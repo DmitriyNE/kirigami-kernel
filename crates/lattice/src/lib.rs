@@ -18,6 +18,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod algebraic;
 pub mod backend;
 mod bignum;
 mod poly;
@@ -31,6 +32,7 @@ mod sturm;
 #[cfg(kani)]
 mod proof;
 
+pub use algebraic::{AlgReal, Surd};
 pub use backend::Backend;
 pub use bignum::{BigInt, BigRat, Bignum};
 pub use poly::Poly;
