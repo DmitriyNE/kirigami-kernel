@@ -1,0 +1,21 @@
+[package]
+name = "selector"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Speed yardstick: a degree-12 Sturm polynomial-remainder-sequence over ~256-bit
+# rational coefficients, run once per gate-passing rational-capable backend
+# (dashu, num-rational, malachite). ibig is integer-only → excluded from the
+# rational yardstick. std binary; times via std::time::Instant (a throwaway
+# selector — no criterion needed to pick a winner).
+[[bin]]
+name = "selector"
+path = "src/main.rs"
+
+[dependencies]
+dashu = "0.4"
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+malachite = "0.4"

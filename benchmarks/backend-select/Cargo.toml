@@ -1,0 +1,10 @@
+# Throwaway backend-selection benchmark — a SELF-CONTAINED workspace with its own
+# Cargo.lock, excluded from the root workspace (see root Cargo.toml `exclude`).
+# Purpose: pick the `lattice` bignum backend under two criteria —
+#   (1) a HARD no_std+alloc gate  (crate `gate`, compiled for thumbv7em-none-eabi)
+#   (2) speed on the yardstick     (crate `selector`: deg-12 Sturm PRS over 256-bit ℚ)
+# Output of record: ../../docs/lattice-backend-benchmark.md. This project is not
+# built by CI and nothing in `lattice` depends on it.
+[workspace]
+resolver = "2"
+members = ["gate", "selector"]

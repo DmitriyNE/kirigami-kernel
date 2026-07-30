@@ -6,6 +6,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The backend-selection benchmark is a throwaway, self-contained workspace under
+# benchmarks/ (its own Cargo.lock). Excluded so criterion + all four candidate
+# bignum crates never enter this lockfile or the `--workspace --all-targets`
+# CI gate. See docs/lattice-backend-benchmark.md.
+exclude = ["benchmarks/*"]
 
 [workspace.package]
 version = "0.0.0"

@@ -1,0 +1,27 @@
+[package]
+name = "gate"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The no_std+alloc gate. One feature per candidate; each depends on the candidate
+# with `default-features = false` (drops its `std` feature). The gate is passed iff
+#   cargo build -p gate --no-default-features --features <cand> --target thumbv7em-none-eabi
+# compiles — a candidate that pulls `std` transitively fails to build for a target
+# that has no std. This is a library, so no global allocator / linked binary is
+# needed; compilation itself is the gate.
+[lib]
+path = "src/lib.rs"
+
+[features]
+dashu = ["dep:dashu"]
+num = ["dep:num-bigint", "dep:num-rational"]
+malachite = ["dep:malachite"]
+ibig = ["dep:ibig"]
+
+[dependencies]
+dashu = { version = "0.4", default-features = false, optional = true }
+num-bigint = { version = "0.4", default-features = false, optional = true }
+num-rational = { version = "0.4", default-features = false, optional = true }
+malachite = { version = "0.4", default-features = false, features = ["naturals_and_integers", "rationals"], optional = true }
+ibig = { version = "0.3", default-features = false, optional = true }
