@@ -16,6 +16,10 @@ extern crate alloc;
 
 pub mod backend;
 mod bignum;
+mod rat;
+mod small;
 
 pub use backend::Backend;
 pub use bignum::{BigInt, BigRat, Bignum};
+pub use rat::{Int, Rat};
+pub use small::SmallRat;
