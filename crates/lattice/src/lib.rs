@@ -23,6 +23,7 @@ mod bignum;
 mod poly;
 mod rat;
 mod small;
+mod sturm;
 
 // Kani bounded-model-checking harnesses for the L0 fast path (compiled only
 // under `cargo kani`; see vv-guide §5/§8).
@@ -34,3 +35,4 @@ pub use bignum::{BigInt, BigRat, Bignum};
 pub use poly::Poly;
 pub use rat::{Int, Rat};
 pub use small::SmallRat;
+pub use sturm::{Interval, SturmChain, sign_on_interval, sign_variations};

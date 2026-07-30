@@ -69,6 +69,38 @@ fn cmp_panic_free_full_domain() {
     let _ = small::cmp(&x, &y);
 }
 
+// The Sturm sign-variation counter (vv-guide §5; the task-3 spike's function #1).
+// Finite: an exhaustive check that the streaming counter matches an independent
+// compact-then-pairwise reference over every {-1,0,1} sequence, and that the
+// count is bounded (panic-/overflow-free). `unwind(7)` bounds the length-6
+// sequence loops (passing `[i8;6]` as `&[i8]` hides the length from CBMC).
+#[kani::proof]
+#[kani::unwind(7)]
+fn sign_variations_matches_reference() {
+    let s: [i8; 6] = kani::any();
+    for &x in &s {
+        kani::assume((-1..=1).contains(&x));
+    }
+    let v = crate::sturm::sign_variations(&s);
+    // reference: compact out zeros, then count adjacent differing signs.
+    let mut buf = [0i8; 6];
+    let mut k = 0usize;
+    for &x in &s {
+        if x != 0 {
+            buf[k] = x;
+            k += 1;
+        }
+    }
+    let mut r = 0u32;
+    for i in 1..k {
+        if buf[i] != buf[i - 1] {
+            r += 1;
+        }
+    }
+    assert!(v == r);
+    assert!(v <= 5);
+}
+
 // ===========================================================================
 // SLOW (CBMC-expensive; spike-hardened) — fast ≡ slow (exact) + reduced-
 // canonicalization + panic-freedom, over the i16-coordinate domain where i128 is
