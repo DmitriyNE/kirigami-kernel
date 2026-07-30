@@ -29,8 +29,8 @@ for f in dashu num malachite ibig; do
   cargo build -p gate --no-default-features --features "$f" --target thumbv7em-none-eabi
 done
 
-# (2) speed yardstick:
-cargo run -p selector --release
+# (2) speed yardstick (criterion; ~3-4 min — num-rational is the slow pole):
+cargo bench
 ```
 
 Candidates: `dashu` (int+rational), `num-bigint`+`num-rational`, `malachite`

@@ -45,15 +45,15 @@ rational layer that dashu already provides.
 
 Degree-12 Sturm polynomial-remainder-sequence over ~240-bit rational coefficients
 (naive Euclidean PRS → deliberate Sturm coefficient explosion; the bignum stress).
-9 runs/backend, `aarch64-darwin`, rustc 1.96.0, `--release`, under `caffeinate -i`
-(no idle-sleep). All backends compute the identical chain (see the fingerprint
-below) and agree on the root count.
+criterion (`benches/prs.rs`, `sample_size(10)` to bound the ~17s num-rational
+backend), `aarch64-darwin`, rustc 1.96.0. All backends compute the identical chain
+(see the fingerprint below) and agree on the root count.
 
-| backend | min (ms) | median (ms) | max (ms) | relative (min) |
-|---|---:|---:|---:|---:|
-| dashu 0.4.4 | 362.6 | 363.6 | 365.6 | 1.00× |
-| malachite 0.4.22 | 363.8 | 364.7 | 366.0 | 1.00× |
-| num-rational 0.4.2 | 16924.9 | 16932.9 | 16938.9 | 46.7× |
+| backend | criterion time [low · median · high] | relative (median) |
+|---|---|---:|
+| dashu 0.4.4 | 363.16 · **363.71 ms** · 364.41 | 1.00× |
+| malachite 0.4.22 | 364.27 · **364.57 ms** · 364.87 | 1.00× |
+| num-rational 0.4.2 | 16.948 · **17.119 s** · 17.419 | 47.1× |
 
 Cross-check: all three agree, root count = 0 (this fixed pseudo-random degree-12
 polynomial has no real roots in (−1000, 1000]).
@@ -73,11 +73,11 @@ i.e. the last chain entries carry coefficients of ~100 000 decimal digits
 three backends, so they do the *same* work — the timing gap is pure backend
 arithmetic speed on very large integers.
 
-**On the dashu ≈ malachite tie (was it suspicious?).** No — with 9 runs it is a
-genuine near-tie, not an identical value: dashu median 363.6 ms vs malachite
-364.7 ms (~0.3% apart), each with ~1% run-to-run spread and no outliers. Two
-FFT-/Toom-grade bignum libraries land within noise of each other on this
-multiply-and-GCD-heavy workload. dashu is marginally ahead.
+**On the dashu ≈ malachite tie (was it suspicious?).** No — it is a genuine
+near-tie, not an identical value: criterion puts dashu at 363.71 ms vs malachite
+364.57 ms (~0.2% apart) with tight confidence intervals. Two FFT-/Toom-grade
+bignum libraries land within noise of each other on this multiply-and-GCD-heavy
+workload; dashu is marginally ahead.
 
 **On num-rational's 47× slowness (real, not a harness bug).** The chain reaches
 ~100 000-digit coefficients, and num-rational reduces to lowest terms after every
@@ -96,9 +96,8 @@ rationals, never this exploded workload.
   + speed tier), so it is stable across the bump; adopting dashu 0.5 in `lattice`
   later is a trivial follow-up and its `RBig` surface we use (`from_parts`,
   arithmetic ops, `cmp`) is unchanged.
-- The speed harness uses `std::time::Instant` min-of-N rather than criterion — a
-  throwaway selector does not need distribution statistics to separate a 47× gap
-  and a dead heat.
+- The speed harness is a criterion bench (`benches/prs.rs`); `sample_size(10)`
+  keeps the ~17s num-rational backend from dominating the run (~3-4 min total).
 - Standing gate after selection: `lattice` is `#![no_std]`, so
   `cargo build -p lattice --target thumbv7em-none-eabi` (wired into CI) is the
   durable no_std+alloc regression guard on the real `lattice` + dashu graph.

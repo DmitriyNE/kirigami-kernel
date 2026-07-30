@@ -41,8 +41,14 @@ fn trim<R: Rat>(mut p: Vec<R>) -> Vec<R> {
 
 fn deriv<R: Rat>(p: &[R]) -> Vec<R> {
     // d/dx Σ p[i] xⁱ = Σ_{i≥1} i·p[i] x^{i-1}
-    let d: Vec<R> = (1..p.len()).map(|i| p[i].mul(&R::from_i64(i as i64))).collect();
-    if d.is_empty() { vec![R::zero()] } else { trim(d) }
+    let d: Vec<R> = (1..p.len())
+        .map(|i| p[i].mul(&R::from_i64(i as i64)))
+        .collect();
+    if d.is_empty() {
+        vec![R::zero()]
+    } else {
+        trim(d)
+    }
 }
 
 /// Remainder of `a` divided by `b` over the rationals (b nonzero, leading coeff
