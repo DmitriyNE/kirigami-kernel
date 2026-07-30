@@ -7,6 +7,22 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-# The bignum backend is selected at M0 by benchmark (malachite | num-rational |
-# dashu | ibig — must be no_std + alloc) and sits behind the `backend` trait, so
-# the choice is swappable and the no_std boundary lives at this crate's API.
+# Bignum backend chosen at M0 by benchmark (docs/lattice-backend-benchmark.md):
+# dashu — passes the no_std+alloc gate, ties malachite for fastest on the
+# deg-12/256-bit Sturm yardstick, native integer + rational types. Behind the
+# `backend::Backend` trait, so the choice stays swappable and the no_std boundary
+# lives at this crate's API. `default-features = false` = no_std + alloc.
+dashu = { version = "0.4", default-features = false }
+
+[lints.rust]
+# Kani injects `--cfg kani`; register it so `#[cfg(kani)]` proof modules do not
+# trip `unexpected_cfgs` under `clippy --all-targets -- -D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[dev-dependencies]
+# Runtime differential coverage (tests only; never in the shipped crate):
+# proptest for fast≡slow, and an INDEPENDENT second bignum backend
+# (num-bigint + num-rational) for the primary≡2nd-backend differential row.
+proptest = "1"
+num-bigint = "0.4"
+num-rational = "0.4"
