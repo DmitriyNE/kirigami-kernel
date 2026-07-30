@@ -20,6 +20,7 @@ extern crate std;
 
 pub mod backend;
 mod bignum;
+mod poly;
 mod rat;
 mod small;
 
@@ -30,5 +31,6 @@ mod proof;
 
 pub use backend::Backend;
 pub use bignum::{BigInt, BigRat, Bignum};
+pub use poly::Poly;
 pub use rat::{Int, Rat};
 pub use small::SmallRat;
