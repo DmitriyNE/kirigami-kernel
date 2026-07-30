@@ -18,8 +18,10 @@
 //!   against the i128 cross-multiply) plus the full-range differential
 //!   (`rat::differential`, fast vs the real BigInt path). The `*_correct_i16`
 //!   harnesses below are the SYMBOLIC version of that proof; they are correct but
-//!   CBMC-expensive, and made practical at the task-3 spike via a loop-bounded /
-//!   fixed-iteration gcd model (the plan's pre-declared fallback for this risk).
+//!   CBMC-expensive. Per the settled tool-fit decision, gcd/reduce *correctness*
+//!   is owned by Lean at the task-3 spike (BMC is the wrong tool for iterative
+//!   number theory); Kani keeps the gcd-free bridge + panic-freedom. No algorithm
+//!   bandage (e.g. binary-GCD) — that would only fix this one operation.
 
 use crate::small::{self, SmallRat, gcd_u128};
 

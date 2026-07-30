@@ -50,7 +50,8 @@ jobs:
             cargo install --locked kani-verifier && cargo-kani setup &&
             cargo kani -p lattice \
               --harness neg_sign_panic_free_full_domain \
-              --harness cmp_panic_free_full_domain'
+              --harness cmp_panic_free_full_domain \
+              --harness sign_variations_matches_reference'
 
       # Added as their targets land:
       #   - the *_correct_i16 fast≡slow Kani harnesses, once the spike's loop-bounded

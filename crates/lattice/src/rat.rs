@@ -8,9 +8,10 @@
 //! consistency* property (checked by the differential test + Kani), **not** a
 //! soundness dependency: a single op that forgot to demote cannot make `==` lie.
 //!
-//! Rational `cmp`/`sign` are **total and exact** here — never `Unresolved`; that
-//! three-valued middle belongs to the algebraic (√-carrying) comparison of a
-//! later slice, a different operation on a different type.
+//! Rational `cmp`/`sign` are **total and exact** — never `Unresolved`. So is the
+//! algebraic (√-carrying) comparison (`algebraic::{Surd, AlgReal}`, spec §8.1
+//! "A/1D inequalities: total"): the three-valued `Unresolved` middle is
+//! certify-core's A/nD strict-sign concern, not any lattice comparison.
 
 use crate::backend::Backend;
 use crate::bignum::Bignum;

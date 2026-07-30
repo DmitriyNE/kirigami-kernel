@@ -9,8 +9,8 @@
 //! Kani is the finite [`sign_variations`] counter. The chain builder here is the
 //! naive Euclidean ℚ-PRS (simplest, correct; fine at predicate degrees) — a
 //! primitive/subresultant builder is a later perf-only swap, and because
-//! `verify_chain` checks *positive proportionality* rather than exact equality,
-//! that swap touches neither the checker nor the counter.
+//! `verify_chain` checks each entry is a *positive multiple* (not an exact
+//! match), that swap touches neither the checker nor the counter.
 
 use crate::backend::Backend;
 use crate::bignum::Bignum;

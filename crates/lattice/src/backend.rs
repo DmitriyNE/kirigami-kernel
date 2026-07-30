@@ -25,9 +25,10 @@ use core::cmp::Ordering;
 /// always kept in canonical form: reduced to lowest terms with denominator `> 0`.
 ///
 /// The trait's methods are the *slow path*. Rational `cmp`/`sign` are **total and
-/// exact** — they never return an "unresolved" verdict; the three-valued
-/// `Verdict` enters only with the algebraic (√-carrying) comparison of a later
-/// slice, which is a different operation on a different type.
+/// exact** — they never return an "unresolved" verdict; so is the algebraic
+/// (√-carrying) comparison in `algebraic` (spec §8.1 "A/1D inequalities: total").
+/// The three-valued `Verdict` middle is certify-core's A/nD strict-sign concern,
+/// not any lattice comparison.
 pub trait Backend {
     /// Arbitrary-precision integer (BigInt slow path; matches Lean `Int`).
     type Int: Clone + Eq;
