@@ -13,6 +13,10 @@
 //! [`backend::Backend`] trait so the concrete bignum crate stays swappable.
 
 extern crate alloc;
+// The unit-test harness (and the dev-only num differential backend) need `std`;
+// the shipped crate stays `#![no_std]`.
+#[cfg(test)]
+extern crate std;
 
 pub mod backend;
 mod bignum;

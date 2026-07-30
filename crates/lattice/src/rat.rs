@@ -5,8 +5,8 @@
 //! **Soundness-first invariant:** `Eq`/`Ord` compare **by value, not by tier** —
 //! a `Fast(1/2)` and a `Slow` holding `1/2` are equal. Canonicalization ("live in
 //! `Fast` iff the reduced value fits `i128`") is therefore a *performance /
-//! consistency* property (checked by proptest + Kani), **not** a soundness
-//! dependency: a single op that forgot to demote cannot make `==` lie.
+//! consistency* property (checked by the differential test + Kani), **not** a
+//! soundness dependency: a single op that forgot to demote cannot make `==` lie.
 //!
 //! Rational `cmp`/`sign` are **total and exact** here — never `Unresolved`; that
 //! three-valued middle belongs to the algebraic (√-carrying) comparison of a
@@ -402,5 +402,129 @@ mod tests {
         let g = big.gcd(&big2);
         assert_eq!(g.sign(), 1);
         assert_eq!(g, big2, "gcd(4·MAX, 2·MAX) = 2·MAX");
+    }
+}
+
+// ===========================================================================
+// Runtime differential (vv-guide §3) — dev-only. Two checks over a
+// boundary-weighted stream: fast ≡ slow (same backend: value + tier) and
+// dashu ≡ num (an INDEPENDENT second backend, compared as reduced decimal
+// num/den). This is the fast path Kani (Step 7) cannot reach — full i128 range
+// against the real BigInt path — plus the vv-matrix "differential (2nd backend)"
+// row. Runs as an in-crate test so it can force the slow tier and read the
+// backend's numerator/denominator.
+// ===========================================================================
+
+#[cfg(test)]
+mod differential {
+    use super::*;
+    use alloc::string::{String, ToString};
+    use num_bigint::BigInt as NInt;
+    use num_rational::BigRational as NRat;
+
+    type Q = Rat<Bignum>;
+
+    /// A lattice rational as its reduced (numerator, denominator) decimal strings
+    /// (via the dashu backend) — the cross-backend canonical form.
+    fn dashu_canon(q: &Q) -> (String, String) {
+        let b = to_slow_rat(q);
+        (
+            Bignum::rat_numer(&b).0.to_string(),
+            Bignum::rat_denom(&b).0.to_string(),
+        )
+    }
+    fn num_of(n: i128, d: i128) -> NRat {
+        NRat::new(NInt::from(n), NInt::from(d))
+    }
+    fn num_canon(r: &NRat) -> (String, String) {
+        (r.numer().to_string(), r.denom().to_string())
+    }
+
+    /// Deterministic boundary-weighted coordinate (LCG). Weighted toward the
+    /// i128 boundary, tiny values, and powers of two — where the tier
+    /// transitions live. (Stratum-weighted proptest generators land at M3a.)
+    fn coord(s: &mut u64) -> i128 {
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let bucket = *s >> 61; // 0..=7
+        let v = *s as i64 as i128;
+        let small = (*s % 8) as i128; // 0..=7
+        match bucket {
+            0 => (v % 17) - 8,              // tiny
+            1 => i128::MAX - small,         // near +MAX
+            2 => i128::MIN + small,         // near MIN
+            3 => v,                         // i64 range
+            4 => v.wrapping_mul(v),         // wider
+            5 => 1i128 << (small + 118),    // large power of two (2^118..2^125)
+            6 => -(1i128 << (small + 118)), // negative large power of two
+            _ => v.wrapping_mul(1_000_000_007),
+        }
+    }
+
+    #[test]
+    fn fast_vs_slow_and_dashu_vs_num() {
+        let mut s = 0x0123_4567_89ab_cdefu64;
+        for iter in 0..20_000u64 {
+            let n1 = coord(&mut s);
+            let d1 = {
+                let d = coord(&mut s);
+                if d == 0 { 1 } else { d }
+            };
+            let n2 = coord(&mut s);
+            let d2 = {
+                let d = coord(&mut s);
+                if d == 0 { 1 } else { d }
+            };
+
+            let q1 = Q::new(n1, d1);
+            let q2 = Q::new(n2, d2);
+            // Force the slow tier by wrapping the materialized backend value.
+            let s1 = Rat::Slow(to_slow_rat(&q1));
+            let s2 = Rat::Slow(to_slow_rat(&q2));
+
+            // ---- fast ≡ slow (same backend): value AND tier (canonicalization) ----
+            let ops = [
+                (q1.add(&q2), s1.add(&s2)),
+                (q1.sub(&q2), s1.sub(&s2)),
+                (q1.mul(&q2), s1.mul(&s2)),
+                (q1.neg(), s1.neg()),
+            ];
+            for (fast, slow) in &ops {
+                assert_eq!(fast, slow, "fast≡slow value (iter {iter})");
+                assert_eq!(
+                    matches!(fast, Rat::Fast(_)),
+                    matches!(slow, Rat::Fast(_)),
+                    "canonicalization: equal value ⇒ equal tier (iter {iter})"
+                );
+            }
+            assert_eq!(q1.cmp(&q2), s1.cmp(&s2), "fast≡slow cmp (iter {iter})");
+            assert_eq!(q1.sign(), s1.sign(), "fast≡slow sign (iter {iter})");
+
+            // ---- dashu ≡ num (independent second backend) ----
+            let m1 = num_of(n1, d1);
+            let m2 = num_of(n2, d2);
+            assert_eq!(
+                dashu_canon(&q1.add(&q2)),
+                num_canon(&(&m1 + &m2)),
+                "add≠num (iter {iter})"
+            );
+            assert_eq!(
+                dashu_canon(&q1.sub(&q2)),
+                num_canon(&(&m1 - &m2)),
+                "sub≠num (iter {iter})"
+            );
+            assert_eq!(
+                dashu_canon(&q1.mul(&q2)),
+                num_canon(&(&m1 * &m2)),
+                "mul≠num (iter {iter})"
+            );
+            assert_eq!(
+                dashu_canon(&q1.neg()),
+                num_canon(&(-&m1)),
+                "neg≠num (iter {iter})"
+            );
+            assert_eq!(q1.cmp(&q2), m1.cmp(&m2), "cmp≠num (iter {iter})");
+        }
     }
 }
