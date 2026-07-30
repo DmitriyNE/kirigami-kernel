@@ -1,6 +1,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
-//! `lattice` — exact-arithmetic substrate for the flex-substrate kernel.
+//! `lattice` — exact-arithmetic substrate for the Kirigami kernel.
 //!
 //! Pure tier (see `docs/environment-and-crate-layout.md §1`): everything above
 //! imports only this for numbers. Two-tier lattice (spec invariant 5): an L0

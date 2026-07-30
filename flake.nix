@@ -1,5 +1,5 @@
 {
-  description = "Flex-substrate certified-exact geometry kernel — reproducible dev environment";
+  description = "Kirigami kernel — reproducible dev environment (certified-exact geometry for formed flexible-PCB substrates)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -48,7 +48,7 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          name = "flex-substrate";
+          name = "kirigami";
           packages = [
             rustToolchain
             pkgs.cargo-fuzz
@@ -73,7 +73,7 @@
           ];
 
           shellHook = ''
-            echo "flex-substrate dev shell:  $(rustc --version 2>/dev/null || echo 'rust not on PATH')"
+            echo "kirigami dev shell:  $(rustc --version 2>/dev/null || echo 'rust not on PATH')"
             echo "  extraction toolchain (hax/charon/aeneas) + Lean/Mathlib pins land at the §7 spike"
           '';
         };

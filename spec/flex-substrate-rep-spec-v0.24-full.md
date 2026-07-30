@@ -3,6 +3,7 @@
 Status: draft for review · 2026-07-29 · **This file is the sole normative artifact.** The companion `flex-substrate-rep-spec-v0.24-delta.md` (review provenance and changelog) and the paper are informative; on any conflict, this document wins.
 Scope: **representation only** — authoring/construction, compiler passes, forming physics, file-format minutiae out of scope.
 Language: "shall" = normative; *Note:* = informative. Open items [Dn] in §12; reserved extensions in §14.
+Implementation: the **Kirigami kernel** (Rust, certified-exact) implements this representation; this document remains the sole normative authority. *(Attribution only — no normative content changed.)*
 
 ---
 

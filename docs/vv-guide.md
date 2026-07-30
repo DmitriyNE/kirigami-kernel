@@ -1,4 +1,4 @@
-# V&V Guide (unified) — verification & validation for the flex-substrate kernel
+# V&V Guide (unified) — verification & validation for the Kirigami kernel
 
 Authoritative. Supersedes and merges `vv-plan-v1.md` and `vv-addendum-1-lean-extraction.md` (both retained only as history). Companion to `implementation-plan-v1.md`. **Verification** = code ⊨ spec v0.24; **validation** = spec ⊨ physical intent.
 

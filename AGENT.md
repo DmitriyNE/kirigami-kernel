@@ -4,7 +4,7 @@ You are a coding agent picking up a project with no prior context. This file is 
 
 ## What this is
 
-A **certified-exact geometry kernel** in Rust for flexible-PCB flat↔3D correspondence — the representation behind a smart contact-lens flex assembly (a 4-layer 240 µm board rolled into a cone). "Certified-exact" is the whole point: no floating point in any result that carries a certificate; every geometric claim ships with a checkable proof object; every predicate is exact rational/algebraic arithmetic.
+**Kirigami** — a **certified-exact geometry kernel** in Rust for flexible-PCB flat↔3D correspondence — the representation behind a smart contact-lens flex assembly (a 4-layer 240 µm board rolled into a cone). "Certified-exact" is the whole point: no floating point in any result that carries a certificate; every geometric claim ships with a checkable proof object; every predicate is exact rational/algebraic arithmetic.
 
 The mathematics was specified and adversarially reviewed across 24 spec revisions before any code. That review is done. **Your job is implementation, not redesign.** The spec is `docs/flex-substrate-rep-spec-v0.24-full.md` and it is the sole normative authority. If code and spec disagree, the spec wins; if the spec seems wrong, stop and flag it — do not silently "fix" it (twenty-four rounds of people cleverer about this than a fresh read will be have already passed over it).
 

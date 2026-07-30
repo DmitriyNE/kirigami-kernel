@@ -1,6 +1,6 @@
-# Flex-substrate kernel — handoff package
+# Kirigami kernel
 
-Cold-start entry point for the coding agent: **read `AGENT.md` first.**
+A certified-exact geometry kernel for formed flexible-PCB substrates — the implementation of the *Flex Substrate Representation* spec v0.24. (Kirigami: cut *and* fold — the flat artwork is cut, then folded/rolled, where origami would only fold.) Cold-start entry point for the coding agent: **read `AGENT.md` first.**
 
 ## Contents
 - `AGENT.md` — onboarding, invariants, task queue, definition of done. START HERE.

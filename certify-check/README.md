@@ -1,6 +1,6 @@
 # certify-check — Lean 4 extraction target
 
-The deductive-verification surface for the flex-substrate kernel. Hosts:
+The deductive-verification surface for the Kirigami kernel. Hosts:
 - the **hand-written Lean specs** of the `certify-core` checkers (each spec *is* the formalization of its certificate definition — `vv-guide §4`), and
 - the **hax / Aeneas lifted models** of those checkers (Rust → Lean, always; there is no Lean → Rust codegen).
 

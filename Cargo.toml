@@ -1,4 +1,4 @@
-# Flex-substrate certified-exact geometry kernel — workspace manifest.
+# Kirigami kernel — workspace manifest (certified-exact geometry for formed flexible-PCB substrates).
 # Layout is authoritative in docs/environment-and-crate-layout.md §1:
 #   pure tier (no_std, the extraction surface + TCB): lattice, certify-core
 #   shell tier ("kernel-search", std, tested + differentially checked): the rest
