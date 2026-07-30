@@ -11,7 +11,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 ## Read order (do not skip)
 
 1. **`docs/agent-glossary.md`** — the 30 terms and acronyms you must know to parse the spec (REG-V, CLIP-DOM, MITER-FIT, EDGE-OCCUPANCY, V_cand/V_∂, the lattice tiers, ...). Read this first or the spec is noise.
-2. **`docs/implementation-plan-v1.md`** — module decomposition, dependency order, milestones. This is your map.
+2. **`docs/implementation-plan-v1.md`** — module decomposition, dependency order, milestones. This is your map. Then **`docs/environment-and-crate-layout.md`** — the resolved crate layout, toolchain/edition pins, Lean/Mathlib, and Nix flake; read it before you scaffold anything.
 3. **`docs/vv-guide.md`** — the verification & validation architecture. **Non-negotiable; it constrains how you write every function.** The core idea: verified *checkers*, tested *searchers*, a hard pure-core/imperative-shell split.
 4. **`fixtures/corpus.md`** — ~30 counterexamples with required verdicts. These are your regression suite from commit one. Each is a real bug a real reviewer found; reproducing its verdict is how you know a module works.
 5. **`docs/flex-substrate-rep-spec-v0.24-full.md`** — the spec itself. Dense. §2 symbol table, §3 charts/domains, §4 development, §5 folds/closures, §6 the arrangement kernel, §8 the certificate tables. Read the section you're implementing; do not try to read it all at once.
@@ -30,7 +30,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 
 ## Toolchain
 
-- **Rust**, `no_std`-friendly `certify-core`. Bignum: benchmark `malachite` vs `num-rational` at M0 (`lattice` doc has the yardstick). No `unsafe`.
+- **Rust, edition 2024** (MSRV floor 1.85). `certify-core` + `lattice` are hard `#![no_std]` + `alloc`; the bignum backend sits behind a `lattice` trait so `no_std` lives at the API, not the backend. Bignum: benchmark `malachite` vs `num-rational` at M0 — winner must be **no_std + alloc** *and* fast on the yardstick (`lattice` doc). No `unsafe`. Environment is pinned via a **Nix flake** (fenix-managed toolchain). **Crate layout, edition/tool pins, Lean/Mathlib, and the flake are all resolved in `docs/environment-and-crate-layout.md` — read it before scaffolding.**
 - **Kani** (bounded model checking): the lattice fast≡slow bridge, finite combinatorial functions, bounded DCEL bookkeeping. See vv-guide §5.
 - **Lean 4 + Mathlib** (deductive): the certificate theorems, via **Rust→Lean** lifting (hax for pure parts, Aeneas for locally-mutable parts — direction is Rust→Lean, there is no Lean→Rust codegen). See vv-guide §4. **Run the §7 spike before committing the extraction approach.**
 - **proptest / cargo-fuzz**: stratum-weighted generators (degenerate-heavy — the bugs live on degenerate strata). **CGAL** and **OpenCascade** are differential oracles in `difftest/`, never in a certified path.
@@ -40,7 +40,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 
 The repo does not exist yet. Milestone 0, in order:
 
-1. **Repo skeleton**: cargo workspace with crate stubs per implementation-plan §1 (`lattice geom certify1d arrange2d closure sew gate develop export fixtures difftest`, plus `certify-core` split out and a `certify-check` target for Lean). Copy `docs/`, `fixtures/`, and create `vv-matrix.md` and `proofs/ledger.md` as stubs. `spec/` holds v0.24-full + delta + pending-v025.
+1. **Repo skeleton**: cargo workspace with crate stubs per the resolved layered layout in `docs/environment-and-crate-layout.md §1` — pure tier `lattice` + `certify-core` (`certify1d` is absorbed as `certify_core::certify1d`, not its own crate); shell tier `geom arrange2d closure sew gate develop export fixtures difftest`; Lean in `certify-check/` (a lake project). Add `flake.nix` / `flake.lock`, `rust-toolchain.toml` (edition 2024, fenix), and `lean-toolchain`. Copy `docs/`, `fixtures/`, and create `vv-matrix.md` and `proofs/ledger.md` as stubs. `spec/` holds v0.24-full + delta + pending-v025.
 2. **M0 lattice**: benchmark the two bignum backends (Sturm on a degree-12 polynomial over 256-bit rationals is the yardstick). Implement the L0 fast path + promotion, exact cmp/sign/gcd, polynomial arithmetic, **Sturm sequences** (isolation + sign-on-interval), **bivariate resultants**. Grow Kani harnesses alongside (fast≡slow, panic-freedom).
 3. **The extraction spike** (vv-guide §7): sign-variation counter lifted both ways to Lean, proven; Sturm hypothesis-checker proven against a Mathlib citation. Produce the go/no-go + the per-checker template.
 4. Only then M3a (arrangement decomposition + event spine) — every arrangement test needs it — with the CGAL difftest shim wired from the first week.

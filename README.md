@@ -10,6 +10,7 @@ Cold-start entry point for the coding agent: **read `AGENT.md` first.**
 - `docs/spec-pending-v025.md` — queued edits (canonical arc decomposition — implement from the start).
 - `docs/paper.md` — gentler narrative overview.
 - `docs/implementation-plan-v1.md` — module decomposition, milestones, effort.
+- `docs/environment-and-crate-layout.md` — **resolved engineering decisions: crate layout, edition/MSRV/tool pins, Lean/Mathlib, Nix flake. Read before scaffolding the repo.**
 - `docs/vv-guide.md` — **verification & validation architecture (unified, authoritative)**.
 - `fixtures/corpus.md` — ~30 counterexamples with required verdicts = the day-one regression suite.
 - `proofs/` — Lean proof ledger (stub; grows with `certify-core`).
