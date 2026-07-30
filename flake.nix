@@ -69,6 +69,7 @@
             pkgs.pkg-config
             pkgs.clang
 
+            pkgs.git # so `git` works inside `nix develop` (CI == local)
             pkgs.jq
           ];
 
