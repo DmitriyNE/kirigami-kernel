@@ -31,8 +31,28 @@ jobs:
       - name: test (incl. the corpus regression suite)
         run: nix develop --command cargo test --workspace
 
+      # no_std + alloc gate: the pure-tier `lattice` (and its dashu backend) must
+      # build for a bare-metal, std-less target. This is the standing form of the
+      # M0 backend benchmark's hard no_std gate (docs/lattice-backend-benchmark.md).
+      - name: no_std gate (lattice → thumbv7em-none-eabi)
+        run: nix develop --command cargo build -p lattice --target thumbv7em-none-eabi
+
+      # Kani panic-/overflow-freedom harnesses for the L0 fast path (vv-guide §5/§8).
+      # gcc + z3 come from the devShell. The kani-verifier install/bundle is not yet
+      # cached and the exact version is pinned at the §7 extraction spike, so this is
+      # scoped to the fast (loop-free) harnesses; the CBMC-expensive gcd-loop
+      # correctness harnesses are covered by tests until the spike hardens them.
+      - name: Kani (lattice fast-path panic-freedom)
+        run: |
+          nix develop --command bash -c '
+            cargo install --locked kani-verifier && cargo-kani setup &&
+            cargo kani -p lattice \
+              --harness neg_sign_panic_free_full_domain \
+              --harness cmp_panic_free_full_domain'
+
       # Added as their targets land:
-      #   - Kani harnesses (fast≡slow lattice bridge; finite classifiers) — M0+
+      #   - the *_correct_i16 fast≡slow Kani harnesses, once the spike's loop-bounded
+      #     gcd model makes them tractable
       #   - the milestone-gate vv-matrix.md check (a soundness-critical row with an
       #     empty {Kani ∨ Lean ∨ runtime-checked-hypothesis} cell fails the gate)
       #   - proptest/cargo-fuzz stratum-weighted suites — M3+
