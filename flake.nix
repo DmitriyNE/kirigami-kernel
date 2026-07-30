@@ -50,6 +50,7 @@
           packages = [
             rustToolchain
             pkgs.cargo-fuzz
+            pkgs.cargo-nextest # test runner (nicer output; scales to the heavy suite ahead)
 
             # Kani (bounded model checking). If absent from the pinned nixpkgs,
             # install in-shell: `cargo install --locked kani-verifier && cargo-kani setup`.

@@ -448,13 +448,13 @@ mod tests {
 }
 
 // ===========================================================================
-// Runtime differential (vv-guide §3) — dev-only. Two checks over a
-// boundary-weighted stream: fast ≡ slow (same backend: value + tier) and
+// Runtime differential (vv-guide §3) — dev-only, proptest-driven. Two properties
+// over boundary-weighted inputs: fast ≡ slow (same backend: value AND tier) and
 // dashu ≡ num (an INDEPENDENT second backend, compared as reduced decimal
-// num/den). This is the fast path Kani (Step 7) cannot reach — full i128 range
-// against the real BigInt path — plus the vv-matrix "differential (2nd backend)"
-// row. Runs as an in-crate test so it can force the slow tier and read the
-// backend's numerator/denominator.
+// num/den). Covers the full i128 range against the real BigInt path — where the
+// fast-path Kani harness (Step 7) cannot reach — plus the vv-matrix
+// "differential (2nd backend)" row. In-crate so it can force the slow tier and
+// read the backend's numerator/denominator.
 // ===========================================================================
 
 #[cfg(test)]
@@ -463,6 +463,7 @@ mod differential {
     use alloc::string::{String, ToString};
     use num_bigint::BigInt as NInt;
     use num_rational::BigRational as NRat;
+    use proptest::prelude::*;
 
     type Q = Rat<Bignum>;
 
@@ -482,91 +483,65 @@ mod differential {
         (r.numer().to_string(), r.denom().to_string())
     }
 
-    /// Deterministic boundary-weighted coordinate (LCG). Weighted toward the
-    /// i128 boundary, tiny values, and powers of two — where the tier
-    /// transitions live. (Stratum-weighted proptest generators land at M3a.)
-    fn coord(s: &mut u64) -> i128 {
-        *s = s
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bucket = *s >> 61; // 0..=7
-        let v = *s as i64 as i128;
-        let small = (*s % 8) as i128; // 0..=7
-        match bucket {
-            0 => (v % 17) - 8,              // tiny
-            1 => i128::MAX - small,         // near +MAX
-            2 => i128::MIN + small,         // near MIN
-            3 => v,                         // i64 range
-            4 => v.wrapping_mul(v),         // wider
-            5 => 1i128 << (small + 118),    // large power of two (2^118..2^125)
-            6 => -(1i128 << (small + 118)), // negative large power of two
-            _ => v.wrapping_mul(1_000_000_007),
-        }
+    /// Boundary-weighted i128: tiny, the i128 extremes, near-extreme, i64-range,
+    /// full-range, and ± large powers of two — where the tier transitions live.
+    fn coord() -> impl Strategy<Value = i128> {
+        prop_oneof![
+            (-8i128..=8),
+            Just(0i128),
+            Just(i128::MIN),
+            Just(i128::MAX),
+            (i128::MAX - 8..=i128::MAX),
+            (i128::MIN..=i128::MIN + 8),
+            any::<i64>().prop_map(|x| x as i128),
+            any::<i128>(),
+            (0u32..127).prop_map(|k| 1i128 << k),
+            (0u32..127).prop_map(|k| -(1i128 << k)),
+        ]
+    }
+    fn nz() -> impl Strategy<Value = i128> {
+        coord().prop_filter("denominator != 0", |d| *d != 0)
     }
 
-    #[test]
-    fn fast_vs_slow_and_dashu_vs_num() {
-        let mut s = 0x0123_4567_89ab_cdefu64;
-        for iter in 0..20_000u64 {
-            let n1 = coord(&mut s);
-            let d1 = {
-                let d = coord(&mut s);
-                if d == 0 { 1 } else { d }
-            };
-            let n2 = coord(&mut s);
-            let d2 = {
-                let d = coord(&mut s);
-                if d == 0 { 1 } else { d }
-            };
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
 
+        /// fast ≡ slow (same backend): every op's fast-path result equals the same
+        /// op forced through the slow path — value AND tier (canonicalization).
+        #[test]
+        fn fast_matches_slow(n1 in coord(), d1 in nz(), n2 in coord(), d2 in nz()) {
             let q1 = Q::new(n1, d1);
             let q2 = Q::new(n2, d2);
             // Force the slow tier by wrapping the materialized backend value.
             let s1 = Rat::Slow(to_slow_rat(&q1));
             let s2 = Rat::Slow(to_slow_rat(&q2));
-
-            // ---- fast ≡ slow (same backend): value AND tier (canonicalization) ----
-            let ops = [
+            for (fast, slow) in [
                 (q1.add(&q2), s1.add(&s2)),
                 (q1.sub(&q2), s1.sub(&s2)),
                 (q1.mul(&q2), s1.mul(&s2)),
                 (q1.neg(), s1.neg()),
-            ];
-            for (fast, slow) in &ops {
-                assert_eq!(fast, slow, "fast≡slow value (iter {iter})");
-                assert_eq!(
-                    matches!(fast, Rat::Fast(_)),
-                    matches!(slow, Rat::Fast(_)),
-                    "canonicalization: equal value ⇒ equal tier (iter {iter})"
-                );
+            ] {
+                prop_assert_eq!(&fast, &slow);
+                // canonicalization: equal value ⇒ equal tier
+                prop_assert_eq!(matches!(fast, Rat::Fast(_)), matches!(slow, Rat::Fast(_)));
             }
-            assert_eq!(q1.cmp(&q2), s1.cmp(&s2), "fast≡slow cmp (iter {iter})");
-            assert_eq!(q1.sign(), s1.sign(), "fast≡slow sign (iter {iter})");
+            prop_assert_eq!(q1.cmp(&q2), s1.cmp(&s2));
+            prop_assert_eq!(q1.sign(), s1.sign());
+        }
 
-            // ---- dashu ≡ num (independent second backend) ----
+        /// dashu ≡ num (an independent second backend), compared as reduced
+        /// decimal num/den.
+        #[test]
+        fn dashu_matches_num(n1 in coord(), d1 in nz(), n2 in coord(), d2 in nz()) {
+            let q1 = Q::new(n1, d1);
+            let q2 = Q::new(n2, d2);
             let m1 = num_of(n1, d1);
             let m2 = num_of(n2, d2);
-            assert_eq!(
-                dashu_canon(&q1.add(&q2)),
-                num_canon(&(&m1 + &m2)),
-                "add≠num (iter {iter})"
-            );
-            assert_eq!(
-                dashu_canon(&q1.sub(&q2)),
-                num_canon(&(&m1 - &m2)),
-                "sub≠num (iter {iter})"
-            );
-            assert_eq!(
-                dashu_canon(&q1.mul(&q2)),
-                num_canon(&(&m1 * &m2)),
-                "mul≠num (iter {iter})"
-            );
-            assert_eq!(
-                dashu_canon(&q1.neg()),
-                num_canon(&(-&m1)),
-                "neg≠num (iter {iter})"
-            );
-            assert_eq!(q1.cmp(&q2), m1.cmp(&m2), "cmp≠num (iter {iter})");
+            prop_assert_eq!(dashu_canon(&q1.add(&q2)), num_canon(&(&m1 + &m2)));
+            prop_assert_eq!(dashu_canon(&q1.sub(&q2)), num_canon(&(&m1 - &m2)));
+            prop_assert_eq!(dashu_canon(&q1.mul(&q2)), num_canon(&(&m1 * &m2)));
+            prop_assert_eq!(dashu_canon(&q1.neg()), num_canon(&(-&m1)));
+            prop_assert_eq!(q1.cmp(&q2), m1.cmp(&m2));
         }
     }
 }

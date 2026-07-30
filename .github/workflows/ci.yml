@@ -29,7 +29,9 @@ jobs:
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
       - name: test (incl. the corpus regression suite)
-        run: nix develop --command cargo test --workspace
+        run: nix develop --command cargo nextest run --workspace
+      - name: doctests (nextest does not run these)
+        run: nix develop --command cargo test --workspace --doc
 
       # no_std + alloc gate: the pure-tier `lattice` (and its dashu backend) must
       # build for a bare-metal, std-less target. This is the standing form of the
