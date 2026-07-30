@@ -1,6 +1,6 @@
 # Environment & crate layout — resolved engineering decisions
 
-Status: decided 2026-07-30 · authoritative for the repo skeleton (M0 task 1). Resolves the engineering-layer gaps the handoff left open (crate-layout reconciliation, toolchain/edition pins, reproducible environment). **The spec `flex-substrate-rep-spec-v0.24-full.md` is untouched by this document** — this is build/structure scaffolding, not math. On any conflict about *geometry or certificates*, the spec still wins; on *repo shape and tooling*, this file is the record.
+Status: decided 2026-07-30 · authoritative for the repo skeleton (M0 task 1). Resolves the engineering-layer gaps the handoff left open (crate-layout reconciliation, toolchain/edition pins, reproducible environment). **The spec `spec/flex-substrate-rep-spec-v0.24-full.md` is untouched by this document** — this is build/structure scaffolding, not math. On any conflict about *geometry or certificates*, the spec still wins; on *repo shape and tooling*, this file is the record.
 
 These choices refine, and where noted supersede, the crate-list phrasing in `implementation-plan-v1.md §1` and `AGENT.md` (task queue + toolchain). Version numbers marked **[spike]** are anchors to be locked by the `vv-guide §7` extraction spike, not authorities.
 

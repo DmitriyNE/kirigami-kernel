@@ -6,7 +6,7 @@ You are a coding agent picking up a project with no prior context. This file is 
 
 **Kirigami** — a **certified-exact geometry kernel** in Rust for flexible-PCB flat↔3D correspondence — the representation behind a smart contact-lens flex assembly (a 4-layer 240 µm board rolled into a cone). "Certified-exact" is the whole point: no floating point in any result that carries a certificate; every geometric claim ships with a checkable proof object; every predicate is exact rational/algebraic arithmetic.
 
-The mathematics was specified and adversarially reviewed across 24 spec revisions before any code. That review is done. **Your job is implementation, not redesign.** The spec is `docs/flex-substrate-rep-spec-v0.24-full.md` and it is the sole normative authority. If code and spec disagree, the spec wins; if the spec seems wrong, stop and flag it — do not silently "fix" it (twenty-four rounds of people cleverer about this than a fresh read will be have already passed over it).
+The mathematics was specified and adversarially reviewed across 24 spec revisions before any code. That review is done. **Your job is implementation, not redesign.** The spec is `spec/flex-substrate-rep-spec-v0.24-full.md` and it is the sole normative authority. If code and spec disagree, the spec wins; if the spec seems wrong, stop and flag it — do not silently "fix" it (twenty-four rounds of people cleverer about this than a fresh read will be have already passed over it).
 
 ## Read order (do not skip)
 
@@ -14,8 +14,8 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 2. **`docs/implementation-plan-v1.md`** — module decomposition, dependency order, milestones. This is your map. Then **`docs/environment-and-crate-layout.md`** — the resolved crate layout, toolchain/edition pins, Lean/Mathlib, and Nix flake; read it before you scaffold anything.
 3. **`docs/vv-guide.md`** — the verification & validation architecture. **Non-negotiable; it constrains how you write every function.** The core idea: verified *checkers*, tested *searchers*, a hard pure-core/imperative-shell split.
 4. **`fixtures/corpus.md`** — ~30 counterexamples with required verdicts. These are your regression suite from commit one. Each is a real bug a real reviewer found; reproducing its verdict is how you know a module works.
-5. **`docs/flex-substrate-rep-spec-v0.24-full.md`** — the spec itself. Dense. §2 symbol table, §3 charts/domains, §4 development, §5 folds/closures, §6 the arrangement kernel, §8 the certificate tables. Read the section you're implementing; do not try to read it all at once.
-6. **`docs/flex-substrate-rep-spec-v0.24-delta.md`** and `docs/spec-pending-v025.md` — the most recent changelog and the queued profile edits (canonical arc decomposition — implement it in the arrangement from the start). `docs/paper.md` is a gentler narrative overview if the spec is too terse.
+5. **`spec/flex-substrate-rep-spec-v0.24-full.md`** — the spec itself. Dense. §2 symbol table, §3 charts/domains, §4 development, §5 folds/closures, §6 the arrangement kernel, §8 the certificate tables. Read the section you're implementing; do not try to read it all at once.
+6. **`spec/flex-substrate-rep-spec-v0.24-delta.md`** and `spec/spec-pending-v025.md` — the most recent changelog and the queued profile edits (canonical arc decomposition — implement it in the arrangement from the start). `docs/paper.md` is a gentler narrative overview if the spec is too terse.
 
 ## The invariants — violating any of these is a defect, not a style choice
 

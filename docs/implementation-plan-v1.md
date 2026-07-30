@@ -1,6 +1,6 @@
 # Kirigami kernel — Implementation Plan v1
 
-Target: a certified-exact implementation of spec v0.24 (+ the pending-v0.25 profile notes). Companion to `flex-substrate-rep-spec-v0.24-full.md`; the spec wins on any conflict. This document is a plan, not a contract — it states module boundaries, dependency order, milestone slices, and the testing doctrine, with honest risk flags.
+Target: a certified-exact implementation of spec v0.24 (+ the pending-v0.25 profile notes). Companion to `spec/flex-substrate-rep-spec-v0.24-full.md`; the spec wins on any conflict. This document is a plan, not a contract — it states module boundaries, dependency order, milestone slices, and the testing doctrine, with honest risk flags.
 
 ## 0. Ground rules inherited from the review
 
