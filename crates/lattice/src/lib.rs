@@ -22,6 +22,7 @@ pub mod backend;
 mod bignum;
 mod poly;
 mod rat;
+mod resultant;
 mod small;
 mod sturm;
 
@@ -34,5 +35,6 @@ pub use backend::Backend;
 pub use bignum::{BigInt, BigRat, Bignum};
 pub use poly::Poly;
 pub use rat::{Int, Rat};
+pub use resultant::{resultant, resultant_bivariate, verify_common_factor};
 pub use small::SmallRat;
 pub use sturm::{Interval, SturmChain, sign_on_interval, sign_variations};
