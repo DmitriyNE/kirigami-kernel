@@ -105,6 +105,20 @@ pub(crate) fn mul(x: &SmallRat, y: &SmallRat) -> Option<SmallRat> {
     SmallRat::reduce(num, den)
 }
 
+/// `x / y`, reduced; `None` on overflow. `y != 0` by contract; a `y.num == 0`
+/// makes the denominator 0 ⇒ `reduce` returns `None` ⇒ the caller promotes.
+pub(crate) fn div(x: &SmallRat, y: &SmallRat) -> Option<SmallRat> {
+    let num = x.num.checked_mul(y.den)?;
+    let den = x.den.checked_mul(y.num)?; // may be < 0 → reduce migrates the sign (den > 0)
+    SmallRat::reduce(num, den)
+}
+
+/// `1 / x`, reduced; `None` iff `x.num` does not fit as a denominator
+/// (`i128::MIN`). `x != 0` by contract (`x.num == 0` ⇒ `None` ⇒ promote).
+pub(crate) fn recip(x: &SmallRat) -> Option<SmallRat> {
+    SmallRat::reduce(x.den, x.num) // den/num; reduce migrates the sign so den > 0
+}
+
 /// `-x`, reduced; `None` iff `x.num == i128::MIN`.
 pub(crate) fn neg(x: &SmallRat) -> Option<SmallRat> {
     Some(SmallRat {

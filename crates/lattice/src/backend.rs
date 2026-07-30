@@ -56,6 +56,19 @@ pub trait Backend {
     /// Least common multiple, always `≥ 0` (`lcm(_,0) = 0`). The §2.2
     /// "integers over the lcm of denominators" per-predicate rescale primitive.
     fn int_lcm(a: &Self::Int, b: &Self::Int) -> Self::Int;
+    /// Truncated quotient and remainder: `a = q·b + r`, with `r` the sign of `a`
+    /// and `|r| < |b|` (matches `i128` `/`,`%` and dashu `div_rem`). `b == 0` is
+    /// out of contract, kept panic-free by convention (like [`Self::rat_from_ints`]).
+    fn int_divrem(a: &Self::Int, b: &Self::Int) -> (Self::Int, Self::Int);
+    /// Truncated quotient. Doubles as *exact* division where `b | a` (Bareiss,
+    /// polynomial content), for which the truncation convention never bites.
+    fn int_div(a: &Self::Int, b: &Self::Int) -> Self::Int {
+        Self::int_divrem(a, b).0
+    }
+    /// Truncated remainder (sign of `a`).
+    fn int_rem(a: &Self::Int, b: &Self::Int) -> Self::Int {
+        Self::int_divrem(a, b).1
+    }
 
     // ---- rational constructors (result is normalized: reduced, den > 0) ------
     fn rat_from_i128(v: i128) -> Self::Rat;
@@ -68,6 +81,9 @@ pub trait Backend {
     fn rat_add(a: &Self::Rat, b: &Self::Rat) -> Self::Rat;
     fn rat_sub(a: &Self::Rat, b: &Self::Rat) -> Self::Rat;
     fn rat_mul(a: &Self::Rat, b: &Self::Rat) -> Self::Rat;
+    /// Exact division `a / b`. `b == 0` is out of contract (panic-free by
+    /// convention, like [`Self::rat_from_ints`]).
+    fn rat_div(a: &Self::Rat, b: &Self::Rat) -> Self::Rat;
     fn rat_neg(a: &Self::Rat) -> Self::Rat;
     fn rat_cmp(a: &Self::Rat, b: &Self::Rat) -> Ordering;
     /// `-1 | 0 | 1`.

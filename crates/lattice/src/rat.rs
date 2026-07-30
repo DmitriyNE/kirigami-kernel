@@ -124,6 +124,26 @@ impl<B: Backend> Int<B> {
         }
         demote_int::<B>(B::int_lcm(&to_slow_int(self), &to_slow_int(o)))
     }
+    /// Truncated quotient and remainder: `self = q·o + r`, `r` the sign of `self`,
+    /// `|r| < |o|`. `o != 0` by contract.
+    pub fn divrem(&self, o: &Self) -> (Self, Self) {
+        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+            // `i128::MIN / -1` overflows the quotient → fall through to the backend.
+            if *b != 0 && !(*a == i128::MIN && *b == -1) {
+                return (Int::Fast(a / b), Int::Fast(a % b));
+            }
+        }
+        let (q, r) = B::int_divrem(&to_slow_int(self), &to_slow_int(o));
+        (demote_int::<B>(q), demote_int::<B>(r))
+    }
+    /// Truncated quotient (exact where `o | self`).
+    pub fn div(&self, o: &Self) -> Self {
+        self.divrem(o).0
+    }
+    /// Truncated remainder (sign of `self`).
+    pub fn rem(&self, o: &Self) -> Self {
+        self.divrem(o).1
+    }
 }
 
 impl<B: Backend> Clone for Int<B> {
@@ -239,6 +259,24 @@ impl<B: Backend> Rat<B> {
             }
         }
         demote_rat::<B>(B::rat_mul(&to_slow_rat(self), &to_slow_rat(o)))
+    }
+    /// Exact division `self / o`. `o != 0` by contract.
+    pub fn div(&self, o: &Self) -> Self {
+        if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
+            if let Some(r) = small::div(x, y) {
+                return Rat::Fast(r);
+            }
+        }
+        demote_rat::<B>(B::rat_div(&to_slow_rat(self), &to_slow_rat(o)))
+    }
+    /// Reciprocal `1 / self`. `self != 0` by contract.
+    pub fn recip(&self) -> Self {
+        if let Rat::Fast(x) = self {
+            if let Some(r) = small::recip(x) {
+                return Rat::Fast(r);
+            }
+        }
+        demote_rat::<B>(B::rat_div(&B::rat_from_i128(1), &to_slow_rat(self)))
     }
     pub fn neg(&self) -> Self {
         if let Rat::Fast(x) = self {
@@ -440,6 +478,11 @@ mod tests {
                             small::cmp(&x, &y).unwrap(),
                             (x.num * y.den).cmp(&(y.num * x.den))
                         );
+                        if y.num != 0 {
+                            let r = small::div(&x, &y).unwrap();
+                            assert!(r.den > 0 && coprime(r.num, r.den));
+                            assert_eq!(r.num * (x.den * y.num), (x.num * y.den) * r.den);
+                        }
                     }
                 }
             }
@@ -527,6 +570,14 @@ mod differential {
             }
             prop_assert_eq!(q1.cmp(&q2), s1.cmp(&s2));
             prop_assert_eq!(q1.sign(), s1.sign());
+            if n2 != 0 {
+                let (f, s) = (q1.div(&q2), s1.div(&s2));
+                prop_assert_eq!(&f, &s);
+                prop_assert_eq!(matches!(f, Rat::Fast(_)), matches!(s, Rat::Fast(_)));
+            }
+            if n1 != 0 {
+                prop_assert_eq!(q1.recip(), s1.recip());
+            }
         }
 
         /// dashu ≡ num (an independent second backend), compared as reduced
@@ -542,6 +593,12 @@ mod differential {
             prop_assert_eq!(dashu_canon(&q1.mul(&q2)), num_canon(&(&m1 * &m2)));
             prop_assert_eq!(dashu_canon(&q1.neg()), num_canon(&(-&m1)));
             prop_assert_eq!(q1.cmp(&q2), m1.cmp(&m2));
+            if n2 != 0 {
+                prop_assert_eq!(dashu_canon(&q1.div(&q2)), num_canon(&(&m1 / &m2)));
+            }
+            if n1 != 0 {
+                prop_assert_eq!(dashu_canon(&q1.recip()), num_canon(&m1.recip()));
+            }
         }
     }
 }

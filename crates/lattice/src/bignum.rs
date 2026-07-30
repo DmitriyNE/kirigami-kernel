@@ -97,6 +97,15 @@ impl Backend for Bignum {
         }
         BigInt(l)
     }
+    fn int_divrem(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
+        if b.0 == IBig::ZERO {
+            debug_assert!(false, "int_divrem: division by zero (out of contract)");
+            return (BigInt(IBig::ZERO), a.clone());
+        }
+        let q = &a.0 / &b.0; // dashu IBig `/` truncates toward zero (matches i128)
+        let r = &a.0 - &q * &b.0;
+        (BigInt(q), BigInt(r))
+    }
 
     fn rat_from_i128(v: i128) -> BigRat {
         BigRat(RBig::from_parts(IBig::from(v), UBig::ONE))
@@ -124,6 +133,13 @@ impl Backend for Bignum {
     }
     fn rat_mul(a: &BigRat, b: &BigRat) -> BigRat {
         BigRat(&a.0 * &b.0)
+    }
+    fn rat_div(a: &BigRat, b: &BigRat) -> BigRat {
+        if b.0 == RBig::ZERO {
+            debug_assert!(false, "rat_div: division by zero (out of contract)");
+            return BigRat(RBig::ZERO);
+        }
+        BigRat(&a.0 / &b.0)
     }
     fn rat_neg(a: &BigRat) -> BigRat {
         BigRat(-a.0.clone())
@@ -205,5 +221,30 @@ mod tests {
         );
         assert_eq!(Bignum::rat_cmp(&half, &one), Ordering::Less);
         assert_eq!(Bignum::rat_sign(&Bignum::rat_sub(&half, &half)), 0);
+    }
+
+    #[test]
+    fn div_and_divrem() {
+        // rat_div beyond i128: (2^200 / 3) / 2 == 2^200 / 6, checked by q·b == a.
+        let a = Bignum::rat_from_ints(two_pow_200(), Bignum::int_from_i128(3));
+        let b = Bignum::rat_from_i128(2);
+        let q = Bignum::rat_div(&a, &b);
+        assert_eq!(
+            Bignum::rat_cmp(&Bignum::rat_mul(&q, &b), &a),
+            Ordering::Equal
+        );
+
+        // int_divrem truncates toward zero (sign of dividend): −7 / 2 = (−3, −1).
+        let (dq, dr) = Bignum::int_divrem(&Bignum::int_from_i128(-7), &Bignum::int_from_i128(2));
+        assert_eq!(
+            (dq, dr),
+            (Bignum::int_from_i128(-3), Bignum::int_from_i128(-1))
+        );
+
+        // exact division beyond i128: 2^200 / 2^100 == 2^100, remainder 0.
+        let p100 = Bignum::int_from_i128(1i128 << 100);
+        let (bq, br) = Bignum::int_divrem(&two_pow_200(), &p100);
+        assert_eq!(bq, p100);
+        assert!(Bignum::int_is_zero(&br));
     }
 }
