@@ -70,11 +70,11 @@ The binding reality: **Kani, hax, and Charon/Aeneas each pin their own toolchain
 | **Dev / CI toolchain** | one pinned stable via `rust-toolchain.toml` (anchor: latest stable ≥ 1.85 at scaffold time) + components `rust-src`, `clippy`, `rustfmt`; managed by fenix | anchor **[spike-adjacent]** |
 | **MSRV contract** | this is a kernel, not a crates.io library — MSRV = the pinned dev toolchain; set `workspace.package.rust-version = "1.85"` and treat CI's pin as the real contract | firm policy |
 | **Pure-crate constraint** | `certify-core` + `lattice` use only stable-language features (no tool-specific nightly features), `#![no_std]` + `extern crate alloc`, `#![forbid(unsafe_code)]` | firm |
-| **Kani** | latest release, pinned by version; brings its own toolchain via `cargo kani` | **[spike]** |
-| **hax** | pinned git tag (pre-1.0, fast-moving) | **[spike]** |
-| **Charon + Aeneas** | pinned as a **co-versioned pair** (Charon is the rustc frontend, Aeneas consumes its output — the two revs must match) | **[spike]** |
+| **Kani** | installed via `cargo install --locked kani-verifier` in CI; version pin is a small follow-up (`docs/spike-extraction-report.md §1`) | still per-version, not yet flake-pinned |
+| **hax** | `github:cryspen/hax` @ `5b0ba8be` (provides `cargo-hax`) | **RESOLVED** (spike) |
+| **Charon + Aeneas** | co-versioned pair: Aeneas `github:AeneasVerif/aeneas` @ `3a8586fa` (its bin/ also ships the matching Charon `527ea8e3`) | **RESOLVED** (spike) |
 
-The `[spike]` versions are locked by the `vv-guide §7` extraction spike, whose exit deliverable already includes "which tool lifted more cleanly, proof effort, Mathlib coverage gaps, semantic-fidelity surprises." This document owns the *pinning scaffold*; the spike fills the exact revs into `flake.lock` and the toolchain files.
+The extraction-tool versions were locked by the `vv-guide §7` spike (`docs/spike-extraction-report.md §1`), which found that **`hax into lean` now routes through Charon+Aeneas** (so Aeneas is the one Lean route; hax is retained for F★ + front-end ergonomics). The revs live in `flake.lock` (inputs `aeneas`, `hax`; `charon` transitively) and `certify-check/lake-manifest.json`. The extraction *binaries* live in the `.#extraction` devShell (not `default`), so ordinary CI/dev steps don't rebuild the OCaml/Rust toolchain.
 
 ---
 
@@ -83,7 +83,7 @@ The `[spike]` versions are locked by the `vv-guide §7` extraction spike, whose 
 - Lean pinned via a `lean-toolchain` file (`leanprover/lean4:v4.xx.0`); Mathlib pinned via a committed `lake-manifest.json` at a matching rev.
 - **The Lean version is downstream of Aeneas, not chosen freely** — it must match whatever the pinned Aeneas release's Lean backend (`aeneas` / `Base` lib) targets. Order of resolution: pick the Aeneas rev → it dictates Lean → Mathlib follows Lean.
 - Use `lake exe cache get` for Mathlib's prebuilt oleans (building Mathlib from source is hours). Consequence, stated honestly: Lean/Mathlib reproducibility is "pinned manifest + Mathlib cache," which is as reproducible as the Lean ecosystem currently gets — not bit-pure the way the Rust side is.
-- Lean version + Mathlib rev are **[spike]** — locked once the Aeneas pair is chosen.
+- **RESOLVED** (spike): **Lean `v4.31.0`** (`certify-check/lean-toolchain`, = Aeneas's `backends/lean/lean-toolchain`) and **Mathlib `v4.31.0`** (`certify-check/lakefile.toml`, rev `fabf563a`, committed in `lake-manifest.json`). The Aeneas Lean library requires the same Mathlib tag, so lake resolves a single shared Mathlib.
 
 ---
 
@@ -108,11 +108,11 @@ The `[spike]` versions are locked by the `vv-guide §7` extraction spike, whose 
 
 ---
 
-## 6. Deferred to the extraction spike (`vv-guide §7`)
+## 6. Resolved by the extraction spike (`vv-guide §7`)
 
-Locked once the spike runs; tracked here so they are not mistaken for oversights:
+Run and **RESOLVED** — decision **GO**; full record in `docs/spike-extraction-report.md`:
 
-- Exact Kani / hax / Charon+Aeneas revs and the Lean + Mathlib pins (§2, §3).
-- Whether edition 2024 needs any pure-crate accommodation for the Charon/hax frontends (expected: none, since the pure code avoids nightly/edition-sensitive features).
-- Which of hax vs Aeneas lifts `certify-core` more cleanly, and the resulting per-checker template (the spike's stated exit criterion).
-- The M0 bignum backend winner under the extended criteria (speed **and** `no_std + alloc`), locked behind the `lattice` backend trait (§1).
+- ✅ hax / Charon+Aeneas revs and the Lean + Mathlib pins (§2, §3): locked in `flake.lock` + `certify-check`. (Kani version pin is the one small remaining follow-up.)
+- ✅ Edition 2024 needs **no** pure-crate accommodation for the Charon/hax frontends — the lift of the (edition-2021 probe) `sign_variations` and the real `crates/lattice` code worked without issue; the pure code avoids nightly/edition-sensitive features as expected.
+- ✅ hax vs Aeneas: **Aeneas lifts more cleanly** (recommended, mature, `sorry`-free model; and `hax into lean` *is* the Aeneas pipeline). The per-checker template is in the report §7.
+- The M0 bignum backend winner (dashu) was already resolved at task 2 (`docs/lattice-backend-benchmark.md`); unrelated to this spike.

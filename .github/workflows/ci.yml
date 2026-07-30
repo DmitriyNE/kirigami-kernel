@@ -53,6 +53,30 @@ jobs:
               --harness cmp_panic_free_full_domain \
               --harness sign_variations_matches_reference'
 
+      # Lean extraction / proof surface (vv-guide §7 spike). Builds `certify-check`
+      # (hand-written specs + the Sturm hypothesis-checker + the Aeneas-lifted
+      # `sign_variations` model), fetching Mathlib's prebuilt oleans + the Aeneas
+      # Lean library. Uses the default shell (elan + lake); the hax/Aeneas *binaries*
+      # (`.#extraction`) are only needed to *re-generate* models, not to build them.
+      # `DEVELOPER_DIR`/`SDKROOT` are unset so `git`-in-lake works under the darwin
+      # C-toolchain (see docs/spike-extraction-report.md §3). Then audit axioms:
+      # our theorems must not depend on `sorryAx` (guards against the Aeneas Std
+      # `get_unchecked` sorries leaking onto a certified path).
+      - name: Lean (certify-check proof surface + axiom audit)
+        run: |
+          nix develop --command bash -c '
+            set -e
+            cd certify-check
+            unset DEVELOPER_DIR SDKROOT
+            lake exe cache get
+            lake build
+            printf "import CertifyCheck\nopen CertifyCheck\n#print axioms signVariationsImp_eq_signVariations\n#print axioms verify_chain_sound\n#print axioms lifted_sign_variations_eq_loop\n" > axiom_audit.lean
+            if lake env lean axiom_audit.lean 2>&1 | grep -q "sorryAx"; then
+              echo "AXIOM AUDIT FAILED: a certify-check theorem depends on sorryAx" >&2
+              rm -f axiom_audit.lean; exit 1
+            fi
+            rm -f axiom_audit.lean'
+
       # Added as their targets land:
       #   - the *_correct_i16 fast≡slow Kani harnesses, once the spike's loop-bounded
       #     gcd model makes them tractable
