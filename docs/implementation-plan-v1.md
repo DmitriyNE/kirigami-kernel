@@ -52,13 +52,21 @@ The certificate store (append-only, provenance-linked, FRESH promotion), CLOSURE
 
 **D — The device (M6 + M8 + atlas assembly).** Full cone + lap seam + petal atlas; VALID_solid-closure end-to-end; STEP loaded into OpenCascade with its checker as the external audit. Exit: the lens-assembly flex model as a certified solid.
 
-**E — Material grade (M7).** Development, content, calibration, fab exports; VALID_material. This is where the eleven closure-era riders finally sweep the cold layers — expect findings; budget a review round.
+**E — Material grade (M7).** Development, content, calibration, fab exports; VALID_material. This is where the eleven closure-era riders finally sweep the cold layers — expect findings, and an adversarial review pass.
 
 Sequencing note: A and B are independent (parallelizable); C needs both; D needs C; E is orthogonal after B and can interleave.
 
-## 3. Effort (honest, one primary implementer + review)
+## 3. Relative complexity & risk
 
-M0: days-to-a-week (mostly crate glue + Sturm/resultant, ~1–2 kLoC). M3: **3–4 weeks** — exact arrangements are notoriously fiddly, but the spec has pre-litigated the fiddly parts (the event strata, the coincidence lattice, the quotient); the residual risk is DCEL bookkeeping, which the cocycle/link/bijection checks are designed to catch loudly. M1+M2: ~2 weeks. M4+M5: **3–4 weeks** (the ledger/sew types are big but mechanical; MITER-FIT's resultant machinery is the thinking part). M6: ~1 week. D: 2–3 weeks incl. STEP wrangling. E: unbounded honestly — the cold layers haven't been audited; call it 3–4 weeks plus a review round. Total to milestone D: **~3 months** of focused work; calendar depends on your bandwidth. Claude Code carries the mechanical mass (type definitions, fixture transcription, DCEL plumbing, test scaffolds) with you reviewing certificates and me reviewing against the spec.
+Not a schedule — durations are meaningless under the intended operating model (fast, parallel, agent-driven). What matters is *where the difficulty and the bug-risk concentrate*, because that is where the verification machinery earns its keep.
+
+- **M0 (`lattice`)** and **M6 (`gate`)** — mechanical: crate glue, Sturm/resultant, enum verdict algebra. Low risk.
+- **M1 + M2 (`geom`, `certify1d`)** — moderate; the hatted stall calculus and the CLIP ladder are intricate but fully pre-litigated by the spec.
+- **M3 (`arrange2d`) — the beast: highest risk, highest reuse.** Exact arrangements are notoriously fiddly, but the spec has pre-litigated the fiddly parts (the event strata, the coincidence lattice, the quotient); the residual risk is DCEL bookkeeping, which the cocycle/link/bijection checks are designed to catch loudly.
+- **M4 + M5 (`closure`, `sew`)** — the ledger/sew types are large but mechanical; MITER-FIT's resultant machinery is the thinking part.
+- **E — Material grade (M7)** — open-ended in *scope*, not schedule: the cold layers have not been through adversarial review, so expect findings and an adversarial pass, unlike the closure vertical which is 24-rounds-frozen.
+
+The checker/searcher split exists precisely so this ordering does not gate throughput: searchers can be built aggressively and in parallel because nothing they emit is trusted until its checker passes.
 
 ## 4. Testing doctrine
 
@@ -73,4 +81,4 @@ M0: days-to-a-week (mostly crate glue + Sturm/resultant, ~1–2 kLoC). M3: **3�
 1. Repo skeleton: workspace, crate stubs, `spec/` with v0.24-full + deltas + `spec-pending-v025.md`, `fixtures/` with the two device instances and the corpus list as TODO-tests.
 2. M0: pick the bigint backend by benchmark (Sturm on degree-12 over 256-bit rationals as the yardstick), land Sturm + resultants + comparison with separation.
 3. M3a–3b behind it immediately — decomposition + event spine — since every arrangement test needs them.
-4. Wire the CGAL difftest harness early (a tiny C++ shim, JSON in/out) so M3 grows against the oracle from the first week.
+4. Wire the CGAL difftest harness early (a tiny C++ shim, JSON in/out) so M3 grows against the oracle from the start.

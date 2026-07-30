@@ -56,7 +56,7 @@ Three-valued `Verdict { Verified(Evidence) | Refuted(Witness) | Unresolved(Margi
 2. *Arithmetic model match* — Lean proofs reason over `Int`/`Rat`. **Prove the checkers over `Int`/`Rat` matching the BigInt slow path** (whose semantics match Lean directly and which is the semantic reference anyway); **Kani proves the fixed-limb fast path ≡ slow path** on its domain (Layer K). Lean and Kani meet at the lattice boundary.
 3. *Spec match* — each checker's Lean spec is hand-written and reviewed; it *is* the formalization of the certificate definition and will surface spec ambiguities (formalization always does), which is a feature.
 
-**Escalation for deep lemmas** where runtime-checked hypotheses don't reduce enough: quotient-emission correctness (π₀ faces ⇒ valid cycles), CAP-OUT-LINK ⇒ 2-manifold-with-boundary. Research-flavored, weeks each, **optional for milestone D** — the runtime-checked-hypothesis route covers soundness in the interim.
+**Escalation for deep lemmas** where runtime-checked hypotheses don't reduce enough: quotient-emission correctness (π₀ faces ⇒ valid cycles), CAP-OUT-LINK ⇒ 2-manifold-with-boundary. Research-flavored and open-ended, **optional for milestone D** — the runtime-checked-hypothesis route covers soundness in the interim.
 
 **Creusot/Verus/hax-to-F\*** noted as fallbacks only; no tool religion; `certify-core` is small and pure so it can migrate. Creusot is *not* run in parallel with Lean (redundant).
 
@@ -85,7 +85,7 @@ Rows = every certificate + kernel operation; columns = {unit, property, differen
 
 ---
 
-## 7. The extraction de-risking spike (M0, one week, do before committing the approach)
+## 7. The extraction de-risking spike (M0, do before committing the approach)
 
 Highest-*variance* unknown; price it before building on it.
 

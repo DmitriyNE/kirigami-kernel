@@ -43,7 +43,7 @@ The repo does not exist yet. Milestone 0, in order:
 1. **Repo skeleton**: cargo workspace with crate stubs per the resolved layered layout in `docs/environment-and-crate-layout.md §1` — pure tier `lattice` + `certify-core` (`certify1d` is absorbed as `certify_core::certify1d`, not its own crate); shell tier `geom arrange2d closure sew gate develop export fixtures difftest`; Lean in `certify-check/` (a lake project). Add `flake.nix` / `flake.lock`, `rust-toolchain.toml` (edition 2024, fenix), and `lean-toolchain`. Copy `docs/`, `fixtures/`, and create `vv-matrix.md` and `proofs/ledger.md` as stubs. `spec/` holds v0.24-full + delta + pending-v025.
 2. **M0 lattice**: benchmark the two bignum backends (Sturm on a degree-12 polynomial over 256-bit rationals is the yardstick). Implement the L0 fast path + promotion, exact cmp/sign/gcd, polynomial arithmetic, **Sturm sequences** (isolation + sign-on-interval), **bivariate resultants**. Grow Kani harnesses alongside (fast≡slow, panic-freedom).
 3. **The extraction spike** (vv-guide §7): sign-variation counter lifted both ways to Lean, proven; Sturm hypothesis-checker proven against a Mathlib citation. Produce the go/no-go + the per-checker template.
-4. Only then M3a (arrangement decomposition + event spine) — every arrangement test needs it — with the CGAL difftest shim wired from the first week.
+4. Only then M3a (arrangement decomposition + event spine) — every arrangement test needs it — with the CGAL difftest shim wired from the start.
 
 Write each milestone's **acceptance criteria into vv-guide §8 before implementing it.**
 
