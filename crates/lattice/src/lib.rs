@@ -23,6 +23,11 @@ mod bignum;
 mod rat;
 mod small;
 
+// Kani bounded-model-checking harnesses for the L0 fast path (compiled only
+// under `cargo kani`; see vv-guide §5/§8).
+#[cfg(kani)]
+mod proof;
+
 pub use backend::Backend;
 pub use bignum::{BigInt, BigRat, Bignum};
 pub use rat::{Int, Rat};

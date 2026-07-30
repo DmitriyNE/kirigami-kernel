@@ -403,6 +403,48 @@ mod tests {
         assert_eq!(g.sign(), 1);
         assert_eq!(g, big2, "gcd(4·MAX, 2·MAX) = 2·MAX");
     }
+
+    // Exhaustive low-magnitude sweep of the L0 fast path: for every rational pair
+    // with |num|,|den| ≤ 24 (den ≠ 0), add/sub/mul return a reduced Some equal to
+    // the i128 cross-multiplied reference, and cmp matches. This is the ground
+    // truth the Kani i16 harness proves symbolically — run natively (seconds) it
+    // is a dense complement to the differential's random + boundary sweep.
+    #[test]
+    fn fast_path_small_grid_exhaustive() {
+        use crate::small::{self, SmallRat};
+        fn coprime(a: i128, b: i128) -> bool {
+            let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
+            while b != 0 {
+                let t = a % b;
+                a = b;
+                b = t;
+            }
+            a == 1
+        }
+        let g = 24i128;
+        for xn in -g..=g {
+            for xd in (-g..=g).filter(|d| *d != 0) {
+                let x = SmallRat::reduce(xn, xd).unwrap();
+                for yn in -g..=g {
+                    for yd in (-g..=g).filter(|d| *d != 0) {
+                        let y = SmallRat::reduce(yn, yd).unwrap();
+                        let dd = x.den * y.den;
+                        let r = small::add(&x, &y).unwrap();
+                        assert!(r.den > 0 && coprime(r.num, r.den));
+                        assert_eq!(r.num * dd, (x.num * y.den + y.num * x.den) * r.den);
+                        let r = small::sub(&x, &y).unwrap();
+                        assert_eq!(r.num * dd, (x.num * y.den - y.num * x.den) * r.den);
+                        let r = small::mul(&x, &y).unwrap();
+                        assert_eq!(r.num * dd, (x.num * y.num) * r.den);
+                        assert_eq!(
+                            small::cmp(&x, &y).unwrap(),
+                            (x.num * y.den).cmp(&(y.num * x.den))
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ===========================================================================

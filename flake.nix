@@ -66,6 +66,9 @@
             pkgs.cmake
             pkgs.pkg-config
             pkgs.clang
+            pkgs.gcc # CBMC/goto-cc (Kani) preprocesses its C intrinsics with `gcc`
+            pkgs.z3 # SMT solver for Kani (`--solver z3`); native bitvector theory
+            # is far faster than cadical's bit-blasting on the 128-bit gcd loop.
 
             pkgs.git # so `git` works inside `nix develop` (CI == local)
             pkgs.jq
