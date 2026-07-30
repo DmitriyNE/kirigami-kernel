@@ -32,19 +32,17 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        # Pinned Rust toolchain. `stable` is fixed by the `fenix` input rev in
-        # flake.lock, so this is reproducible; rust-toolchain.toml separately
-        # pins the exact version for non-Nix users. To pin the exact version in
-        # Nix too, switch to:
-        #   fenix.packages.${system}.fromToolchainFile {
-        #     file = ./rust-toolchain.toml; sha256 = "<paste from first eval>"; }
-        rustToolchain = fenix.packages.${system}.stable.withComponents [
-          "cargo"
-          "clippy"
-          "rustc"
-          "rustfmt"
-          "rust-src"
-        ];
+        # Pinned Rust toolchain, driven by rust-toolchain.toml so the SAME file
+        # is the single source of truth for Nix and non-Nix (rustup) users —
+        # `nix develop`'s rustc == the file's pin (a vv-guide §8 M0 criterion).
+        # The file also lists the `thumbv7em-none-eabi` no_std gate target, which
+        # fromToolchainFile fetches. If the file changes, `sha256` must be
+        # updated: set it to lib.fakeSha256, run `nix develop`, paste the hash
+        # the error reports.
+        rustToolchain = fenix.packages.${system}.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
+        };
       in
       {
         devShells.default = pkgs.mkShell {
