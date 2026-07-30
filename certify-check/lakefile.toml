@@ -1,0 +1,15 @@
+name = "certify-check"
+defaultTargets = ["CertifyCheck"]
+
+# PROVISIONAL. The Lean pin (lean-toolchain) and the Mathlib rev are locked at
+# the vv-guide §7 spike, downstream of the chosen Aeneas release — see
+# docs/environment-and-crate-layout.md §3. The hax/Aeneas Lean backend libraries
+# are added as further `[[require]]` entries then.
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+# rev = "<pinned at the spike, matched to lean-toolchain>"
+
+[[lean_lib]]
+name = "CertifyCheck"

@@ -1,0 +1,12 @@
+[package]
+name = "develop"
+description = "The flat side: D map + γ ODE per tag, content layer + flat booleans (reuses arrange2d), folds/reflection mates, seam, calibration (M7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+certify-core.workspace = true
+geom.workspace = true
+arrange2d.workspace = true

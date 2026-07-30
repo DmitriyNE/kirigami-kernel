@@ -1,0 +1,9 @@
+-- certify-check — the Rust→Lean extraction target (AGENT.md's "certify-check").
+--
+-- Hand-written Lean specs of the `certify-core` checkers live here alongside
+-- the hax/Aeneas-lifted models; each checker's Lean spec IS the formalization
+-- of its certificate definition (vv-guide §4). Populated at the §7 spike,
+-- starting with the sign-variation counter and the Sturm hypothesis-checker.
+--
+-- Intentionally empty until the spike. `import Mathlib` is added with the first
+-- real proof, so typechecking a stub does not require `lake exe cache get`.

@@ -1,0 +1,11 @@
+[package]
+name = "gate"
+description = "Records + validity: the append-only, provenance-linked, FRESH-promoting certificate store, and VALID/CLOSURE-CAP evaluation orchestration (M6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+certify-core.workspace = true
+sew.workspace = true

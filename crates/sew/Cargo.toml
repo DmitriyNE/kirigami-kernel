@@ -1,0 +1,12 @@
+[package]
+name = "sew"
+description = "The sewing layer: EDGE-OCCUPANCY construction (both constructors), MITER-EDGE-LEDGER + MITER-OUT, the quadrant classifier, SEW-LINK (M5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+certify-core.workspace = true
+arrange2d.workspace = true
+closure.workspace = true

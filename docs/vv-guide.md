@@ -110,6 +110,28 @@ Exit: go/no-go with real numbers + a template every later `certify-core` functio
 
 Milestone acceptance criteria are written **before** each milestone's implementation, appended here.
 
+### M0 acceptance criteria (repo skeleton + `lattice` + the extraction spike)
+
+*Authored 2026-07-30, before implementation, per the rule above.*
+
+**Skeleton (task 1) — met when:**
+- `cargo check`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --all --check` are green on both `x86_64-linux` and `aarch64-darwin`.
+- The pure tier (`lattice`, `certify-core`) is `#![no_std]` + `#![forbid(unsafe_code)]`; the only crate not forbidding unsafe is `difftest` (FFI, non-certified oracle).
+- `nix develop` provides the pinned toolchain (`rustc` == the `rust-toolchain.toml` pin) plus the difftest/Lean tooling; `flake.lock` is committed.
+- CI runs the three lint scripts + fmt + clippy + tests inside the devShell; the `no-float-certified` lint is active over the pure tier.
+
+**`lattice` (task 2) — met when:**
+- The bignum backend is chosen by the documented benchmark (Sturm on a degree-12 polynomial over 256-bit rationals) **and** is `no_std + alloc`; it sits behind `backend::Backend`, with no raw bignum ops outside `lattice`.
+- Exact `cmp`/`sign`/`gcd`, interval-plus-separation comparison, polynomial arithmetic, Sturm (isolation + sign-on-interval), and bivariate resultants are implemented and unit-tested.
+- Kani harnesses are green for: L0 fast-path ≡ BigInt slow-path on the fast path's domain, promotion-trigger correctness, and panic-/overflow-freedom on the fast path.
+- The `lattice cmp/sign`, `Sturm isolate`, and `resultant` rows in `vv-matrix.md` have no empty `{Kani ∨ Lean ∨ runtime-checked-hypothesis}` cell.
+
+**Extraction spike (task 3) — met when (this is the §7 go/no-go):**
+- The sign-variation counter is lifted to Lean by **both** hax and Aeneas and proven against its hand-written Lean spec.
+- The Sturm hypothesis-checker (chain identities ⇒ Sturm chain) is proven against a Mathlib-cited statement; `proofs/ledger.md` carries the entry (citation, hypotheses-checked-at-runtime vs structural).
+- Recorded: which tool lifted more cleanly, proof effort, Mathlib coverage gaps, semantic-fidelity surprises, the per-checker template, and the go/no-go decision (with the §7 fallback taken if no-go).
+- The exact Kani / hax / Charon+Aeneas / Lean / Mathlib versions are locked into `flake.lock` + the toolchain files, resolving the `[spike]` items in `environment-and-crate-layout.md §2/§3`.
+
 ---
 
 ## 9. Sequencing

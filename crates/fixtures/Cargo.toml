@@ -1,0 +1,13 @@
+[package]
+name = "fixtures"
+description = "The two device instances (cone β=42°; petal conical flank) and the ~30-entry counterexample corpus loader — the day-one regression suite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+geom.workspace = true
+arrange2d.workspace = true
+closure.workspace = true
+sew.workspace = true

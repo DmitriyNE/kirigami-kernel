@@ -1,0 +1,11 @@
+[package]
+name = "arrange2d"
+description = "The §6 exact D24 arrangement + boolean kernel (the beast): canonical decomposition, event spine, DCEL, the eight-step boolean, quotient emission (M3)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+certify-core.workspace = true
+geom.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "lattice"
+description = "Exact-arithmetic substrate: L0 fixed-limb fast path + BigInt slow path, polynomial arithmetic, Sturm, resultants. Pure, no_std — the base of the TCB."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The bignum backend is selected at M0 by benchmark (malachite | num-rational |
+# dashu | ibig — must be no_std + alloc) and sits behind the `backend` trait, so
+# the choice is swappable and the no_std boundary lives at this crate's API.

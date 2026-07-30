@@ -1,0 +1,12 @@
+[package]
+name = "closure"
+description = "Joint geometry: fan/collar (WEDGE, EXT-WEDGE, D_collar), Q-clip on b_J, G_i clips + CLIP-DOM species, CAP-IN-D24, MITER-FIT resultant pairing φ_J (M4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+certify-core.workspace = true
+geom.workspace = true
+arrange2d.workspace = true

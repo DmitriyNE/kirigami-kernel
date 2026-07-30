@@ -1,0 +1,22 @@
+[package]
+name = "export"
+description = "STEP + mesh + marks: planar trims of ruled faces, rational patches with IDEALIZED flags, the mesh size-field cap, dimension/mark layers, GRID-closure rounding ledger (M8)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Floats are permitted ONLY here, behind this flag — plots/viewers/diagnostics.
+# A float that reaches a predicate is a bug (spec invariant 1); the
+# no-float-certified lint guards the pure crates.
+diagnostics = []
+
+[dependencies]
+certify-core.workspace = true
+geom.workspace = true
+arrange2d.workspace = true
+closure.workspace = true
+sew.workspace = true
+gate.workspace = true
+develop.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "geom"
+description = "Chart primitives: q/h splines, C(σ,μ,w), n/r/pedal, tags, the hatted stall calculus, b_J/b_i/G_i fields (M1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lattice.workspace = true
+certify-core.workspace = true

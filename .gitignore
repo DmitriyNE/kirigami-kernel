@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+# Cargo.lock IS committed: this is an application/kernel, not a published lib.
+
+# Nix / direnv
+.direnv/
+result
+result-*
+
+# Lean / lake
+/certify-check/.lake/
+/certify-check/build/
+/certify-check/lake-packages/
+
+# OS
+.DS_Store

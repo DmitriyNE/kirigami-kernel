@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# CI runs INSIDE the pinned Nix devShell so "CI == local"
+# (docs/environment-and-crate-layout.md §4). Both first-class targets are in the
+# matrix: x86_64-linux and aarch64-darwin.
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: spec + code invariant lints (:= census, tuple-predicate, no-float-in-certified)
+        run: nix develop --command bash scripts/lint/run-all.sh
+
+      - name: fmt
+        run: nix develop --command cargo fmt --all --check
+
+      - name: clippy
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test (incl. the corpus regression suite)
+        run: nix develop --command cargo test --workspace
+
+      # Added as their targets land:
+      #   - Kani harnesses (fast≡slow lattice bridge; finite classifiers) — M0+
+      #   - the milestone-gate vv-matrix.md check (a soundness-critical row with an
+      #     empty {Kani ∨ Lean ∨ runtime-checked-hypothesis} cell fails the gate)
+      #   - proptest/cargo-fuzz stratum-weighted suites — M3+

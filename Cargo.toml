@@ -1,0 +1,28 @@
+# Flex-substrate certified-exact geometry kernel — workspace manifest.
+# Layout is authoritative in docs/environment-and-crate-layout.md §1:
+#   pure tier (no_std, the extraction surface + TCB): lattice, certify-core
+#   shell tier ("kernel-search", std, tested + differentially checked): the rest
+# The Lean extraction target lives in certify-check/ (a lake project, not a crate).
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"   # edition-2024 floor; dev/CI pin in rust-toolchain.toml
+publish = false          # not a crates.io library; license: internal, decide later
+
+[workspace.dependencies]
+# Internal crates, referenced elsewhere as `<name>.workspace = true`.
+lattice = { path = "crates/lattice" }
+certify-core = { path = "crates/certify-core" }
+geom = { path = "crates/geom" }
+arrange2d = { path = "crates/arrange2d" }
+closure = { path = "crates/closure" }
+sew = { path = "crates/sew" }
+gate = { path = "crates/gate" }
+develop = { path = "crates/develop" }
+export = { path = "crates/export" }
+fixtures = { path = "crates/fixtures" }
+difftest = { path = "crates/difftest" }

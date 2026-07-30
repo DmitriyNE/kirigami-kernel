@@ -1,0 +1,10 @@
+[package]
+name = "certify-core"
+description = "The verified checker surface (pure, no_std): three-valued verdict algebra + every pure checker. The single Rust->Lean extraction target and the TCB boundary (vv-guide §1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lattice.workspace = true

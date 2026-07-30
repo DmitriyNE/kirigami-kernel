@@ -1,0 +1,13 @@
+[package]
+name = "difftest"
+description = "Differential oracles: CGAL Arrangement_2 (circular kernel) and OpenCascade shape checker via a C++ FFI shim. NEVER in a certified path — an oracle, compared against stored answers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fixtures.workspace = true
+# C++ FFI (e.g. `cxx`) + a build.rs shim (CGAL / OpenCascade, JSON in/out) land
+# with M3; kept out of the skeleton so the workspace builds without system C++
+# libs present.
