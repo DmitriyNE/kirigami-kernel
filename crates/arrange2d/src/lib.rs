@@ -31,6 +31,7 @@ pub mod event;
 pub mod membership;
 pub mod predicates;
 pub mod spine;
+pub mod tangent;
 pub mod witness;
 
 /// Shared test-only V&V support (generators + independent oracles), Phase 5.

@@ -187,6 +187,71 @@ through `arrange_events → (EventSet, CoincSet, Witness)`, wired into the spine
 branch (distinct-source only); and the CGAL `Arr_curve_data_traits_2` overlap-edge differential +
 the `vv-matrix.md` `[M3c]` row + gate. Next: 3d (DCEL + 8-step boolean + π₀ quotient emission).
 
+### 3d acceptance criteria (DCEL + the eight-step boolean + π₀ quotient emission — LEDGE-DOM)
+
+*Authored before implementation, per the rule above.* Slice 3d mints the region semantics the event
+calculus lacked: the spec §6 "Cell construction", steps (1)–(8), certificate-named **LEDGE-DOM**
+(`spec/…-v0.24-full.md:289`; §8.5 row `:383`). It consumes the 3c searcher output
+(`arrange_events → (EventSet, CoincSet, Witness)`) and emits the boolean's region faces.
+
+**Unlike 3a/3b/3c, 3d is NOT a pure searcher slice.** The DCEL construction, bit propagation,
+selection, and separating-edge/π₀ emission are the untrusted **searcher** (in `arrange2d`); but the
+**ℤ₂² cocycle check is a checker** that lives in the pure tier (`certify_core::arrange`), and the
+`vv-matrix.md` `quotient emission ★ [M3d]` row is **soundness-critical**. That ★ cell is discharged
+by a **real proof — Kani (bounded model checking) first; if intractable, a deductive Lean proof via
+the Charon+Aeneas extraction pipeline** (no runtime-checked-hypothesis shortcut, no defer). "Bounded
+DCEL bookkeeping … bit propagation … N ≈ 6–10 half-edges" is explicitly in Kani scope (§5). The
+region certificate (CAP-OUT / CAP-OUT-LINK / `Link_emitted ≅ Link_geometric`) stays 3e; 3d ships only
+its two self-diagnostics (the ℤ₂² cocycle check and the substrate-link twin-pairing/no-dangling check).
+
+**The general-tangent azimuth comparator (foundation) — met when:**
+- `arrange2d` computes the exact **outgoing-tangent azimuth** of a half-edge leaving a vertex — over
+  arbitrary `Surd` direction vectors from mixed edges (lines + different circles) — as a total cyclic
+  order (half-plane split + cross-product sign, no angle materialized), with the segment tangent
+  `±(b,−a)` and the arc tangent `±(−n_y, n_x)` (sign resolved from `half` + which x-extreme the vertex
+  is), and a **curvature tie-break** for coincident tangents (the `TouchKind::Tangent` case — line
+  tangent to circle, mutually-tangent circles). Distinct from `azimuth::tag_cmp` (positions on one
+  fixed circle).
+- Verified: total cyclic order (antisymmetry/transitivity), rigid-invariance of the order, and the
+  curvature tie-break (a line tangent to a circle from inside vs outside; two mutually-tangent circles).
+
+**The DCEL + eight-step boolean (core) — met when:**
+- The half-edge DCEL is built from **(input edges split at the interior `EventSet` vertices) ∪ the
+  `CoincSet` sub-edges** (3d owns the ordinary-edge splitting; the spine emits only coincidence
+  sub-edges pre-split), with twin pairing, the azimuth-sorted vertex rotation, and traced faces; the
+  **substrate-link self-diagnostic** (twin pairing complete, no dangling half-edge, alternating labels)
+  passes.
+- The eight steps hold exactly (spec `:289`): seed the unbounded cell `(A,B)=(0,0)`; operand sidedness
+  = the **stored face-orientation bit, re-read not computed** (`SegPiece.orient` / `ArcPiece.winding.
+  orient`); propagate `(A,B)` (∂F_A flips A, ∂F_B flips B, coincident flips both); the **ℤ₂² cocycle
+  check** (every closed walk returns its bits); coincident edges carry both operands' signed incidence;
+  **pluggable selection** △ = A⊕B, ∧, ∨; **emit only separating edges** (three-way law); and
+  **faces = π₀** of selected-cell adjacency along selected|selected edges — **one face per connected
+  component, not per cell**.
+- Corpus: two overlapping disks — ∪ ⇒ one face, ∩ ⇒ one face, △ ⇒ two faces pinched at the internal
+  tangency (the "three selected cells, mutual arcs suppressed" case); a clean miter ⇒ empty △.
+
+**The ★ soundness proof (`certify_core::arrange`) — met when:**
+- The ℤ₂² cocycle-closure check is a pure, `no_std`, panic-free checker over a **flattened index-array
+  certificate** (Kani-harnessable + Charon-extractable); the `arrange2d` searcher calls it as its
+  self-diagnostic.
+- Its soundness is discharged by **Kani** (a bounded-DCEL bit-propagation/cocycle harness, N ≈ 6–10
+  half-edges, unwind-bounded — the first Kani surface outside `lattice`) **or**, if Kani is
+  intractable, a **deductive Lean proof** over the Aeneas-lifted model (the `GcdReduce.lean`
+  "CBMC-intractable → proven here" template; certify-core stood up as a second extraction surface),
+  axiom-clean under the `#print axioms` gate. The `vv-matrix.md` `[M3d]` Kani-or-Lean cell is filled
+  and `M3d` joins the milestone-gate `landed` set.
+
+**V&V activation — met when:**
+- The emitted region agrees with **two CGAL oracles**: Option A `Boolean_set_operations_2` +
+  `Gps_circle_segment_traits_2` (per-component `General_polygon_with_holes_2` ↔ faces = π₀, exact
+  `a+b√d` boundary edges) as the primary independent boolean, and Option B `Arrangement_2` face
+  iteration as a DCEL-structure cross-check, on △/∧/∨ over corpus + generated inputs.
+- The emitted faces satisfy the metamorphic invariants (rational rigid motion, lattice rescaling) and
+  an **Euler-characteristic** consistency property; CI runs the region/boolean configs in the
+  `--features cgal` differential; `vv-matrix.md` gains the `[M3d]` row (unit / property (Euler) /
+  differential (CGAL) / Kani-or-Lean).
+
 ---
 
 ## 9. Sequencing
