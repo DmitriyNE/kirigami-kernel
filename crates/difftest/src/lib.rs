@@ -10,3 +10,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 //! CGAL `Arrangement_2` (circular kernel) and OpenCascade shape-checker oracles.
+
+/// The CGAL FFI oracle (feature `cgal`; needs system CGAL + gmp/mpfr, i.e.
+/// `nix develop`). Phase 0 wires a build smoke; the arrangement oracle grows here.
+#[cfg(feature = "cgal")]
+pub mod cgal;

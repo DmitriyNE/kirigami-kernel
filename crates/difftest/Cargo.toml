@@ -8,6 +8,15 @@ publish.workspace = true
 
 [dependencies]
 fixtures.workspace = true
-# C++ FFI (e.g. `cxx`) + a build.rs shim (CGAL / OpenCascade, JSON in/out) land
-# with M3; kept out of the skeleton so the workspace builds without system C++
-# libs present.
+# The C++ FFI (CGAL / OpenCascade, JSON in/out) is behind the `cgal` feature so
+# the default workspace build needs no system C++ libs. `nix develop` (CI) ships
+# CGAL 6.2 + gmp/mpfr/boost; build with `--features cgal`.
+cxx = { version = "1.0", optional = true }
+
+[build-dependencies]
+cxx-build = "1.0"
+pkg-config = "0.3"
+
+[features]
+# The CGAL Arrangement_2 (circular kernel) differential oracle.
+cgal = ["dep:cxx"]

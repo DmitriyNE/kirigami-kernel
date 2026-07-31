@@ -101,6 +101,142 @@ impl<B: Backend> Surd<B> {
         }
         unreachable!("a+b√d must lie in one isolating interval")
     }
+
+    // --- exact field arithmetic (spec §2.2 D24: degree-≤2 stays in-lattice) ---
+    //
+    // The arrangement's carrier-intersection coordinates all share one radical
+    // `d = Δ`, so `add`/`sub`/`mul` stay closed in `Surd` on that path. A
+    // genuinely cross-radical combination (`d₁ ≠ d₂`, both irrational) leaves the
+    // degree-2 field, so it escalates to `AlgReal` (degree ≤ 4) — hence the `Alg`
+    // return. `scale`/`neg` are always in-field.
+
+    /// True iff the radical term vanishes (`b = 0` or `d = 0`) — a rational value.
+    fn is_rational(&self) -> bool {
+        self.b.is_zero() || self.d.is_zero()
+    }
+
+    /// `k · (a + b√d)` for a rational `k` — closed in the same radical field.
+    pub fn scale(&self, k: &Rat<B>) -> Surd<B> {
+        Surd {
+            a: self.a.mul(k),
+            b: self.b.mul(k),
+            d: self.d.clone(),
+        }
+    }
+
+    /// `-(a + b√d)`.
+    pub fn neg(&self) -> Surd<B> {
+        Surd {
+            a: self.a.neg(),
+            b: self.b.neg(),
+            d: self.d.clone(),
+        }
+    }
+
+    /// `self + o`: a [`Surd`] when the radicals are compatible (rational operand,
+    /// or equal `d`), else an [`AlgReal`] (cross-radical, degree 4).
+    pub fn add(&self, o: &Self) -> Alg<B> {
+        let a = self.a.add(&o.a);
+        match (self.is_rational(), o.is_rational()) {
+            (true, true) => Alg::Surd(Surd::from_rat(a)),
+            (true, false) => Alg::Surd(Surd {
+                a,
+                b: o.b.clone(),
+                d: o.d.clone(),
+            }),
+            (false, true) => Alg::Surd(Surd {
+                a,
+                b: self.b.clone(),
+                d: self.d.clone(),
+            }),
+            (false, false) => {
+                if self.d.cmp(&o.d) == Ordering::Equal {
+                    Alg::Surd(Surd {
+                        a,
+                        b: self.b.add(&o.b),
+                        d: self.d.clone(),
+                    })
+                } else {
+                    Alg::Alg(self.cross_add(o))
+                }
+            }
+        }
+    }
+
+    /// `self − o` (see [`Surd::add`]).
+    pub fn sub(&self, o: &Self) -> Alg<B> {
+        self.add(&o.neg())
+    }
+
+    /// `self · o` (see [`Surd::add`] for the radical-field discipline).
+    pub fn mul(&self, o: &Self) -> Alg<B> {
+        match (self.is_rational(), o.is_rational()) {
+            (true, _) => Alg::Surd(o.scale(&self.a)),
+            (_, true) => Alg::Surd(self.scale(&o.a)),
+            (false, false) => {
+                if self.d.cmp(&o.d) == Ordering::Equal {
+                    // (a₁+b₁√d)(a₂+b₂√d) = (a₁a₂+b₁b₂d) + (a₁b₂+a₂b₁)√d
+                    Alg::Surd(Surd {
+                        a: self.a.mul(&o.a).add(&self.b.mul(&o.b).mul(&self.d)),
+                        b: self.a.mul(&o.b).add(&o.a.mul(&self.b)),
+                        d: self.d.clone(),
+                    })
+                } else {
+                    Alg::Alg(self.cross_mul(o))
+                }
+            }
+        }
+    }
+
+    /// Cross-radical `self + o` (`d₁ ≠ d₂`, both irrational). The four conjugates
+    /// `(a₁±b₁√d₁)+(a₂±b₂√d₂)` are the roots of `(x−A)⁴ − 2P(x−A)² + (P²−Q²R)`,
+    /// rational in `A=a₁+a₂`, `P=b₁²d₁+b₂²d₂`, `Q=2b₁b₂`, `R=d₁d₂`.
+    fn cross_add(&self, o: &Self) -> AlgReal<B> {
+        let a = self.a.add(&o.a);
+        let p = self
+            .b
+            .mul(&self.b)
+            .mul(&self.d)
+            .add(&o.b.mul(&o.b).mul(&o.d));
+        let q = {
+            let t = self.b.mul(&o.b);
+            t.add(&t)
+        };
+        let r = self.d.mul(&o.d);
+        let one = Rat::from_i128(1);
+        let xa = Poly::from_coeffs(vec![a.neg(), one]); // x − A
+        let xa2 = xa.mul(&xa);
+        let xa4 = xa2.mul(&xa2);
+        let minpoly = xa4
+            .sub(&xa2.scale(&p.add(&p)))
+            .add(&Poly::constant(p.mul(&p).sub(&q.mul(&q).mul(&r))));
+        isolate_sum(&minpoly, self.to_algreal(), o.to_algreal())
+    }
+
+    /// Cross-radical `self · o` (`d₁ ≠ d₂`, both irrational). The four product
+    /// conjugates are the roots of `(x²−2m·x+N)² − 4n²R·x²`, rational in `m=a₁a₂`,
+    /// `N=(a₁²−b₁²d₁)(a₂²−b₂²d₂)`, `n=b₁b₂`, `R=d₁d₂`.
+    fn cross_mul(&self, o: &Self) -> AlgReal<B> {
+        let m = self.a.mul(&o.a);
+        let n = self
+            .a
+            .mul(&self.a)
+            .sub(&self.b.mul(&self.b).mul(&self.d))
+            .mul(&o.a.mul(&o.a).sub(&o.b.mul(&o.b).mul(&o.d)));
+        let nn = self.b.mul(&o.b);
+        let r = self.d.mul(&o.d);
+        let one = Rat::from_i128(1);
+        let zero = Rat::from_i128(0);
+        let quad = Poly::from_coeffs(vec![n, m.add(&m).neg(), one]); // x² − 2m·x + N
+        let four_n2r = {
+            let t = nn.mul(&nn).mul(&r);
+            let t2 = t.add(&t);
+            t2.add(&t2)
+        };
+        let x2 = Poly::from_coeffs(vec![zero.clone(), zero, four_n2r]);
+        isolate_prod(&quad.mul(&quad).sub(&x2), self.to_algreal(), o.to_algreal())
+    }
+
     fn cmp_impl(&self, o: &Self) -> Ordering {
         // sign(self − o) with self − o = A + b₁√d₁ − b₂√d₂, A = a₁ − a₂.
         let a = self.a.sub(&o.a);
@@ -152,6 +288,81 @@ impl<B: Backend> Ord for Surd<B> {
 impl<B: Backend> fmt::Debug for Surd<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Surd({:?} + {:?}√{:?})", self.a, self.b, self.d)
+    }
+}
+
+/// The result of exact [`Surd`] field arithmetic ([`Surd::add`] / [`Surd::mul`]):
+/// a [`Surd`] when the operation stayed in one radical field (the arrangement
+/// carrier path, where every coordinate shares `d = Δ`), or an [`AlgReal`] for a
+/// genuinely cross-radical (degree-≤4) combination.
+pub enum Alg<B: Backend = Bignum> {
+    /// Stayed in the degree-≤2 field.
+    Surd(Surd<B>),
+    /// Escaped to a general (L3) algebraic number.
+    Alg(AlgReal<B>),
+}
+
+impl<B: Backend> Alg<B> {
+    /// The [`Surd`] when the arithmetic stayed in one radical field; panics on the
+    /// cross-radical [`AlgReal`] case. The arrangement carrier/membership path
+    /// never escalates (all coordinates share `d = Δ`), so it uses this.
+    pub fn unwrap_surd(self) -> Surd<B> {
+        match self {
+            Alg::Surd(s) => s,
+            Alg::Alg(_) => panic!("Alg::unwrap_surd: value escaped its radical field"),
+        }
+    }
+
+    /// `-1 | 0 | 1`.
+    pub fn sign(&self) -> i8 {
+        match self {
+            Alg::Surd(s) => s.sign(),
+            Alg::Alg(a) => a.sign(),
+        }
+    }
+}
+
+/// Isolate `α + β` (cross-radical surds) among the roots of `minpoly` by refining
+/// the operands' intervals until their sum-interval holds exactly one root.
+fn isolate_sum<B: Backend>(minpoly: &Poly<B>, mut a: AlgReal<B>, mut b: AlgReal<B>) -> AlgReal<B> {
+    let sf = minpoly.squarefree_part();
+    let sc = SturmChain::new(&sf);
+    loop {
+        let lo = a.iv.lo.add(&b.iv.lo);
+        let hi = a.iv.hi.add(&b.iv.hi);
+        if sc.count_in(&lo, &hi) == 1 {
+            return AlgReal {
+                poly: sf,
+                iv: Interval { lo, hi },
+            };
+        }
+        a.refine();
+        b.refine();
+    }
+}
+
+/// Isolate `α · β` among the roots of `minpoly` (the product-interval is the
+/// min/max of the four corner products; refine until it holds exactly one root).
+fn isolate_prod<B: Backend>(minpoly: &Poly<B>, mut a: AlgReal<B>, mut b: AlgReal<B>) -> AlgReal<B> {
+    let sf = minpoly.squarefree_part();
+    let sc = SturmChain::new(&sf);
+    loop {
+        let corners = [
+            a.iv.lo.mul(&b.iv.lo),
+            a.iv.lo.mul(&b.iv.hi),
+            a.iv.hi.mul(&b.iv.lo),
+            a.iv.hi.mul(&b.iv.hi),
+        ];
+        let lo = corners.iter().min().unwrap().clone();
+        let hi = corners.iter().max().unwrap().clone();
+        if sc.count_in(&lo, &hi) == 1 {
+            return AlgReal {
+                poly: sf,
+                iv: Interval { lo, hi },
+            };
+        }
+        a.refine();
+        b.refine();
     }
 }
 
@@ -223,6 +434,15 @@ impl<B: Backend> AlgReal<B> {
                 return Ordering::Less; // q > hi ≥ root
             }
             a.refine();
+        }
+    }
+
+    /// `-1 | 0 | 1`.
+    pub fn sign(&self) -> i8 {
+        match self.cmp_rat(&Rat::from_i128(0)) {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
         }
     }
 
@@ -329,6 +549,47 @@ mod tests {
         assert_eq!(surd(0, 1, 8).cmp(&surd(0, 2, 2)), Ordering::Equal);
         // √4 == 2 (perfect square vs rational)
         assert_eq!(surd(0, 1, 4), S::from_rat(Q::from_i128(2)));
+    }
+
+    #[test]
+    fn surd_arithmetic_same_radical() {
+        let s = surd(1, 1, 2); // 1 + √2
+        assert_eq!(s.scale(&Q::from_i128(2)), surd(2, 2, 2)); // 2 + 2√2
+        assert_eq!(s.neg(), surd(-1, -1, 2)); // −1 − √2
+        // add / sub with equal radical
+        assert_eq!(s.add(&surd(3, 2, 2)).unwrap_surd(), surd(4, 3, 2)); // 4 + 3√2
+        assert_eq!(surd(3, 2, 2).sub(&s).unwrap_surd(), surd(2, 1, 2)); // 2 + √2
+        // rational operand stays in-field
+        assert_eq!(
+            s.add(&S::from_rat(Q::from_i128(3))).unwrap_surd(),
+            surd(4, 1, 2)
+        );
+        assert_eq!(
+            s.mul(&S::from_rat(Q::from_i128(2))).unwrap_surd(),
+            surd(2, 2, 2)
+        );
+        // (1 + √2)² = 3 + 2√2
+        assert_eq!(s.mul(&s).unwrap_surd(), surd(3, 2, 2));
+    }
+
+    #[test]
+    fn surd_arithmetic_cross_radical() {
+        // √2 + √3 (root of x⁴ − 10x² + 1) ≈ 3.14626
+        match surd(0, 1, 2).add(&surd(0, 1, 3)) {
+            Alg::Alg(r) => {
+                assert_eq!(r.sign(), 1);
+                assert_eq!(r.cmp_rat(&Q::from_i128(3)), Ordering::Greater);
+                assert_eq!(r.cmp_rat(&Q::new(63, 20)), Ordering::Less); // < 3.15
+            }
+            Alg::Surd(_) => panic!("√2 + √3 must be cross-radical"),
+        }
+        // √2 · √3 = √6 (escalates, but exactly equals the surd 0 + 1√6)
+        match surd(0, 1, 2).mul(&surd(0, 1, 3)) {
+            Alg::Alg(r) => {
+                assert_eq!(r.cmp(&surd(0, 1, 6).to_algreal()), Ordering::Equal);
+            }
+            Alg::Surd(_) => panic!("√2 · √3 must escalate (different radicals)"),
+        }
     }
 
     #[test]
