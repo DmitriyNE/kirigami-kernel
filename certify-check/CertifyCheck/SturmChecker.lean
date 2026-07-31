@@ -5,7 +5,7 @@
   does not re-prove Sturm's theorem, it checks (by exact ℚ arithmetic) that a given
   polynomial sequence satisfies the *chain identities* that make the variation
   theorem apply, and then cites the theorem (`vv-guide §0`, runtime-checked
-  hypotheses; `proofs/ledger.md`).
+  hypotheses; `docs/proofs/ledger.md`).
 
   This file is that citation, formalized:
 
@@ -72,7 +72,7 @@ runtime-checked-hypothesis design (`vv-guide §0`), we cite the theorem
 (BPR *Algorithms in Real Algebraic Geometry*, Thm 2.50; Eberl) and prove the
 *reduction*: that `verify_chain` checks exactly `IsSturmChainData`, and that its
 `V` is the `signVariations` proved in `CertifyCheck.SignVariations`. This axiom is
-the single, labelled soundness assumption; it is recorded in `proofs/ledger.md`.
+the single, labelled soundness assumption; it is recorded in `docs/proofs/ledger.md`.
 -/
 axiom sturm_root_count
     (p : Polynomial ℚ) (cs : List (Polynomial ℚ))

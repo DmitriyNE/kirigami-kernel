@@ -5,7 +5,7 @@
 //! **Verification (vv-guide §0/§5/§8):** the variation theorem
 //! (`#distinct real roots in (a,b] = V(a) − V(b)`) is cited, not re-proven; its
 //! hypotheses are checked at runtime by [`SturmChain::verify_chain`] (a
-//! runtime-checked hypothesis, `proofs/ledger.md`). The only piece proven in
+//! runtime-checked hypothesis, `docs/proofs/ledger.md`). The only piece proven in
 //! Kani is the finite [`sign_variations`] counter. The chain builder here is the
 //! naive Euclidean ℚ-PRS (simplest, correct; fine at predicate degrees) — a
 //! primitive/subresultant builder is a later perf-only swap, and because

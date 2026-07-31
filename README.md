@@ -13,7 +13,7 @@ A certified-exact geometry kernel for formed flexible-PCB substrates — the imp
 - `docs/environment-and-crate-layout.md` — **resolved engineering decisions: crate layout, edition/MSRV/tool pins, Lean/Mathlib, Nix flake. Read before scaffolding the repo.**
 - `docs/vv-guide.md` — **verification & validation architecture (unified, authoritative)**.
 - `fixtures/corpus.md` — ~30 counterexamples with required verdicts = the day-one regression suite.
-- `proofs/` — Lean proof ledger (stub; grows with `certify-core`).
+- `docs/proofs/` — proof ledger: the theorems the checkers rely on, one entry per obligation (grows with `certify-core`; the proofs themselves live in `certify-check/`).
 
 *The normative spec lineage — v0.24 full + delta + pending — lives **only** under `spec/` (one copy; the CI lints scan it). Everything under `docs/` is informative companion material.*
 

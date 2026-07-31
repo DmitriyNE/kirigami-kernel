@@ -6,7 +6,7 @@
       `h.degree() ≥ 1  ∧  f.rem(h).is_zero()  ∧  g.rem(h).is_zero()`
   — it does not recompute the resultant, it *exhibits* a common factor `h` and
   checks (by exact ℚ arithmetic) that `h` has positive degree and divides both
-  `f` and `g` (`vv-guide §0`, runtime-checked hypotheses; `proofs/ledger.md`).
+  `f` and `g` (`vv-guide §0`, runtime-checked hypotheses; `docs/proofs/ledger.md`).
 
   Unlike the Sturm checker, the deep theorem this relies on —
   `Res(f, g) = 0 ⇔ f, g share a positive-degree factor` — is **now in Mathlib**

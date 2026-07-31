@@ -7,7 +7,7 @@
 //! resultant (eliminate `x` between two polynomials whose coefficients are
 //! `y`-polynomials) via the Sylvester matrix and fraction-free Bareiss.
 //!
-//! **Verification (vv-guide §0, `proofs/ledger.md`):** the resultant⇔common-root
+//! **Verification (vv-guide §0, `docs/proofs/ledger.md`):** the resultant⇔common-root
 //! theorem is cited; the instance certificate is a **divisibility check** —
 //! [`verify_common_factor`] — which is exactly the spec's "resultant-conditioned
 //! A-identity (divisibility check)" (§5.3). The resultant *value* is

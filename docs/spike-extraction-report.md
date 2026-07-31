@@ -64,7 +64,7 @@ Aeneas artifact re-lifted **directly from `crates/lattice`**):
   `certify-check/Lattice/{Types,Funs}.lean` — typechecks against the Aeneas Lean lib; the generated
   `lattice.sturm.sign_variations` (its `Source` comments cite `crates/lattice/src/sturm.rs:26–38`) is
   **`sorry`-free**.
-- **hax:** `cargo hax into legacy-lean` (on the probe) → `proofs/legacy-lean/extraction/lift_probe.lean`
+- **hax:** `cargo hax into legacy-lean` (on the probe) → a scratch `legacy-lean/extraction/lift_probe.lean`
   (a `RustM`/`core_models.fold` model). hax's `into lean` = the charon+aeneas pipeline (convergence, §2).
 
 **Two workarounds (minor, documented):**
@@ -189,7 +189,7 @@ The repeatable recipe every `certify-core` checker follows (validated on `sign_v
 7. **Audit axioms**: `#print axioms <thm>` — accept only `[propext, Classical.choice, Quot.sound]` plus any
    *deliberate, labelled* cited axiom; reject `sorryAx` (guards against Aeneas-Std `sorry`s).
 8. **Runtime-checked hypotheses** (Sturm-style): formalize the checked conditions as a predicate, state the
-   deep theorem as a single cited `axiom`, and add a `proofs/ledger.md` entry (statement · citation ·
+   deep theorem as a single cited `axiom`, and add a `docs/proofs/ledger.md` entry (statement · citation ·
    hypotheses-checked-at-runtime vs structural · the axiom name in the checker's footprint).
 
 ## 8. Go / no-go — **GO**

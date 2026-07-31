@@ -19,7 +19,7 @@ CI fails a milestone gate if a **soundness-critical** row (marked ★) has empty
 | STEP shell | export | ⬜ | — | ⬜ (OCC) | — | — | ⬜ (kernels + hw) |
 | (extend per implementation-plan §1) | | | | | | | |
 
-**Notes.** (`rc-hyp` = runtime-checked-hypothesis cell, tracked in `proofs/ledger.md`.)
+**Notes.** (`rc-hyp` = runtime-checked-hypothesis cell, tracked in `docs/proofs/ledger.md`.)
 - `lattice cmp/sign` (slice 1): unit = corpus seeds + `Bignum` (>i128) + the exhaustive
   ±24 grid; property = the proptest differential; differential = num-rational (2nd backend).
   **Kani** = `neg`/`sign`/`cmp` panic-/overflow-freedom over the full i128 domain (incl
