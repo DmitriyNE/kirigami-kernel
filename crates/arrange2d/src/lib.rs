@@ -22,6 +22,7 @@
 //!   * [`spine`]      — the steps-1–4 driver, most-degenerate-first.
 //!   * [`witness`]    — the replayable `(claim, certificate)` for the M3e checker.
 
+pub mod azimuth;
 pub mod carrier;
 pub mod classify;
 pub mod decompose;
