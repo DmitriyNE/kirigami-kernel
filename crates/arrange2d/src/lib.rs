@@ -30,3 +30,7 @@ pub mod membership;
 pub mod predicates;
 pub mod spine;
 pub mod witness;
+
+/// Shared test-only V&V support (generators + independent oracles), Phase 5.
+#[cfg(test)]
+mod testgen;
