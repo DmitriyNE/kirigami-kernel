@@ -3,8 +3,11 @@
 Row per certificate/kernel operation; cell per method. Status: ✅ done · 🚧 partial · ⬜ todo · N/A.
 Each Item carries its milestone tag `[Mx]`. CI fails the milestone gate
 (`scripts/lint/vv_matrix_gate.sh`) if a **soundness-critical** row (marked ★) whose
-milestone has **landed** (`[M0]`, `[M3a]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
-Not-yet-landed ★ rows (`[M3c]`/`[M3d]`/`[M3e]`/`[M4]`/…) are out of scope until their milestone ships.
+milestone has **landed** (`[M0]`, `[M3a]`, `[M3c]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
+Not-yet-landed ★ rows (`[M2]`/`[M3d]`/`[M3e]`/`[M4]`/…) are out of scope until their milestone ships.
+(The `arrange2d`/`certify1d` searcher slices `[M3a]`/`[M3c]` are non-★: Kani/Lean = N/A, soundness
+deferred to the M3e checkers. CLIP-σ/strict-Sylvester are `[M2]`/`[M4]` CLIP-DOM checkers, not the 3c
+arrangement lattice — the "1D" name is overloaded.)
 
 | Item | crate | unit | property | differential | Kani | Lean | validation |
 |---|---|---|---|---|---|---|---|
@@ -15,8 +18,9 @@ Not-yet-landed ★ rows (`[M3c]`/`[M3d]`/`[M3e]`/`[M4]`/…) are out of scope un
 | carrier + predicates [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL + resultant) | N/A | N/A | — |
 | membership [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL) | N/A | N/A | — |
 | event spine + classify [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL) | N/A | N/A | — |
-| CLIP-σ signed ★ [M3c] | certify1d | ⬜ | ⬜ | — | — | ⬜ | — |
-| strict Sylvester ★ [M3c] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
+| 1D coincidence lattice [M3c] | arrange2d | ✅ | ✅ | ✅ (CGAL overlap-edge) | N/A | N/A | — |
+| CLIP-σ signed ★ [M2] | certify1d | ⬜ | ⬜ | — | — | ⬜ | — |
+| strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
 | quotient emission ★ [M3d] | arrange2d | ⬜ | ⬜ (Euler) | ⬜ (CGAL) | — | ⬜ (research) | — |
 | CAP-OUT-LINK ★ [M3e] | arrange2d | ⬜ | ⬜ | — | — | ⬜ (research) | — |

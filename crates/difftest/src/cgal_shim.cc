@@ -5,6 +5,7 @@
 #include <CGAL/Gmpq.h>  // CGAL's exact rational over GMP — heavy-enough header + gmp link
 
 #include <CGAL/Arr_circle_segment_traits_2.h>
+#include <CGAL/Arr_curve_data_traits_2.h>
 #include <CGAL/Arrangement_2.h>
 #include <CGAL/Cartesian.h>
 
@@ -101,6 +102,61 @@ rust::String cgal_arrange(rust::Str input) {
     if (v->degree() >= 3) {
       os << coord_triple(v->point().x()) << " " << coord_triple(v->point().y()) << "\n";
     }
+  }
+  return rust::String(os.str());
+}
+
+// --- Phase-5/3c overlap-edge oracle (curve provenance via data traits) ----------
+namespace {
+// Curve data is a bitmask of originating curve ids; overlap merges by OR, so an
+// edge's popcount is the number of input curves that cover it.
+struct MergeOr {
+  unsigned operator()(unsigned a, unsigned b) const { return a | b; }
+};
+using DTraits = CGAL::Arr_curve_data_traits_2<Traits, unsigned, MergeOr>;
+using DCurve = DTraits::Curve_2;
+using DArrangement = CGAL::Arrangement_2<DTraits>;
+}  // namespace
+
+// Build the arrangement and return one line PER EDGE: `n xa xb xd ya yb yd  ua ub
+// ud va vb vd` where `n` = the number of input curves covering the edge (an
+// overlap edge has n ≥ 2 — our merged coincident edge; a single curve has n = 1 —
+// a residual/plain edge), and the two coordinate triples are the edge's endpoints
+// (a + b·√d). Input curves carry an id: `S x1 y1 x2 y2 id` / `C cx cy r2 id`.
+rust::String cgal_arrange_edges(rust::Str input) {
+  std::istringstream lines{std::string(input)};
+  std::string line;
+  std::vector<DCurve> curves;
+  while (std::getline(lines, line)) {
+    std::istringstream ts(line);
+    std::string kind;
+    if (!(ts >> kind)) continue;
+    if (kind == "S") {
+      std::string x1, y1, x2, y2;
+      unsigned id;
+      ts >> x1 >> y1 >> x2 >> y2 >> id;
+      Curve_2 base(KSegment(KPoint(parse_q(x1), parse_q(y1)),
+                            KPoint(parse_q(x2), parse_q(y2))));
+      curves.emplace_back(base, 1u << id);
+    } else if (kind == "C") {
+      std::string cx, cy, r2;
+      unsigned id;
+      ts >> cx >> cy >> r2 >> id;
+      Kernel::Circle_2 circ(KPoint(parse_q(cx), parse_q(cy)), parse_q(r2));
+      Curve_2 base(circ);
+      curves.emplace_back(base, 1u << id);
+    }
+  }
+  DArrangement arr;
+  CGAL::insert(arr, curves.begin(), curves.end());
+
+  std::ostringstream os;
+  for (auto e = arr.edges_begin(); e != arr.edges_end(); ++e) {
+    unsigned mask = e->curve().data();
+    os << __builtin_popcount(mask) << " " << coord_triple(e->source()->point().x())
+       << " " << coord_triple(e->source()->point().y()) << " "
+       << coord_triple(e->target()->point().x()) << " "
+       << coord_triple(e->target()->point().y()) << "\n";
   }
   return rust::String(os.str());
 }

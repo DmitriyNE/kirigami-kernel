@@ -4,21 +4,23 @@
 //! pipeline (decompose → arrange_events → touch vertices) and the CGAL
 //! circular-kernel `Arrangement_2` oracle, and assert the intersection-vertex
 //! point sets agree **exactly** — compared by radical-safe `Surd::cmp`, no
-//! tolerance — up to the quotient. Coincident carriers (`SharedCarrier`, our 0
-//! events, vs CGAL overlap edges) are excluded from the generator and validated
-//! in-crate; here every generated arrangement has distinct carriers, so the CGAL
-//! degree-≥3 vertices (genuine multi-curve intersections) match our touch set
-//! one-for-one.
+//! tolerance — up to the quotient. The transverse harness excludes coincident
+//! carriers (so the CGAL degree-≥3 vertices match our touch set one-for-one);
+//! the **coincidence** harness (slice 3c) handles them directly against the CGAL
+//! `Arr_curve_data_traits_2` **overlap-edge** oracle — our merged edge (both
+//! operands) ≡ CGAL's overlap edge (covering count ≥ 2), our residuals ≡ CGAL's
+//! single-count edges.
 //!
 //! Lines are bounded to the same wide segment on both sides, so the two engines
 //! see identical geometry; the segment is far wider than any small-coordinate
 //! intersection.
 
-use crate::cgal::cgal_arrange;
+use crate::cgal::{cgal_arrange, cgal_arrange_edges};
 use arrange2d::decompose::decompose;
+use arrange2d::event::{CoincEdge, Operand};
 use arrange2d::spine::arrange_events;
 use certify_core::Verdict;
-use geom::content::{Circle, Curve, CurveId, Line, Orient, Point2, SegPiece};
+use geom::content::{Circle, Curve, CurveId, Edge, Line, Orient, Point2, SegPiece};
 use lattice::{Bignum, Rat, Surd};
 
 type Q = Rat<Bignum>;
@@ -140,6 +142,90 @@ fn cgal_vertices(gens: &[Gen]) -> Vec<P> {
 /// equality (points compared by value via `Point2`'s radical-safe `Eq`).
 fn same_points(a: &[P], b: &[P]) -> bool {
     a.len() == b.len() && a.iter().all(|p| b.contains(p))
+}
+
+// --- coincidence (overlap-edge) differential ---
+
+/// A canonical edge key: the two endpoints (ordered) + the number of covering
+/// curves (our `Both` ⇒ 2, residual ⇒ 1; CGAL's popcount).
+fn edge_key(p: P, q: P, count: u32) -> (P, P, u32) {
+    if p <= q { (p, q, count) } else { (q, p, count) }
+}
+
+/// Our stage-2 coincidence output edges as canonical keys.
+fn our_coinc_keys(edges: &[Edge<Bignum>]) -> Vec<(P, P, u32)> {
+    let coinc = match arrange_events(edges) {
+        Verdict::Verified((_, c, _)) => c,
+        _ => unreachable!(),
+    };
+    coinc
+        .iter()
+        .map(|e: &CoincEdge<Bignum>| {
+            let (s, t) = match &e.edge {
+                Edge::Seg(sp) => (sp.start.clone(), sp.end.clone()),
+                Edge::Arc(a) => (a.start.clone(), a.end.clone()),
+            };
+            edge_key(s, t, if e.operand == Operand::Both { 2 } else { 1 })
+        })
+        .collect()
+}
+
+/// CGAL's arrangement edges as canonical keys (from `cgal_arrange_edges`).
+fn cgal_edge_keys(input: &str) -> Vec<(P, P, u32)> {
+    cgal_arrange_edges(input)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let count: u32 = t[0].parse().unwrap();
+            let p = Point2 {
+                x: Surd::new(parse_q(t[1]), parse_q(t[2]), parse_q(t[3])),
+                y: Surd::new(parse_q(t[4]), parse_q(t[5]), parse_q(t[6])),
+            };
+            let q = Point2 {
+                x: Surd::new(parse_q(t[7]), parse_q(t[8]), parse_q(t[9])),
+                y: Surd::new(parse_q(t[10]), parse_q(t[11]), parse_q(t[12])),
+            };
+            edge_key(p, q, count)
+        })
+        .collect()
+}
+
+/// Two coincident segments through `base + t·dir`, and the matching CGAL input
+/// (curve ids 0, 1). Endpoints are integers, so both engines see identical
+/// geometry and the two segments share the exact same carrier line.
+fn coincident_segments(
+    bx: i128,
+    by: i128,
+    dx: i128,
+    dy: i128,
+    t: [i128; 4],
+) -> (Vec<Edge<Bignum>>, String) {
+    let pt = |tt: i128| (bx + tt * dx, by + tt * dy);
+    // line through the direction (dx, dy): normal (dy, −dx), c = −(dy·bx − dx·by).
+    let line = Line {
+        a: qi(dy),
+        b: qi(-dx),
+        c: qi(-(dy * bx - dx * by)),
+    };
+    let seg = |ta: i128, tb: i128, src: u32| {
+        let (x0, y0) = pt(ta);
+        let (x1, y1) = pt(tb);
+        Edge::Seg(Box::new(SegPiece {
+            line: line.clone(),
+            start: Point2::from_rat(qi(x0), qi(y0)),
+            end: Point2::from_rat(qi(x1), qi(y1)),
+            orient: Orient::Ccw,
+            source: CurveId(src),
+        }))
+    };
+    let edges = vec![seg(t[0], t[1], 0), seg(t[2], t[3], 1)];
+    let (x0, y0) = pt(t[0]);
+    let (x1, y1) = pt(t[1]);
+    let (x2, y2) = pt(t[2]);
+    let (x3, y3) = pt(t[3]);
+    let cgal = format!("S {x0}/1 {y0}/1 {x1}/1 {y1}/1 0\nS {x2}/1 {y2}/1 {x3}/1 {y3}/1 1");
+    (edges, cgal)
 }
 
 #[cfg(test)]
@@ -279,6 +365,35 @@ mod tests {
         }
     }
 
+    /// Coincidence corpus: two overlapping collinear segments — our stage-2
+    /// merged + residual edges match CGAL's overlap (count 2) + single (count 1)
+    /// edges.
+    #[test]
+    fn coincident_units() {
+        // (base, dir, [t0,t1,t2,t3]): partial / containment / equality / shared-end.
+        let cases: &[(i128, i128, i128, i128, [i128; 4])] = &[
+            (0, 0, 1, 0, [0, 4, 2, 6]),  // horizontal partial
+            (0, 0, 1, 0, [0, 6, 2, 4]),  // horizontal containment
+            (0, 0, 1, 0, [0, 4, 0, 4]),  // equality
+            (0, 0, 1, 1, [0, 4, 2, 6]),  // diagonal partial
+            (1, -2, 0, 1, [0, 5, 2, 7]), // vertical partial
+            (0, 0, 2, 1, [-3, 3, 0, 5]), // diagonal, shifted
+        ];
+        for &(bx, by, dx, dy, t) in cases {
+            let (edges, cgal) = coincident_segments(bx, by, dx, dy, t);
+            let mut ours = our_coinc_keys(&edges);
+            let mut theirs = cgal_edge_keys(&cgal);
+            ours.sort();
+            theirs.sort();
+            assert_eq!(
+                ours,
+                theirs,
+                "coincident mismatch at {:?}",
+                (bx, by, dx, dy, t)
+            );
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -287,6 +402,27 @@ mod tests {
         #[test]
         fn arrangement_matches_cgal(gens in gen_arrangement()) {
             prop_assert!(same_points(&our_vertices(&gens), &cgal_vertices(&gens)));
+        }
+
+        /// Two random OVERLAPPING coincident segments: our merged + residual edges
+        /// match CGAL's overlap + single edges exactly (endpoints via Surd::cmp,
+        /// covering-count via popcount vs Both/residual).
+        #[test]
+        fn coincident_edges_match_cgal(
+            bx in -3i128..=3, by in -3i128..=3, dx in -3i128..=3, dy in -3i128..=3,
+            t0 in -6i128..=6, t1 in -6i128..=6, t2 in -6i128..=6, t3 in -6i128..=6,
+        ) {
+            prop_assume!(dx != 0 || dy != 0);
+            prop_assume!(t0 != t1 && t2 != t3);
+            let (sa0, sa1) = (t0.min(t1), t0.max(t1));
+            let (sb0, sb1) = (t2.min(t3), t2.max(t3));
+            prop_assume!(sa0.max(sb0) < sa1.min(sb1)); // genuine overlap
+            let (edges, cgal) = coincident_segments(bx, by, dx, dy, [t0, t1, t2, t3]);
+            let mut ours = our_coinc_keys(&edges);
+            let mut theirs = cgal_edge_keys(&cgal);
+            ours.sort();
+            theirs.sort();
+            prop_assert_eq!(ours, theirs);
         }
     }
 }

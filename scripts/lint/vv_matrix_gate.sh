@@ -12,7 +12,7 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 matrix="$root/vv-matrix.md"
 
 # Landed milestones — extend as each ships.
-landed="M0 M3a"
+landed="M0 M3a M3c"
 
 awk -v landed="$landed" '
   BEGIN { n = split(landed, a, " "); for (i = 1; i <= n; i++) L[a[i]] = 1; fail = 0 }

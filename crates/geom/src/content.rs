@@ -83,7 +83,7 @@ pub enum Half {
 }
 
 /// Orientation of a source curve — provenance only in M3a; the §8.3 winding
-/// integer (Sturm-isolated poles) is computed in slice 3c.
+/// integer (Sturm-isolated poles) is computed in slice 3c (`arrange2d::azimuth`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Orient {
     Ccw,

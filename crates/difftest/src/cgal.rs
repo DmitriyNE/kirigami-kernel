@@ -20,10 +20,16 @@ mod ffi {
         /// x2 y2` segment / `C cx cy r2` circle, rationals as "num/den"), each
         /// returned as `xa xb xd ya yb yd` (coordinate = a + b·√d).
         fn cgal_arrange(input: &str) -> String;
+
+        /// Phase-5/3c overlap-edge oracle: one line per arrangement edge,
+        /// `n xa xb xd ya yb yd ua ub ud va vb vd` — `n` = number of input curves
+        /// covering the edge (≥ 2 ⇒ overlap/merged), then the two endpoints. Input
+        /// curves carry an id: `S x1 y1 x2 y2 id` / `C cx cy r2 id`.
+        fn cgal_arrange_edges(input: &str) -> String;
     }
 }
 
-pub use ffi::{cgal_arr_smoke, cgal_arrange, cgal_smoke};
+pub use ffi::{cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_smoke};
 
 #[cfg(test)]
 mod tests {

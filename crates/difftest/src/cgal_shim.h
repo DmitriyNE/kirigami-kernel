@@ -17,4 +17,9 @@ rust::String cgal_arr_smoke();
 // cgal_shim.cc for the input format and output shape.
 rust::String cgal_arrange(rust::Str input);
 
+// Phase-5/3c overlap-edge oracle: the arrangement's edges, each tagged with the
+// number of input curves covering it (≥ 2 = an overlap / merged edge). Input
+// curves carry an id. See cgal_shim.cc.
+rust::String cgal_arrange_edges(rust::Str input);
+
 }  // namespace kirigami
