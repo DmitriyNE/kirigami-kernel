@@ -249,5 +249,12 @@ extras (`checked_neg`, `signum`, used only by the sibling `neg`/`sign`) are mode
 elaborator unary-normalises the 39-digit literal via `Nat.rec`); the fit-bound is sealed behind an
 `irreducible_def i128FitBound` so `by_cases`/`split` never force that evaluation.
 
-Remaining Phase-5 item (not yet done): **`verify_common_factor`** (`resultant.rs`) — cite-the-theorem
-(resultant ⇔ common root) like the Sturm checker, **not** an Aeneas lift (see `proofs/ledger.md` entry 2).
+- **`verify_common_factor_sound`** (`CertifyCheck/Resultant.lean`) — the certifying check
+  `verify_common_factor(f,g,h)` (`deg h ≥ 1 ∧ h∣f ∧ h∣g`) is proven sound: a verified witness ⟹
+  `¬IsCoprime f g` (direct) ⟹ `resultant f g = 0`. **Unlike the Sturm checker, this needs NO cited
+  axiom** — the resultant⇔common-root theorem the spike flagged as a Mathlib gap ("developing") has since
+  landed as `Polynomial.resultant_eq_zero_iff`, so the soundness is proven outright. Honest side
+  condition `f ≠ 0 ∨ g ≠ 0` (the checker does not guard degenerate `f = g = 0`). This closes Phase 5.
+
+**Phase 5 is complete.** All three items (gcd, reduce, verify_common_factor) proven and axiom-clean, in
+the CI `#print axioms` gate.

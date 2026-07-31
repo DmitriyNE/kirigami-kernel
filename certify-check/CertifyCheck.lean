@@ -20,6 +20,9 @@
 --   * CertifyCheck.Reduce          — `SmallRat::reduce` proven to produce the
 --     canonical reduced form of `num/den` (positive denominator, coprime,
 --     equal rational), over the full `i128` range.
+--   * CertifyCheck.Resultant       — `verify_common_factor` proven sound (a
+--     verified common factor ⟹ `¬IsCoprime f g` ⟹ `resultant f g = 0`), with
+--     NO cited axiom (Mathlib's `resultant_eq_zero_iff` closes the §7 gap).
 
 import CertifyCheck.SignVariations
 import CertifyCheck.SturmChecker
@@ -27,3 +30,4 @@ import CertifyCheck.LiftedAeneas
 import CertifyCheck.Refine
 import CertifyCheck.GcdReduce
 import CertifyCheck.Reduce
+import CertifyCheck.Resultant
