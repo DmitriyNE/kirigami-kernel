@@ -15,3 +15,8 @@
 /// `nix develop`). Phase 0 wires a build smoke; the arrangement oracle grows here.
 #[cfg(feature = "cgal")]
 pub mod cgal;
+
+/// The CGAL `Arrangement_2` differential harness — our `arrange2d` vs CGAL, exact
+/// and up to the quotient. Test-only, feature `cgal`.
+#[cfg(all(test, feature = "cgal"))]
+mod differential;

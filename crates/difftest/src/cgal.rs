@@ -14,10 +14,16 @@ mod ffi {
         /// of two crossing segments as two `a b d` triples (`a + b·√d`), proving
         /// the circular kernel builds/links and `Root_of_2` extraction works.
         fn cgal_arr_smoke() -> String;
+
+        /// Phase-5 differential oracle: the genuine (degree ≥ 3) intersection
+        /// vertices of an arrangement of the input curves (one per line: `S x1 y1
+        /// x2 y2` segment / `C cx cy r2` circle, rationals as "num/den"), each
+        /// returned as `xa xb xd ya yb yd` (coordinate = a + b·√d).
+        fn cgal_arrange(input: &str) -> String;
     }
 }
 
-pub use ffi::{cgal_arr_smoke, cgal_smoke};
+pub use ffi::{cgal_arr_smoke, cgal_arrange, cgal_smoke};
 
 #[cfg(test)]
 mod tests {

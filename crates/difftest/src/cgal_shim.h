@@ -12,4 +12,9 @@ rust::String cgal_smoke();
 // Root_of_2 extraction works. See cgal_shim.cc.
 rust::String cgal_arr_smoke();
 
+// Phase-5 differential oracle: build the arrangement of the input curves and
+// return its genuine multi-curve intersection vertices (degree ≥ 3). See
+// cgal_shim.cc for the input format and output shape.
+rust::String cgal_arrange(rust::Str input);
+
 }  // namespace kirigami

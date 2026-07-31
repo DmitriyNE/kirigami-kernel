@@ -17,6 +17,15 @@ cxx = { version = "1.0", optional = true }
 cxx-build = "1.0"
 pkg-config = "0.3"
 
+[dev-dependencies]
+# The CGAL differential harness compares our arrangement (arrange2d, over the
+# geom/lattice types) against the CGAL oracle; proptest drives the inputs.
+arrange2d.workspace = true
+geom.workspace = true
+lattice.workspace = true
+certify-core.workspace = true
+proptest = "1"
+
 [features]
 # The CGAL Arrangement_2 (circular kernel) differential oracle.
 cgal = ["dep:cxx"]
