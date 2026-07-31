@@ -7,3 +7,9 @@
 //! meant, that is the fossil bug). Substitution/removability transport, the
 //! `b_J`/`b_i`/`G_i` fields, and `N_i^cut`. The two device fixtures (cone; petal
 //! conical flank) are data in the `fixtures` crate.
+//!
+//! [`content`] — the 2D flat-content primitives (lines, circles, arc/segment
+//! pieces) the §6 arrangement operates on. Landed early with M3a (`arrange2d`);
+//! the M1 chart/spline scope above is separate.
+
+pub mod content;

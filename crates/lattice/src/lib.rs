@@ -32,7 +32,7 @@ mod sturm;
 #[cfg(kani)]
 mod proof;
 
-pub use algebraic::{AlgReal, Surd};
+pub use algebraic::{Alg, AlgReal, Surd};
 pub use backend::Backend;
 pub use bignum::{BigInt, BigRat, Bignum};
 pub use poly::Poly;
