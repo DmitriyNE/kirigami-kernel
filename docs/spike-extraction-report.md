@@ -2,8 +2,9 @@
 
 *Status: **COMPLETE — decision: GO** (task 3, `vv-guide §7`). Records which tool lifted more cleanly, real
 proof effort, Mathlib coverage gaps, semantic-fidelity surprises, the per-checker template, and the go/no-go.
-One mechanical follow-up remains (close the lifted-model refinement proof — designed; §5/§8), gated to
-Phase 5.*
+The representative lifted-model refinement is **fully proven** end-to-end and axiom-clean
+(`sign_variations_spec`, §5/§8) — the extraction pipeline is demonstrated all the way from real
+`crates/lattice` Rust to a machine-checked Lean proof.*
 
 ## 0. What the spike prices
 
@@ -125,19 +126,27 @@ retained for its F★ backend and its ergonomic front-end, not as a second indep
   `lattice.sturm.sign_variations` typechecks against the Aeneas Lean lib; `lifted_sign_variations_eq_loop`
   proves it reduces to its loop; `#print axioms` on the generated def = `[propext, Classical.choice,
   Quot.sound]` (**no `sorry`**).
-- **Lifted-model refinement — designed, scoped as the per-checker cost, not closed this spike.** The
-  remaining `lattice.sturm.sign_variations signs ⦃ r => r.val = signVariations (sliceInts signs) ⦄` is a
-  standard `loop.spec_decr_nat` proof (measure `len − i`; invariant `v + svAux last (drop i) = target ∧
-  v ≤ target`; `U32` overflow discharged by `len ≤ U32.max`; chain through
-  `signVariationsImp_eq_signVariations`). The invariant is fully worked out in the file. This is **the
-  honestly-measured cost the template quantifies**: the algorithm-vs-spec *crux* is already discharged
-  axiom-clean; the lifted-model refinement is mechanical but Aeneas-`Spec`/`step`-API-heavy (~100 lines).
-  It is the first task of the gated post-spike Lean effort (Phase 5).
+- **Lifted-model refinement — PROVEN** (`CertifyCheck/Refine.lean`, `sign_variations_spec`). The end-to-end
+  `lattice.sturm.sign_variations signs ⦃ r => r.val = signVariations (sliceInts signs) ⦄` is closed the
+  *intended* Aeneas way: `Aeneas.Std.loop.spec_decr_nat` for the loop + the **`step` tactic** for the body
+  (measure `len − i`; invariant `v + svAux last (drop i) = svAux 0 I`; `U32` overflow discharged by
+  `len ≤ U32.max`), chained to the spec through `signVariationsImp_eq_signVariations`. **Axiom-clean**:
+  `#print axioms sign_variations_spec` = `[propext, Classical.choice, Quot.sound]` — no `sorryAx`, and
+  **off the Aeneas Std `get_unchecked` sorries**. So the Aeneas-lifted model of the real `crates/lattice`
+  code is now *proven* to compute the mathematical spec — a fully end-to-end, sound Rust→Lean result.
+- **What closing it took (the concrete per-checker cost + a semantic-fidelity finding):** the manual route
+  (reduce the `Result` monad by hand) is a trap — unfolding `Bind.bind` breaks Lean's `instances`
+  transparency. The framework's `step`/`loop.spec_decr_nat` tactics avoid that and are the right grain.
+  The **one real gap**: Aeneas's library ships a `@[step]` `next` spec for `RangeIter`/`StepBy` but **not
+  for the shared-slice iterator** (`IteratorSliceIter.next`) — so `step` couldn't drive a slice loop
+  out of the box. We supplied that ~15-line spec (`sliceIter_next_spec`, mirroring
+  `IteratorRange.next_'S_spec`); it's reusable and worth upstreaming to Aeneas.
 
 **Effort headline:** the *hard, reusable* proof (algorithm ≡ mathematical spec) is small and clean (~30
-lines, one induction). The *per-lift* cost (refinement of the monadic model to the pure algorithm) is
-mechanical and templatable but non-trivial per function; investing once in shared loop/iterator lemmas
-and a `progress`-driven tactic will amortize it across `certify-core`.
+lines, one induction). The *per-lift* refinement of the monadic model to the pure algorithm is ~120 lines
+of `step`-driven Aeneas proof — mechanical once you (a) drive it with `step`/`loop.spec_decr_nat` rather
+than reducing the monad by hand, and (b) have the iterator's `@[step]` `next` spec. Both amortize: the
+tactics and the slice-`next` spec are one-time investments reused across `certify-core`.
 
 ## 6. Semantic-fidelity surprises
 
@@ -205,5 +214,7 @@ The extraction approach is viable; adopt it. Evidence:
 5. Reproducibility is "pinned manifest + Mathlib cache," not bit-pure (env-doc §3) — accepted.
 
 **The `vv-guide §7` fallback (hand-transcribed models + heavy Kani/property/differential) is NOT needed** —
-end-to-end extraction works. The one open item is mechanical: close the lifted-model refinement proof
-(designed; §5), the first task of the gated Phase 5.
+end-to-end extraction works and the representative checker (`sign_variations`) is proven all the way from
+real `crates/lattice` Rust to Lean (`sign_variations_spec`, axiom-clean). Phase 5 applies the same,
+now-validated, `step`/`loop.spec_decr_nat` template to the remaining checkers (gcd/reduce,
+`verify_common_factor`).

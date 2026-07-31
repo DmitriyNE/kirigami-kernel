@@ -6,7 +6,7 @@ CI fails a milestone gate if a **soundness-critical** row (marked ★) has empty
 | Item | crate | unit | property | differential | Kani | Lean | validation |
 |---|---|---|---|---|---|---|---|
 | lattice cmp/sign ★ | lattice | ✅ | ✅ (randomized diff) | ✅ (num-rational) | ✅ (panic-free full i128; fast≡slow via exhaustive+diff) | ⬜ (spike GO; gcd/reduce Lean gated Phase 5) | — |
-| Sturm isolate ★ | lattice | ✅ | ✅ (proptest) | ✅ (constructed roots) | ✅ (sign-count) | 🚧 `SturmChecker.lean` (checker formalized; Sturm = 1 cited axiom) · `sign_variations` proven axiom-clean · rc-hyp ✅ | — |
+| Sturm isolate ★ | lattice | ✅ | ✅ (proptest) | ✅ (constructed roots) | ✅ (sign-count) | 🚧 `SturmChecker.lean` (checker formalized; Sturm = 1 cited axiom) · `sign_variations` proven axiom-clean, incl. the **Aeneas-lifted model** end-to-end (`Refine.lean`) · rc-hyp ✅ | — |
 | resultant ★ | lattice | ✅ | ✅ | ✅ (vs Poly::gcd) | — | ⬜ (spike GO; `verify_common_factor` Lean gated Phase 5) · rc-hyp ✅ | — |
 | CLIP-σ signed ★ | certify1d | ⬜ | ⬜ | — | — | ⬜ | — |
 | strict Sylvester ★ | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |

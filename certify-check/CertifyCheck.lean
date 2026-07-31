@@ -9,7 +9,11 @@
 --     streaming-algorithm equivalence (core Lean, no Mathlib).
 --   * CertifyCheck.SturmChecker    — the Sturm hypothesis-checker vs a cited
 --     theorem (Mathlib `Polynomial`).
+--   * CertifyCheck.LiftedAeneas    — the Aeneas-lifted `sign_variations` model.
+--   * CertifyCheck.Refine          — proof that the lifted model computes the
+--     mathematical `signVariations` (loop.spec_decr_nat + the `step` tactic).
 
 import CertifyCheck.SignVariations
 import CertifyCheck.SturmChecker
 import CertifyCheck.LiftedAeneas
+import CertifyCheck.Refine

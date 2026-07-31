@@ -17,19 +17,16 @@
     iterator at index 0 with the sentinel accumulator (definitional).
   * The generated definition is `sorry`-free (`#print axioms` below).
 
-  The remaining step — the loop-invariant refinement
+  The loop-invariant refinement
   `lattice.sturm.sign_variations signs ⦃ r => r.val = signVariations (sliceInts signs) ⦄`
-  — is a standard `Aeneas.Std.loop.spec_decr_nat` proof:
-    · measure  `it.slice.len − it.i`
-    · invariant `v.val + svAux last.val ((signs.val.drop i).map (·.val)) = target
-                 ∧ v.val ≤ target ∧ i ≤ len`  (the `≤ target` bound discharges the
-                 `U32` overflow, given `signs.length ≤ U32.max`)
-    · at `.done` (i = len ⇒ drop = []): `svAux _ [] = 0` ⇒ `v.val = target`.
-  It then chains through `signVariationsImp_eq_signVariations` to the spec. This is
-  the *measured per-checker cost* recorded in `docs/spike-extraction-report.md`:
-  the algorithm-vs-spec crux is already discharged, axiom-clean, in
-  `CertifyCheck.SignVariations`; the lifted-model refinement is the mechanical
-  (but Aeneas-API-heavy) remainder the template covers.
+  is **proven** in `CertifyCheck.Refine` (`sign_variations_spec`), the intended
+  Aeneas way — `Aeneas.Std.loop.spec_decr_nat` for the loop + the `step` tactic for
+  the body (measure `len − i`; invariant `v + svAux last (drop i) = svAux 0 I`; the
+  `U32` overflow discharged by `signs.length ≤ U32.max`) — then chained to the
+  mathematical spec through `signVariationsImp_eq_signVariations`. It is axiom-clean
+  (`[propext, Classical.choice, Quot.sound]`; no `sorryAx`, and off the Aeneas Std
+  `get_unchecked` sorries). Closing it required supplying the one `@[step]` `next`
+  spec Aeneas's library omits for the shared-slice iterator (see `Refine`).
 -/
 import Lattice.Funs
 import CertifyCheck.SignVariations
@@ -40,7 +37,7 @@ namespace CertifyCheck
 
 /-- Spec-side image of the lifted slice: each `I8` as its `Int` value (matching the
     lattice's `Rat::sign` domain and the `signVariations` argument type). -/
-def sliceInts (s : Slice Std.I8) : List Int := (↑s : List Std.I8).map (fun b => (↑b : Int))
+def sliceInts (s : Slice Std.I8) : List Int := s.val.map (fun b => b.val)
 
 /-- The Aeneas-lifted `sign_variations` reduces to its loop over the iterator
     starting at index 0 with the `(last, v) = (0, 0)` sentinel accumulator. -/

@@ -70,7 +70,7 @@ jobs:
             unset DEVELOPER_DIR SDKROOT
             lake exe cache get
             lake build
-            printf "import CertifyCheck\nopen CertifyCheck\n#print axioms signVariationsImp_eq_signVariations\n#print axioms verify_chain_sound\n#print axioms lifted_sign_variations_eq_loop\n" > axiom_audit.lean
+            printf "import CertifyCheck\nopen CertifyCheck\n#print axioms signVariationsImp_eq_signVariations\n#print axioms verify_chain_sound\n#print axioms lifted_sign_variations_eq_loop\n#print axioms sign_variations_spec\n#print axioms sliceIter_next_spec\n" > axiom_audit.lean
             if lake env lean axiom_audit.lean 2>&1 | grep -q "sorryAx"; then
               echo "AXIOM AUDIT FAILED: a certify-check theorem depends on sorryAx" >&2
               rm -f axiom_audit.lean; exit 1
