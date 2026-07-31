@@ -11,11 +11,19 @@
 //! checker in `certify_core::arrange` over the flat certificate this module exposes
 //! — is slice 3d.3.
 //!
-//! **Scope note (holes).** Faces are taken as the traced DCEL cycles: correct when
-//! every region is bounded by a single cycle (the disk ∪/∩/△ corpus and the
-//! Milestone-A operands). A selected region with an *unselected hole* (e.g. an
-//! annulus) would need cycle→face nesting, deferred; the 3d.4 CGAL differential
-//! (which handles holes) is the loud safety net that would catch it.
+//! **Scope note (connected arrangements).** Cells are taken as the traced DCEL
+//! cycles, and bit propagation is a single BFS from the unbounded seed. This is
+//! exact when the arrangement is **connected** — every region bounded by one cycle,
+//! the cell-adjacency graph connected (the overlapping / tangent / identical disk
+//! ∪/∩/△ corpus). Two cases are **not yet handled**: a **disconnected** arrangement
+//! (disjoint operands — the unbounded face splits into separate cycles BFS does not
+//! all reach), and a selected region with an **unselected hole** (an annulus). Both
+//! would need per-component point-location (an absolute label per connected
+//! component) plus cycle→face nesting (grouping a face's outer + hole cycles).
+//! Crucially these are **not silently wrong**: the proven ℤ₂² cocycle checker returns
+//! `false`, so [`ledge_dom_checked`] yields `Unresolved`. Lifting this is a 3d
+//! follow-up (or folds into 3e's CAP-OUT components↔faces bijection); the 3d.4 CGAL
+//! differential is the loud safety net.
 
 use certify_core::Verdict;
 use geom::content::{CurveId, Edge};
@@ -407,5 +415,119 @@ mod tests {
             1,
             "∩ is the disk"
         );
+    }
+
+    // --- properties: cocycle closure + metamorphic invariants over disk pairs ---
+
+    use crate::testgen::{rigid, rigid_circle, scale_circle};
+    use proptest::prelude::*;
+
+    fn disk(cx: i128, cy: i128, r2: i128) -> Circle<Bignum> {
+        Circle {
+            cx: Q::from_i128(cx),
+            cy: Q::from_i128(cy),
+            r2: Q::from_i128(r2),
+        }
+    }
+    fn two_disk_edges(c1: &Circle<Bignum>, c2: &Circle<Bignum>) -> Vec<Edge<Bignum>> {
+        let mut e = crate::decompose::decompose(&Curve::Circle {
+            circle: c1.clone(),
+            orient: Orient::Ccw,
+            source: CurveId(0),
+        });
+        e.extend(crate::decompose::decompose(&Curve::Circle {
+            circle: c2.clone(),
+            orient: Orient::Ccw,
+            source: CurveId(1),
+        }));
+        e
+    }
+    /// `(△, ∩, ∪)` output face counts.
+    fn face_counts(edges: &[Edge<Bignum>]) -> (usize, usize, usize) {
+        (
+            ledge_dom(edges, &ab, BoolOp::Xor).faces.len(),
+            ledge_dom(edges, &ab, BoolOp::And).faces.len(),
+            ledge_dom(edges, &ab, BoolOp::Or).faces.len(),
+        )
+    }
+
+    /// The ℤ₂² cocycle closes (the proven `certify_core::arrange::cocycle_ok`
+    /// accepts) on **connected** two-operand arrangements — boundaries that meet, so
+    /// the cell-adjacency graph is connected and bit propagation reaches every cell.
+    #[test]
+    fn cocycle_closes_on_connected_configs() {
+        // (overlap, internal tangency, external tangency, identical, overlap).
+        let configs = [
+            (disk(0, 0, 25), disk(8, 0, 25)),
+            (disk(0, 0, 4), disk(1, 0, 1)),
+            (disk(0, 0, 4), disk(4, 0, 4)),
+            (disk(0, 0, 25), disk(0, 0, 25)),
+            (disk(0, 0, 25), disk(6, 0, 16)),
+        ];
+        for (c1, c2) in &configs {
+            let e = two_disk_edges(c1, c2);
+            let d = Dcel::build(&e);
+            assert!(
+                label_cells(&d, &ab).cocycle_ok,
+                "cocycle must close on the connected config ({:?},{:?})",
+                c1.cx,
+                c2.cx
+            );
+        }
+    }
+
+    /// Honest scope boundary (documented limitation): on a **disconnected**
+    /// arrangement (disjoint operands), the unbounded face splits into separate
+    /// cycles that bit propagation from one seed does not all reach. The searcher
+    /// **self-detects** this — the proven checker returns `false`, so
+    /// `ledge_dom_checked` yields `Unresolved` rather than a silently-wrong region.
+    /// The fix (per-component point-location) is deferred; see the module scope note.
+    #[test]
+    fn disjoint_operands_self_detected() {
+        let e = two_disk_edges(&disk(0, 0, 1), &disk(0, 3, 1)); // separate unit disks
+        let d = Dcel::build(&e);
+        assert!(
+            !label_cells(&d, &ab).cocycle_ok,
+            "disjoint arrangement is flagged, not mislabeled"
+        );
+        assert!(matches!(
+            ledge_dom_checked(&e, &ab, BoolOp::Or),
+            Verdict::Unresolved(())
+        ));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// The boolean's output face count (△/∩/∪) is invariant under a rational
+        /// rigid motion — the whole DCEL + eight-step pipeline is frame-independent.
+        #[test]
+        fn boolean_face_count_rigid_invariant(
+            x1 in -3i128..=3, y1 in -3i128..=3, r1 in 1i128..=6,
+            x2 in -3i128..=3, y2 in -3i128..=3, r2 in 1i128..=6,
+            u in -3i128..=3, v in -3i128..=3, tx in -4i128..=4, ty in -4i128..=4,
+        ) {
+            prop_assume!(u != 0 || v != 0);
+            let (c1, c2) = (disk(x1, y1, r1), disk(x2, y2, r2));
+            let m = rigid(u, v, tx, ty);
+            let e0 = two_disk_edges(&c1, &c2);
+            let e1 = two_disk_edges(&rigid_circle(&c1, &m), &rigid_circle(&c2, &m));
+            prop_assert_eq!(face_counts(&e0), face_counts(&e1));
+        }
+
+        /// Invariant under lattice rescaling `p ↦ k·p` (`k > 0`): scaling preserves
+        /// the arrangement's combinatorics, hence the output face counts.
+        #[test]
+        fn boolean_face_count_scale_invariant(
+            x1 in -3i128..=3, y1 in -3i128..=3, r1 in 1i128..=6,
+            x2 in -3i128..=3, y2 in -3i128..=3, r2 in 1i128..=6,
+            k in 1i128..=5,
+        ) {
+            let (c1, c2) = (disk(x1, y1, r1), disk(x2, y2, r2));
+            let kk = Q::from_i128(k);
+            let e0 = two_disk_edges(&c1, &c2);
+            let e1 = two_disk_edges(&scale_circle(&c1, &kk), &scale_circle(&c2, &kk));
+            prop_assert_eq!(face_counts(&e0), face_counts(&e1));
+        }
     }
 }
