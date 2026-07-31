@@ -11,19 +11,23 @@
 //! checker in `certify_core::arrange` over the flat certificate this module exposes
 //! — is slice 3d.3.
 //!
-//! **Scope note (connected arrangements).** Cells are taken as the traced DCEL
-//! cycles, and bit propagation is a single BFS from the unbounded seed. This is
-//! exact when the arrangement is **connected** — every region bounded by one cycle,
-//! the cell-adjacency graph connected (the overlapping / tangent / identical disk
-//! ∪/∩/△ corpus). Two cases are **not yet handled**: a **disconnected** arrangement
-//! (disjoint operands — the unbounded face splits into separate cycles BFS does not
-//! all reach), and a selected region with an **unselected hole** (an annulus). Both
-//! would need per-component point-location (an absolute label per connected
-//! component) plus cycle→face nesting (grouping a face's outer + hole cycles).
-//! Crucially these are **not silently wrong**: the proven ℤ₂² cocycle checker returns
-//! `false`, so [`ledge_dom_checked`] yields `Unresolved`. Lifting this is a 3d
-//! follow-up (or folds into 3e's CAP-OUT components↔faces bijection); the 3d.4 CGAL
-//! differential is the loud safety net.
+//! **Scope note (regime handled).** Cells are taken as the traced DCEL cycles, and
+//! bit propagation is a single BFS from the unbounded seed. This is exact on
+//! **transverse-crossing** overlaps (operand boundaries meeting in two points) and
+//! on **identical/coincident** operands — the disk ∪/∩/△ corpus. Three degenerate
+//! classes are **not yet handled**, all folding into the 3e CAP-OUT / face-ID
+//! follow-up (which needs per-component point-location + cycle→face nesting):
+//! - **disconnected** (disjoint operands) and **nested non-touching** (annulus/hole):
+//!   **self-detected, never silently wrong** — the proven ℤ₂² cocycle checker returns
+//!   `false`, so [`ledge_dom_checked`] yields `Unresolved`.
+//! - **tangency** (internal/external — the operands touch at a point): the cocycle
+//!   *does* close (the arrangement is connected), so this is **not** self-detected,
+//!   yet the emitted face count can be **frame-dependent** — after a rotation the
+//!   tangent point may land on the axis-aligned decomposition's x-extremum, changing
+//!   the piece split. A real caveat until face-ID lands; the 3e checkers are the net.
+//!
+//! Property/differential tests are therefore scoped to the transverse regime (see
+//! `crosses_twice`).
 
 use certify_core::Verdict;
 use geom::content::{CurveId, Edge};
@@ -429,6 +433,17 @@ mod tests {
             r2: Q::from_i128(r2),
         }
     }
+    /// Do the two circles (squared radii `r1`, `r2`) cross in **two transverse
+    /// points** — `|r1−r2| < dist < r1+r2`, i.e. `(dist² − r1 − r2)² < 4·r1·r2`?
+    /// This is the connected, non-degenerate regime the boolean handles robustly.
+    /// Tangency (1 point) and nested/disjoint (0 points) are the deferred degenerate
+    /// cases (see the module scope note) — and internal tangency in particular is not
+    /// frame-independent, because after a rotation the tangent point can land on the
+    /// axis-aligned decomposition's x-extremum where a piece splits.
+    fn crosses_twice(x1: i128, y1: i128, r1: i128, x2: i128, y2: i128, r2: i128) -> bool {
+        let d = (x1 - x2).pow(2) + (y1 - y2).pow(2);
+        (d - r1 - r2).pow(2) < 4 * r1 * r2
+    }
     fn two_disk_edges(c1: &Circle<Bignum>, c2: &Circle<Bignum>) -> Vec<Edge<Bignum>> {
         let mut e = crate::decompose::decompose(&Curve::Circle {
             circle: c1.clone(),
@@ -508,6 +523,7 @@ mod tests {
             u in -3i128..=3, v in -3i128..=3, tx in -4i128..=4, ty in -4i128..=4,
         ) {
             prop_assume!(u != 0 || v != 0);
+            prop_assume!(crosses_twice(x1, y1, r1, x2, y2, r2));
             let (c1, c2) = (disk(x1, y1, r1), disk(x2, y2, r2));
             let m = rigid(u, v, tx, ty);
             let e0 = two_disk_edges(&c1, &c2);
@@ -523,6 +539,7 @@ mod tests {
             x2 in -3i128..=3, y2 in -3i128..=3, r2 in 1i128..=6,
             k in 1i128..=5,
         ) {
+            prop_assume!(crosses_twice(x1, y1, r1, x2, y2, r2));
             let (c1, c2) = (disk(x1, y1, r1), disk(x2, y2, r2));
             let kk = Q::from_i128(k);
             let e0 = two_disk_edges(&c1, &c2);

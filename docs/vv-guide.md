@@ -264,11 +264,15 @@ region differential (∪/∩ face counts agree on the non-pinching overlapping-d
 milestone gate, which had been passing **vacuously** (whitespace field split — now `FS="|"`).
 
 **Explicit deferrals (a focused follow-up, natural home 3e CAP-OUT):**
-- **General face identification** — the boolean is exact on *connected* arrangements; a **disconnected**
-  input (disjoint operands) or a selected region with an **unselected hole** (annulus) needs
-  per-component point-location + cycle→face nesting. These are **never silently wrong**: the proven
-  cocycle checker returns `false`, so `ledge_dom_checked` yields `Unresolved`. This is exactly the
-  domain of 3e's CAP-OUT components↔faces bijection.
+- **General face identification** — the boolean is exact on **transverse-crossing** overlaps and
+  **identical/coincident** operands; three degenerate classes need per-component point-location +
+  cycle→face nesting: **disconnected** (disjoint) and **nested non-touching** (annulus/hole) are
+  **self-detected** (the proven cocycle checker returns `false` ⇒ `Unresolved`, never silently wrong);
+  **tangency** (operands touching at a point) *does* close the cocycle, so it is **not** self-detected
+  and its emitted face count can be **frame-dependent** (the tangent point may coincide with the
+  axis-aligned decomposition's x-extremum after a rotation) — a real caveat until face-ID lands. This
+  is exactly the domain of 3e's CAP-OUT components↔faces bijection; tests are scoped to the transverse
+  regime.
 - **△ pinch semantics** (a *validated finding*, not a defect): at a pinch point (△ of overlapping
   disks), our π₀ separates the lunes into two faces (spec §6: "π₀ keeps them separate, CAP-OUT-LINK
   rejects the vertex"), while CGAL's set-boolean joins them into one — so face counts differ by exactly

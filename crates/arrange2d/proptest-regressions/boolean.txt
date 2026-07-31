@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 73d80ae492e2b8bba163295ce78e37e63a2bd280fe31349f680feb7e59af729b # shrinks to x1 = 0, y1 = 0, r1 = 1, x2 = 0, y2 = 3, r2 = 1
+cc dfeb1ec494d8d8855c51b37ee812160a5c4bde0bb59ad1ec8ff77867e9d125ce # shrinks to x1 = 3, y1 = -1, r1 = 4, x2 = 3, y2 = 0, r2 = 1, u = 1, v = 1, tx = 0, ty = 0
