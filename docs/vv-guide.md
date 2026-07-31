@@ -252,6 +252,30 @@ its two self-diagnostics (the ℤ₂² cocycle check and the substrate-link twin
   `--features cgal` differential; `vv-matrix.md` gains the `[M3d]` row (unit / property (Euler) /
   differential (CGAL) / Kani-or-Lean).
 
+**Status: 3d met (connected regime), with a scoped follow-up.** Landed: the general-tangent azimuth
+comparator (`arrange2d::tangent`); the half-edge DCEL (`arrange2d::dcel` — split at arrangement
+vertices, coincident-merge, azimuth rotation, face-cycle tracing, substrate-link self-diagnostic); the
+eight-step ℤ₂² boolean (`arrange2d::boolean` — seed, propagate, △/∧/∨ selection, separating-edge
+emission, π₀ quotient); the **★ soundness** as a Kani proof — the pure `certify_core::arrange::
+cocycle_ok` checker (first Kani surface outside `lattice`), with `cocycle_implies_telescoping`
+verifying accept ⇒ every closed walk returns its bits (Euler V−E+F asserted in the DCEL corpus;
+rigid + lattice-rescale invariance of the △/∩/∪ face counts); and the CGAL `Boolean_set_operations_2`
+region differential (∪/∩ face counts agree on the non-pinching overlapping-disk cases). Also fixed the
+milestone gate, which had been passing **vacuously** (whitespace field split — now `FS="|"`).
+
+**Explicit deferrals (a focused follow-up, natural home 3e CAP-OUT):**
+- **General face identification** — the boolean is exact on *connected* arrangements; a **disconnected**
+  input (disjoint operands) or a selected region with an **unselected hole** (annulus) needs
+  per-component point-location + cycle→face nesting. These are **never silently wrong**: the proven
+  cocycle checker returns `false`, so `ledge_dom_checked` yields `Unresolved`. This is exactly the
+  domain of 3e's CAP-OUT components↔faces bijection.
+- **△ pinch semantics** (a *validated finding*, not a defect): at a pinch point (△ of overlapping
+  disks), our π₀ separates the lunes into two faces (spec §6: "π₀ keeps them separate, CAP-OUT-LINK
+  rejects the vertex"), while CGAL's set-boolean joins them into one — so face counts differ by exactly
+  the pinch. The CGAL Option B (`Arrangement_2` face iteration) cross-check and the exact per-edge
+  `a+b√d` boundary-set differential both need the same point-location machinery as the face-ID
+  follow-up, so they land together there.
+
 ---
 
 ## 9. Sequencing

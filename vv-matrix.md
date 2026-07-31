@@ -24,7 +24,7 @@ arrangement lattice — the "1D" name is overloaded.)
 | CLIP-σ signed ★ [M2] | certify1d | ⬜ | ⬜ | — | — | ⬜ | — |
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
-| quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | 🚧 (Euler in unit; proptest 3d.4) | ⬜ (CGAL 3d.4) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
+| quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | ✅ (Euler + rigid/rescale invariance) | 🚧 (CGAL ∪/∩ non-pinch; △-pinch + face-ID follow-up) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
 | CAP-OUT-LINK ★ [M3e] | arrange2d | ⬜ | ⬜ | — | — | ⬜ (research) | — |
 | Link_emitted≅geom ★ [M3e] | sew | ⬜ | ⬜ | — | ⬜ (bounded) | ⬜ | — |
 | completeness bijections [M3e] | arrange2d | ⬜ | ⬜ | — | ⬜ (bounded) | — | — |

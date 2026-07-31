@@ -7,7 +7,11 @@
 #include <CGAL/Arr_circle_segment_traits_2.h>
 #include <CGAL/Arr_curve_data_traits_2.h>
 #include <CGAL/Arrangement_2.h>
+#include <CGAL/Boolean_set_operations_2.h>
 #include <CGAL/Cartesian.h>
+#include <CGAL/Gps_circle_segment_traits_2.h>
+
+#include <variant>
 
 #include <sstream>
 #include <string>
@@ -158,6 +162,75 @@ rust::String cgal_arrange_edges(rust::Str input) {
        << coord_triple(e->target()->point().x()) << " "
        << coord_triple(e->target()->point().y()) << "\n";
   }
+  return rust::String(os.str());
+}
+
+// --- 3d region/boolean oracle A: Boolean_set_operations_2 on circle-segment -------
+namespace {
+using GpsTraits = CGAL::Gps_circle_segment_traits_2<Kernel>;
+using GPolygon = GpsTraits::Polygon_2;
+using GPolygonWH = GpsTraits::Polygon_with_holes_2;
+using GCurve = GpsTraits::Curve_2;
+using GXcv = GpsTraits::X_monotone_curve_2;
+using GPoint = GpsTraits::Point_2;
+
+// A full circle as a CCW general polygon (its two x-monotone semicircle arcs).
+GPolygon circle_polygon(const CGAL::Gmpq& cx, const CGAL::Gmpq& cy, const CGAL::Gmpq& r2) {
+  KPoint center(cx, cy);
+  Kernel::Circle_2 circ(center, r2);  // default orientation is counterclockwise
+  GpsTraits traits;
+  GCurve curve(circ);
+  std::vector<std::variant<GPoint, GXcv>> objs;
+  traits.make_x_monotone_2_object()(curve, std::back_inserter(objs));
+  GPolygon pgn;
+  for (const auto& o : objs) {
+    if (const GXcv* arc = std::get_if<GXcv>(&o)) pgn.push_back(*arc);
+  }
+  return pgn;
+}
+}  // namespace
+
+// The number of connected components (polygons-with-holes) of a boolean `op` over
+// two operands built from the input disks. Input: `C cx cy r2 operand` per line
+// (operand 0 = A, 1 = B; rationals num/den). `op` = "xor" | "and" | "or".
+//
+// NOTE on semantics: CGAL joins regions that meet only at a **pinch point** into one
+// polygon-with-holes (closed-set connectivity), whereas our π₀ separates them
+// (open-cell edge-adjacency — spec §6: "π₀ keeps them separate faces, CAP-OUT-LINK
+// rejects the vertex"). So counts agree only on the NON-pinching cases (e.g. ∩ of
+// two overlapping disks = one lens); △ of overlapping disks is pinched (CGAL 1, our
+// π₀ 2). The harness compares on the non-pinching case and documents the rest.
+rust::String cgal_boolean_count(rust::Str input, rust::Str op) {
+  CGAL::General_polygon_set_2<GpsTraits> a, b;
+  std::istringstream lines{std::string(input)};
+  std::string line;
+  while (std::getline(lines, line)) {
+    std::istringstream ts(line);
+    std::string kind, cx, cy, r2;
+    unsigned operand;
+    if (!(ts >> kind)) continue;
+    if (kind != "C") continue;
+    ts >> cx >> cy >> r2 >> operand;
+    GPolygon p = circle_polygon(parse_q(cx), parse_q(cy), parse_q(r2));
+    if (operand == 0) {
+      a.join(p);
+    } else {
+      b.join(p);
+    }
+  }
+  CGAL::General_polygon_set_2<GpsTraits> r = a;
+  std::string o(op);
+  if (o == "xor") {
+    r.symmetric_difference(b);
+  } else if (o == "and") {
+    r.intersection(b);
+  } else {
+    r.join(b);
+  }
+  std::vector<GPolygonWH> res;
+  r.polygons_with_holes(std::back_inserter(res));
+  std::ostringstream os;
+  os << res.size();
   return rust::String(os.str());
 }
 

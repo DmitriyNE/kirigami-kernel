@@ -15,7 +15,7 @@
 //! see identical geometry; the segment is far wider than any small-coordinate
 //! intersection.
 
-use crate::cgal::{cgal_arrange, cgal_arrange_edges};
+use crate::cgal::{cgal_arrange, cgal_arrange_edges, cgal_boolean_count};
 use arrange2d::decompose::decompose;
 use arrange2d::event::{CoincEdge, Operand};
 use arrange2d::spine::arrange_events;
@@ -424,5 +424,85 @@ mod tests {
             theirs.sort();
             prop_assert_eq!(ours, theirs);
         }
+    }
+
+    // --- slice 3d: the boolean region differential (Boolean_set_operations_2) ------
+
+    use arrange2d::boolean::{BoolOp, OperandId, ledge_dom};
+
+    type Disk = (i128, i128, i128);
+
+    /// The CGAL two-operand input for disks `c1` (operand A) and `c2` (operand B).
+    fn cgal_bool_input(c1: Disk, c2: Disk) -> String {
+        format!(
+            "C {}/1 {}/1 {}/1 0\nC {}/1 {}/1 {}/1 1",
+            c1.0, c1.1, c1.2, c2.0, c2.1, c2.2
+        )
+    }
+    /// Our emitted π₀ face count of `op` over disk operands `c1` (A) and `c2` (B).
+    fn our_faces(c1: Disk, c2: Disk, op: BoolOp) -> usize {
+        let mk = |c: Disk, src: u32| {
+            decompose(&Curve::Circle {
+                circle: Circle {
+                    cx: qi(c.0),
+                    cy: qi(c.1),
+                    r2: qi(c.2),
+                },
+                orient: Orient::Ccw,
+                source: CurveId(src),
+            })
+        };
+        let mut edges = mk(c1, 0);
+        edges.extend(mk(c2, 1));
+        let operand = |s: CurveId| {
+            if s.0 == 0 { OperandId::A } else { OperandId::B }
+        };
+        ledge_dom(&edges, &operand, op).faces.len()
+    }
+    fn cgal_count(c1: Disk, c2: Disk, op: &str) -> usize {
+        cgal_boolean_count(&cgal_bool_input(c1, c2), op)
+            .parse()
+            .unwrap()
+    }
+
+    /// ∪ and ∩ of properly-overlapping disks are **non-pinching** (a single joined
+    /// region / a single lens), so our π₀ emitted face count agrees exactly with
+    /// CGAL's independent `Boolean_set_operations_2` component count.
+    #[test]
+    fn boolean_union_intersection_match_cgal() {
+        let pairs: &[(Disk, Disk)] = &[
+            ((0, 0, 25), (8, 0, 25)),
+            ((0, 0, 4), (1, 0, 4)),
+            ((0, 0, 9), (4, 0, 9)),
+            ((-1, 0, 16), (3, 1, 16)),
+        ];
+        for &(c1, c2) in pairs {
+            assert_eq!(
+                our_faces(c1, c2, BoolOp::And),
+                cgal_count(c1, c2, "and"),
+                "∩ {c1:?} {c2:?}"
+            );
+            assert_eq!(
+                our_faces(c1, c2, BoolOp::Or),
+                cgal_count(c1, c2, "or"),
+                "∪ {c1:?} {c2:?}"
+            );
+        }
+    }
+
+    /// △ of overlapping disks is **pinched** at the two crossing points: our π₀
+    /// separates it into two lunes (spec §6 — π₀ keeps them separate, CAP-OUT-LINK
+    /// rejects the pinch vertex), while CGAL's set-boolean joins them into one
+    /// polygon-with-holes. The documented, spec-aligned semantic boundary — the
+    /// count differs by exactly the pinch.
+    #[test]
+    fn boolean_xor_pinch_documented() {
+        let (c1, c2) = ((0, 0, 25), (8, 0, 25));
+        assert_eq!(our_faces(c1, c2, BoolOp::Xor), 2, "our π₀: two lunes");
+        assert_eq!(
+            cgal_count(c1, c2, "xor"),
+            1,
+            "CGAL: one pinch-joined region"
+        );
     }
 }

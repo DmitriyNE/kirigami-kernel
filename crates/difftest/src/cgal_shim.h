@@ -22,4 +22,10 @@ rust::String cgal_arrange(rust::Str input);
 // curves carry an id. See cgal_shim.cc.
 rust::String cgal_arrange_edges(rust::Str input);
 
+// Slice-3d region/boolean oracle A: Boolean_set_operations_2 on circle-segment
+// general polygons. Returns the connected-component count of `op` (xor|and|or) over
+// two disk operands (`C cx cy r2 operand` per line). See cgal_shim.cc for the
+// pinch-semantics note.
+rust::String cgal_boolean_count(rust::Str input, rust::Str op);
+
 }  // namespace kirigami

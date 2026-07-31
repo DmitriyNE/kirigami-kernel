@@ -26,10 +26,15 @@ mod ffi {
         /// covering the edge (≥ 2 ⇒ overlap/merged), then the two endpoints. Input
         /// curves carry an id: `S x1 y1 x2 y2 id` / `C cx cy r2 id`.
         fn cgal_arrange_edges(input: &str) -> String;
+
+        /// Slice-3d region/boolean oracle A: the connected-component count of a
+        /// boolean `op` (xor|and|or) over two disk operands (`C cx cy r2 operand`).
+        /// See cgal_shim.cc for the pinch-semantics note.
+        fn cgal_boolean_count(input: &str, op: &str) -> String;
     }
 }
 
-pub use ffi::{cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_smoke};
+pub use ffi::{cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_boolean_count, cgal_smoke};
 
 #[cfg(test)]
 mod tests {
@@ -45,5 +50,17 @@ mod tests {
     #[test]
     fn cgal_arr_smoke_origin_vertex() {
         assert_eq!(super::cgal_arr_smoke(), "0/1 0/1 0/1 ; 0/1 0/1 0/1");
+    }
+
+    /// The `Boolean_set_operations_2` circle-segment path builds/links: ∩ of two
+    /// overlapping disks (0,0,25)=A and (8,0,25)=B is the single lens (non-pinching,
+    /// so it also equals our π₀); ∪ is the single joined region; △ is CGAL's ONE
+    /// pinch-joined region (our π₀ separates it into 2 lunes — spec §6).
+    #[test]
+    fn cgal_boolean_count_two_disks() {
+        let input = "C 0/1 0/1 25/1 0\nC 8/1 0/1 25/1 1";
+        assert_eq!(super::cgal_boolean_count(input, "and"), "1");
+        assert_eq!(super::cgal_boolean_count(input, "or"), "1");
+        assert_eq!(super::cgal_boolean_count(input, "xor"), "1"); // pinch-joined
     }
 }
