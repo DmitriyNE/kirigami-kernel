@@ -20,7 +20,7 @@ pub struct CurveId(pub u32);
 /// A directed line `a·x + b·y + c = 0` over exact ℚ, **not** normalized (`|n|` is
 /// irrational). Direction `(b, −a)`; leftward normal `(a, b)`. Orientation is
 /// meaningful — §6 re-reads the face-orientation bit, never recomputes it.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Line<B: Backend = Bignum> {
     pub a: Rat<B>,
     pub b: Rat<B>,
@@ -29,7 +29,7 @@ pub struct Line<B: Backend = Bignum> {
 
 /// A circle by center and **squared** radius (spec §2.2: predicates use `r²`,
 /// never the irrational `r`).
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Circle<B: Backend = Bignum> {
     pub cx: Rat<B>,
     pub cy: Rat<B>,
@@ -40,7 +40,7 @@ pub struct Circle<B: Backend = Bignum> {
 /// rational points are the `b = 0` degenerate case, kept cheap by [`Surd`].
 /// Ordered lexicographically (x then y) — the sweep order, exact via
 /// cross-radical-safe [`Surd`] comparison.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Point2<B: Backend = Bignum> {
     pub x: Surd<B>,
     pub y: Surd<B>,
@@ -93,7 +93,7 @@ pub enum Orient {
 /// Winding as **provenance** on the original curve (pending-v0.25 §1.4):
 /// orientation plus the source span this piece came from — never DCEL-edge
 /// multiplicity.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Winding<B: Backend = Bignum> {
     pub orient: Orient,
     pub source_span: Option<(Point2<B>, Point2<B>)>,
@@ -102,7 +102,7 @@ pub struct Winding<B: Backend = Bignum> {
 /// A simple x-monotone circular-arc piece — canonical decomposition output. The
 /// arc of `circle` on `half` spanning `[x_lo, x_hi]`, with endpoints and source
 /// provenance. No piece spans more than one simple point-set arc (pending-v0.25).
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ArcPiece<B: Backend = Bignum> {
     pub circle: Circle<B>,
     pub half: Half,
@@ -116,12 +116,15 @@ pub struct ArcPiece<B: Backend = Bignum> {
 
 /// A line-segment piece (compact content — line inputs are bounded segments).
 /// x-monotone unless vertical; the arrangement's sweep order (lexicographic
-/// (x, then y)) handles the vertical case.
-#[derive(Clone, Debug)]
+/// (x, then y)) handles the vertical case. `orient` is the stored face-orientation
+/// bit (provenance, re-read never recomputed — §6); a segment is never sub-split,
+/// so it needs the bit but no source-span (unlike [`ArcPiece`]'s [`Winding`]).
+#[derive(Debug)]
 pub struct SegPiece<B: Backend = Bignum> {
     pub line: Line<B>,
     pub start: Point2<B>,
     pub end: Point2<B>,
+    pub orient: Orient,
     pub source: CurveId,
 }
 
@@ -129,10 +132,136 @@ pub struct SegPiece<B: Backend = Bignum> {
 /// Both payloads are boxed — each piece holds several [`Surd`] coordinates (large),
 /// so an unboxed variant would make every `Edge` slot in an edge list piece-sized.
 /// Boxing keeps `Edge` a uniform small handle.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Edge<B: Backend = Bignum> {
     Seg(Box<SegPiece<B>>),
     Arc(Box<ArcPiece<B>>),
+}
+
+/// A pre-decomposition input content curve (spec §6, D24: lines + circular arcs).
+/// Canonical decomposition (`arrange2d::decompose`) turns each into simple
+/// x-monotone [`Edge`]s: a segment passes through; a whole circle splits into two
+/// arcs; a proper arc splits at whichever x-extrema fall inside its angular span.
+#[derive(Debug)]
+pub enum Curve<B: Backend = Bignum> {
+    /// A line segment — already x-monotone (vertical handled by the sweep order).
+    Seg(SegPiece<B>),
+    /// A whole circle, oriented — splits into exactly two x-monotone arcs.
+    Circle {
+        circle: Circle<B>,
+        orient: Orient,
+        source: CurveId,
+    },
+    /// A circular arc from `start` to `end` (both on `circle`) traversed in
+    /// `orient`; `start != end` (a whole circle is [`Curve::Circle`]).
+    Arc {
+        circle: Circle<B>,
+        start: Point2<B>,
+        end: Point2<B>,
+        orient: Orient,
+        source: CurveId,
+    },
+}
+
+// Manual `Clone` (no `B: Clone` bound — mirrors `lattice`'s `Rat`/`Surd`), so the
+// whole arrangement stays generic over any `Backend` without a spurious bound.
+// (`Backend` implementors are marker types; the fields' own manual `Clone` does
+// the work.) `Debug` stays derived — it is only ever formatted at concrete `Bignum`.
+impl<B: Backend> Clone for Line<B> {
+    fn clone(&self) -> Self {
+        Line {
+            a: self.a.clone(),
+            b: self.b.clone(),
+            c: self.c.clone(),
+        }
+    }
+}
+impl<B: Backend> Clone for Circle<B> {
+    fn clone(&self) -> Self {
+        Circle {
+            cx: self.cx.clone(),
+            cy: self.cy.clone(),
+            r2: self.r2.clone(),
+        }
+    }
+}
+impl<B: Backend> Clone for Point2<B> {
+    fn clone(&self) -> Self {
+        Point2 {
+            x: self.x.clone(),
+            y: self.y.clone(),
+        }
+    }
+}
+impl<B: Backend> Clone for Winding<B> {
+    fn clone(&self) -> Self {
+        Winding {
+            orient: self.orient,
+            source_span: self.source_span.clone(),
+        }
+    }
+}
+impl<B: Backend> Clone for ArcPiece<B> {
+    fn clone(&self) -> Self {
+        ArcPiece {
+            circle: self.circle.clone(),
+            half: self.half,
+            x_lo: self.x_lo.clone(),
+            x_hi: self.x_hi.clone(),
+            start: self.start.clone(),
+            end: self.end.clone(),
+            winding: self.winding.clone(),
+            source: self.source,
+        }
+    }
+}
+impl<B: Backend> Clone for SegPiece<B> {
+    fn clone(&self) -> Self {
+        SegPiece {
+            line: self.line.clone(),
+            start: self.start.clone(),
+            end: self.end.clone(),
+            orient: self.orient,
+            source: self.source,
+        }
+    }
+}
+impl<B: Backend> Clone for Edge<B> {
+    fn clone(&self) -> Self {
+        match self {
+            Edge::Seg(s) => Edge::Seg(s.clone()),
+            Edge::Arc(a) => Edge::Arc(a.clone()),
+        }
+    }
+}
+impl<B: Backend> Clone for Curve<B> {
+    fn clone(&self) -> Self {
+        match self {
+            Curve::Seg(s) => Curve::Seg(s.clone()),
+            Curve::Circle {
+                circle,
+                orient,
+                source,
+            } => Curve::Circle {
+                circle: circle.clone(),
+                orient: *orient,
+                source: *source,
+            },
+            Curve::Arc {
+                circle,
+                start,
+                end,
+                orient,
+                source,
+            } => Curve::Arc {
+                circle: circle.clone(),
+                start: start.clone(),
+                end: end.clone(),
+                orient: *orient,
+                source: *source,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
