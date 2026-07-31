@@ -3,8 +3,10 @@
 Row per certificate/kernel operation; cell per method. Status: ✅ done · 🚧 partial · ⬜ todo · N/A.
 Each Item carries its milestone tag `[Mx]`. CI fails the milestone gate
 (`scripts/lint/vv_matrix_gate.sh`) if a **soundness-critical** row (marked ★) whose
-milestone has **landed** (`[M0]`, `[M3a]`, `[M3c]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
-Not-yet-landed ★ rows (`[M2]`/`[M3d]`/`[M3e]`/`[M4]`/…) are out of scope until their milestone ships.
+milestone has **landed** (`[M0]`, `[M3a]`, `[M3c]`, `[M3d]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
+Not-yet-landed ★ rows (`[M2]`/`[M3e]`/`[M4]`/…) are out of scope until their milestone ships.
+(The gate reads the table columns with `FS="|"`; before slice 3d it split on whitespace, so `$2`
+matched a mid-cell word instead of the ★ Item and passed vacuously — fixed with the M3d landing.)
 (The `arrange2d`/`certify1d` searcher slices `[M3a]`/`[M3c]` are non-★: Kani/Lean = N/A, soundness
 deferred to the M3e checkers. CLIP-σ/strict-Sylvester are `[M2]`/`[M4]` CLIP-DOM checkers, not the 3c
 arrangement lattice — the "1D" name is overloaded.)
@@ -22,7 +24,7 @@ arrangement lattice — the "1D" name is overloaded.)
 | CLIP-σ signed ★ [M2] | certify1d | ⬜ | ⬜ | — | — | ⬜ | — |
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
-| quotient emission ★ [M3d] | arrange2d | ⬜ | ⬜ (Euler) | ⬜ (CGAL) | — | ⬜ (research) | — |
+| quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | 🚧 (Euler in unit; proptest 3d.4) | ⬜ (CGAL 3d.4) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
 | CAP-OUT-LINK ★ [M3e] | arrange2d | ⬜ | ⬜ | — | — | ⬜ (research) | — |
 | Link_emitted≅geom ★ [M3e] | sew | ⬜ | ⬜ | — | ⬜ (bounded) | ⬜ | — |
 | completeness bijections [M3e] | arrange2d | ⬜ | ⬜ | — | ⬜ (bounded) | — | — |
@@ -52,5 +54,13 @@ arrangement lattice — the "1D" name is overloaded.)
   differential = the CGAL `Arrangement_2` circular-kernel oracle **up to the quotient** (exact
   `a+b√d`, no tolerance) **plus** the in-crate `resultant_bivariate` count oracle. **Kani / Lean
   = N/A**: a ℚ-arrangement searcher is out of Kani scope (vv-guide §5, :76), and its soundness is
-  deferred to the `certify_core::arrange` checkers at M3e (the ★ `[M3d]`/`[M3e]` rows) — so these
-  searcher rows are **not** soundness-critical and the gate does not demand a proof cell.
+  deferred to the `certify_core::arrange` checkers (the ★ `[M3d]` cocycle check lands at slice 3d,
+  Kani-proven; the ★ `[M3e]` CAP-OUT rows follow) — so these searcher rows are **not**
+  soundness-critical and the gate does not demand a proof cell.
+- **`quotient emission` `[M3d]`** (slice 3d): the `arrange2d` DCEL + eight-step boolean is an
+  untrusted searcher, but its ℤ₂² **cocycle check** is the pure checker `certify_core::arrange::
+  cocycle_ok`, and the searcher's labeling flows through it. **Kani** proves the checker sound —
+  `cocycle_implies_telescoping` (certify-core `#[cfg(kani)] proof.rs`): if `cocycle_ok` accepts, every
+  walk telescopes its flips, so every closed walk returns its bits (spec §6 step 4), over all
+  arrangements up to 4 cells / 5 edges (**bounded DCEL bookkeeping**, vv-guide §5:73). The first Kani
+  surface outside `lattice`. Lean was the fallback if Kani proved intractable; it did not.

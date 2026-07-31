@@ -12,10 +12,14 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 matrix="$root/vv-matrix.md"
 
 # Landed milestones — extend as each ships.
-landed="M0 M3a M3c"
+landed="M0 M3a M3c M3d"
 
 awk -v landed="$landed" '
-  BEGIN { n = split(landed, a, " "); for (i = 1; i <= n; i++) L[a[i]] = 1; fail = 0 }
+  # FS="|" so the table columns are the awk fields: $2 = Item, $3 = crate,
+  # $4 = unit, $5 = property, $6 = differential, $7 = Kani, $8 = Lean, $9 = validation.
+  # (Default whitespace splitting made $2 a mid-cell word that never held the ★, so
+  # the gate matched nothing and passed vacuously — this restores the enforcement.)
+  BEGIN { FS = "|"; n = split(landed, a, " "); for (i = 1; i <= n; i++) L[a[i]] = 1; fail = 0 }
   /^\|/ {
     if ($0 ~ /^\|[- :|]*$/) next;      # separator row
     item = $2;

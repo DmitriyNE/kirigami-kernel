@@ -24,5 +24,10 @@ pub mod certify1d;
 pub mod gate;
 pub mod sew;
 
+// Kani bounded-model-checking harnesses for the pure checkers (compiled only under
+// `cargo kani`; see `vv-guide §5/§8`) — the first Kani surface outside `lattice`.
+#[cfg(kani)]
+mod proof;
+
 pub use margin::MarginSq;
 pub use verdict::Verdict;

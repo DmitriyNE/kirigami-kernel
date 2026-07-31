@@ -118,9 +118,10 @@ fn tangent<B: Backend>(d: &Dcel<B>, h: usize) -> crate::tangent::Outgoing<B> {
 }
 
 /// Propagate the ℤ₂² cell labels over the DCEL and self-check the cocycle (spec §6
-/// steps 2–4). Seeds the unbounded cell `(0,0)`, BFS-crosses edges flipping bits,
-/// and verifies every non-tree edge is consistent (`cocycle_ok`). Returns the flat
-/// certificate for the 3d.3 checker.
+/// steps 2–4). Seeds the unbounded cell `(0,0)`, BFS-crosses edges flipping bits to
+/// compute the labeling, then certifies consistency by flowing it through the pure,
+/// Kani-proven `certify_core::arrange::cocycle_ok` (3d.3). Returns the flat
+/// certificate (`labels`, `adj`, `seed`) that checker consumes.
 pub fn label_cells<B: Backend>(
     d: &Dcel<B>,
     operand_of: &impl Fn(CurveId) -> OperandId,
@@ -138,9 +139,10 @@ pub fn label_cells<B: Backend>(
     let seed = unbounded_cycle(d);
     let mut labels: Vec<Option<(bool, bool)>> = vec![None; d.n_cycles];
     labels[seed] = Some((false, false));
-    let mut cocycle_ok = true;
 
-    // BFS over the cell-adjacency graph (nodes = cycles, edges = DCEL edges).
+    // BFS over the cell-adjacency graph (nodes = cycles, edges = DCEL edges) to
+    // *compute* the labeling; consistency (the cocycle) is then certified below by
+    // the pure `certify_core::arrange` checker, not asserted here.
     let mut queue = vec![seed];
     while let Some(c) = queue.pop() {
         let here = labels[c].unwrap();
@@ -153,32 +155,45 @@ pub fn label_cells<B: Backend>(
                 None
             };
             if let Some(o) = other {
-                let expect = (here.0 ^ fa, here.1 ^ fb);
-                match labels[o] {
-                    None => {
-                        labels[o] = Some(expect);
-                        queue.push(o);
-                    }
-                    Some(l) => {
-                        if l != expect {
-                            cocycle_ok = false; // ℤ₂² cocycle failure — a kernel defect
-                        }
-                    }
+                if labels[o].is_none() {
+                    labels[o] = Some((here.0 ^ fa, here.1 ^ fb));
+                    queue.push(o);
                 }
             }
         }
     }
+    let labels: Vec<(bool, bool)> = labels
+        .into_iter()
+        .map(|l| l.unwrap_or((false, false)))
+        .collect();
+
+    // The ℤ₂² cocycle self-diagnostic (spec §6 step 4): the searcher's computed
+    // labeling flows through the *proven* pure checker (Kani-verified, 3d.3).
+    let labels_u8: Vec<u8> = labels.iter().map(|&(a, b)| pack(a, b)).collect();
+    let (ea, eb, ef) = flat_edges(&adj);
+    let cocycle_ok = certify_core::arrange::cocycle_ok(d.n_cycles, &labels_u8, seed, &ea, &eb, &ef);
 
     CellLabeling {
         n_cycles: d.n_cycles,
-        labels: labels
-            .into_iter()
-            .map(|l| l.unwrap_or((false, false)))
-            .collect(),
+        labels,
         adj,
         seed,
         cocycle_ok,
     }
+}
+
+/// Pack an `(A, B)` label into the checker's `u8` (bit 0 = A, bit 1 = B).
+fn pack(a: bool, b: bool) -> u8 {
+    (a as u8) | ((b as u8) << 1)
+}
+
+/// The flat edge certificate `certify_core::arrange::cocycle_ok` consumes:
+/// `(edge_a, edge_b, edge_flip)`, `edge_flip` packed like a label.
+fn flat_edges(adj: &[(usize, usize, bool, bool)]) -> (Vec<usize>, Vec<usize>, Vec<u8>) {
+    let ea = adj.iter().map(|&(a, ..)| a).collect();
+    let eb = adj.iter().map(|&(_, b, ..)| b).collect();
+    let ef = adj.iter().map(|&(_, _, fa, fb)| pack(fa, fb)).collect();
+    (ea, eb, ef)
 }
 
 /// Union-find over cells (for the π₀ quotient).

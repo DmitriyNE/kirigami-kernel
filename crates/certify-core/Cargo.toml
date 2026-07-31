@@ -8,3 +8,8 @@ publish.workspace = true
 
 [dependencies]
 lattice.workspace = true
+
+[lints.rust]
+# Kani injects `--cfg kani`; register it so `#[cfg(kani)]` proof modules do not
+# trip `unexpected_cfgs` under `clippy --all-targets -- -D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

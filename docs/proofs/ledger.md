@@ -12,4 +12,5 @@ gate (`.github/workflows/ci.yml`).
 | [Resultant ⇔ common root](resultant.md) | `resultant::verify_common_factor` | `Resultant.lean` | ✅ `[propext, Classical.choice, Quot.sound]` — no cited axiom |
 | [Fast-path gcd](fast-path.md#gcd) | `small::gcd_u128` | `GcdReduce.lean` | ✅ `[propext, Classical.choice, Quot.sound]` |
 | [Fast-path reduce](fast-path.md#reduce) | `small::SmallRat::reduce` | `Reduce.lean` | ✅ `[propext, Classical.choice, Quot.sound]` |
+| ℤ₂² cocycle closure (§6 step 4) | `arrange::cocycle_ok` | Kani (bounded) | ✅ `cocycle_implies_telescoping` — bounded DCEL ≤4 cells / 5 edges (vv-guide §5:73); accept ⇒ every closed walk returns its bits |
 | Sylvester criterion (strict) | *(shell tier — M4+)* | — | ⬜ TODO |
