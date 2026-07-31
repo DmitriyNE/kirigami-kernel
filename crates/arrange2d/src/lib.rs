@@ -23,6 +23,7 @@
 //!   * [`witness`]    — the replayable `(claim, certificate)` for the M3e checker.
 
 pub mod azimuth;
+pub mod boolean;
 pub mod carrier;
 pub mod classify;
 pub mod coincide;
