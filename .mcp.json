@@ -2,9 +2,13 @@
   "mcpServers": {
     "lean-lsp": {
       "type": "stdio",
-      "command": "uvx",
+      "command": "nix",
       "args": [
-        "lean-lsp-mcp@0.29.0"
+        "develop",
+        "--command",
+        "bash",
+        "-c",
+        "unset DEVELOPER_DIR SDKROOT; exec uvx lean-lsp-mcp@0.29.0"
       ],
       "env": {}
     }

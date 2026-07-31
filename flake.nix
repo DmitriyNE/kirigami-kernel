@@ -95,9 +95,12 @@
         devShells.default = pkgs.mkShell {
           name = "kirigami";
           packages = basePackages;
+          # Echo to stderr, never stdout: `nix develop --command` runs this hook, and
+          # the `.mcp.json` lean-lsp server pipes JSON-RPC over stdout — any stray
+          # stdout byte corrupts that stream.
           shellHook = ''
-            echo "kirigami dev shell:  $(rustc --version 2>/dev/null || echo 'rust not on PATH')"
-            echo "  Lean via elan; run \`nix develop .#extraction\` for hax/charon/aeneas"
+            echo "kirigami dev shell:  $(rustc --version 2>/dev/null || echo 'rust not on PATH')" >&2
+            echo "  Lean via elan; run \`nix develop .#extraction\` for hax/charon/aeneas" >&2
             ${leanEnvNote}
           '';
         };
@@ -114,8 +117,8 @@
             hax.packages.${system}.default
           ];
           shellHook = ''
-            echo "kirigami extraction shell:"
-            echo "  $(aeneas -version 2>/dev/null | head -1 || echo aeneas) · charon · $(cargo-hax --version 2>/dev/null | head -1 || echo cargo-hax)"
+            echo "kirigami extraction shell:" >&2
+            echo "  $(aeneas -version 2>/dev/null | head -1 || echo aeneas) · charon · $(cargo-hax --version 2>/dev/null | head -1 || echo cargo-hax)" >&2
             ${leanEnvNote}
           '';
         };
