@@ -152,6 +152,14 @@ Milestone acceptance criteria are written **before** each milestone's implementa
 - Stratum-weighted generators (over-sampling degenerate strata, built exactly in-lattice) + degeneracy-directed shrinkers are live with a CI degenerate-heavy knob; the event set satisfies the metamorphic invariants (rational rigid motion, lattice rescaling).
 - CI activates the stratum-weighted proptest/fuzz suites and the milestone-gate `vv-matrix.md` check (scoped to M3a's rows); the M3a `arrange2d` rows carry unit / property / differential (Kani / Lean = N/A for the ℚ-arrangement searcher slice).
 
+**Status: M3a met.** Phases 0–5 landed: the `geom::content` primitives + `lattice::Surd`
+arithmetic; the `arrange2d` decomposition → predicates/carrier → membership → classification +
+event-spine pipeline (`arrange_events`); the CGAL `Arrangement_2` differential (up to the
+quotient, exact `a+b√d`) + the in-crate `resultant_bivariate` count oracle + the rigid-motion /
+lattice-rescaling metamorphic invariants; the stratum generators with the `ARRANGE_STRATUM_WEIGHT`
+knob; and the CI activation (CGAL suite + milestone gate) with the `arrange2d` rows filled in
+`vv-matrix.md`.
+
 **Out of M3a (deferred, not gated here):** stage-2 1D coincidence lattice (3c); DCEL + 8-step boolean + π₀ quotient emission (3d); CAP-OUT / CAP-OUT-LINK / completeness bijections (3e — the ★ soundness-critical rows, Lean = "(research)").
 
 ---

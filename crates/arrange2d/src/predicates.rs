@@ -1,7 +1,7 @@
 //! Exact line predicates (M3a Phase 1). `PARALLEL` := `a_A·b_B − a_B·b_A = 0`
 //! (the direction cross, one ring op); `COINCIDENT` := all three 2×2 minors of
 //! the stacked `(a, b, c)` rows vanish (kept in three-minor form — it cannot be
-//! half-read; normal-pair proportionality alone is WRONG). Plus circle
+//! half-read; the `(a, b)` normal minor alone is WRONG). Plus circle
 //! carrier-coincidence (equal center ∧ equal `r²`). Corpus: `cx_parallel_distinct_lines`.
 
 use geom::content::{Circle, Line};
@@ -20,8 +20,8 @@ pub fn parallel<B: Backend>(la: &Line<B>, lb: &Line<B>) -> bool {
     minor_ab(la, lb).is_zero()
 }
 
-/// `COINCIDENT`: the rows `(a, b, c)` are proportional ⇔ **all three** 2×2 minors
-/// of the stacked 2×3 matrix vanish. Kept in three-minor form on purpose — the
+/// `COINCIDENT`: the stacked rows `(a, b, c)` collapse ⇔ **all three** 2×2 minors
+/// of the 2×3 matrix vanish. Kept in three-minor form on purpose — the
 /// `(a, b)` minor alone (i.e. `PARALLEL`) is necessary but *not* sufficient; a
 /// coincident pair also needs the `(a, c)` and `(b, c)` minors to vanish, else
 /// two parallel-but-offset lines would read as the same carrier. Implies

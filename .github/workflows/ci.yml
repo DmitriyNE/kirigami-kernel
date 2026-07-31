@@ -33,6 +33,21 @@ jobs:
       - name: doctests (nextest does not run these)
         run: nix develop --command cargo test --workspace --doc
 
+      # M3a Phase 5: the CGAL Arrangement_2 differential oracle (the first CI run of
+      # `--features cgal` — builds the C++ FFI shim) together with the degenerate-heavy
+      # stratum pass (ARRANGE_STRATUM_WEIGHT over-samples the tangent/coincident/
+      # concurrent strata). The differential agrees with CGAL up to the quotient
+      # (exact a+b√d); the stratum suite re-runs arrange2d's property tests weighted
+      # toward degeneracy.
+      - name: CGAL differential + degenerate-heavy stratum suite
+        run: nix develop --command bash -c 'ARRANGE_STRATUM_WEIGHT=8 cargo nextest run -p arrange2d -p difftest --features cgal'
+
+      # Milestone gate (vv-guide §6/§8): a LANDED soundness-critical (★) vv-matrix
+      # row must carry a {Kani ∨ Lean ∨ runtime-checked-hypothesis} proof cell.
+      # Not-yet-landed ★ rows (M3d/M3e/…) are out of scope until their milestone ships.
+      - name: milestone gate (vv-matrix.md)
+        run: nix develop --command bash scripts/lint/vv_matrix_gate.sh
+
       # no_std + alloc gate: the pure-tier `lattice` (and its dashu backend) must
       # build for a bare-metal, std-less target. This is the standing form of the
       # M0 backend benchmark's hard no_std gate (docs/lattice-backend-benchmark.md).
@@ -87,6 +102,5 @@ jobs:
       # Added as their targets land:
       #   - the *_correct_i16 fast≡slow Kani harnesses, once the spike's loop-bounded
       #     gcd model makes them tractable
-      #   - the milestone-gate vv-matrix.md check (a soundness-critical row with an
-      #     empty {Kani ∨ Lean ∨ runtime-checked-hypothesis} cell fails the gate)
-      #   - proptest/cargo-fuzz stratum-weighted suites — M3+
+      # (the milestone-gate vv-matrix check and the stratum-weighted suite are now
+      #  active — see the steps above.)
