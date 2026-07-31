@@ -1,0 +1,68 @@
+name: extraction-drift
+
+# Enforces that the committed Aeneas-lifted Lean model
+# (certify-check/Lattice/{Funs,Types}.lean) still matches `crates/lattice` at the
+# pinned Charon/Aeneas — i.e. that nobody changed the Rust (or bumped the tool
+# pins) without regenerating the model we PROVE ABOUT. Output is byte-deterministic
+# at our pins, so the check is a plain `git diff`.
+#
+# Path-filtered: only runs when the crate, the extraction pins, the manifest, the
+# scripts, or the model itself change (the `.#extraction` shell builds Charon/Aeneas
+# from source, so we keep this off the hot path). Single OS — the model is
+# platform-independent; no need to 2x the OCaml build.
+#
+# On failure: run `nix run .#extract` (or scripts/extract.sh in
+# `nix develop .#extraction`) and commit. If you bumped the Charon/Aeneas pins,
+# also expect to fix proofs — see docs/upgrading-extraction-toolchain.md.
+on:
+  push:
+    paths:
+      - 'crates/lattice/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'scripts/extract.sh'
+      - 'scripts/check-externals.sh'
+      - 'certify-check/extract/**'
+      - 'certify-check/Lattice/**'
+      - '.github/workflows/extraction-drift.yml'
+  pull_request:
+    paths:
+      - 'crates/lattice/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'scripts/extract.sh'
+      - 'scripts/check-externals.sh'
+      - 'certify-check/extract/**'
+      - 'certify-check/Lattice/**'
+      - '.github/workflows/extraction-drift.yml'
+
+jobs:
+  drift:
+    name: model matches Rust @ pinned Charon/Aeneas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Regenerate `Lattice/{Funs,Types}.lean` + `extract/FunsExternal_Template.lean`
+      # from the current Rust with the pinned Charon/Aeneas.
+      - name: Regenerate lifted model
+        run: nix develop .#extraction --command bash scripts/extract.sh
+
+      - name: Drift check (committed model == freshly regenerated)
+        run: |
+          if ! git diff --quiet -- \
+               certify-check/Lattice/Funs.lean \
+               certify-check/Lattice/Types.lean \
+               certify-check/extract/FunsExternal_Template.lean; then
+            echo "::error title=Lean model out of sync with crates/lattice::The committed Aeneas-lifted model does not match crates/lattice at the pinned Charon/Aeneas. Run 'nix run .#extract' (or scripts/extract.sh inside 'nix develop .#extraction') and commit the regenerated model. If you bumped the Charon/Aeneas pins in flake.lock, also expect to fix proofs — see docs/upgrading-extraction-toolchain.md."
+            git --no-pager diff --stat -- certify-check/
+            exit 1
+          fi
+          echo "✓ committed model matches crates/lattice at the pinned Charon/Aeneas"
+
+      # Guard the hand-written TCB surface: every externalised core item still has
+      # a faithful `def` model (no silent axiom holes). Pure bash — no toolchain.
+      - name: Externals coverage
+        run: bash scripts/check-externals.sh

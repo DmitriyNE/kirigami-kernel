@@ -122,6 +122,21 @@
             ${leanEnvNote}
           '';
         };
+
+        # `nix run .#extract` — one-command regeneration of the Aeneas-lifted Lean
+        # model from `crates/lattice` (the automated "crossing"). Runs
+        # `scripts/extract.sh` inside the extraction shell (which brings rustc +
+        # charon + aeneas). The committed model is drift-checked in CI, so run this
+        # and commit after touching `crates/lattice` or the Charon/Aeneas pins —
+        # see docs/upgrading-extraction-toolchain.md.
+        apps.extract = {
+          type = "app";
+          program = toString (pkgs.writeShellScript "kirigami-extract" ''
+            set -euo pipefail
+            root="$(${pkgs.git}/bin/git rev-parse --show-toplevel)"
+            exec ${pkgs.nix}/bin/nix develop "$root#extraction" --command bash "$root/scripts/extract.sh"
+          '');
+        };
       }
     );
 }

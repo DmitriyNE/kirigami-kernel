@@ -1,0 +1,16 @@
+# Start-from set for the Aeneas lift of `crates/lattice` (charon `--start-from`).
+# One item path per line; blank lines and `#` comments are ignored.
+#
+# After editing this file, regenerate the committed Lean model with
+#   nix run .#extract          (or: scripts/extract.sh inside `nix develop .#extraction`)
+# and commit the result. CI's `extraction-drift` workflow regenerates and
+# `git diff`s the model, so a stale model fails the build.
+#
+# NOTE: charon's `--start-from` for inherent impl methods is finicky
+# (`crate::small::SmallRat::reduce` silently matches nothing). We instead lift the
+# whole `small` module — which pulls in `SmallRat::reduce` and its dependency
+# closure — and name `sign_variations` directly. See
+# docs/spike-extraction-report.md and docs/upgrading-extraction-toolchain.md.
+
+crate::sturm::sign_variations
+crate::small

@@ -77,6 +77,13 @@ jobs:
             fi
             rm -f axiom_audit.lean'
 
+      # Extraction TCB guard: every `core` item Aeneas externalises has a faithful
+      # `def` model in Lattice/FunsExternal.lean (no `axiom` — which would enter the
+      # certified footprint without being sorryAx). Pure bash on committed files;
+      # the `extraction-drift` workflow additionally regenerates + drift-checks.
+      - name: Extraction externals coverage (faithful FunsExternal models)
+        run: bash scripts/check-externals.sh
+
       # Added as their targets land:
       #   - the *_correct_i16 fast≡slow Kani harnesses, once the spike's loop-bounded
       #     gcd model makes them tractable
