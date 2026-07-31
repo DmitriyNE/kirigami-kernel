@@ -9,10 +9,15 @@ mod ffi {
         /// Phase-0 build smoke: exercises a heavy CGAL header + its exact number
         /// type and gmp linking. Returns an exact rational as a string ("3/4").
         fn cgal_smoke() -> String;
+
+        /// Phase-5 circular-kernel `Arrangement_2` smoke: the intersection vertex
+        /// of two crossing segments as two `a b d` triples (`a + b·√d`), proving
+        /// the circular kernel builds/links and `Root_of_2` extraction works.
+        fn cgal_arr_smoke() -> String;
     }
 }
 
-pub use ffi::cgal_smoke;
+pub use ffi::{cgal_arr_smoke, cgal_smoke};
 
 #[cfg(test)]
 mod tests {
@@ -20,5 +25,13 @@ mod tests {
     #[test]
     fn cgal_smoke_exact_rational() {
         assert_eq!(super::cgal_smoke(), "3/4");
+    }
+
+    /// The circular-kernel arrangement of two crossing segments has its
+    /// intersection at the exact rational origin (0 + 0·√0, twice; `Gmpq` streams
+    /// `0` as `0/1`).
+    #[test]
+    fn cgal_arr_smoke_origin_vertex() {
+        assert_eq!(super::cgal_arr_smoke(), "0/1 0/1 0/1 ; 0/1 0/1 0/1");
     }
 }
