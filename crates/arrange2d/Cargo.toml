@@ -12,3 +12,8 @@ geom.workspace = true
 # The event spine needs the exact number surface directly (Surd carrier points,
 # Poly/Sturm/resultant); geom owns the content *types*, lattice owns the numbers.
 lattice.workspace = true
+
+[dev-dependencies]
+# Stratum-weighted / metamorphic property tests (rigid-motion invariance,
+# residual-zero carrier oracle). Same idiom as `lattice`.
+proptest = "1"

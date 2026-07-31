@@ -15,6 +15,7 @@ dependencies = [
  "certify-core",
  "geom",
  "lattice",
+ "proptest",
 ]
 
 [[package]]
