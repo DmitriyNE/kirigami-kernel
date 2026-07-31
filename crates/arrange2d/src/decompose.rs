@@ -177,6 +177,7 @@ pub fn decompose<B: Backend>(curve: &Curve<B>) -> Vec<Edge<B>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testgen::{on_circle, on_circle_pt};
     use geom::content::{Line, SegPiece};
     use lattice::Bignum;
 
@@ -201,19 +202,6 @@ mod tests {
             orient,
             source: CurveId(0),
         }
-    }
-
-    /// `(x − cx)² + (y − cy)² − r²` as a `Surd`; zero ⇔ on the circle.
-    fn on_circle(c: &Circle<Bignum>, p: &P) -> bool {
-        let dx = p.x.sub(&Surd::from_rat(c.cx.clone())).unwrap_surd();
-        let dy = p.y.sub(&Surd::from_rat(c.cy.clone())).unwrap_surd();
-        dx.square()
-            .add(&dy.square())
-            .unwrap_surd()
-            .sub(&Surd::from_rat(c.r2.clone()))
-            .unwrap_surd()
-            .sign()
-            == 0
     }
 
     fn arcs(edges: &[Edge<Bignum>]) -> Vec<&ArcPiece<Bignum>> {
@@ -383,17 +371,6 @@ mod tests {
     // --- properties ---
 
     use proptest::prelude::*;
-
-    /// A rational point on the circle `(cx, cy, r²=r·r)` at rational parameter
-    /// `t = tn/td`: the stereographic image, exact in ℚ.
-    fn on_circle_pt(cx: &Q, cy: &Q, r: &Q, tn: i128, td: i128) -> P {
-        let (tn, td) = (Q::from_i128(tn), Q::from_i128(td));
-        let denom = td.mul(&td).add(&tn.mul(&tn)); // td² + tn²
-        let x = cx.add(&r.mul(&td.mul(&td).sub(&tn.mul(&tn))).div(&denom)); // cx + r(td²−tn²)/D
-        let two_tn_td = Q::from_i128(2).mul(&tn).mul(&td);
-        let y = cy.add(&r.mul(&two_tn_td).div(&denom)); // cy + r·2·tn·td/D
-        Point2::from_rat(x, y)
-    }
 
     fn points_eq(p: &P, q: &P) -> bool {
         p == q

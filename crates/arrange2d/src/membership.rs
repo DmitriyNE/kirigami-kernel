@@ -66,6 +66,7 @@ pub fn on_edge<B: Backend>(p: &Point2<B>, edge: &Edge<B>) -> bool {
 mod tests {
     use super::*;
     use crate::decompose::decompose;
+    use crate::testgen::{on_circle_pt, rigid, rigid_circle, rigid_pt};
     use geom::content::{Circle, Curve, CurveId, Line, Orient, Winding};
     use lattice::{Bignum, Rat};
 
@@ -175,35 +176,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    fn rot(u: i128, v: i128) -> (Q, Q) {
-        let den = u * u + v * v;
-        (Q::new(u * u - v * v, den), Q::new(2 * u * v, den))
-    }
-    /// `k1·a ± k2·b + t` for rational `k1,k2,t` and (rational) surds a,b.
-    fn surd_lin(
-        k1: &Q,
-        a: &Surd<Bignum>,
-        k2: &Q,
-        b: &Surd<Bignum>,
-        minus: bool,
-        t: &Q,
-    ) -> Surd<Bignum> {
-        let (t1, t2) = (a.scale(k1), b.scale(k2));
-        let sum = if minus {
-            t1.sub(&t2).unwrap_surd()
-        } else {
-            t1.add(&t2).unwrap_surd()
-        };
-        sum.add(&Surd::from_rat(t.clone())).unwrap_surd()
-    }
-    /// Rigid motion `p ↦ R·p + t` of a (rational) point.
-    fn rigid_pt(p: &P, co: &Q, si: &Q, tx: &Q, ty: &Q) -> P {
-        // x' = co·x − si·y + tx ; y' = si·x + co·y + ty
-        Point2 {
-            x: surd_lin(co, &p.x, si, &p.y, true, tx),
-            y: surd_lin(si, &p.x, co, &p.y, false, ty),
-        }
-    }
     /// Is `p` on any of the pieces (i.e. on the decomposed curve as a point set)?
     fn member_of_any(p: &P, edges: &[Edge<Bignum>]) -> bool {
         edges.iter().any(|e| on_edge(p, e))
@@ -233,14 +205,13 @@ mod tests {
             let in_extent = t.sign() >= 0 && t.cmp(&Q::from_i128(1)) != Ordering::Greater;
             prop_assert_eq!(on_seg(&p, &s), in_extent);
 
-            let (co, si) = rot(u, v);
-            let (tx, ty) = (Q::from_i128(mtx), Q::from_i128(mty));
+            let m = rigid(u, v, mtx, mty);
             let s2 = SegPiece {
-                start: rigid_pt(&s.start, &co, &si, &tx, &ty),
-                end: rigid_pt(&s.end, &co, &si, &tx, &ty),
+                start: rigid_pt(&s.start, &m),
+                end: rigid_pt(&s.end, &m),
                 ..s.clone()
             };
-            let p2 = rigid_pt(&p, &co, &si, &tx, &ty);
+            let p2 = rigid_pt(&p, &m);
             prop_assert_eq!(on_seg(&p2, &s2), in_extent);
         }
 
@@ -296,14 +267,7 @@ mod tests {
         ) {
             prop_assume!(u != 0 || v != 0);
             let (cx, cy, r) = (Q::from_i128(cx), Q::from_i128(cy), Q::from_i128(r));
-            // exact rational point on circle (cx,cy,r) at parameter tn/td
-            let on_c = |tn: i128, td: i128| -> P {
-                let (tn, td) = (Q::from_i128(tn), Q::from_i128(td));
-                let denom = td.mul(&td).add(&tn.mul(&tn));
-                let x = cx.add(&r.mul(&td.mul(&td).sub(&tn.mul(&tn))).div(&denom));
-                let y = cy.add(&r.mul(&Q::from_i128(2).mul(&tn).mul(&td)).div(&denom));
-                Point2::from_rat(x, y)
-            };
+            let on_c = |tn: i128, td: i128| on_circle_pt(&cx, &cy, &r, tn, td);
             let (a, b, p) = (on_c(e1, e1d), on_c(e2, e2d), on_c(pt, ptd));
             prop_assume!(a != b); // proper arc
             let orient = if cw { Orient::Cw } else { Orient::Ccw };
@@ -313,13 +277,10 @@ mod tests {
                 circle: c.clone(), start: a.clone(), end: b.clone(), orient, source: CurveId(0),
             }));
 
-            // rigid image: rotate+translate centre (r² preserved) and every point.
-            let (co, si) = rot(u, v);
-            let (tx, ty) = (Q::from_i128(mtx), Q::from_i128(mty));
-            let ncx = co.mul(&cx).sub(&si.mul(&cy)).add(&tx);
-            let ncy = si.mul(&cx).add(&co.mul(&cy)).add(&ty);
-            let c2 = Circle { cx: ncx, cy: ncy, r2: r.mul(&r) };
-            let rp2 = |q: &P| rigid_pt(q, &co, &si, &tx, &ty);
+            // rigid image: move the centre (r² preserved) and every point.
+            let m = rigid(u, v, mtx, mty);
+            let c2 = rigid_circle(&c, &m);
+            let rp2 = |q: &P| rigid_pt(q, &m);
             let m1 = member_of_any(&rp2(&p), &decompose(&Curve::Arc {
                 circle: c2, start: rp2(&a), end: rp2(&b), orient, source: CurveId(0),
             }));

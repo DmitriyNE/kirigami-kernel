@@ -147,6 +147,7 @@ pub fn circle_circle<B: Backend>(c1: &Circle<B>, c2: &Circle<B>) -> Intersection
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testgen::{on_circle, on_line, rigid, rigid_line};
 
     type Q = Rat<Bignum>;
     type P = Point2<Bignum>;
@@ -176,32 +177,8 @@ mod tests {
         }
     }
 
-    // --- exact self-contained oracle: a point lies on its carriers ---
-
-    /// `a·x + b·y + c` as a `Surd` (rational coefficients, one shared radical).
-    fn line_residual(l: &Line<Bignum>, p: &P) -> Surd<Bignum> {
-        p.x.scale(&l.a)
-            .add(&p.y.scale(&l.b))
-            .unwrap_surd()
-            .add(&Surd::from_rat(l.c.clone()))
-            .unwrap_surd()
-    }
-    /// `(x − cx)² + (y − cy)² − r²` as a `Surd`.
-    fn circle_residual(c: &Circle<Bignum>, p: &P) -> Surd<Bignum> {
-        let dx = p.x.sub(&Surd::from_rat(c.cx.clone())).unwrap_surd();
-        let dy = p.y.sub(&Surd::from_rat(c.cy.clone())).unwrap_surd();
-        dx.square()
-            .add(&dy.square())
-            .unwrap_surd()
-            .sub(&Surd::from_rat(c.r2.clone()))
-            .unwrap_surd()
-    }
-    fn on_line(l: &Line<Bignum>, p: &P) -> bool {
-        line_residual(l, p).sign() == 0
-    }
-    fn on_circle(c: &Circle<Bignum>, p: &P) -> bool {
-        circle_residual(c, p).sign() == 0
-    }
+    // The residual-zero point oracle (`on_line`/`on_circle`) is shared from
+    // `crate::testgen`.
 
     // --- line ∩ line ---
 
@@ -363,23 +340,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// A rational rotation `(cos, sin)` with `cos² + sin² = 1`, from the rational
-    /// parametrisation of the unit circle: `cos = (u²−v²)/(u²+v²)`,
-    /// `sin = 2uv/(u²+v²)` for integers `(u, v) ≠ (0, 0)`.
-    fn rot(u: i128, v: i128) -> (Q, Q) {
-        let den = u * u + v * v;
-        (Q::new(u * u - v * v, den), Q::new(2 * u * v, den))
-    }
-
-    /// Apply the rigid motion `p ↦ R·p + t` to a line's `(a, b, c)`. For an
-    /// orthogonal `R`, the normal rotates (`n' = R·n`) and `c' = c − n'·t`.
-    fn rigid_line(l: &Line<Bignum>, co: &Q, si: &Q, tx: &Q, ty: &Q) -> Line<Bignum> {
-        let a = co.mul(&l.a).sub(&si.mul(&l.b)); // co·a − si·b
-        let b = si.mul(&l.a).add(&co.mul(&l.b)); // si·a + co·b
-        let c = l.c.sub(&a.mul(tx).add(&b.mul(ty)));
-        Line { a, b, c }
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(48))]
 
@@ -394,10 +354,9 @@ mod tests {
         ) {
             prop_assume!(u != 0 || v != 0);
             let (l1, l2) = (line(a1, b1, c1), line(a2, b2, c2));
-            let (co, si) = rot(u, v);
-            let (tx, ty) = (Q::from_i128(tx), Q::from_i128(ty));
-            let m1 = rigid_line(&l1, &co, &si, &tx, &ty);
-            let m2 = rigid_line(&l2, &co, &si, &tx, &ty);
+            let m = rigid(u, v, tx, ty);
+            let m1 = rigid_line(&l1, &m);
+            let m2 = rigid_line(&l2, &m);
             prop_assert_eq!(predicates::parallel(&l1, &l2), predicates::parallel(&m1, &m2));
             prop_assert_eq!(predicates::coincident(&l1, &l2), predicates::coincident(&m1, &m2));
         }

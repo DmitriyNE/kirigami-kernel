@@ -283,59 +283,22 @@ mod tests {
     // --- property: classification is frame-independent ---
 
     use crate::classify::{det_at, kind_of};
+    use crate::testgen::{Rigid, rigid, rigid_line, rigid_pt};
     use proptest::prelude::*;
 
-    /// A rational rigid motion `p ↦ R·p + t`.
-    struct Rigid {
-        co: Q,
-        si: Q,
-        tx: Q,
-        ty: Q,
-    }
-    fn rigid(u: i128, v: i128, tx: i128, ty: i128) -> Rigid {
-        let den = u * u + v * v;
-        Rigid {
-            co: Q::new(u * u - v * v, den),
-            si: Q::new(2 * u * v, den),
-            tx: Q::from_i128(tx),
-            ty: Q::from_i128(ty),
-        }
-    }
-    /// `k1·a ± k2·b + t` for rational `k1,k2,t` and (rational) surds a,b.
-    fn surd_lin(
-        k1: &Q,
-        a: &Surd<Bignum>,
-        k2: &Q,
-        b: &Surd<Bignum>,
-        minus: bool,
-        t: &Q,
-    ) -> Surd<Bignum> {
-        let (t1, t2) = (a.scale(k1), b.scale(k2));
-        let s = if minus {
-            t1.sub(&t2).unwrap_surd()
-        } else {
-            t1.add(&t2).unwrap_surd()
-        };
-        s.add(&Surd::from_rat(t.clone())).unwrap_surd()
-    }
-    fn rigid_pt(p: &P, m: &Rigid) -> P {
-        Point2 {
-            x: surd_lin(&m.co, &p.x, &m.si, &p.y, true, &m.tx),
-            y: surd_lin(&m.si, &p.x, &m.co, &p.y, false, &m.ty),
-        }
-    }
-    /// A line `a·x+b·y+c=0` under `p ↦ R·p + t`: normal rotates (`n' = R·n`),
-    /// `c' = c − n'·t`. Wide extent so the classifier (not membership) is tested.
+    /// A line `a·x+b·y+c=0` bounded to a wide segment after the rigid motion — wide
+    /// extent so the classifier (not membership) is exercised.
     fn rigid_line_edge(a: &Q, b: &Q, c: &Q, m: &Rigid, src: u32) -> Edge<Bignum> {
-        let na = m.co.mul(a).sub(&m.si.mul(b));
-        let nb = m.si.mul(a).add(&m.co.mul(b));
-        let nc = c.sub(&na.mul(&m.tx).add(&nb.mul(&m.ty)));
-        Edge::Seg(Box::new(SegPiece {
-            line: Line {
-                a: na,
-                b: nb,
-                c: nc,
+        let line = rigid_line(
+            &Line {
+                a: a.clone(),
+                b: b.clone(),
+                c: c.clone(),
             },
+            m,
+        );
+        Edge::Seg(Box::new(SegPiece {
+            line,
             start: rp(-1000, -1000),
             end: rp(1000, 1000),
             orient: Orient::Ccw,
