@@ -25,6 +25,7 @@
 pub mod azimuth;
 pub mod carrier;
 pub mod classify;
+pub mod coincide;
 pub mod decompose;
 pub mod event;
 pub mod membership;

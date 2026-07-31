@@ -13,15 +13,20 @@ use lattice::{Backend, Rat};
 
 use crate::carrier::{self, Intersections};
 use crate::classify::{det_at, kind_of};
-use crate::event::{EventSet, Incidence};
+use crate::coincide::coincide;
+use crate::event::{CoincEdge, EventSet, Incidence, TouchKind};
 use crate::membership::on_edge;
 use crate::predicates;
 use crate::witness::{PairWitness, SpineBranch, TouchWitness, Witness};
 
-/// The searcher entry's verdict: `Verified((events, witness))` at degree ≤ 2
-/// (always — every predicate is total), `Unresolved(margin)` reserved for the L3
-/// escalation, and `Refuted` [`Infallible`] (the searcher computes, never refutes).
-pub type ArrangeVerdict<B> = Verdict<(EventSet<B>, Witness<B>), Infallible, MarginSq<Rat<B>>>;
+/// The searcher entry's verdict: `Verified((events, coincidence edges, witness))`
+/// at degree ≤ 2 (always — every predicate is total), `Unresolved(margin)` reserved
+/// for the L3 escalation, and `Refuted` [`Infallible`] (the searcher computes,
+/// never refutes). The `CoincSet` is the stage-2 1D-coincidence output (3c) — the
+/// merged + residual sub-edges 3d's DCEL consumes.
+pub type CoincSet<B> = Vec<CoincEdge<B>>;
+pub type ArrangeVerdict<B> =
+    Verdict<(EventSet<B>, CoincSet<B>, Witness<B>), Infallible, MarginSq<Rat<B>>>;
 
 /// The source curve id an edge came from.
 fn source_of<B: Backend>(edge: &Edge<B>) -> CurveId {
@@ -54,6 +59,7 @@ fn carrier_intersect<B: Backend>(a: &Edge<B>, b: &Edge<B>) -> Intersections<B> {
 /// The result of the four-step spine on one edge pair.
 struct PairResult<B: Backend> {
     incidences: Vec<(Point2<B>, Incidence)>,
+    coinc_edges: Vec<CoincEdge<B>>,
     witness: PairWitness<B>,
 }
 
@@ -63,16 +69,32 @@ fn arrange_pair<B: Backend>(
     a: &Edge<B>,
     b: &Edge<B>,
 ) -> PairResult<B> {
-    // (1) CARRIER-COINCIDENT first — the seam to the stage-2 1D lattice (3c).
+    // (1) CARRIER-COINCIDENT first — the stage-2 1D coincidence lattice (3c).
     // Coincident circles satisfy the internal-tangency identity, so testing
     // coincidence before tangency is what stops the mislabel.
     if carrier_coincident(a, b) {
+        let co = coincide(sources, a, b);
+        let incidences = co
+            .touches
+            .into_iter()
+            .map(|p| {
+                (
+                    p,
+                    Incidence {
+                        kind: TouchKind::Coincident,
+                        sources,
+                    },
+                )
+            })
+            .collect();
         return PairResult {
-            incidences: Vec::new(),
+            incidences,
+            coinc_edges: co.edges,
             witness: PairWitness {
                 sources,
                 branch: SpineBranch::CarrierCoincident,
                 touches: Vec::new(),
+                coincidence: Some(co.outcome),
             },
         };
     }
@@ -101,10 +123,12 @@ fn arrange_pair<B: Backend>(
     };
     PairResult {
         incidences,
+        coinc_edges: Vec::new(),
         witness: PairWitness {
             sources,
             branch,
             touches,
+            coincidence: None,
         },
     }
 }
@@ -117,6 +141,7 @@ fn arrange_pair<B: Backend>(
 /// checker's role).
 pub fn arrange_events<B: Backend>(edges: &[Edge<B>]) -> ArrangeVerdict<B> {
     let mut set = EventSet::new();
+    let mut coinc: CoincSet<B> = Vec::new();
     let mut wit = Witness::new();
     for (i, ea) in edges.iter().enumerate() {
         for eb in &edges[i + 1..] {
@@ -125,10 +150,11 @@ pub fn arrange_events<B: Backend>(edges: &[Edge<B>]) -> ArrangeVerdict<B> {
             for (p, inc) in res.incidences {
                 set.insert(p, inc);
             }
+            coinc.extend(res.coinc_edges);
             wit.pairs.push(res.witness);
         }
     }
-    Verdict::Verified((set, wit))
+    Verdict::Verified((set, coinc, wit))
 }
 
 #[cfg(test)]
@@ -184,7 +210,9 @@ mod tests {
         }))
     }
 
-    fn verified(v: ArrangeVerdict<Bignum>) -> (EventSet<Bignum>, Witness<Bignum>) {
+    fn verified(
+        v: ArrangeVerdict<Bignum>,
+    ) -> (EventSet<Bignum>, CoincSet<Bignum>, Witness<Bignum>) {
         match v {
             Verdict::Verified(x) => x,
             _ => panic!("degree-≤2 arrangement is always Verified"),
@@ -201,7 +229,7 @@ mod tests {
             circle_edge(0, 0, 4, Half::Upper, 0),
             circle_edge(0, 0, 4, Half::Lower, 1),
         ];
-        let (set, _) = verified(arrange_events(&coincident));
+        let (set, _, _) = verified(arrange_events(&coincident));
         assert_eq!(set.len(), 0, "coincident carriers emit no events");
 
         // internally tangent: centres 1 apart, r = 2 and r = 1, touch at (2, 0).
@@ -209,7 +237,7 @@ mod tests {
             circle_edge(0, 0, 4, Half::Upper, 0), // r = 2
             circle_edge(1, 0, 1, Half::Upper, 1), // r = 1
         ];
-        let (set, _) = verified(arrange_events(&tangent));
+        let (set, _, _) = verified(arrange_events(&tangent));
         assert_eq!(set.len(), 1);
         assert_eq!(set.vertices[0].incidences[0].kind, TouchKind::Tangent);
     }
@@ -223,7 +251,7 @@ mod tests {
             circle_edge(0, 0, 1, Half::Upper, 0),
             circle_edge(0, 0, 1, Half::Lower, 0), // same circle, same source
         ];
-        let (set, wit) = verified(arrange_events(&arcs));
+        let (set, _, wit) = verified(arrange_events(&arcs));
         assert_eq!(set.len(), 0);
         assert_eq!(wit.pairs[0].branch, SpineBranch::CarrierCoincident);
     }
@@ -231,7 +259,7 @@ mod tests {
     #[test]
     fn two_lines_transverse() {
         // x-axis and y-axis cross transversely at the origin.
-        let (set, _) = verified(arrange_events(&[
+        let (set, _, _) = verified(arrange_events(&[
             line_edge(0, 1, 0, 0), // y = 0
             line_edge(1, 0, 0, 1), // x = 0
         ]));
@@ -246,7 +274,7 @@ mod tests {
     #[test]
     fn line_circle_secant_two_transverse() {
         // y = 0 secant through the unit-√2 circle: two transverse crossings.
-        let (set, _) = verified(arrange_events(&[
+        let (set, _, _) = verified(arrange_events(&[
             line_edge(0, 1, 0, 0),
             circle_edge(0, 0, 2, Half::Upper, 1),
         ]));
@@ -259,7 +287,7 @@ mod tests {
     #[test]
     fn line_circle_tangent() {
         // y = 1 tangent to the unit circle at (0, 1): one Tangent event.
-        let (set, _) = verified(arrange_events(&[
+        let (set, _, _) = verified(arrange_events(&[
             line_edge(0, 1, -1, 0),
             circle_edge(0, 0, 1, Half::Upper, 1),
         ]));
@@ -270,7 +298,7 @@ mod tests {
     #[test]
     fn concurrency_dedups_to_one_vertex() {
         // Three distinct lines through the origin ⇒ one vertex, three incidences.
-        let (set, _) = verified(arrange_events(&[
+        let (set, _, _) = verified(arrange_events(&[
             line_edge(0, 1, 0, 0),  // y = 0
             line_edge(1, 0, 0, 1),  // x = 0
             line_edge(1, -1, 0, 2), // y = x

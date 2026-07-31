@@ -591,7 +591,7 @@ mod tests {
     /// Touch-vertex count of an arrangement of carriers (always `Verified`).
     fn events(carriers: &[Carrier]) -> usize {
         match arrange_events(&to_edges(carriers)) {
-            Verdict::Verified((set, _)) => set.len(),
+            Verdict::Verified((set, _, _)) => set.len(),
             _ => unreachable!("degree-≤2 arrangement is always Verified"),
         }
     }

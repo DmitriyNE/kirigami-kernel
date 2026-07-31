@@ -17,7 +17,7 @@ use lattice::{Backend, Rat, Surd};
 
 /// The two x-extremal points `L = (cx − √r², cy)` and `R = (cx + √r², cy)`; their
 /// coordinates share the single radical `d = r²`.
-fn extrema<B: Backend>(c: &Circle<B>) -> (Point2<B>, Point2<B>) {
+pub(crate) fn extrema<B: Backend>(c: &Circle<B>) -> (Point2<B>, Point2<B>) {
     let y = Surd::from_rat(c.cy.clone());
     let l = Point2 {
         x: Surd::new(c.cx.clone(), Rat::from_i128(-1), c.r2.clone()),

@@ -3,7 +3,7 @@
 //! `geom::content::Point2` equality — the ℓ=0 vertex identity (free,
 //! classifier-internal); `0 < ℓ < q_sep` edges are never merged.
 
-use geom::content::{CurveId, Point2};
+use geom::content::{CurveId, Edge, Point2};
 use lattice::{Backend, Bignum};
 
 /// How two carriers meet at a retained vertex.
@@ -15,6 +15,9 @@ pub enum TouchKind {
     /// Carriers are tangent: `det(ċ_A, ċ_B) = 0` (the A-identity holds), reached
     /// only for non-coincident carriers (most-degenerate-first guard).
     Tangent,
+    /// A touch on a **shared** carrier (slice 3c): two coincident edges meet at a
+    /// point (a shared endpoint / extremum), decided by the 1D coincidence lattice.
+    Coincident,
 }
 
 /// One incidence at a vertex: how a specific pair of source curves touches there.
@@ -91,5 +94,38 @@ impl<B: Backend> EventSet<B> {
 
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
+    }
+}
+
+/// Which input curves cover a coincidence sub-edge (slice 3c).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Operand {
+    /// The merged coincident sub-edge — both operands cover it (spec §6: 3d step-5
+    /// attaches "both operands' signed incidence"; step-7 makes it a merge
+    /// instruction consumed by the quotient).
+    Both,
+    /// A residual sub-edge covered only by the first curve.
+    First,
+    /// A residual sub-edge covered only by the second curve.
+    Second,
+}
+
+/// A 1-D coincidence output edge on a shared carrier (slice 3c): the merged edge
+/// (`Both`) where two coincident curves overlap, or a residual sub-edge (`First`/
+/// `Second`) where only one covers. Fed to 3d's DCEL.
+#[derive(Debug)]
+pub struct CoincEdge<B: Backend = Bignum> {
+    pub edge: Edge<B>,
+    pub operand: Operand,
+    pub sources: (CurveId, CurveId),
+}
+
+impl<B: Backend> Clone for CoincEdge<B> {
+    fn clone(&self) -> Self {
+        CoincEdge {
+            edge: self.edge.clone(),
+            operand: self.operand,
+            sources: self.sources,
+        }
     }
 }

@@ -106,7 +106,7 @@ fn our_vertices(gens: &[Gen]) -> Vec<P> {
         edges.extend(decompose(&arr_curve(g, i as u32)));
     }
     match arrange_events(&edges) {
-        Verdict::Verified((set, _)) => set.vertices.into_iter().map(|v| v.point).collect(),
+        Verdict::Verified((set, _, _)) => set.vertices.into_iter().map(|v| v.point).collect(),
         _ => unreachable!("degree-≤2 arrangement is always Verified"),
     }
 }

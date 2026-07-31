@@ -40,12 +40,34 @@ impl<B: Backend> Clone for TouchWitness<B> {
     }
 }
 
+/// The stage-2 1D-coincidence outcome for a `CarrierCoincident` pair (slice 3c) —
+/// the normative outcome lattice collapsed to the emitted-shape classes. `touches`
+/// counts touch-at-point vertices; `merged`/`residuals` count the emitted
+/// coincidence sub-edges. The checker re-derives the spans from the two carriers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CoincOutcome {
+    /// Disjoint on the shared carrier — nothing emitted.
+    Disjoint,
+    /// Same-source pieces (one decomposed curve) — not a coincidence, skipped.
+    SameSource,
+    /// Touch(es) at a point / the shared extrema — vertices, no merged edge.
+    Touch { touches: usize },
+    /// Overlap — one merged edge (both operands) plus residual sub-edges.
+    Overlap {
+        touches: usize,
+        merged: usize,
+        residuals: usize,
+    },
+}
+
 /// The decision trail for one processed edge pair — replayed as-is by the checker.
 #[derive(Debug)]
 pub struct PairWitness<B: Backend = Bignum> {
     pub sources: (CurveId, CurveId),
     pub branch: SpineBranch,
     pub touches: Vec<TouchWitness<B>>,
+    /// The 1D-coincidence outcome — `Some` exactly on the `CarrierCoincident` branch.
+    pub coincidence: Option<CoincOutcome>,
 }
 
 impl<B: Backend> Clone for PairWitness<B> {
@@ -54,6 +76,7 @@ impl<B: Backend> Clone for PairWitness<B> {
             sources: self.sources,
             branch: self.branch,
             touches: self.touches.clone(),
+            coincidence: self.coincidence,
         }
     }
 }
