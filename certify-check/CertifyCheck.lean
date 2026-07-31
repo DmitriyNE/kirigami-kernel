@@ -12,8 +12,18 @@
 --   * CertifyCheck.LiftedAeneas    — the Aeneas-lifted `sign_variations` model.
 --   * CertifyCheck.Refine          — proof that the lifted model computes the
 --     mathematical `signVariations` (loop.spec_decr_nat + the `step` tactic).
+--
+-- Phase 5 (gated apply of the validated template — the gcd/reduce correctness
+-- Lean owns per the gcd tool-fit decision):
+--   * CertifyCheck.GcdReduce       — the fast-path `u128` Euclidean gcd loop
+--     (CBMC-intractable) proven to compute `Nat.gcd`, same idiom as Refine.
+--   * CertifyCheck.Reduce          — `SmallRat::reduce` proven to produce the
+--     canonical reduced form of `num/den` (positive denominator, coprime,
+--     equal rational), over the full `i128` range.
 
 import CertifyCheck.SignVariations
 import CertifyCheck.SturmChecker
 import CertifyCheck.LiftedAeneas
 import CertifyCheck.Refine
+import CertifyCheck.GcdReduce
+import CertifyCheck.Reduce

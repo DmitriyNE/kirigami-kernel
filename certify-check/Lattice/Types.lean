@@ -14,4 +14,11 @@ set_option maxRecDepth 2048
 
 namespace lattice
 
+/-- [lattice::small::SmallRat]
+    Source: 'crates/lattice/src/small.rs', lines 39:0-42:1
+    Visibility: public -/
+structure small.SmallRat where
+  num : Std.I128
+  den : Std.I128
+
 end lattice

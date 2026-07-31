@@ -2,6 +2,7 @@
 -- [lattice]: function definitions
 import Aeneas
 import Lattice.Types
+import Lattice.FunsExternal
 open Aeneas Aeneas.Std Result ControlFlow Error
 set_option linter.dupNamespace false
 set_option linter.hashCommand false
@@ -13,7 +14,386 @@ set_option maxHeartbeats 1000000
 /- You can set the `maxRecDepth` value with the `-max-recdepth` CLI option -/
 set_option maxRecDepth 2048
 
+/- You can remove the following line by using the CLI option `-all-computable`: -/
+noncomputable section
+
 namespace lattice
+
+/-- [lattice::small::gcd_u128]: loop body 0:
+    Source: 'crates/lattice/src/small.rs', lines 12:4-16:5 -/
+@[rust_loop_body]
+def small.gcd_u128_loop.body
+  (a : Std.U128) (b : Std.U128) :
+  Result (ControlFlow (Std.U128 × Std.U128) Std.U128)
+  := do
+  if b != 0#u128
+  then let t ← a % b
+       ok (cont (b, t))
+  else ok (done a)
+
+/-- [lattice::small::gcd_u128]: loop 0:
+    Source: 'crates/lattice/src/small.rs', lines 12:4-16:5 -/
+@[rust_loop]
+def small.gcd_u128_loop (a : Std.U128) (b : Std.U128) : Result Std.U128 := do
+  loop
+    (fun (a1, b1) => small.gcd_u128_loop.body a1 b1)
+    (a, b)
+
+/-- [lattice::small::gcd_u128]:
+    Source: 'crates/lattice/src/small.rs', lines 11:0-18:1 -/
+@[reducible]
+def small.gcd_u128 (a : Std.U128) (b : Std.U128) : Result Std.U128 := do
+  small.gcd_u128_loop a b
+
+/-- [lattice::small::i128_gcd]:
+    Source: 'crates/lattice/src/small.rs', lines 22:0-24:1 -/
+def small.i128_gcd
+  (a : Std.I128) (b : Std.I128) : Result (Option Std.I128) := do
+  let i ← core.num.I128.unsigned_abs a
+  let i1 ← core.num.I128.unsigned_abs b
+  let i2 ← small.gcd_u128 i i1
+  let r ← I128.Insts.CoreConvertTryFromU128TryFromIntError.try_from i2
+  core.result.Result.ok r
+
+/-- [lattice::small::neg_mag::LIM]
+    Source: 'crates/lattice/src/small.rs', lines 28:4-28:44 -/
+@[global_simps, irreducible]
+def small.neg_mag.LIM : Result Std.U128 := do
+  let i ← lift (IScalar.hcast .U128 core.num.I128.MAX)
+  i + 1#u128
+
+/-- [lattice::small::neg_mag]:
+    Source: 'crates/lattice/src/small.rs', lines 27:0-34:1 -/
+def small.neg_mag (m : Std.U128) : Result (Option Std.I128) := do
+  let i ← small.neg_mag.LIM
+  let o ← lift (core.cmp.impls.OrdU128.cmp m i)
+  match o with
+  | Ordering.lt =>
+    let i1 ← lift (UScalar.hcast .I128 m)
+    let i2 ← -. i1
+    ok (some i2)
+  | Ordering.eq => ok (some core.num.I128.MIN)
+  | Ordering.gt => ok none
+
+/-- [lattice::small::{impl core::clone::Clone for lattice::small::SmallRat}::clone]:
+    Source: 'crates/lattice/src/small.rs', lines 38:9-38:14
+    Visibility: public -/
+def small.SmallRat.Insts.CoreCloneClone.clone
+  (self : small.SmallRat) : Result small.SmallRat := do
+  ok self
+
+/-- Trait implementation: [lattice::small::{impl core::clone::Clone for lattice::small::SmallRat}]
+    Source: 'crates/lattice/src/small.rs', lines 38:9-38:14 -/
+@[reducible]
+def small.SmallRat.Insts.CoreCloneClone : core.clone.Clone small.SmallRat := {
+  clone := small.SmallRat.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [lattice::small::{impl core::marker::Copy for lattice::small::SmallRat}]
+    Source: 'crates/lattice/src/small.rs', lines 38:16-38:20 -/
+@[reducible]
+def small.SmallRat.Insts.CoreMarkerCopy : core.marker.Copy small.SmallRat := {
+  cloneInst := small.SmallRat.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [lattice::small::{impl core::marker::StructuralPartialEq for lattice::small::SmallRat}]
+    Source: 'crates/lattice/src/small.rs', lines 38:22-38:31 -/
+@[reducible]
+def small.SmallRat.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq small.SmallRat := {
+}
+
+/-- [lattice::small::{impl core::cmp::PartialEq<lattice::small::SmallRat> for lattice::small::SmallRat}::eq]:
+    Source: 'crates/lattice/src/small.rs', lines 38:22-38:31
+    Visibility: public -/
+def small.SmallRat.Insts.CoreCmpPartialEqSmallRat.eq
+  (self : small.SmallRat) (other : small.SmallRat) : Result Bool := do
+  if self.num = other.num
+  then ok (self.den = other.den)
+  else ok false
+
+/-- Trait implementation: [lattice::small::{impl core::cmp::PartialEq<lattice::small::SmallRat> for lattice::small::SmallRat}]
+    Source: 'crates/lattice/src/small.rs', lines 38:22-38:31 -/
+@[reducible]
+def small.SmallRat.Insts.CoreCmpPartialEqSmallRat : core.cmp.PartialEq
+  small.SmallRat small.SmallRat := {
+  eq := small.SmallRat.Insts.CoreCmpPartialEqSmallRat.eq
+}
+
+/-- [lattice::small::{impl core::cmp::Eq for lattice::small::SmallRat}::assert_fields_are_eq]:
+    Source: 'crates/lattice/src/small.rs', lines 38:33-38:35
+    Visibility: public -/
+def small.SmallRat.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : small.SmallRat) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [lattice::small::{impl core::cmp::Eq for lattice::small::SmallRat}]
+    Source: 'crates/lattice/src/small.rs', lines 38:33-38:35 -/
+@[reducible]
+def small.SmallRat.Insts.CoreCmpEq : core.cmp.Eq small.SmallRat := {
+  partialEqInst := small.SmallRat.Insts.CoreCmpPartialEqSmallRat
+  assert_fields_are_eq := small.SmallRat.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [lattice::small::{impl core::fmt::Debug for lattice::small::SmallRat}::fmt]:
+    Source: 'crates/lattice/src/small.rs', lines 38:37-38:42
+    Visibility: public -/
+def small.SmallRat.Insts.CoreFmtDebug.fmt
+  (self : small.SmallRat) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  let dyn := Dyn.mk _ core.fmt.DebugI128 self.num
+  let dyn1 := Dyn.mk _ (core.fmt.DebugShared core.fmt.DebugI128) self.den
+  core.fmt.Formatter.debug_struct_field2_finish f (toStr "SmallRat") (toStr
+    "num") dyn (toStr "den") dyn1
+
+/-- Trait implementation: [lattice::small::{impl core::fmt::Debug for lattice::small::SmallRat}]
+    Source: 'crates/lattice/src/small.rs', lines 38:37-38:42 -/
+@[reducible]
+def small.SmallRat.Insts.CoreFmtDebug : core.fmt.Debug small.SmallRat := {
+  fmt := small.SmallRat.Insts.CoreFmtDebug.fmt
+}
+
+/-- [lattice::small::{lattice::small::SmallRat}::int]:
+    Source: 'crates/lattice/src/small.rs', lines 46:4-48:5 -/
+def small.SmallRat.int (v : Std.I128) : Result small.SmallRat := do
+  ok { num := v, den := 1#i128 }
+
+/-- [lattice::small::{lattice::small::SmallRat}::reduce]:
+    Source: 'crates/lattice/src/small.rs', lines 53:4-68:5 -/
+def small.SmallRat.reduce
+  (num : Std.I128) (den : Std.I128) : Result (Option small.SmallRat) := do
+  if den = 0#i128
+  then ok none
+  else
+    let i ← core.num.I128.unsigned_abs num
+    let i1 ← core.num.I128.unsigned_abs den
+    let g ← small.gcd_u128 i i1
+    let n_mag ← i / g
+    let d_mag ← i1 / g
+    if (num < 0#i128) ^^ (den < 0#i128)
+    then
+      let o ← small.neg_mag n_mag
+      let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+      match cf with
+      | core.ops.control_flow.ControlFlow.Continue val =>
+        let r ←
+          I128.Insts.CoreConvertTryFromU128TryFromIntError.try_from d_mag
+        let o1 ← core.result.Result.ok r
+        let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+        match cf1 with
+        | core.ops.control_flow.ControlFlow.Continue val1 =>
+          ok (some { num := val, den := val1 })
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+            small.SmallRat residual
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+          small.SmallRat residual
+    else
+      let r ← I128.Insts.CoreConvertTryFromU128TryFromIntError.try_from n_mag
+      let o ← core.result.Result.ok r
+      let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+      match cf with
+      | core.ops.control_flow.ControlFlow.Continue val =>
+        let r1 ←
+          I128.Insts.CoreConvertTryFromU128TryFromIntError.try_from d_mag
+        let o1 ← core.result.Result.ok r1
+        let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+        match cf1 with
+        | core.ops.control_flow.ControlFlow.Continue val1 =>
+          ok (some { num := val, den := val1 })
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+            small.SmallRat residual
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+          small.SmallRat residual
+
+/-- [lattice::small::{lattice::small::SmallRat}::from_reduced]:
+    Source: 'crates/lattice/src/small.rs', lines 72:4-75:5 -/
+def small.SmallRat.from_reduced
+  (num : Std.I128) (den : Std.I128) : Result small.SmallRat := do
+  massert (den > 0#i128)
+  ok { num, den }
+
+/-- [lattice::small::add]:
+    Source: 'crates/lattice/src/small.rs', lines 80:0-88:1 -/
+def small.add
+  (x : small.SmallRat) (y : small.SmallRat) :
+  Result (Option small.SmallRat)
+  := do
+  let o ← small.i128_gcd x.den y.den
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let xd ← x.den / val
+    let o1 ← lift (I128.checked_mul xd y.den)
+    let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let i ← y.den / val
+      let o2 ← lift (I128.checked_mul x.num i)
+      let cf2 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o2
+      match cf2 with
+      | core.ops.control_flow.ControlFlow.Continue val2 =>
+        let o3 ← lift (I128.checked_mul y.num xd)
+        let cf3 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o3
+        match cf3 with
+        | core.ops.control_flow.ControlFlow.Continue val3 =>
+          let o4 ← lift (I128.checked_add val2 val3)
+          let cf4 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o4
+          match cf4 with
+          | core.ops.control_flow.ControlFlow.Continue val4 =>
+            small.SmallRat.reduce val4 val1
+          | core.ops.control_flow.ControlFlow.Break residual =>
+            core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+              small.SmallRat residual
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+            small.SmallRat residual
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+          small.SmallRat residual
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+        small.SmallRat residual
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      small.SmallRat residual
+
+/-- [lattice::small::sub]:
+    Source: 'crates/lattice/src/small.rs', lines 91:0-99:1 -/
+def small.sub
+  (x : small.SmallRat) (y : small.SmallRat) :
+  Result (Option small.SmallRat)
+  := do
+  let o ← small.i128_gcd x.den y.den
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let xd ← x.den / val
+    let o1 ← lift (I128.checked_mul xd y.den)
+    let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let i ← y.den / val
+      let o2 ← lift (I128.checked_mul x.num i)
+      let cf2 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o2
+      match cf2 with
+      | core.ops.control_flow.ControlFlow.Continue val2 =>
+        let o3 ← lift (I128.checked_mul y.num xd)
+        let cf3 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o3
+        match cf3 with
+        | core.ops.control_flow.ControlFlow.Continue val3 =>
+          let o4 ← lift (I128.checked_sub val2 val3)
+          let cf4 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o4
+          match cf4 with
+          | core.ops.control_flow.ControlFlow.Continue val4 =>
+            small.SmallRat.reduce val4 val1
+          | core.ops.control_flow.ControlFlow.Break residual =>
+            core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+              small.SmallRat residual
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+            small.SmallRat residual
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+          small.SmallRat residual
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+        small.SmallRat residual
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      small.SmallRat residual
+
+/-- [lattice::small::mul]:
+    Source: 'crates/lattice/src/small.rs', lines 102:0-106:1 -/
+def small.mul
+  (x : small.SmallRat) (y : small.SmallRat) :
+  Result (Option small.SmallRat)
+  := do
+  let o ← lift (I128.checked_mul x.num y.num)
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let o1 ← lift (I128.checked_mul x.den y.den)
+    let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      small.SmallRat.reduce val val1
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+        small.SmallRat residual
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      small.SmallRat residual
+
+/-- [lattice::small::div]:
+    Source: 'crates/lattice/src/small.rs', lines 110:0-114:1 -/
+def small.div
+  (x : small.SmallRat) (y : small.SmallRat) :
+  Result (Option small.SmallRat)
+  := do
+  let o ← lift (I128.checked_mul x.num y.den)
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let o1 ← lift (I128.checked_mul x.den y.num)
+    let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      small.SmallRat.reduce val val1
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+        small.SmallRat residual
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      small.SmallRat residual
+
+/-- [lattice::small::recip]:
+    Source: 'crates/lattice/src/small.rs', lines 118:0-120:1 -/
+def small.recip (x : small.SmallRat) : Result (Option small.SmallRat) := do
+  small.SmallRat.reduce x.den x.num
+
+/-- [lattice::small::neg]:
+    Source: 'crates/lattice/src/small.rs', lines 123:0-128:1 -/
+def small.neg (x : small.SmallRat) : Result (Option small.SmallRat) := do
+  let o ← core.num.I128.checked_neg x.num
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    ok (some { x with num := val })
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      small.SmallRat residual
+
+/-- [lattice::small::cmp]:
+    Source: 'crates/lattice/src/small.rs', lines 132:0-136:1 -/
+def small.cmp
+  (x : small.SmallRat) (y : small.SmallRat) : Result (Option Ordering) := do
+  let o ← lift (I128.checked_mul x.num y.den)
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let o1 ← lift (I128.checked_mul y.num x.den)
+    let cf1 ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let o2 ← lift (core.cmp.impls.OrdI128.cmp val val1)
+      ok (some o2)
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+        Ordering residual
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      Ordering residual
+
+/-- [lattice::small::sign]:
+    Source: 'crates/lattice/src/small.rs', lines 139:0-141:1 -/
+def small.sign (x : small.SmallRat) : Result Std.I8 := do
+  let i ← core.num.I128.signum x.num
+  ok (IScalar.cast .I8 i)
 
 /-- [lattice::sturm::sign_variations]: loop body 0:
     Source: 'crates/lattice/src/sturm.rs', lines 29:4-36:5

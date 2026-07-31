@@ -19,3 +19,6 @@ result-*
 
 # OS
 .DS_Store
+
+# Charon/Aeneas extraction intermediates (models are committed as certify-check/Lattice/*.lean)
+*.llbc

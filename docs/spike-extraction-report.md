@@ -218,3 +218,36 @@ end-to-end extraction works and the representative checker (`sign_variations`) i
 real `crates/lattice` Rust to Lean (`sign_variations_spec`, axiom-clean). Phase 5 applies the same,
 now-validated, `step`/`loop.spec_decr_nat` template to the remaining checkers (gcd/reduce,
 `verify_common_factor`).
+
+## Phase 5 — gated apply (the gcd/reduce correctness Lean owns)
+
+Done and axiom-clean (`[propext, Classical.choice, Quot.sound]`, in the CI `#print axioms` gate):
+
+- **`gcd_u128_spec`** (`CertifyCheck/GcdReduce.lean`) — the fast-path 128-bit Euclidean `gcd` loop
+  (`small::gcd_u128`), which is CBMC-intractable, is proven to compute `Nat.gcd`, via
+  `loop.spec_decr_nat` (measure = `b`, invariant `gcd a b = gcd a₀ b₀`) + `step`. This closes the piece
+  Lean owns per the gcd tool-fit decision.
+- **`reduce_spec`** (`CertifyCheck/Reduce.lean`) — `SmallRat::reduce` is proven, over the **full `i128`
+  range**, to produce the canonical reduced form of `num/den`: whenever it returns `some sr`, then
+  `0 < sr.den`, `gcd(|sr.num|, sr.den) = 1`, and `sr.num · den = num · sr.den` (equal rational).
+  Coprimality is `Nat.coprime_div_gcd_div_gcd`; the equality reduces (× the gcd) to the sign identity
+  `|num|·den = num·|den|` under same/opposite sign. Helper specs proven the same way:
+  `unsigned_abs_spec`, `try_from_spec`, `neg_mag_spec` (the last steps through `LIM = 2^127`, the scalar
+  `cmp`, the `hcast`/negation, and `MIN`).
+
+**New TCB surface (recorded honestly).** Unlike `sign_variations`/`gcd_u128` (fully concrete, only `%`),
+Aeneas's lift of `reduce` bottoms out in five `core`-library items its Std library does **not** model:
+`I128::unsigned_abs`, `TryFrom<u128> for i128`, and the `?`-operator glue on `Option`
+(`Try::branch`, `FromResidual::from_residual`, `Result::ok`). Aeneas emits these as holes
+(`FunsExternal_Template.lean`); leaving them as `axiom`s would pollute every downstream `#print axioms`.
+We instead supply **faithful hand-written models** in `Lattice/FunsExternal.lean` — the only hand-written
+pieces of the `small` model, and its entire TCB surface beyond Aeneas/Charon/Lean/Mathlib. Each is small,
+`rfl`-simple or a `.val`-level definition, and directly auditable against the cited Rust reference
+(`unsigned_abs = |x|`; `try_from = checked narrow`; the `?`-glue is pure control flow). Two off-path
+extras (`checked_neg`, `signum`, used only by the sibling `neg`/`sign`) are modelled too so the whole
+`small` model stays axiom-free. **Gotcha captured**: casing on `_ < 2^127` blows `maxRecDepth` (the
+elaborator unary-normalises the 39-digit literal via `Nat.rec`); the fit-bound is sealed behind an
+`irreducible_def i128FitBound` so `by_cases`/`split` never force that evaluation.
+
+Remaining Phase-5 item (not yet done): **`verify_common_factor`** (`resultant.rs`) — cite-the-theorem
+(resultant ⇔ common root) like the Sturm checker, **not** an Aeneas lift (see `proofs/ledger.md` entry 2).
