@@ -36,12 +36,16 @@ mod ffi {
         /// all components of the boolean `op` (a `General_polygon_with_holes_2` counts
         /// its inner boundaries) — an annulus △ has exactly one. Same input as above.
         fn cgal_boolean_holes(input: &str, op: &str) -> String;
+
+        /// Exact-geometry differential: the boolean output's boundary vertices, one
+        /// `xa xb xd ya yb yd` (a+b√d) per outer/hole arc source. Same input as above.
+        fn cgal_boolean_boundary(input: &str, op: &str) -> String;
     }
 }
 
 pub use ffi::{
-    cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_boolean_count, cgal_boolean_holes,
-    cgal_smoke,
+    cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_boolean_boundary, cgal_boolean_count,
+    cgal_boolean_holes, cgal_smoke,
 };
 
 #[cfg(test)]

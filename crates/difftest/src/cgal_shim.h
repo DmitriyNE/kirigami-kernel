@@ -31,4 +31,7 @@ rust::String cgal_boolean_count(rust::Str input, rust::Str op);
 // Slice-3e Option-B: total holes across all components of the boolean (annulus △ = 1).
 rust::String cgal_boolean_holes(rust::Str input, rust::Str op);
 
+// Slice-#2: the boolean output's boundary vertices, each `xa xb xd ya yb yd` (a+b√d).
+rust::String cgal_boolean_boundary(rust::Str input, rust::Str op);
+
 }  // namespace kirigami

@@ -253,4 +253,22 @@ rust::String cgal_boolean_holes(rust::Str input, rust::Str op) {
   return rust::String(os.str());
 }
 
+// Slice-#2 exact-geometry differential: the **boundary vertices** of the boolean `op`
+// output — every outer-boundary and hole X-monotone-arc source point of every component
+// — each as `xa xb xd ya yb yd` (a + b·√d, six exact rationals). Compared against our
+// emitted region's boundary edge endpoints for exact `a+b√d` agreement (not just counts).
+rust::String cgal_boolean_boundary(rust::Str input, rust::Str op) {
+  std::ostringstream os;
+  auto emit_loop = [&os](const GPolygon& p) {
+    for (auto it = p.curves_begin(); it != p.curves_end(); ++it) {
+      os << coord_triple(it->source().x()) << " " << coord_triple(it->source().y()) << "\n";
+    }
+  };
+  for (const auto& pwh : boolean_components(input, op)) {
+    if (!pwh.is_unbounded()) emit_loop(pwh.outer_boundary());
+    for (auto h = pwh.holes_begin(); h != pwh.holes_end(); ++h) emit_loop(*h);
+  }
+  return rust::String(os.str());
+}
+
 }  // namespace kirigami
