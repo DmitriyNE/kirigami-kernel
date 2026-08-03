@@ -10,7 +10,13 @@
 //!   the thickened map `C(σ,μ,w)`, and `det J` — all exact rational functions of σ.
 //! - [`tags`] — primitive-tag classification of a chart (cone, cylinder, …) with an
 //!   exact witness (spec §3.6).
+//! - [`stall`] — the hatted stall calculus at a parametrization stall (spec §3.2.2),
+//!   including the `J_raw = p̂·Ĵ` identity.
+//! - [`reparam`] — the REPARAM verb: regenerate a stalled record as a regular one
+//!   (spec §7).
 
 pub mod chart;
 pub mod content;
+pub mod reparam;
+pub mod stall;
 pub mod tags;
