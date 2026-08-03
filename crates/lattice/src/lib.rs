@@ -8,8 +8,8 @@
 //! reference matching Lean's `Int`/`Rat`). Never inline raw bignum ops
 //! elsewhere — go through `lattice`.
 //!
-//! M0 fills this in: exact cmp/sign/gcd, polynomial arithmetic, Sturm sequences
-//! (isolation + sign-on-interval), and bivariate resultants — all behind the
+//! Provides: exact cmp/sign/gcd, polynomial arithmetic, Sturm sequences (root
+//! isolation and sign-on-interval), and bivariate resultants — all behind the
 //! [`backend::Backend`] trait so the concrete bignum crate stays swappable.
 
 extern crate alloc;

@@ -1,5 +1,5 @@
-// The CGAL differential-oracle shim (C++ side). Phase 0 stands up the toolchain
-// with a minimal smoke; Phase 5 adds the Arrangement_2 (circular kernel) oracle.
+// The CGAL differential-oracle shim (C++ side): a build smoke plus the
+// Arrangement_2 (circular kernel) and Boolean_set_operations_2 oracles.
 #include "difftest/src/cgal_shim.h"
 
 #include <CGAL/Gmpq.h>  // CGAL's exact rational over GMP — heavy-enough header + gmp link
@@ -27,7 +27,7 @@ rust::String cgal_smoke() {
   return rust::String(os.str());
 }
 
-// --- Phase-5 circular-kernel arrangement types ---------------------------------
+// --- circular-kernel arrangement types -----------------------------------------
 namespace {
 using Kernel = CGAL::Cartesian<CGAL::Gmpq>;  // FT = Gmpq streams as exact "n/d"
 using Traits = CGAL::Arr_circle_segment_traits_2<Kernel>;
@@ -110,7 +110,7 @@ rust::String cgal_arrange(rust::Str input) {
   return rust::String(os.str());
 }
 
-// --- Phase-5/3c overlap-edge oracle (curve provenance via data traits) ----------
+// --- overlap-edge oracle (curve provenance via data traits) ---------------------
 namespace {
 // Curve data is a bitmask of originating curve ids; overlap merges by OR, so an
 // edge's popcount is the number of input curves that cover it.
@@ -165,7 +165,7 @@ rust::String cgal_arrange_edges(rust::Str input) {
   return rust::String(os.str());
 }
 
-// --- 3d region/boolean oracle A: Boolean_set_operations_2 on circle-segment -------
+// --- region/boolean oracle: Boolean_set_operations_2 on circle-segment ------------
 namespace {
 using GpsTraits = CGAL::Gps_circle_segment_traits_2<Kernel>;
 using GPolygon = GpsTraits::Polygon_2;
@@ -253,7 +253,7 @@ rust::String cgal_boolean_holes(rust::Str input, rust::Str op) {
   return rust::String(os.str());
 }
 
-// Slice-#2 exact-geometry differential: the **boundary vertices** of the boolean `op`
+// Exact-geometry differential: the **boundary vertices** of the boolean `op`
 // output — every outer-boundary and hole X-monotone-arc source point of every component
 // — each as `xa xb xd ya yb yd` (a + b·√d, six exact rationals). Compared against our
 // emitted region's boundary edge endpoints for exact `a+b√d` agreement (not just counts).

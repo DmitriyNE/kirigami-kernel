@@ -19,7 +19,7 @@ pub struct BigInt(pub(crate) IBig);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BigRat(pub(crate) RBig);
 
-/// The M0 backend (`Backend::Int = BigInt`, `Backend::Rat = BigRat`).
+/// The default backend (`Backend::Int = BigInt`, `Backend::Rat = BigRat`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Bignum;
 

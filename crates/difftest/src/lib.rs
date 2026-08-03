@@ -4,15 +4,14 @@
 // permitted, and only for the C++ FFI to CGAL / OpenCascade. It never appears
 // in a certified path — an oracle is compared against stored answers
 // (oracle ∧ audit, never oracle-instead-of-audit), and disagreements are
-// triaged as findings against either side. The FFI shim (a tiny C++ layer,
-// JSON in/out) is wired at M3 so the arrangement grows against CGAL from the
-// start.
+// triaged as findings against either side. The FFI shim is a tiny C++ layer
+// (JSON in/out).
 #![deny(unsafe_op_in_unsafe_fn)]
 
 //! CGAL `Arrangement_2` (circular kernel) and OpenCascade shape-checker oracles.
 
 /// The CGAL FFI oracle (feature `cgal`; needs system CGAL + gmp/mpfr, i.e.
-/// `nix develop`). Phase 0 wires a build smoke; the arrangement oracle grows here.
+/// `nix develop`). Exposes the `Arrangement_2` and boolean oracle entry points.
 #[cfg(feature = "cgal")]
 pub mod cgal;
 

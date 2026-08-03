@@ -6,7 +6,7 @@
 //! point sets agree **exactly** — compared by radical-safe `Surd::cmp`, no
 //! tolerance — up to the quotient. The transverse harness excludes coincident
 //! carriers (so the CGAL degree-≥3 vertices match our touch set one-for-one);
-//! the **coincidence** harness (slice 3c) handles them directly against the CGAL
+//! the **coincidence** harness handles them directly against the CGAL
 //! `Arr_curve_data_traits_2` **overlap-edge** oracle — our merged edge (both
 //! operands) ≡ CGAL's overlap edge (covering count ≥ 2), our residuals ≡ CGAL's
 //! single-count edges.
@@ -428,7 +428,7 @@ mod tests {
         }
     }
 
-    // --- slice 3d: the boolean region differential (Boolean_set_operations_2) ------
+    // --- the boolean region differential (Boolean_set_operations_2) ----------------
 
     use arrange2d::boolean::{BoolOp, OperandId, ledge_dom};
 
@@ -536,12 +536,11 @@ mod tests {
             .unwrap()
     }
 
-    /// Slice-3e Option-B structural cross-check over the **non-pinching** part of the
-    /// full regime: for disjoint and nested operands our emitted (faces, holes) match
-    /// CGAL's independent `General_polygon_with_holes_2` (component, hole) counts —
-    /// including the **annulus △ = one face with one hole**, the case flat π₀ could not
-    /// represent before 3e.1b. (△ of *overlapping* disks stays the documented pinch
-    /// divergence and is excluded here.)
+    /// Structural cross-check over the **non-pinching** part of the full regime: for
+    /// disjoint and nested operands our emitted (faces, holes) match CGAL's independent
+    /// `General_polygon_with_holes_2` (component, hole) counts — including the **annulus
+    /// △ = one face with one hole**. (△ of *overlapping* disks stays the documented
+    /// pinch divergence and is excluded here.)
     #[test]
     fn boolean_faces_holes_match_cgal() {
         // (c1, c2, op) over disjoint + nested configs — all non-pinching.

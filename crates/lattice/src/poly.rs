@@ -13,7 +13,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-/// A polynomial in ℚ[x], coefficients low-degree first (`coeffs[i]` = coeff of xⁱ).
+/// A polynomial in `ℚ[x]`, coefficients low-degree first (`coeffs[i]` = coeff of xⁱ).
 pub struct Poly<B: Backend = Bignum> {
     pub(crate) coeffs: Vec<Rat<B>>,
 }

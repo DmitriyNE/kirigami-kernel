@@ -9,7 +9,7 @@
 //! conical flank) are data in the `fixtures` crate.
 //!
 //! [`content`] — the 2D flat-content primitives (lines, circles, arc/segment
-//! pieces) the §6 arrangement operates on. Landed early with M3a (`arrange2d`);
-//! the M1 chart/spline scope above is separate.
+//! pieces) the §6 arrangement operates on. These are built and used today by
+//! `arrange2d`; the chart/spline layer above is a separate, still-unbuilt scope.
 
 pub mod content;
