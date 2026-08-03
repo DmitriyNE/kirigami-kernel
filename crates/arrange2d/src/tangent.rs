@@ -1,5 +1,5 @@
-//! The general outgoing-tangent azimuth order at an arrangement vertex (M3 slice
-//! 3d) — the DCEL rotation system's angular comparator. Unlike [`super::azimuth`]'s
+//! The general outgoing-tangent azimuth order at an arrangement vertex — the DCEL
+//! rotation system's angular comparator. Unlike [`super::azimuth`]'s
 //! `tag_cmp` (positions of points on ONE fixed circle), this orders the outgoing
 //! tangent **directions** of half-edges leaving a shared vertex, over the mixed
 //! edge kinds (segments + arcs on different circles) that meet there.
@@ -145,7 +145,7 @@ fn curv_cmp<B: Backend>(a: &Outgoing<B>, b: &Outgoing<B>) -> Ordering {
         return a.curv_sign.cmp(&b.curv_sign);
     }
     match a.curv_sign {
-        0 => Ordering::Equal, // both straight, same direction (a coincidence — 3c's domain)
+        0 => Ordering::Equal, // both straight, same direction (a coincidence)
         s => {
             // κ = s/r; for s > 0 a smaller r² is a larger κ, for s < 0 the reverse.
             let by_r2 = a.r2.cmp(&b.r2);

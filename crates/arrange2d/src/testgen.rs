@@ -1,4 +1,4 @@
-//! Shared test-only V&V support for the arrangement (M3a Phase 5).
+//! Shared test-only V&V support for the arrangement.
 //!
 //! One home for what the per-module test modules duplicated (rigid-motion +
 //! exact-on-circle generators, the residual-zero point oracle), plus the two new

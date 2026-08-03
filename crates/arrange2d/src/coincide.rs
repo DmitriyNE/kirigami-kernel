@@ -1,10 +1,9 @@
-//! The stage-2 1D coincidence lattice (M3 slice 3c). When two edges share a
-//! CARRIER (coincident lines / arcs on one circle — the M3a spine's
-//! `CarrierCoincident` branch), an exact 1D domain arrangement on that carrier
-//! decides the normative outcome lattice (spec §6): `disjoint` ⇒ nothing;
-//! `touch-at-point` ⇒ a vertex; `partial overlap` ⇒ one merged edge (both
+//! The 1D coincidence lattice. When two edges share a CARRIER (coincident lines /
+//! arcs on one circle — the spine's `CarrierCoincident` branch), an exact 1D domain
+//! arrangement on that carrier decides the outcome lattice (spec §6): `disjoint` ⇒
+//! nothing; `touch-at-point` ⇒ a vertex; `partial overlap` ⇒ one merged edge (both
 //! operands) + the residual sub-edges; `containment`/`equality` as the degenerate
-//! cases of that same form. The emitted primitives feed 3d's DCEL. Only
+//! cases of that same form. The emitted primitives feed the DCEL. Only
 //! **distinct-source** pairs are coincidences — two pieces of one decomposed curve
 //! are structure, not overlap.
 //!

@@ -1,4 +1,4 @@
-//! Carrier ∩ carrier solving (M3a Phase 1). Line∩line → a rational point;
+//! Carrier ∩ carrier solving. Line∩line → a rational point;
 //! line∩circle & circle∩circle → a quadratic whose two roots are degree-≤2
 //! `lattice::Surd`s sharing one radical `d = Δ` (`Δ<0` → none, `Δ=0` → tangency
 //! identity, `Δ>0` → two points). At most two points, degree ≤ 2.
@@ -8,9 +8,10 @@ use geom::content::{Circle, Line, Point2};
 use lattice::{Backend, Bignum, Rat, Surd};
 
 /// The intersection of two carriers — degree ≤ 2, so at most two points, plus the
-/// shared-carrier degeneracy (identical line/circle carriers). A shared carrier's
-/// 1D coincidence lattice is stage-2 (slice 3c), so M3a reports it and stops: the
-/// spine emits **no** transverse/tangent events for a `SharedCarrier`.
+/// shared-carrier degeneracy (identical line/circle carriers). A shared carrier is
+/// resolved separately by the 1D coincidence lattice ([`crate::coincide`]), so this
+/// step reports it and stops: the spine emits **no** transverse/tangent events for a
+/// `SharedCarrier`.
 ///
 /// `Two` is returned in the sweep order (lexicographic on [`Point2`]) so the
 /// result is canonical regardless of the ± branch labelling.
@@ -22,7 +23,8 @@ pub enum Intersections<B: Backend = Bignum> {
     One(Point2<B>),
     /// Two distinct points; their coordinates share the radical `d = Δ`.
     Two(Point2<B>, Point2<B>),
-    /// Identical carriers (coincident lines / equal circles) — deferred to 3c.
+    /// Identical carriers (coincident lines / equal circles) — resolved by the 1D
+    /// coincidence lattice ([`crate::coincide`]), not here.
     SharedCarrier,
 }
 

@@ -1,16 +1,17 @@
-//! The half-edge arrangement (M3 slice 3d, spec §6 step 1) — the DCEL the eight-step
-//! boolean is minted on. Built from the retained events: every input edge is split
-//! at the arrangement vertices interior to it, coincident sub-edges (same carrier +
-//! same endpoints, distinct sources) are merged with their source multiplicity, and
-//! each surviving sub-edge becomes a twin half-edge pair. The vertex **rotation
-//! system** is the [`super::tangent`] outgoing-tangent azimuth order; faces are
-//! traced from the `next` cycles.
+//! The half-edge arrangement (spec §6 step 1) — the DCEL the boolean runs on. Built
+//! from the retained events: every input edge is split at the arrangement vertices
+//! interior to it, coincident sub-edges (same carrier + same endpoints, distinct
+//! sources) are merged with their source multiplicity, and each surviving sub-edge
+//! becomes a twin half-edge pair. The vertex **rotation system** is the
+//! [`super::tangent`] outgoing-tangent azimuth order; faces are traced from the
+//! `next` cycles.
 //!
-//! This is an untrusted **searcher** (like the rest of `arrange2d`); its two
-//! self-diagnostics — the substrate-link check here (twin pairing complete, no
-//! dangling half-edge, [`Dcel::substrate_link_ok`]) and the ℤ₂² cocycle check (3d.2/
-//! 3d.3) — are kernel-defect detectors, not the region certificate (that is 3e's
-//! CAP-OUT). The `(A, B)` cell labels, selection, and π₀ quotient are slice 3d.2.
+//! This is an untrusted **searcher** (like the rest of `arrange2d`). The
+//! substrate-link check here ([`Dcel::substrate_link_ok`]: twin pairing complete, no
+//! dangling half-edge) is a kernel-defect detector, not the region certificate —
+//! correctness is established by the verified checkers in
+//! [`certify_core::arrange`], run over the emitted labeling by
+//! [`crate::boolean::ledge_dom_certified`].
 
 use certify_core::Verdict;
 use core::cmp::Ordering;
@@ -291,7 +292,7 @@ impl<B: Backend> Dcel<B> {
     /// The **substrate-link diagnostic** (spec §6): twin pairing is a complete
     /// involution, no half-edge is dangling, and `next`/`prev` are mutually inverse
     /// with `next(h)` originating where `h` ends. Validates the overlay's own
-    /// integrity — never the region (that is 3e).
+    /// integrity — not the region certificate ([`certify_core::arrange`] owns that).
     pub fn substrate_link_ok(&self) -> bool {
         let he = &self.halfedges;
         for (h, e) in he.iter().enumerate() {

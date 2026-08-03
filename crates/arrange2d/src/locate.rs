@@ -1,9 +1,9 @@
-//! Exact point-location by horizontal ray-casting (M3 slice 3e, foundation).
+//! Exact point-location by horizontal ray-casting.
 //!
-//! Slice 3e's region rebuild and CAP-OUT assembly need to answer "is this point
-//! inside the region?" and "how many A- / B-curves enclose this point?" exactly,
-//! over lines and circles. This module is the primitive layer: where a horizontal
-//! ray `y = y0` crosses an [`Edge`], and the even-odd crossing parity that follows.
+//! The region rebuild and CAP-OUT assembly need to answer "is this point inside the
+//! region?" and "how many A- / B-curves enclose this point?" exactly, over lines and
+//! circles. This module is the primitive layer: where a horizontal ray `y = y0`
+//! crosses an [`Edge`], and the even-odd crossing parity that follows.
 //!
 //! **The arc crossing lives in a new radical.** A ray `y = y0` (rational) meets the
 //! circle `(x−cx)² + (y0−cy)² = r2` at `x = cx ± √disc`, `disc = r2 − (y0−cy)²` — a
@@ -17,7 +17,7 @@
 //! vertex `y` — the standard ray-casting non-degeneracy. At `y0 = cy` a ray grazes
 //! the two shared x-extrema of a circle's upper/lower pieces (a double-count trap);
 //! at a vertex height it grazes a shared endpoint. Both are a finite set, so a
-//! generic rational `y0` always exists — and the 3e seeder *chooses* its query
+//! generic rational `y0` always exists — and the seeder *chooses* its query
 //! points, so it simply picks generic ones. This module therefore skips the
 //! `y0 = cy` row (and, for segments, uses the straddle rule that counts a shared
 //! vertex once); callers must respect the precondition.
@@ -151,9 +151,9 @@ pub fn rational_below<B: Backend>(s: &Surd<B>) -> Rat<B> {
     a
 }
 
-/// A rational strictly between the surds `lo < hi` — the "rational strictly between
-/// two Surds" primitive the 3e slab decomposition needs to pick generic scanline
-/// heights and interior sample x's. Brackets `[a, b]` with `a < lo`, `b > hi` (via
+/// A rational strictly between the surds `lo < hi` — used to pick generic scanline
+/// heights and interior sample x's for the slab decomposition. Brackets `[a, b]`
+/// with `a < lo`, `b > hi` (via
 /// [`rational_below`]/[`rational_above`]) then bisects until the rational midpoint
 /// lands in the open gap `(lo, hi)`; terminates because the gap has positive width
 /// and the bracket halves each step. Requires `lo < hi`.

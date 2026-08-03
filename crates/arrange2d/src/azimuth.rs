@@ -1,7 +1,7 @@
-//! §8.3 azimuth calculus (M3 slice 3c). The half-angle stereographic tag of a
-//! point on a circle, its exact CCW angular order, and the signed pole-crossing
-//! winding integer — the angular primitive the coincidence lattice (3c) and the
-//! future half-edge azimuth sort (3d) both use.
+//! The azimuth calculus (spec §8.3): the half-angle stereographic tag of a point on
+//! a circle, its exact CCW angular order, and the signed pole-crossing winding
+//! integer — the angular primitive the coincidence lattice ([`crate::coincide`]) and
+//! the half-edge rotation order ([`crate::tangent`]) both build on.
 //!
 //! For a point `p` on circle `(C, r²)` with normal `n = p − C`, the tag is
 //! `t = n_y / (n_x + √r²) = tan(θ/2)` (spec §8.3: `t = n_y/(n_x+ρ)`), stored
