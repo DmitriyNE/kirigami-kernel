@@ -1,0 +1,18 @@
+[package]
+name = "twotier-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bench]]
+name = "twotier"
+harness = false
+
+[dependencies]
+lattice = { path = "../../../crates/lattice" }
+
+[dev-dependencies]
+criterion = "0.5"

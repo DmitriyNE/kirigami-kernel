@@ -1,0 +1,8 @@
+# Throwaway benchmark — does the lattice two-tier Fast(i128)/Slow(dashu) overlay
+# actually beat dashu-only in the small-coordinate regime the fast path targets?
+# Self-contained workspace with its own Cargo.lock, excluded from the root
+# workspace (root Cargo.toml `exclude = ["benchmarks/*"]`). Not built by CI.
+# Reproduce: `cargo bench` inside `nix develop`. Output of record: ../../docs/two-tier-benchmark.md
+[workspace]
+resolver = "2"
+members = ["bench"]
