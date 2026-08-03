@@ -8,6 +8,9 @@
 //! - [`chart`] — the exact chart field layer (spec §3.2): from a quaternion spline
 //!   `q(σ)` and support spline `h(σ)`, the surface normal `n`, ruling `r`, pedal `c`,
 //!   the thickened map `C(σ,μ,w)`, and `det J` — all exact rational functions of σ.
+//! - [`tags`] — primitive-tag classification of a chart (cone, cylinder, …) with an
+//!   exact witness (spec §3.6).
 
 pub mod chart;
 pub mod content;
+pub mod tags;

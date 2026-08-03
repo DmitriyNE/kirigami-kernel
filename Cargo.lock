@@ -321,6 +321,7 @@ dependencies = [
  "arrange2d",
  "closure",
  "geom",
+ "lattice",
  "sew",
 ]
 
