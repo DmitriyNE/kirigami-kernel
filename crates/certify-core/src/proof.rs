@@ -2,7 +2,7 @@
 //! `cargo kani`; see `vv-guide §5/§8`). This is the first Kani surface outside
 //! `lattice` — the slice-3d ℤ₂² cocycle proof.
 
-use crate::arrange::{cocycle_ok, link_ok, v_boundary};
+use crate::arrange::{cocycle_ok, link_iso_ok, link_ok, v_boundary};
 
 // The soundness of the cocycle checker, as **bounded DCEL bookkeeping** (vv-guide
 // §5): if `cocycle_ok` accepts a labeling, then bit propagation is *path
@@ -120,4 +120,56 @@ fn link_ok_iff_no_pinch() {
         i += 1;
     }
     assert!(v_boundary(&s) == (!ref_has_pinch(&s) && has_t && has_f));
+}
+
+// Soundness of the `Link_emitted ≅ Link_geometric` checker (spec §8.5, slice 3e.3):
+// over all permutations of `N` incident edges, the rotation-search `link_iso_ok` agrees
+// with the independent **cyclic-adjacency** characterization — two cyclic orderings are
+// an identity-fixing oriented iso iff every element has the same successor in both. This
+// is exactly what distinguishes a rotation from a crossing (`a→c→b→d`), so the proof
+// certifies the checker audits order, not just the multiset.
+
+/// The element cyclically after the first occurrence of `x` in a permutation `seq`.
+fn succ_of<const N: usize>(seq: &[usize; N], x: usize) -> usize {
+    let mut i = 0;
+    while i < N {
+        if seq[i] == x {
+            return seq[(i + 1) % N];
+        }
+        i += 1;
+    }
+    x // unreachable when `seq` is a permutation containing `x`
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn link_iso_matches_cyclic_adjacency() {
+    const N: usize = 4;
+    let a: [usize; N] = kani::any();
+    let b: [usize; N] = kani::any();
+
+    // Both are permutations of 0..N (distinct, in range) — the incident-edge set of a
+    // vertex, ordered two ways.
+    let mut i = 0;
+    while i < N {
+        kani::assume(a[i] < N && b[i] < N);
+        let mut j = i + 1;
+        while j < N {
+            kani::assume(a[i] != a[j] && b[i] != b[j]);
+            j += 1;
+        }
+        i += 1;
+    }
+
+    // Reference: identical cyclic successor for every value ⟺ same cyclic order.
+    let mut adj_same = true;
+    let mut x = 0;
+    while x < N {
+        if succ_of(&a, x) != succ_of(&b, x) {
+            adj_same = false;
+        }
+        x += 1;
+    }
+
+    assert!(link_iso_ok(&a, &b) == adj_same);
 }

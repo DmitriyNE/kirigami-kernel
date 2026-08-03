@@ -149,6 +149,41 @@ pub fn link_ok(sectors: &[bool]) -> bool {
     !matches!(classify_link(sectors), LinkClass::Pinch)
 }
 
+/// `Link_emitted(v) ≅ Link_geometric(v)` (spec §8.5 / SEW-LINK): do the two cyclic
+/// orderings `a` (the stored face-cycle walk) and `b` (the geometric azimuth sort) of
+/// the incident edges around `v` agree as an **identity-fixing oriented cyclic
+/// isomorphism** — i.e. `a` is a cyclic rotation of `b` (same elements, same cyclic
+/// order and orientation)? This is the *audit* the spec insists on over a mere count:
+/// `a → c → b → d` has the right multiset yet crosses, and is rejected here. Pure,
+/// `no_std`, panic-free; Kani-proven (`link_iso_matches_cyclic_adjacency`).
+pub fn link_iso_ok(a: &[usize], b: &[usize]) -> bool {
+    let n = a.len();
+    if b.len() != n {
+        return false;
+    }
+    if n == 0 {
+        return true;
+    }
+    // Some rotation `off` of `b` matches `a` position-for-position.
+    let mut off = 0;
+    while off < n {
+        let mut matched = true;
+        let mut i = 0;
+        while i < n {
+            if a[i] != b[(i + off) % n] {
+                matched = false;
+                break;
+            }
+            i += 1;
+        }
+        if matched {
+            return true;
+        }
+        off += 1;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +295,27 @@ mod tests {
         );
         assert!(!link_ok(&[true, false, true, false]));
         assert!(!v_boundary(&[true, false, true, false]));
+    }
+
+    // --- Link_emitted ≅ Link_geometric (3e.3) ---
+
+    #[test]
+    fn link_iso_accepts_rotations() {
+        assert!(link_iso_ok(&[0, 1, 2, 3], &[0, 1, 2, 3])); // identical
+        assert!(link_iso_ok(&[0, 1, 2, 3], &[2, 3, 0, 1])); // rotation
+        assert!(link_iso_ok(&[0, 1, 2, 3], &[3, 0, 1, 2])); // rotation
+        assert!(link_iso_ok(&[], &[])); // empty
+        assert!(link_iso_ok(&[5], &[5])); // singleton
+    }
+
+    #[test]
+    fn link_iso_rejects_crossings_and_mismatch() {
+        // The spec's crossing counterexample: same multiset, different cyclic order.
+        assert!(!link_iso_ok(&[0, 1, 2, 3], &[0, 2, 1, 3]));
+        // Reversed orientation is not an identity-fixing *oriented* iso.
+        assert!(!link_iso_ok(&[0, 1, 2, 3], &[0, 3, 2, 1]));
+        // Different length / different elements.
+        assert!(!link_iso_ok(&[0, 1, 2], &[0, 1, 2, 3]));
+        assert!(!link_iso_ok(&[0, 1, 2], &[0, 1, 4]));
     }
 }

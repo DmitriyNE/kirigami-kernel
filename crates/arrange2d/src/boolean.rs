@@ -27,7 +27,7 @@
 //! spec §6 "π₀ keeps them separate, CAP-OUT-LINK rejects the vertex".
 
 use certify_core::Verdict;
-use certify_core::arrange::{LinkClass, classify_link};
+use certify_core::arrange::{LinkClass, classify_link, link_iso_ok};
 use core::cmp::Ordering;
 use geom::content::{Circle, CurveId, Edge, Half};
 use lattice::{Backend, Rat, Surd};
@@ -583,6 +583,55 @@ pub fn has_pinch<B: Backend>(
     link_classes(&d, &sel).contains(&LinkClass::Pinch)
 }
 
+// ---------------------------------------------------------------------------
+// Link_emitted ≅ Link_geometric + completeness bijections (spec §8.5, slice 3e.3).
+// ---------------------------------------------------------------------------
+
+/// `Link_emitted(v)`: the incident outgoing half-edges in the **stored** rotation order
+/// (the CCW orbit of `o ↦ twin(prev(o))`, as wired by `Dcel::link_rotation`).
+fn link_emitted<B: Backend>(d: &Dcel<B>, v: usize) -> Vec<usize> {
+    let start = match (0..d.halfedges.len()).find(|&h| d.halfedges[h].origin == v) {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let mut order = vec![start];
+    let mut o = start;
+    loop {
+        // twin(prev(o)) is the next outgoing half-edge CCW around `v`.
+        o = d.halfedges[d.halfedges[o].prev].twin;
+        if o == start {
+            break;
+        }
+        order.push(o);
+    }
+    order
+}
+
+/// Audit `Link_emitted(v) ≅ Link_geometric(v)` at every vertex (spec §8.5 SEW-LINK): the
+/// stored face-cycle rotation equals the geometric azimuth sort ([`outgoing_sorted`]) as
+/// an identity-fixing oriented cyclic isomorphism (via the Kani-proven
+/// `certify_core::arrange::link_iso_ok`). A searcher-integrity audit of `link_rotation`.
+pub fn links_consistent<B: Backend>(d: &Dcel<B>) -> bool {
+    (0..d.verts.len()).all(|v| link_iso_ok(&link_emitted(d, v), &outgoing_sorted(d, v)))
+}
+
+/// The number of **separating** edges (selected | unselected) for a selection — the
+/// emitted boundary edges (spec §6 step 7: exactly one selected and one unselected side).
+pub fn separating_count<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> usize {
+    (0..d.edges.len())
+        .filter(|&k| sel[d.halfedges[2 * k].cycle] != sel[d.halfedges[2 * k + 1].cycle])
+        .count()
+}
+
+/// Total boundary edges a region emits (outer loops + holes) — the `{separating edges} ↔
+/// {emitted boundary edges}` side of the CAP-OUT completeness bijection (spec §8.5).
+pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
+    r.faces
+        .iter()
+        .map(|f| f.outer.len() + f.holes.iter().map(Vec::len).sum::<usize>())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -923,6 +972,50 @@ mod tests {
                     "pinch count is frame-invariant: c=({:?},{:?})",
                     c1.cx,
                     c2.cx
+                );
+            }
+        }
+    }
+
+    /// The four representative corpus configs (transverse, disjoint, annulus, tangency).
+    fn corpus() -> Vec<Vec<Edge<Bignum>>> {
+        vec![
+            two_disk_edges(&disk(0, 0, 25), &disk(8, 0, 25)), // transverse
+            two_disk_edges(&disk(0, 0, 1), &disk(0, 3, 1)),   // disjoint
+            two_disk_edges(&disk(0, 0, 9), &disk(0, 0, 1)),   // nested annulus
+            two_disk_edges(&disk(0, 0, 4), &disk(1, 0, 1)),   // internal tangency
+        ]
+    }
+
+    /// **Link_emitted ≅ Link_geometric** (3e.3): at every vertex of every corpus
+    /// arrangement, the stored rotation order equals the geometric azimuth sort as an
+    /// identity-fixing oriented cyclic isomorphism — the `link_rotation` integrity audit.
+    #[test]
+    fn links_consistent_on_corpus() {
+        for e in corpus() {
+            let d = Dcel::build(&e);
+            assert!(
+                links_consistent(&d),
+                "Link_emitted ≅ Link_geometric at every vertex"
+            );
+        }
+    }
+
+    /// **{separating edges} ↔ {emitted boundary edges}** (3e.3, CAP-OUT completeness):
+    /// for every op on every corpus config, the number of separating (selected|unselected)
+    /// edges equals the total edges the region emits across its outer loops and holes.
+    #[test]
+    fn separating_boundary_bijection() {
+        for e in corpus() {
+            let d = Dcel::build(&e);
+            let (labels, _) = slab_locate(&d, &ab);
+            for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
+                let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
+                let r = ledge_dom(&e, &ab, op);
+                assert_eq!(
+                    separating_count(&d, &sel),
+                    region_boundary_count(&r),
+                    "separating ↔ boundary edge bijection ({op:?})"
                 );
             }
         }
