@@ -373,11 +373,16 @@ sorry-free** (`#print axioms … [propext, Classical.choice, Quot.sound]`). `Cer
 **dispatch-soundness** layer deductively over the lifted model: `link_ok` returns `false` iff the vertex is a
 `Pinch` (the CAP-OUT-LINK reject rule), `v_boundary ↔ Boundary`, and `V_∂ ⊆ accepted` — all axiom-clean.
 
-**Scoped follow-ups (not gating — the ★ soundness is discharged by the Kani checkers):**
-- **The run-counter refinement** (`cyclic_true_runs` = the cyclic-run count via `loop.spec_decr_nat`, hence
-  the full `link_ok ↔ ≤1 run` matching the Kani property in Lean) and above it **the topological 2-manifold
-  theorem** (CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary; π₀ faces ⇒ valid cycles) remain the
-  frontier. The lift + dispatch soundness are done; the Kani checkers remain the load-bearing discharge.
+**The run-counter refinement is now proven in Lean** (`CertifyCheck.CapOutRefine`, axiom-clean): the
+Aeneas-lifted `cyclic_true_runs` provably computes the mathematical cyclic-run count (`cyclic_true_runs_spec`,
+via `loop.spec_decr_nat` + `step` over the modular-indexing loop, mirroring `sign_variations_spec`), so
+**`link_ok ↔ ≤1 run`** is a deductive theorem (`link_ok_spec`) — the unbounded Lean analogue of the bounded
+Kani `link_ok_iff_no_pinch`, over the extracted model. So the CAP-OUT-LINK ★ carries *both* a Kani proof
+and a Lean refinement.
+
+**Remaining frontier (not gating — research escalation, §5:59):** only **the topological 2-manifold theorem**
+(CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary; π₀ faces ⇒ valid cycles). The checker-soundness
+proofs (Kani + Lean) are the load-bearing discharge.
 - **CGAL Option B** (`Arrangement_2` face iteration) and the **exact per-edge `a+b√d` boundary-set**
   differential — a redundant cross-check of the Option-A `Boolean_set_operations_2` oracle (already
   covering faces + holes); the △-of-overlapping-disks pinch stays the documented spec-aligned divergence
