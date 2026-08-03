@@ -1,13 +1,11 @@
-//! 2D content primitives — the D24 flat-content curve types the §6 arrangement
-//! operates on (spec §6; `docs/vv-guide.md §8` M3a). Directed lines, circles
-//! (stored by squared radius), and the simple x-monotone arc/segment pieces that
-//! canonical decomposition produces. Exact over `lattice` rationals; intersection
-//! coordinates are degree-≤2 [`Surd`]s.
+//! 2D content primitives — the D24 flat-content curve types the arrangement
+//! operates on (spec §6): directed lines, circles (stored by squared radius), and
+//! the simple x-monotone arc/segment pieces that canonical decomposition produces.
+//! Exact over `lattice` rationals; intersection coordinates are degree-≤2 [`Surd`]s.
 //!
-//! This is the M3a slice of `geom`, deliberately separate from the M1
-//! chart/spline scope in the crate-root doc. The arrangement *algorithms*
-//! (predicates, carrier solving, membership, classification) live in `arrange2d`;
-//! these are just the shared primitive types (reused later by closure/sew).
+//! This module holds only the shared primitive *types*. The arrangement algorithms
+//! that consume them (predicates, carrier solving, membership, classification) live
+//! in `arrange2d`.
 
 use core::cmp::Ordering;
 use lattice::{Backend, Bignum, Rat, Surd};
@@ -82,17 +80,17 @@ pub enum Half {
     Lower,
 }
 
-/// Orientation of a source curve — provenance only in M3a; the §8.3 winding
-/// integer (Sturm-isolated poles) is computed in slice 3c (`arrange2d::azimuth`).
+/// Orientation of a source curve (CCW / CW). Carried as provenance on decomposed
+/// pieces; the exact §8.3 winding integer is computed downstream in
+/// `arrange2d::azimuth`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Orient {
     Ccw,
     Cw,
 }
 
-/// Winding as **provenance** on the original curve (pending-v0.25 §1.4):
-/// orientation plus the source span this piece came from — never DCEL-edge
-/// multiplicity.
+/// Winding as **provenance** on the original curve: orientation plus the source
+/// span this piece came from — never DCEL-edge multiplicity.
 #[derive(Debug)]
 pub struct Winding<B: Backend = Bignum> {
     pub orient: Orient,
@@ -101,7 +99,7 @@ pub struct Winding<B: Backend = Bignum> {
 
 /// A simple x-monotone circular-arc piece — canonical decomposition output. The
 /// arc of `circle` on `half` spanning `[x_lo, x_hi]`, with endpoints and source
-/// provenance. No piece spans more than one simple point-set arc (pending-v0.25).
+/// provenance. No piece spans more than one simple point-set arc.
 #[derive(Debug)]
 pub struct ArcPiece<B: Backend = Bignum> {
     pub circle: Circle<B>,

@@ -1,17 +1,22 @@
 //! Pure arrangement checkers.
 //!
-//! The **ℤ₂² cocycle-closure check** ([`cocycle_ok`], spec §6 step 4 — every closed
-//! walk returns its bits, a kernel-defect detector no local check sees) lands at
-//! slice 3d; it is proven by Kani (bounded DCEL bookkeeping, `vv-guide §5`) over the
-//! flat index-array certificate the `arrange2d` searcher emits.
+//! These are the trusted, formally-verified core of the `arrange2d` boolean engine.
+//! The engine itself is an untrusted searcher; it emits a flat index-array
+//! certificate, and these checkers re-derive its correctness. Each is pure, total,
+//! `no_std`, panic-free, and Kani-proven — they form the extraction surface into
+//! Lean. They consume only index arrays and bitmasks, never coordinates.
 //!
-//! **CAP-OUT-LINK** ([`classify_link`] / [`v_boundary`] / [`link_ok`], spec §8.5,
-//! slice 3e.2) classifies a vertex from its cyclic sector-selected mask and computes
-//! `V_∂` membership — the frame-invariant manifold/pinch test, Kani-proven
-//! (`link_ok_iff_no_pinch`). Still to come in slice 3e: `Link_emitted ≅
-//! Link_geometric` as an identity-fixing oriented isomorphism (3e.3) and the CAP-OUT
-//! completeness bijections (components ↔ faces, separating edges ↔ boundary edges,
-//! V_∂ ↔ emitted vertices). The DCEL / boolean searcher lives in the `arrange2d` crate.
+//! - [`cocycle_ok`] — the ℤ₂² cocycle-closure check (spec §6 step 4): every closed
+//!   walk returns its bits, catching a mis-paired-twin / dropped-event defect no
+//!   local check sees. Proven by `cocycle_implies_telescoping`.
+//! - [`classify_link`] / [`v_boundary`] / [`link_ok`] — CAP-OUT-LINK (spec §8.5):
+//!   classify a vertex from its cyclic sector-selected mask and compute `V_∂`
+//!   membership. The frame-invariant manifold/pinch test. Proven by
+//!   `link_ok_iff_no_pinch`.
+//! - [`link_iso_ok`] — `Link_emitted ≅ Link_geometric` (spec §8.5): the two cyclic
+//!   orders agree as an identity-fixing oriented isomorphism.
+//!
+//! The DCEL / boolean searcher these certify lives in the `arrange2d` crate.
 
 /// The ℤ₂² cocycle-closure check (spec §6 step 4) over a flat, index-array
 /// certificate of the DCEL bit propagation. Pure, total, and **panic-free** (all
@@ -29,7 +34,7 @@
 /// (every closed walk telescopes its flips to `0` — the `cocycle_implies_telescoping`
 /// Kani proof), so acceptance certifies there is no frustrated cycle: the
 /// mis-paired-twin / dropped-event defect class the spec calls out. It does **not**
-/// certify the region (that is CAP-OUT, 3e) — only the overlay's ℤ₂² integrity.
+/// certify the region (that is CAP-OUT) — only the overlay's ℤ₂² integrity.
 pub fn cocycle_ok(
     n_cells: usize,
     labels: &[u8],
@@ -69,9 +74,9 @@ pub fn cocycle_ok(
 
 /// The local classification of a vertex's link from its **cyclic sector-selected
 /// mask** — the selection bits of the faces incident to `v`, in azimuth order (spec
-/// §8.5 CAP-OUT-LINK, slice 3e). This is the frame-invariant manifold test: the
-/// classification depends only on the geometric sector order, never on the axis-aligned
-/// decomposition, so it resolves the tangency case 3d left frame-dependent.
+/// §8.5 CAP-OUT-LINK). This is the frame-invariant manifold test: the classification
+/// depends only on the geometric sector order, never on the axis-aligned
+/// decomposition, so the tangency case is well-defined regardless of frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LinkClass {
     /// No selected sector — `v` is exterior to the selected region (`v ∉ V_∂`).
@@ -149,7 +154,7 @@ pub fn link_ok(sectors: &[bool]) -> bool {
     !matches!(classify_link(sectors), LinkClass::Pinch)
 }
 
-/// `Link_emitted(v) ≅ Link_geometric(v)` (spec §8.5 / SEW-LINK): do the two cyclic
+/// `Link_emitted(v) ≅ Link_geometric(v)` (spec §8.5): do the two cyclic
 /// orderings `a` (the stored face-cycle walk) and `b` (the geometric azimuth sort) of
 /// the incident edges around `v` agree as an **identity-fixing oriented cyclic
 /// isomorphism** — i.e. `a` is a cyclic rotation of `b` (same elements, same cyclic
@@ -246,7 +251,7 @@ mod tests {
         assert!(!cocycle_ok(2, &labels, 0, &[0, 1], &[1], &ef));
     }
 
-    // --- CAP-OUT-LINK: V_∂ classification (3e.2) ---
+    // --- CAP-OUT-LINK: V_∂ classification ---
 
     #[test]
     fn link_exterior_and_interior() {
@@ -297,7 +302,7 @@ mod tests {
         assert!(!v_boundary(&[true, false, true, false]));
     }
 
-    // --- Link_emitted ≅ Link_geometric (3e.3) ---
+    // --- Link_emitted ≅ Link_geometric ---
 
     #[test]
     fn link_iso_accepts_rotations() {

@@ -1,10 +1,10 @@
-//! The event-spine driver (M3a Phase 4) — spec §6 steps 1–4, branch priority
-//! most-degenerate-first: (1) CARRIER-COINCIDENT first (its result is deferred to
-//! the stage-2 1D coincidence lattice, slice 3c — the seam is here); (2) else
-//! solve carrier ∩ carrier; (3) interval membership on both edges before any
-//! classification; (4) classify the survivors. The untrusted searcher entry
-//! (`arrange_events`), returning a `certify_core::Verdict` of the emitted
-//! `EventSet` + a replayable [`super::witness`].
+//! The event-spine driver — spec §6 steps 1–4, branch priority most-degenerate-
+//! first: (1) CARRIER-COINCIDENT first (resolved by the 1D coincidence lattice,
+//! [`crate::coincide`] — the seam is here); (2) else solve carrier ∩ carrier; (3)
+//! interval membership on both edges before any classification; (4) classify the
+//! survivors. The untrusted searcher entry (`arrange_events`) returns a
+//! `certify_core::Verdict` of the emitted `EventSet` + a replayable
+//! [`super::witness`].
 
 use certify_core::{MarginSq, Verdict};
 use core::convert::Infallible;
@@ -22,8 +22,8 @@ use crate::witness::{PairWitness, SpineBranch, TouchWitness, Witness};
 /// The searcher entry's verdict: `Verified((events, coincidence edges, witness))`
 /// at degree ≤ 2 (always — every predicate is total), `Unresolved(margin)` reserved
 /// for the L3 escalation, and `Refuted` [`Infallible`] (the searcher computes,
-/// never refutes). The `CoincSet` is the stage-2 1D-coincidence output (3c) — the
-/// merged + residual sub-edges 3d's DCEL consumes.
+/// never refutes). The `CoincSet` is the 1D-coincidence output — the merged +
+/// residual sub-edges the DCEL consumes.
 pub type CoincSet<B> = Vec<CoincEdge<B>>;
 pub type ArrangeVerdict<B> =
     Verdict<(EventSet<B>, CoincSet<B>, Witness<B>), Infallible, MarginSq<Rat<B>>>;
@@ -69,7 +69,7 @@ fn arrange_pair<B: Backend>(
     a: &Edge<B>,
     b: &Edge<B>,
 ) -> PairResult<B> {
-    // (1) CARRIER-COINCIDENT first — the stage-2 1D coincidence lattice (3c).
+    // (1) CARRIER-COINCIDENT first — the 1D coincidence lattice.
     // Coincident circles satisfy the internal-tangency identity, so testing
     // coincidence before tangency is what stops the mislabel.
     if carrier_coincident(a, b) {
@@ -137,7 +137,7 @@ fn arrange_pair<B: Backend>(
 /// plus the replayable [`Witness`]. All pairs, most-degenerate-first, with ℓ=0
 /// vertex dedup. Always `Verified` at degree ≤ 2 (every predicate is total);
 /// `Unresolved(margin)` is reserved for the L3 escalation, and `Refuted` is
-/// [`Infallible`] — the searcher computes, it never refutes (that is the M3e
+/// [`Infallible`] — the searcher computes, it never refutes (that is the verified
 /// checker's role).
 pub fn arrange_events<B: Backend>(edges: &[Edge<B>]) -> ArrangeVerdict<B> {
     let mut set = EventSet::new();
@@ -243,8 +243,8 @@ mod tests {
     }
 
     /// Corpus `cx_antipodal_arcs`: two arcs on the SAME circle share a carrier →
-    /// shared carrier, zero events, zero merged edges (the refutation of one-stage
-    /// merging; the 1D overlap decision is deferred to 3c).
+    /// shared carrier, zero events, zero merged edges (the 1D overlap decision is
+    /// made by the coincidence lattice, not the spine).
     #[test]
     fn cx_antipodal_arcs() {
         let arcs = [

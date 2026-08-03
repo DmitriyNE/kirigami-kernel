@@ -6,7 +6,7 @@
 //! point sets agree **exactly** — compared by radical-safe `Surd::cmp`, no
 //! tolerance — up to the quotient. The transverse harness excludes coincident
 //! carriers (so the CGAL degree-≥3 vertices match our touch set one-for-one);
-//! the **coincidence** harness (slice 3c) handles them directly against the CGAL
+//! the **coincidence** harness handles them directly against the CGAL
 //! `Arr_curve_data_traits_2` **overlap-edge** oracle — our merged edge (both
 //! operands) ≡ CGAL's overlap edge (covering count ≥ 2), our residuals ≡ CGAL's
 //! single-count edges.
@@ -15,7 +15,9 @@
 //! see identical geometry; the segment is far wider than any small-coordinate
 //! intersection.
 
-use crate::cgal::{cgal_arrange, cgal_arrange_edges, cgal_boolean_count, cgal_boolean_holes};
+use crate::cgal::{
+    cgal_arrange, cgal_arrange_edges, cgal_boolean_boundary, cgal_boolean_count, cgal_boolean_holes,
+};
 use arrange2d::decompose::decompose;
 use arrange2d::event::{CoincEdge, Operand};
 use arrange2d::spine::arrange_events;
@@ -426,7 +428,7 @@ mod tests {
         }
     }
 
-    // --- slice 3d: the boolean region differential (Boolean_set_operations_2) ------
+    // --- the boolean region differential (Boolean_set_operations_2) ----------------
 
     use arrange2d::boolean::{BoolOp, OperandId, ledge_dom};
 
@@ -534,12 +536,11 @@ mod tests {
             .unwrap()
     }
 
-    /// Slice-3e Option-B structural cross-check over the **non-pinching** part of the
-    /// full regime: for disjoint and nested operands our emitted (faces, holes) match
-    /// CGAL's independent `General_polygon_with_holes_2` (component, hole) counts —
-    /// including the **annulus △ = one face with one hole**, the case flat π₀ could not
-    /// represent before 3e.1b. (△ of *overlapping* disks stays the documented pinch
-    /// divergence and is excluded here.)
+    /// Structural cross-check over the **non-pinching** part of the full regime: for
+    /// disjoint and nested operands our emitted (faces, holes) match CGAL's independent
+    /// `General_polygon_with_holes_2` (component, hole) counts — including the **annulus
+    /// △ = one face with one hole**. (△ of *overlapping* disks stays the documented
+    /// pinch divergence and is excluded here.)
     #[test]
     fn boolean_faces_holes_match_cgal() {
         // (c1, c2, op) over disjoint + nested configs — all non-pinching.
@@ -562,6 +563,90 @@ mod tests {
                 our_holes(c1, c2, op),
                 cgal_holes(c1, c2, ops),
                 "hole count {c1:?} {c2:?} {ops}"
+            );
+        }
+    }
+
+    /// A point-set deduped by radical-safe `Point2` equality.
+    fn dedup_points(v: Vec<P>) -> Vec<P> {
+        let mut out: Vec<P> = Vec::new();
+        for p in v {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        out
+    }
+    /// Our boolean output's boundary vertex set (every outer + hole edge endpoint).
+    fn our_boundary_verts(c1: Disk, c2: Disk, op: BoolOp) -> Vec<P> {
+        let mk = |c: Disk, src: u32| {
+            decompose(&Curve::Circle {
+                circle: Circle {
+                    cx: qi(c.0),
+                    cy: qi(c.1),
+                    r2: qi(c.2),
+                },
+                orient: Orient::Ccw,
+                source: CurveId(src),
+            })
+        };
+        let mut edges = mk(c1, 0);
+        edges.extend(mk(c2, 1));
+        let operand = |s: CurveId| if s.0 == 0 { OperandId::A } else { OperandId::B };
+        let region = ledge_dom(&edges, &operand, op);
+        let mut vs = Vec::new();
+        for f in &region.faces {
+            for e in f.outer.iter().chain(f.holes.iter().flatten()) {
+                let (s, t) = match e {
+                    Edge::Seg(s) => (s.start.clone(), s.end.clone()),
+                    Edge::Arc(a) => (a.start.clone(), a.end.clone()),
+                };
+                vs.push(s);
+                vs.push(t);
+            }
+        }
+        dedup_points(vs)
+    }
+    /// CGAL's boolean boundary vertex set, parsed from the `xa xb xd ya yb yd` triples.
+    fn cgal_boundary_verts(c1: Disk, c2: Disk, op: &str) -> Vec<P> {
+        let out = cgal_boolean_boundary(&cgal_bool_input(c1, c2), op);
+        let vs = out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                Point2 {
+                    x: Surd::new(parse_q(t[0]), parse_q(t[1]), parse_q(t[2])),
+                    y: Surd::new(parse_q(t[3]), parse_q(t[4]), parse_q(t[5])),
+                }
+            })
+            .collect();
+        dedup_points(vs)
+    }
+
+    /// **Exact `a+b√d` boundary-geometry differential** (#2): the boolean output's
+    /// boundary vertex set matches CGAL's `General_polygon_with_holes_2` boundary
+    /// exactly (radical-safe `Surd` equality, no tolerance) — not just face/hole counts.
+    /// Covers disjoint + nested (the non-pinching regime) with **rational** (`r²∈{4,25}`)
+    /// and **irrational** (`r²∈{2,8}` → `±√2`, `±2√2` extrema) radii, so the `a+b√d`
+    /// path is genuinely exercised.
+    #[test]
+    fn boolean_boundary_geometry_matches_cgal() {
+        let cases: &[(Disk, Disk, BoolOp, &str)] = &[
+            ((0, 0, 4), (9, 0, 4), BoolOp::Or, "or"), // disjoint, rational extrema
+            ((0, 0, 2), (9, 0, 2), BoolOp::Or, "or"), // disjoint, ±√2 extrema
+            ((0, 0, 25), (0, 0, 4), BoolOp::And, "and"), // nested ∩ = inner
+            ((0, 0, 25), (0, 0, 4), BoolOp::Or, "or"), // nested ∪ = outer
+            ((0, 0, 25), (0, 0, 4), BoolOp::Xor, "xor"), // annulus
+            ((0, 0, 8), (0, 0, 2), BoolOp::Xor, "xor"), // annulus, ±2√2 / ±√2
+        ];
+        for &(c1, c2, op, ops) in cases {
+            assert!(
+                same_points(
+                    &our_boundary_verts(c1, c2, op),
+                    &cgal_boundary_verts(c1, c2, ops)
+                ),
+                "boundary vertex geometry {c1:?} {c2:?} {ops}"
             );
         }
     }

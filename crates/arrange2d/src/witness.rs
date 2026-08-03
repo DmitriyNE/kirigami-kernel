@@ -1,9 +1,8 @@
-//! The replayable `(claim, certificate)` a searcher emits (M3a Phase 4). Per
-//! event: the branch taken, the vanishing minors / discriminant `Δ`, the
-//! membership comparisons, and the tangency-identity value — everything the
-//! future `certify_core::arrange` checker (M3e) needs to re-verify *without*
-//! re-searching. Designed and populated now; validated by differential + property
-//! + corpus until the checker lands.
+//! The replayable `(claim, certificate)` a searcher emits. Per event: the branch
+//! taken, the vanishing minors / discriminant `Δ`, the membership comparisons, and
+//! the tangency-identity value — everything a `certify_core::arrange` checker needs
+//! to re-verify *without* re-searching. Populated by the spine; cross-checked by the
+//! differential + property + corpus tests.
 
 use geom::content::{CurveId, Point2};
 use lattice::{Backend, Bignum, Surd};
@@ -11,7 +10,7 @@ use lattice::{Backend, Bignum, Surd};
 /// Which stratum of the spine a pair fell into (spec §6 most-degenerate-first).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpineBranch {
-    /// Step 1: the carriers coincide (deferred to the stage-2 1D lattice, 3c).
+    /// Step 1: the carriers coincide (resolved by the 1D coincidence lattice).
     CarrierCoincident,
     /// Steps 2–3: carriers meet in no retained point (parallel/disjoint, or every
     /// candidate discarded by membership).
@@ -20,7 +19,7 @@ pub enum SpineBranch {
     Touches,
 }
 
-/// A retained touch, with the exact value the M3e checker re-tests: `det` is the
+/// A retained touch, with the exact value a checker re-tests: `det` is the
 /// classification determinant `det(ċ_A, ċ_B)` — its sign is transversality, and
 /// `det = 0` is the exact tangency identity. (`Δ` and the membership comparisons
 /// are recomputable locally by the checker from the two carriers and this point,
@@ -40,8 +39,8 @@ impl<B: Backend> Clone for TouchWitness<B> {
     }
 }
 
-/// The stage-2 1D-coincidence outcome for a `CarrierCoincident` pair (slice 3c) —
-/// the normative outcome lattice collapsed to the emitted-shape classes. `touches`
+/// The 1D-coincidence outcome for a `CarrierCoincident` pair — the outcome lattice
+/// collapsed to the emitted-shape classes. `touches`
 /// counts touch-at-point vertices; `merged`/`residuals` count the emitted
 /// coincidence sub-edges. The checker re-derives the spans from the two carriers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

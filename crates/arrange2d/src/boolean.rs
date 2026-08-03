@@ -1,30 +1,38 @@
-//! The eight-step boolean (M3 slice 3d, spec §6:289 steps 2–8) — the general D24
-//! boolean engine over the [`super::dcel`] arrangement. Seeds the unbounded cell
-//! `(A,B) = (0,0)`, propagates the ℤ₂² operand bits across edges (∂F_A flips A,
-//! ∂F_B flips B, a coincident edge flips both), self-checks the ℤ₂² cocycle
-//! (every closed walk returns its bits), selects by a pluggable boolean
-//! (△ = A⊕B, ∧, ∨), emits only separating edges (the three-way law), and takes
-//! faces = π₀ of the selected cells along selected|selected edges.
+//! Boolean operations (∪ / ∩ / △) over two regions bounded by lines and circular arcs.
 //!
-//! This is the untrusted **searcher**. The cocycle check is done here as the §6
-//! step-4 self-diagnostic ([`CellLabeling::cocycle_ok`]); its *proof* — the pure
-//! checker in `certify_core::arrange` over the flat certificate this module exposes
-//! — is slice 3d.3.
+//! Given the decomposed input edges and a map from each source curve to operand `A` or
+//! `B`, [`ledge_dom`] computes the boolean and returns a [`Region`]: one [`Face`] per
+//! connected component, each with an outer boundary loop (CCW) and counter-oriented hole
+//! loops (CW). An annulus, for example, is one face with one hole.
 //!
-//! **Scope note (regime handled).** Cells are the traced DCEL cycles, labeled by
-//! **exact point-location** — the horizontal-slab decomposition of [`slab_locate`]
-//! (3e.1), which seeds every cell independently (not a single BFS). The boolean is now
-//! exact and **frame-invariant across the full regime**: transverse-crossing overlaps,
-//! identical/coincident, disjoint, nested (annulus), and **tangency** (internal /
-//! external). The cocycle closes on all of them; [`ledge_dom`] emits [`Face`]s carrying
-//! an outer loop plus counter-oriented holes (an annulus `△` is one face with one
-//! hole), and its face counts are invariant under rational rigid motion + rescaling
-//! over the whole regime — the boundary-loop [`emit_region`] (3e.1b) removed the
-//! tangency frame-dependence 3d had (the crescent traces as one face regardless of
-//! where the decomposition splits). Pinch points (a △ touching itself at a crossing or
-//! tangent point) are classified frame-invariantly by CAP-OUT-LINK ([`has_pinch`] /
-//! [`link_classes`], 3e.2, over the Kani-proven `certify_core::arrange::classify_link`):
-//! spec §6 "π₀ keeps them separate, CAP-OUT-LINK rejects the vertex".
+//! # How it works
+//!
+//! 1. Build the arrangement half-edge structure ([`super::dcel`]).
+//! 2. Label every cell with its `(inside-A, inside-B)` membership by exact
+//!    point-location (a horizontal-slab ray-cast; see [`super::locate`]).
+//! 3. Select the cells the operation keeps: `△ = A⊕B`, `∩ = A∧B`, `∪ = A∨B` ([`BoolOp`]).
+//! 4. Trace the boundary between kept and dropped cells into the output face loops.
+//!
+//! It is exact and invariant under rigid motion and rescaling across the full input
+//! regime: transversely crossing, tangent, disjoint, nested, and identical/coincident
+//! operands.
+//!
+//! # Certified vs plain entry
+//!
+//! - [`ledge_dom`] emits a [`Region`] unconditionally — fast, and correct for valid
+//!   input, but performs no self-check.
+//! - [`ledge_dom_certified`] returns the same region wrapped in a `Verdict`: it runs the
+//!   formally verified [`certify_core::arrange`] checkers over the *emitted* region and
+//!   reports any internal inconsistency as a [`CapOutFault`] (`Refuted`) rather than a
+//!   silently-wrong region. On success it also classifies the arrangement vertices into
+//!   `V_∂` (manifold shell vertices) and pinch points.
+//!
+//! # Pinch points
+//!
+//! Where a symmetric difference touches itself at a single point — the crossings of two
+//! overlapping disks, or a tangency — the two lobes meet only at that vertex. This is a
+//! valid result: the lobes are emitted as separate faces meeting at the point, and the
+//! vertex is reported as a *pinch* (excluded from `V_∂`), not treated as an error.
 
 use certify_core::Verdict;
 use certify_core::arrange::{LinkClass, classify_link, link_iso_ok};
@@ -39,29 +47,31 @@ use crate::locate::{
 
 /// An `(A, B)` ℤ₂² cell label.
 type Label = (bool, bool);
-/// A rational sample point `(x, y)` — an interior witness of a cell (3e point-location).
+/// A rational point `(x, y)` known to lie in the interior of a cell.
 type Pt<B> = (Rat<B>, Rat<B>);
 
-/// Which operand a source curve bounds (the two-operand ℤ₂² model).
+/// Which of the two operands a source curve belongs to. Every input curve is assigned
+/// `A` or `B`; the boolean combines the region bounded by the `A` curves with the region
+/// bounded by the `B` curves.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperandId {
     A,
     B,
 }
 
-/// The pluggable selection over the propagated `(A, B)` cell label (spec §6 step 6).
+/// The boolean operation to compute.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoolOp {
-    /// Symmetric difference `A ⊕ B` (the closure △).
+    /// Symmetric difference, `A △ B` — in exactly one operand.
     Xor,
-    /// Intersection `A ∧ B`.
+    /// Intersection, `A ∩ B` — in both operands.
     And,
-    /// Union `A ∨ B`.
+    /// Union, `A ∪ B` — in either operand.
     Or,
 }
 
 impl BoolOp {
-    /// Apply the selection to a cell's `(A, B)` label.
+    /// Whether a cell with membership `(inside_a, inside_b)` is kept by this operation.
     pub fn select(self, label: (bool, bool)) -> bool {
         let (a, b) = label;
         match self {
@@ -72,25 +82,55 @@ impl BoolOp {
     }
 }
 
-/// One emitted output face (spec §6 step 8 — one face per π₀ component of the selected
-/// region, never per cell): its **outer** boundary loop (CCW) and its **holes** (CW,
-/// counter-oriented inner loops — the unselected regions strictly enclosed by it).
-/// Together an outer + holes describe a `General_polygon_with_holes` (the CGAL oracle).
+/// One face of the output region: an `outer` boundary loop (counterclockwise) and zero
+/// or more `holes` (clockwise inner loops — regions strictly enclosed by `outer` but not
+/// part of the face). Each loop is the sequence of boundary edges, in order.
 pub struct Face<B: Backend> {
     pub outer: Vec<Edge<B>>,
     pub holes: Vec<Vec<Edge<B>>>,
 }
 
-/// The emitted region: the connected components of the selected cells.
+/// A boolean result: one [`Face`] per connected component of the region.
 pub struct Region<B: Backend> {
     pub faces: Vec<Face<B>>,
 }
 
-/// The **flat certificate** of the cell labeling — a flattened, index-array view of
-/// the DCEL bit propagation, exactly what the 3d.3 `certify_core::arrange` cocycle
-/// checker (Kani-harnessable / Charon-extractable) consumes. `adj[k] = (cyc_a,
-/// cyc_b, flip_a, flip_b)` is the k-th undirected edge: crossing it between its two
-/// incident cells flips `A` iff `flip_a`, `B` iff `flip_b`.
+/// Why [`ledge_dom_certified`] refused a region: an internal-consistency check that a
+/// correctly-built region always passes. A fault therefore indicates a bug in the
+/// constructor, not an unsupported input — each variant names the failed check and the
+/// class of defect it catches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CapOutFault {
+    /// The half-edge structure is malformed — a broken twin pairing or a dangling
+    /// half-edge ([`Dcel::substrate_link_ok`]).
+    SubstrateLink,
+    /// The cell membership labeling is inconsistent — some closed walk does not return
+    /// to its starting label, indicating a mis-paired twin or a dropped intersection
+    /// event (rejected by the verified `certify_core::arrange::cocycle_ok`).
+    Cocycle,
+    /// At vertex `v`, the stored edge rotation disagrees with the geometric azimuth order
+    /// (rejected by the verified `certify_core::arrange::link_iso_ok`).
+    Link { vertex: usize },
+    /// The number of emitted boundary edges does not equal the number of edges separating
+    /// a kept cell from a dropped one — emission dropped or duplicated a boundary edge.
+    Bijection,
+}
+
+/// A certified boolean result: the emitted [`Region`] plus a classification of the
+/// arrangement vertices. `v_boundary` lists the manifold shell vertices (`V_∂`);
+/// `pinches` lists the points where the region touches itself (see the module-level
+/// "Pinch points" note) — valid, but not manifold boundary vertices.
+pub struct CapOut<B: Backend> {
+    pub region: Region<B>,
+    pub v_boundary: Vec<usize>,
+    pub pinches: Vec<usize>,
+}
+
+/// The cell membership labeling in the flat, index-array form the
+/// `certify_core::arrange::cocycle_ok` checker consumes. `labels[c]` is cell `c`'s
+/// `(inside_a, inside_b)`; `adj[k] = (cyc_a, cyc_b, flip_a, flip_b)` is the k-th edge —
+/// crossing it flips `A` iff `flip_a` and `B` iff `flip_b`; `seed` is an outer `(0,0)`
+/// cell; `cocycle_ok` is the checker's verdict on this labeling.
 pub struct CellLabeling {
     pub n_cycles: usize,
     pub labels: Vec<(bool, bool)>,
@@ -116,11 +156,9 @@ fn edge_flips<B: Backend>(
     (ca % 2 == 1, cb % 2 == 1)
 }
 
-/// Propagate the ℤ₂² cell labels over the DCEL and self-check the cocycle (spec §6
-/// steps 2–4). Labels every cell by exact point-location (3e.1), anchors the checker
-/// at an unbounded `(0,0)` cell, then certifies consistency by flowing the labeling
-/// through the pure, Kani-proven `certify_core::arrange::cocycle_ok` (3d.3). Returns
-/// the flat certificate (`labels`, `adj`, `seed`) that checker consumes.
+/// Compute the `(inside_a, inside_b)` membership of every arrangement cell and run the
+/// consistency check on it. Membership is found by exact point-location; the result is a
+/// [`CellLabeling`] whose `cocycle_ok` field is the verified checker's verdict.
 pub fn label_cells<B: Backend>(
     d: &Dcel<B>,
     operand_of: &impl Fn(CurveId) -> OperandId,
@@ -135,26 +173,20 @@ pub fn label_cells<B: Backend>(
         })
         .collect();
 
-    // Label every cycle by exact point-location (the horizontal-slab decomposition,
-    // 3e.1). This replaces the single-seed BFS, which could not reach cycles in a
-    // disconnected cell-adjacency graph — one geometric face (the unbounded one
-    // especially, and every hole) is bounded by several traced cycles that share no
-    // edge, so BFS left them mislabeled and the cocycle failed on disjoint/nested
-    // inputs. Point-location seeds every cycle independently and consistently; the
-    // cocycle check below now certifies that consistency instead of masking a gap.
+    // Label every cell by exact point-location. Each cell (a traced boundary cycle) is
+    // labeled independently, so the result is correct even when the cell-adjacency graph
+    // is disconnected — as it is for disjoint operands and for holes, where one region is
+    // bounded by several cycles that share no edge.
     let labels = label_all_cycles(d, operand_of);
 
-    // The checker's anchor is any unbounded `(A,B) = (0,0)` cell — the region outside
-    // every operand always exists. (The old `unbounded_cycle` searched the leftmost
-    // vertex's rotation, but the most-CCW outgoing half-edge there bounds an *interior*
-    // cell, not the unbounded one; 3d masked that by force-seeding it `(0,0)`.)
+    // The checker anchors at an unbounded `(A,B) = (0,0)` cell — the region outside every
+    // operand, which always exists. Any such cell works.
     let seed = labels
         .iter()
         .position(|&l| l == (false, false))
         .unwrap_or(0);
 
-    // The ℤ₂² cocycle self-diagnostic (spec §6 step 4): the searcher's computed
-    // labeling flows through the *proven* pure checker (Kani-verified, 3d.3).
+    // Run the verified consistency checker on the computed labeling.
     let labels_u8: Vec<u8> = labels.iter().map(|&(a, b)| pack(a, b)).collect();
     let (ea, eb, ef) = flat_edges(&adj);
     let cocycle_ok = certify_core::arrange::cocycle_ok(d.n_cycles, &labels_u8, seed, &ea, &eb, &ef);
@@ -216,6 +248,22 @@ fn critical_ys<B: Backend>(d: &Dcel<B>) -> Vec<Surd<B>> {
     ys.sort();
     ys.dedup();
     ys
+}
+
+/// Is `y0` a **generic** ray height — strictly avoiding every arrangement vertex `y`
+/// and every circle centre `cy` (the `winding_parity` genericity precondition, `locate`)?
+/// A slab band height is generic by construction *iff* [`critical_ys`] is complete; this
+/// is the self-check that makes an incomplete critical set (a dropped vertex / circle
+/// upstream) a **detected** fault rather than a silent-wrong label. See the
+/// `debug_assert!` in [`slab_locate`] and `slab_heights_generic` (proptest).
+fn generic_height<B: Backend>(d: &Dcel<B>, y0: &Rat<B>) -> bool {
+    let y0s = Surd::from_rat(y0.clone());
+    if d.verts.iter().any(|p| p.y.cmp(&y0s) == Ordering::Equal) {
+        return false;
+    }
+    circles_of(d)
+        .iter()
+        .all(|c| c.cy.cmp(y0) != Ordering::Equal)
 }
 
 /// The sub-edges bounding operand `want` (any covering source maps to it) — the
@@ -282,12 +330,11 @@ fn arc_down_he<B: Backend>(
     }
 }
 
-/// Label **every** cycle by exact point-location over the horizontal-slab
-/// decomposition (3e.1): for each gap between consecutive critical heights, cast one
-/// generic rational ray, and for each cell the ray crosses set its `(A, B)` label
-/// from the even-odd `winding_parity` of a rational interior sample against the A- and
-/// B-boundary edges. Robust to disconnected / nested arrangements (unlike the BFS it
-/// replaces); the cocycle check downstream certifies the result.
+/// Label every cell by exact point-location. For each horizontal slab between consecutive
+/// critical heights, cast one generic rational ray; for each cell the ray crosses, set its
+/// `(A, B)` label from the even-odd `winding_parity` of an interior sample against the A-
+/// and B-boundary edges. Labels every cell independently, so it is correct even when the
+/// arrangement is disconnected or nested (disjoint operands, holes).
 fn label_all_cycles<B: Backend>(
     d: &Dcel<B>,
     operand_of: &impl Fn(CurveId) -> OperandId,
@@ -295,9 +342,9 @@ fn label_all_cycles<B: Backend>(
     slab_locate(d, operand_of).0
 }
 
-/// The slab decomposition, returning both the per-cycle `(A, B)` labels **and** a
-/// rational interior sample point of each cycle's face — the latter reused by 3e.1b's
-/// boundary-loop orientation / hole-nesting (a point known to be inside a given cell).
+/// The slab decomposition, returning both the per-cell `(A, B)` labels and a rational
+/// point known to lie inside each cell. Boundary-loop orientation and hole-nesting use the
+/// interior points to decide which cell a traced loop bounds.
 fn slab_locate<B: Backend>(
     d: &Dcel<B>,
     operand_of: &impl Fn(CurveId) -> OperandId,
@@ -323,6 +370,16 @@ fn slab_locate<B: Backend>(
         band_ys.push(rational_between(&w[0], &w[1]));
     }
     band_ys.push(rational_above(&crit[crit.len() - 1]));
+
+    // Genericity self-check (#4): every band ray must strictly avoid all vertex y's and
+    // circle centres. This holds by construction iff `critical_ys` is complete; a fire
+    // here is a dropped-vertex / missing-circle defect that would otherwise mis-count a
+    // parity and silently mislabel a cell. Debug-only (zero release cost); exercised by
+    // the whole property/differential suite.
+    debug_assert!(
+        band_ys.iter().all(|y0| generic_height(d, y0)),
+        "slab band height grazed a vertex y or circle centre — critical_ys is incomplete"
+    );
 
     let a_edges = &a_edges;
     let b_edges = &b_edges;
@@ -501,10 +558,36 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
     Region { faces }
 }
 
-/// The full eight-step boolean: build the DCEL, label the cells by exact point-location
-/// (3e.1), select by `op`, then emit the region as outer + hole loops (spec §6 steps
-/// 1–8). Never `Refuted` (searcher); a cocycle failure is surfaced through
-/// [`ledge_dom_checked`], not here.
+/// Compute the boolean `op` of the two operands and return the result region.
+///
+/// Builds the arrangement, labels every cell by exact point-location, keeps the cells
+/// `op` selects, and traces the kept region into faces (outer loop + holes). This is the
+/// plain entry point: it always emits a region. To have the emitted region checked by the
+/// verified checkers, use [`ledge_dom_certified`].
+///
+/// ```
+/// use arrange2d::boolean::{ledge_dom, BoolOp, OperandId};
+/// use arrange2d::decompose::decompose;
+/// use geom::content::{Circle, Curve, CurveId, Orient};
+/// use lattice::{Bignum, Rat};
+///
+/// let disk = |cx, cy, r2, src| decompose(&Curve::Circle {
+///     circle: Circle {
+///         cx: Rat::<Bignum>::from_i128(cx),
+///         cy: Rat::from_i128(cy),
+///         r2: Rat::from_i128(r2),
+///     },
+///     orient: Orient::Ccw,
+///     source: CurveId(src),
+/// });
+/// let mut edges = disk(0, 0, 25, 0);
+/// edges.extend(disk(8, 0, 25, 1));
+/// let operand_of = |c: CurveId| if c.0 == 0 { OperandId::A } else { OperandId::B };
+///
+/// // Intersection of the two overlapping disks is the single lens.
+/// let lens = ledge_dom(&edges, &operand_of, BoolOp::And);
+/// assert_eq!(lens.faces.len(), 1);
+/// ```
 pub fn ledge_dom<B: Backend>(
     edges: &[Edge<B>],
     operand_of: &impl Fn(CurveId) -> OperandId,
@@ -516,27 +599,150 @@ pub fn ledge_dom<B: Backend>(
     emit_region(&d, &sel, &reps)
 }
 
-/// Convenience: the boolean as a `Verdict` carrying the labeling's cocycle verdict
-/// (the searcher self-diagnostic). `Refuted` is [`core::convert::Infallible`].
+/// Compute the boolean `op` and certify the result (spec §8.5 CAP-OUT).
+///
+/// Same result as [`ledge_dom`], but every output runs through the verified checkers, and
+/// any defect is reported as a [`CapOutFault`] instead of a silently-wrong region. The
+/// region is emitted from the *same* labeling the checkers certify, so what is verified is
+/// exactly what is returned.
+///
+/// The gates, in order:
+/// - the DCEL's twin-pairing integrity ([`CapOutFault::SubstrateLink`]);
+/// - the ℤ₂² `cocycle_ok` consistency of the cell labeling ([`CapOutFault::Cocycle`]);
+/// - `Link_emitted ≅ Link_geometric` at every vertex ([`CapOutFault::Link`]);
+/// - the `{separating edges} ↔ {boundary edges}` bijection ([`CapOutFault::Bijection`]).
+///
+/// The middle two are Kani-proven. On success it returns the [`CapOut`], which carries the
+/// region together with the CAP-OUT-LINK classification of the arrangement vertices (the
+/// boundary set `V_∂` and the pinch points). Pinches are valid — a symmetric difference
+/// pinches at its crossings — so they are reported, not refused.
+///
+/// ```
+/// use arrange2d::boolean::{ledge_dom_certified, BoolOp, CapOut, OperandId};
+/// use arrange2d::decompose::decompose;
+/// use certify_core::Verdict;
+/// use geom::content::{Circle, Curve, CurveId, Orient};
+/// use lattice::{Bignum, Rat};
+///
+/// let disk = |cx, cy, r2, src| decompose(&Curve::Circle {
+///     circle: Circle {
+///         cx: Rat::<Bignum>::from_i128(cx),
+///         cy: Rat::from_i128(cy),
+///         r2: Rat::from_i128(r2),
+///     },
+///     orient: Orient::Ccw,
+///     source: CurveId(src),
+/// });
+/// let mut edges = disk(0, 0, 25, 0);
+/// edges.extend(disk(8, 0, 25, 1));
+/// let operand_of = |c: CurveId| if c.0 == 0 { OperandId::A } else { OperandId::B };
+///
+/// match ledge_dom_certified(&edges, &operand_of, BoolOp::Or) {
+///     // The region passed every verified checker; `v_boundary` / `pinches` classify
+///     // the arrangement vertices.
+///     Verdict::Verified(CapOut { region, .. }) => assert_eq!(region.faces.len(), 1),
+///     // A fault means a constructor bug, not unsupported input.
+///     Verdict::Refuted(fault) => panic!("CAP-OUT refuted: {fault:?}"),
+///     Verdict::Unresolved(()) => unreachable!(),
+/// }
+/// ```
+pub fn ledge_dom_certified<B: Backend>(
+    edges: &[Edge<B>],
+    operand_of: &impl Fn(CurveId) -> OperandId,
+    op: BoolOp,
+) -> Verdict<CapOut<B>, CapOutFault, ()> {
+    let d = Dcel::build(edges);
+    if !d.substrate_link_ok() {
+        return Verdict::Refuted(CapOutFault::SubstrateLink);
+    }
+    let (labels, reps) = slab_locate(&d, operand_of);
+    certify_from_labels(&d, operand_of, op, labels, reps)
+}
+
+/// The certification core, taking the labeling explicitly so the gates can be exercised
+/// on a deliberately-corrupted labeling in tests (a correct searcher never trips them).
+fn certify_from_labels<B: Backend>(
+    d: &Dcel<B>,
+    operand_of: &impl Fn(CurveId) -> OperandId,
+    op: BoolOp,
+    labels: Vec<Label>,
+    reps: Vec<Pt<B>>,
+) -> Verdict<CapOut<B>, CapOutFault, ()> {
+    // (1) ℤ₂² cocycle over THIS labeling (spec §6 step 4) — the Kani-proven checker.
+    let adj: Vec<(usize, usize, bool, bool)> = (0..d.edges.len())
+        .map(|k| {
+            let (fa, fb) = edge_flips(&d.edges[k], operand_of);
+            (
+                d.halfedges[2 * k].cycle,
+                d.halfedges[2 * k + 1].cycle,
+                fa,
+                fb,
+            )
+        })
+        .collect();
+    let seed = labels
+        .iter()
+        .position(|&l| l == (false, false))
+        .unwrap_or(0);
+    let labels_u8: Vec<u8> = labels.iter().map(|&(a, b)| pack(a, b)).collect();
+    let (ea, eb, ef) = flat_edges(&adj);
+    if !certify_core::arrange::cocycle_ok(d.n_cycles, &labels_u8, seed, &ea, &eb, &ef) {
+        return Verdict::Refuted(CapOutFault::Cocycle);
+    }
+
+    // (2) Link_emitted ≅ Link_geometric at every vertex (spec §8.5) — Kani-proven.
+    for v in 0..d.verts.len() {
+        if !link_iso_ok(&link_emitted(d, v), &outgoing_sorted(d, v)) {
+            return Verdict::Refuted(CapOutFault::Link { vertex: v });
+        }
+    }
+
+    // (3) select + emit from THIS labeling (spec §6 steps 6–8).
+    let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
+    let region = emit_region(d, &sel, &reps);
+
+    // (4) {separating edges} ↔ {emitted boundary edges} completeness (spec §8.5).
+    if separating_count(d, &sel) != region_boundary_count(&region) {
+        return Verdict::Refuted(CapOutFault::Bijection);
+    }
+
+    // CAP-OUT-LINK classification (informational): V_∂ = manifold shell vertices,
+    // pinches = non-manifold touch points (valid, but not in V_∂).
+    let classes = link_classes(d, &sel);
+    let v_boundary = (0..classes.len())
+        .filter(|&v| classes[v] == LinkClass::Boundary)
+        .collect();
+    let pinches = (0..classes.len())
+        .filter(|&v| classes[v] == LinkClass::Pinch)
+        .collect();
+    Verdict::Verified(CapOut {
+        region,
+        v_boundary,
+        pinches,
+    })
+}
+
+/// The certified region as a plain `Verdict<Region, _, _>` — a thin wrapper over
+/// [`ledge_dom_certified`] that drops the [`CapOut`] classification and collapses any
+/// [`CapOutFault`] to `Unresolved` (this signature's `Refuted` type is
+/// [`core::convert::Infallible`]). Use when you only want the region and a pass/fail.
 pub fn ledge_dom_checked<B: Backend>(
     edges: &[Edge<B>],
     operand_of: &impl Fn(CurveId) -> OperandId,
     op: BoolOp,
 ) -> Verdict<Region<B>, core::convert::Infallible, ()> {
-    let d = Dcel::build(edges);
-    let cl = label_cells(&d, operand_of);
-    if !cl.cocycle_ok {
-        return Verdict::Unresolved(());
+    match ledge_dom_certified(edges, operand_of, op) {
+        Verdict::Verified(c) => Verdict::Verified(c.region),
+        Verdict::Refuted(_) | Verdict::Unresolved(()) => Verdict::Unresolved(()),
     }
-    Verdict::Verified(ledge_dom(edges, operand_of, op))
 }
 
 // ---------------------------------------------------------------------------
-// CAP-OUT-LINK (spec §8.5, slice 3e.2b) — the searcher side of the V_∂ / manifold
-// classifier. At each vertex the incident faces, taken in azimuth order, give a cyclic
-// sector-selected mask; `certify_core::arrange::classify_link` classifies it. The order
-// is `dir_cmp` (geometric), so the per-vertex class is **frame-invariant** — the net
-// for the tangency case whose raw face count is not.
+// CAP-OUT-LINK (spec §8.5) — the searcher side of the V_∂ / manifold classifier. At each
+// vertex the incident faces, taken in azimuth order, give a cyclic sector-selected mask;
+// `certify_core::arrange::classify_link` classifies it. The order is `dir_cmp`
+// (geometric), so the per-vertex class is frame-invariant — which is what makes the
+// tangency case, whose raw face count is not frame-invariant, well-defined.
 // ---------------------------------------------------------------------------
 
 /// The outgoing half-edges at vertex `v`, in the rotation-system (azimuth) order.
@@ -584,7 +790,7 @@ pub fn has_pinch<B: Backend>(
 }
 
 // ---------------------------------------------------------------------------
-// Link_emitted ≅ Link_geometric + completeness bijections (spec §8.5, slice 3e.3).
+// Link_emitted ≅ Link_geometric + completeness bijections (spec §8.5).
 // ---------------------------------------------------------------------------
 
 /// `Link_emitted(v)`: the incident outgoing half-edges in the **stored** rotation order
@@ -607,10 +813,11 @@ fn link_emitted<B: Backend>(d: &Dcel<B>, v: usize) -> Vec<usize> {
     order
 }
 
-/// Audit `Link_emitted(v) ≅ Link_geometric(v)` at every vertex (spec §8.5 SEW-LINK): the
-/// stored face-cycle rotation equals the geometric azimuth sort ([`outgoing_sorted`]) as
-/// an identity-fixing oriented cyclic isomorphism (via the Kani-proven
-/// `certify_core::arrange::link_iso_ok`). A searcher-integrity audit of `link_rotation`.
+/// Check `Link_emitted(v) ≅ Link_geometric(v)` at every vertex (spec §8.5): the stored
+/// face-cycle rotation equals the geometric azimuth sort as an identity-fixing
+/// oriented cyclic isomorphism (via the Kani-proven
+/// `certify_core::arrange::link_iso_ok`). Audits that the DCEL's rotation wiring matches
+/// the true geometry at each vertex.
 pub fn links_consistent<B: Backend>(d: &Dcel<B>) -> bool {
     (0..d.verts.len()).all(|v| link_iso_ok(&link_emitted(d, v), &outgoing_sorted(d, v)))
 }
@@ -635,10 +842,45 @@ pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geom::content::{Circle, Curve, Orient};
+    use geom::content::{Circle, Curve, Line, Orient, Point2, SegPiece};
     use lattice::{Bignum, Rat};
 
     type Q = Rat<Bignum>;
+
+    /// A closed polygon operand: the CCW loop of segments through `verts`, tagged `src`.
+    fn polygon(verts: &[(i128, i128)], src: u32) -> Vec<Edge<Bignum>> {
+        let n = verts.len();
+        (0..n)
+            .map(|i| {
+                let (sx, sy) = verts[i];
+                let (ex, ey) = verts[(i + 1) % n];
+                let (a, b) = (Q::from_i128(-(ey - sy)), Q::from_i128(ex - sx));
+                let c = a
+                    .mul(&Q::from_i128(sx))
+                    .add(&b.mul(&Q::from_i128(sy)))
+                    .neg();
+                Edge::Seg(Box::new(SegPiece {
+                    line: Line { a, b, c },
+                    start: Point2::from_rat(Q::from_i128(sx), Q::from_i128(sy)),
+                    end: Point2::from_rat(Q::from_i128(ex), Q::from_i128(ey)),
+                    orient: Orient::Ccw,
+                    source: CurveId(src),
+                }))
+            })
+            .collect()
+    }
+    /// The number of certified output faces of `op`, panicking on any CAP-OUT refutation.
+    fn certified_faces(
+        edges: &[Edge<Bignum>],
+        operand_of: &impl Fn(CurveId) -> OperandId,
+        op: BoolOp,
+    ) -> usize {
+        match ledge_dom_certified(edges, operand_of, op) {
+            Verdict::Verified(c) => c.region.faces.len(),
+            Verdict::Refuted(f) => panic!("CAP-OUT refuted a valid boolean: {f:?}"),
+            Verdict::Unresolved(()) => panic!("unresolved"),
+        }
+    }
 
     fn circle_edges(cx: i128, cy: i128, r2: i128, src: u32) -> Vec<Edge<Bignum>> {
         crate::decompose::decompose(&Curve::Circle {
@@ -805,12 +1047,10 @@ mod tests {
         }
     }
 
-    /// **Disjoint operands are now handled exactly** (3e.1): point-location seeds each
-    /// connected component of the cell-adjacency graph independently, so the two
-    /// separate disks' cells are labeled correctly and the cocycle closes — where 3d
-    /// could only self-detect the disconnection as `Unresolved`. Two separate unit
-    /// disks (centres 3 apart): outside `(0,0)`, disk-A `(1,0)`, disk-B `(0,1)`; no
-    /// `(1,1)` overlap cell.
+    /// Disjoint operands: two separate unit disks (centres 3 apart). Because every cell is
+    /// point-located independently, the disconnected arrangement still labels consistently
+    /// and the cocycle closes. Cells: outside `(0,0)`, disk-A `(1,0)`, disk-B `(0,1)` — no
+    /// `(1,1)` overlap cell. ∪ = two disks, ∩ = empty, △ = two disks.
     #[test]
     fn disjoint_operands_now_correct() {
         let e = two_disk_edges(&disk(0, 0, 1), &disk(0, 3, 1));
@@ -846,11 +1086,10 @@ mod tests {
         );
     }
 
-    /// **Nested operands (annulus) are now handled exactly** (3e.1): concentric disks,
-    /// the inner strictly inside the outer. The three cells — outside `(0,0)`, the
-    /// annulus between them `(1,0)` (in A = outer, not B = inner), and the inner disk
-    /// `(1,1)` — label consistently. ∩ = the inner disk, △ = the annulus, ∪ = the
-    /// outer disk.
+    /// Nested operands (annulus): concentric disks, the inner strictly inside the outer.
+    /// The three cells — outside `(0,0)`, the annulus between them `(1,0)` (in A = outer,
+    /// not B = inner), and the inner disk `(1,1)` — label consistently. ∩ = the inner
+    /// disk, △ = the annulus, ∪ = the outer disk.
     #[test]
     fn nested_operands_now_correct() {
         // A = outer (source 0, r²=9), B = inner (source 1, r²=1), concentric.
@@ -879,8 +1118,8 @@ mod tests {
             "the filled outer disk has no hole"
         );
 
-        // △ = the annulus: ONE face (the ring) with ONE hole (the inner disk) — the
-        // Face-with-holes nesting (3e.1b), where flat π₀ would have emitted two faces.
+        // △ = the annulus: ONE face (the ring) with ONE hole (the inner disk) — hole
+        // nesting collapses what would otherwise be two separate boundary loops.
         let xor = ledge_dom(&e, &ab, BoolOp::Xor);
         assert_eq!(xor.faces.len(), 1, "△ = the annulus is one face");
         assert_eq!(
@@ -900,10 +1139,10 @@ mod tests {
         ));
     }
 
-    /// **CAP-OUT-LINK detects the internal-tangency pinch** (3e.2): c1=(0,0,4) r=2 and
-    /// c2=(1,0,1) r=1 are internally tangent at (2,0). Their △ (the crescent) pinches to
-    /// a point there — CAP-OUT-LINK classifies that vertex as a non-manifold `Pinch`,
-    /// while ∪ (the outer disk) and ∩ (the inner disk) are smooth at the touch (no pinch).
+    /// CAP-OUT-LINK detects the internal-tangency pinch: c1=(0,0,4) r=2 and c2=(1,0,1) r=1
+    /// are internally tangent at (2,0). Their △ (the crescent) pinches to a point there —
+    /// CAP-OUT-LINK classifies that vertex as a non-manifold `Pinch`, while ∪ (the outer
+    /// disk) and ∩ (the inner disk) are smooth at the touch (no pinch).
     #[test]
     fn internal_tangency_pinch_detected() {
         let e = two_disk_edges(&disk(0, 0, 4), &disk(1, 0, 1));
@@ -915,10 +1154,10 @@ mod tests {
         assert!(!has_pinch(&e, &ab, BoolOp::And), "∩ = inner disk, smooth");
     }
 
-    /// The tangency pinch is **frame-invariant** — the net CAP-OUT-LINK provides where
-    /// the raw face count is not (3d.4b): whether △ pinches survives every rational
-    /// rigid motion, even though the motion moves the tangent point off the x-extremum
-    /// and re-splits the decomposition. External tangency likewise pinches under △.
+    /// The tangency pinch is frame-invariant: whether △ pinches survives every rational
+    /// rigid motion, even though the motion moves the tangent point off the x-extremum and
+    /// re-splits the decomposition (the raw face count is not frame-invariant, but the
+    /// pinch classification is). External tangency likewise pinches under △.
     #[test]
     fn tangency_pinch_rigid_invariant() {
         let cfgs = [
@@ -950,10 +1189,10 @@ mod tests {
             .count()
     }
 
-    /// **CAP-OUT-LINK is the frame-invariant net** (3e.2): the pinch count of a △ is the
-    /// same in every frame, even where the raw vertex count is not — a rigid motion moves
-    /// a tangent point off the x-extremum (adding smooth extremum vertices) but never
-    /// changes how many vertices are genuine non-manifold pinches.
+    /// The pinch count of a △ is the same in every frame, even where the raw vertex count
+    /// is not — a rigid motion moves a tangent point off the x-extremum (adding smooth
+    /// extremum vertices) but never changes how many vertices are genuine non-manifold
+    /// pinches.
     #[test]
     fn pinch_count_rigid_invariant() {
         let cfgs = [
@@ -987,9 +1226,9 @@ mod tests {
         ]
     }
 
-    /// **Link_emitted ≅ Link_geometric** (3e.3): at every vertex of every corpus
-    /// arrangement, the stored rotation order equals the geometric azimuth sort as an
-    /// identity-fixing oriented cyclic isomorphism — the `link_rotation` integrity audit.
+    /// Link_emitted ≅ Link_geometric: at every vertex of every corpus arrangement, the
+    /// stored rotation order equals the geometric azimuth sort as an identity-fixing
+    /// oriented cyclic isomorphism.
     #[test]
     fn links_consistent_on_corpus() {
         for e in corpus() {
@@ -1001,9 +1240,9 @@ mod tests {
         }
     }
 
-    /// **{separating edges} ↔ {emitted boundary edges}** (3e.3, CAP-OUT completeness):
-    /// for every op on every corpus config, the number of separating (selected|unselected)
-    /// edges equals the total edges the region emits across its outer loops and holes.
+    /// {separating edges} ↔ {emitted boundary edges} (CAP-OUT completeness): for every op
+    /// on every corpus config, the number of separating (selected|unselected) edges equals
+    /// the total edges the region emits across its outer loops and holes.
     #[test]
     fn separating_boundary_bijection() {
         for e in corpus() {
@@ -1021,15 +1260,140 @@ mod tests {
         }
     }
 
+    /// The certified entry accepts the whole corpus (transverse, disjoint, annulus,
+    /// tangency) for every op — all four CAP-OUT gates (substrate-link, cocycle, Link≅geom,
+    /// bijection) pass over the emitted region.
+    #[test]
+    fn certified_verified_on_corpus() {
+        for e in corpus() {
+            for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
+                assert!(
+                    matches!(ledge_dom_certified(&e, &ab, op), Verdict::Verified(_)),
+                    "CAP-OUT must certify a valid boolean ({op:?})"
+                );
+            }
+        }
+    }
+
+    /// The CAP-OUT-LINK classification carried by the certificate: a △ pinches at every
+    /// crossing/tangent point (2 for transverse overlap, 1 for internal tangency), while
+    /// ∪/∩ are manifold (no pinch). These vertices are reported, not refuted.
+    #[test]
+    fn certified_pinch_classification() {
+        let got = |e: &[Edge<Bignum>], op| match ledge_dom_certified(e, &ab, op) {
+            Verdict::Verified(c) => c.pinches.len(),
+            _ => panic!("expected Verified"),
+        };
+        let transverse = two_disk_edges(&disk(0, 0, 25), &disk(8, 0, 25));
+        assert_eq!(got(&transverse, BoolOp::Xor), 2, "transverse △: 2 pinches");
+        assert_eq!(got(&transverse, BoolOp::Or), 0, "∪ is manifold");
+        assert_eq!(got(&transverse, BoolOp::And), 0, "∩ is manifold");
+        let tangency = two_disk_edges(&disk(0, 0, 4), &disk(1, 0, 1));
+        assert_eq!(
+            got(&tangency, BoolOp::Xor),
+            1,
+            "internal tangency △: 1 pinch"
+        );
+    }
+
+    /// **The gate is real, not decorative:** a deliberately-corrupted labeling (one
+    /// cell's A-bit flipped, breaking the ℤ₂² cochain) is *refuted* with `Cocycle` —
+    /// where the plain `ledge_dom` would have silently emitted a wrong region.
+    #[test]
+    fn certified_refutes_corrupted_labeling() {
+        let e = two_disks();
+        let d = Dcel::build(&e);
+        let (mut labels, reps) = slab_locate(&d, &ab);
+        labels[0].0 = !labels[0].0; // break the cochain around cell 0
+        assert!(matches!(
+            certify_from_labels(&d, &ab, BoolOp::Or, labels, reps),
+            Verdict::Refuted(CapOutFault::Cocycle)
+        ));
+    }
+
+    /// The slab genericity self-check (#4) distinguishes a grazing height (equal to a
+    /// vertex y or a circle centre — the silent-wrong risk) from a generic one. Two disks
+    /// (0,0,25),(8,0,25): vertices at y ∈ {−3,0,3}, centre cy = 0.
+    #[test]
+    fn generic_height_detects_grazing() {
+        let d = Dcel::build(&two_disks());
+        assert!(
+            !generic_height(&d, &Q::from_i128(0)),
+            "y=0 = cy and the extrema y"
+        );
+        assert!(
+            !generic_height(&d, &Q::from_i128(3)),
+            "y=3 = the crossing vertices"
+        );
+        assert!(generic_height(&d, &Q::new(1, 2)), "y=1/2 is generic");
+    }
+
+    /// **Boolean over polygon (segment) operands** (#3) — the disks-only corpus never
+    /// exercised line-bounded regions. Two overlapping 4×4 squares: ∪ = one face, ∩ =
+    /// the 2×2 overlap, △ certifies (two L-shapes pinched at the crossings).
+    #[test]
+    fn boolean_over_polygons() {
+        let mut e = polygon(&[(0, 0), (4, 0), (4, 4), (0, 4)], 0);
+        e.extend(polygon(&[(2, 2), (6, 2), (6, 6), (2, 6)], 1));
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::Or),
+            1,
+            "∪ of overlapping squares"
+        );
+        assert_eq!(certified_faces(&e, &ab, BoolOp::And), 1, "∩ is the overlap");
+        assert!(matches!(
+            ledge_dom_certified(&e, &ab, BoolOp::Xor),
+            Verdict::Verified(_)
+        ));
+    }
+
+    /// **Mixed line+circle operands** (#3): a 6×6 square A with a radius-2 disk B fully
+    /// inside it. ∩ = the disk, ∪ = the square, △ = the square with a disk-shaped hole
+    /// (one face, one hole) — the polygon analogue of the annulus.
+    #[test]
+    fn boolean_mixed_line_circle() {
+        let mut e = polygon(&[(0, 0), (6, 0), (6, 6), (0, 6)], 0);
+        e.extend(circle_edges(3, 3, 4, 1));
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::And),
+            1,
+            "∩ = the inner disk"
+        );
+        assert_eq!(certified_faces(&e, &ab, BoolOp::Or), 1, "∪ = the square");
+        match ledge_dom_certified(&e, &ab, BoolOp::Xor) {
+            Verdict::Verified(c) => {
+                assert_eq!(c.region.faces.len(), 1, "△ = one face");
+                assert_eq!(c.region.faces[0].holes.len(), 1, "with a disk hole");
+            }
+            Verdict::Refuted(f) => panic!("△ refuted: {f:?}"),
+            Verdict::Unresolved(()) => panic!("△ unresolved"),
+        }
+    }
+
+    /// **Degree-6 arrangement vertex** (#3): three circles through the common point
+    /// (0,0) — (1,0,1),(0,1,1),(1,1,2) — where the corpus never went past degree 4.
+    /// Operands A = {two circles}, B = {one}. The certified entry must Verify for every
+    /// op (CAP-OUT-LINK is proven up to ≤6 sectors).
+    #[test]
+    fn boolean_degree6_vertex() {
+        let mut e = circle_edges(1, 0, 1, 0);
+        e.extend(circle_edges(0, 1, 1, 1));
+        e.extend(circle_edges(1, 1, 2, 2));
+        let op3 = |s: CurveId| if s.0 <= 1 { OperandId::A } else { OperandId::B };
+        for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
+            assert!(
+                matches!(ledge_dom_certified(&e, &op3, op), Verdict::Verified(_)),
+                "degree-6 boolean must certify ({op:?})"
+            );
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
         /// The boolean's output face count (△/∩/∪) is invariant under a rational rigid
-        /// motion — the whole DCEL + eight-step + point-location pipeline is
-        /// frame-independent across the **full** regime: transverse, tangent, disjoint,
-        /// nested, identical. (3d scoped this to `crosses_twice` because the tangency
-        /// count was frame-dependent under the old π₀-over-cells emission; the 3e.1b
-        /// boundary-loop emission fixed that, so the restriction is lifted.)
+        /// motion — the whole pipeline is frame-independent across the full regime:
+        /// transverse, tangent, disjoint, nested, identical.
         #[test]
         fn boolean_face_count_rigid_invariant(
             x1 in -3i128..=3, y1 in -3i128..=3, r1 in 1i128..=6,

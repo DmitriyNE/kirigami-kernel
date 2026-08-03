@@ -1,11 +1,11 @@
-//! Shared test-only V&V support for the arrangement (M3a Phase 5).
+//! Shared test-only V&V support for the arrangement.
 //!
-//! One home for what the per-module test modules duplicated (rigid-motion +
-//! exact-on-circle generators, the residual-zero point oracle), plus the two new
-//! Phase-5 pieces: the `resultant_bivariate` **count** oracle (an intersection
-//! cardinality computed by Sylvester + fraction-free Bareiss — sharing nothing
-//! with `carrier.rs`'s discriminant), and the stratum-weighted input strategy with
-//! the `ARRANGE_STRATUM_WEIGHT` degenerate-heavy knob. Compiled only under `test`.
+//! One home for what the per-module test modules would otherwise duplicate:
+//! rigid-motion + exact-on-circle generators, the residual-zero point oracle, the
+//! `resultant_bivariate` **count** oracle (an intersection cardinality computed by
+//! Sylvester + fraction-free Bareiss — sharing nothing with `carrier.rs`'s
+//! discriminant), and the stratum-weighted input strategy with the
+//! `ARRANGE_STRATUM_WEIGHT` degenerate-heavy knob. Compiled only under `test`.
 
 #![allow(dead_code)]
 

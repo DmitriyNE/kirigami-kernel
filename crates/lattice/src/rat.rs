@@ -25,7 +25,9 @@ use core::fmt;
 
 /// Exact integer: `i128` fast path over the backend BigInt slow path.
 pub enum Int<B: Backend = Bignum> {
+    /// Value fits in `i128` — arithmetic stays on the fast path until it overflows.
     Fast(i128),
+    /// Value exceeded `i128`; held in the backend's arbitrary-precision integer.
     Slow(B::Int),
 }
 
@@ -45,16 +47,20 @@ fn demote_int<B: Backend>(i: B::Int) -> Int<B> {
 }
 
 impl<B: Backend> Int<B> {
+    /// The integer with value `v` (on the fast path).
     pub fn from_i128(v: i128) -> Self {
         Int::Fast(v)
     }
+    /// The integer `0`.
     pub fn zero() -> Self {
         Int::Fast(0)
     }
+    /// The integer `1`.
     pub fn one() -> Self {
         Int::Fast(1)
     }
 
+    /// `self + o` (stays on the fast path until it overflows `i128`).
     pub fn add(&self, o: &Self) -> Self {
         if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
             if let Some(r) = a.checked_add(*b) {
@@ -63,6 +69,7 @@ impl<B: Backend> Int<B> {
         }
         demote_int::<B>(B::int_add(&to_slow_int(self), &to_slow_int(o)))
     }
+    /// `self - o`.
     pub fn sub(&self, o: &Self) -> Self {
         if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
             if let Some(r) = a.checked_sub(*b) {
@@ -71,6 +78,7 @@ impl<B: Backend> Int<B> {
         }
         demote_int::<B>(B::int_sub(&to_slow_int(self), &to_slow_int(o)))
     }
+    /// `self * o`.
     pub fn mul(&self, o: &Self) -> Self {
         if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
             if let Some(r) = a.checked_mul(*b) {
@@ -79,6 +87,7 @@ impl<B: Backend> Int<B> {
         }
         demote_int::<B>(B::int_mul(&to_slow_int(self), &to_slow_int(o)))
     }
+    /// `-self`.
     pub fn neg(&self) -> Self {
         if let Int::Fast(a) = self {
             if let Some(r) = a.checked_neg() {
@@ -94,6 +103,7 @@ impl<B: Backend> Int<B> {
             Int::Slow(i) => B::int_sign(i),
         }
     }
+    /// Whether `self == 0`.
     pub fn is_zero(&self) -> bool {
         match self {
             Int::Fast(a) => *a == 0,
@@ -190,7 +200,9 @@ impl<B: Backend> fmt::Debug for Int<B> {
 /// Exact rational: L0 `SmallRat` fast path over the backend `Rat` slow path.
 /// Always canonical (reduced, `den > 0`).
 pub enum Rat<B: Backend = Bignum> {
+    /// Numerator and denominator both fit `i128` — arithmetic stays on the fast path.
     Fast(SmallRat),
+    /// Overflowed the fast path; held in the backend's arbitrary-precision rational.
     Slow(B::Rat),
 }
 
@@ -237,6 +249,7 @@ impl<B: Backend> Rat<B> {
         }
     }
 
+    /// `self + o` (stays on the fast path until it overflows `i128`).
     pub fn add(&self, o: &Self) -> Self {
         if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
             if let Some(r) = small::add(x, y) {
@@ -245,6 +258,7 @@ impl<B: Backend> Rat<B> {
         }
         demote_rat::<B>(B::rat_add(&to_slow_rat(self), &to_slow_rat(o)))
     }
+    /// `self - o`.
     pub fn sub(&self, o: &Self) -> Self {
         if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
             if let Some(r) = small::sub(x, y) {
@@ -253,6 +267,7 @@ impl<B: Backend> Rat<B> {
         }
         demote_rat::<B>(B::rat_sub(&to_slow_rat(self), &to_slow_rat(o)))
     }
+    /// `self * o`.
     pub fn mul(&self, o: &Self) -> Self {
         if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
             if let Some(r) = small::mul(x, y) {
@@ -279,6 +294,7 @@ impl<B: Backend> Rat<B> {
         }
         demote_rat::<B>(B::rat_div(&B::rat_from_i128(1), &to_slow_rat(self)))
     }
+    /// `-self`.
     pub fn neg(&self) -> Self {
         if let Rat::Fast(x) = self {
             if let Some(r) = small::neg(x) {
@@ -294,6 +310,7 @@ impl<B: Backend> Rat<B> {
             Rat::Slow(r) => B::rat_sign(r),
         }
     }
+    /// Whether `self == 0`.
     pub fn is_zero(&self) -> bool {
         match self {
             Rat::Fast(x) => x.num == 0,

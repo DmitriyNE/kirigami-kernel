@@ -63,7 +63,7 @@ fn cocycle_implies_telescoping() {
     assert!(acc == (labels[start] ^ labels[cur]));
 }
 
-// Soundness of the CAP-OUT-LINK classifier (spec §8.5, slice 3e): the streaming O(n)
+// Soundness of the CAP-OUT-LINK classifier (spec §8.5): the streaming O(n)
 // run-counter `link_ok`/`v_boundary` agrees with the exhaustive O(n²) pinch definition
 // over **all** cyclic sector masks up to `N` sectors. The pinch definition is
 // independent (a pairwise search for two selected sectors separated by an unselected
@@ -122,7 +122,7 @@ fn link_ok_iff_no_pinch() {
     assert!(v_boundary(&s) == (!ref_has_pinch(&s) && has_t && has_f));
 }
 
-// Soundness of the `Link_emitted ≅ Link_geometric` checker (spec §8.5, slice 3e.3):
+// Soundness of the `Link_emitted ≅ Link_geometric` checker (spec §8.5):
 // over all permutations of `N` incident edges, the rotation-search `link_iso_ok` agrees
 // with the independent **cyclic-adjacency** characterization — two cyclic orderings are
 // an identity-fixing oriented iso iff every element has the same successor in both. This

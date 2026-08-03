@@ -25,9 +25,9 @@ arrangement lattice — the "1D" name is overloaded.)
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
 | quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | ✅ (Euler + rigid/rescale invariance) | 🚧 (CGAL ∪/∩ non-pinch; △-pinch + face-ID follow-up) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
-| CAP-OUT-LINK ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (pinch rigid-invariance) | 🚧 (CGAL faces+holes; △-pinch documented) | ✅ (`link_ok_iff_no_pinch`, bounded ≤6 sectors) | ✅ (`link_ok_spec`: `link_ok ↔ ≤1 run`, axiom-clean over the Aeneas lift, matching Kani; run-counter refinement `cyclic_true_runs_spec` done) — 2-manifold thm = research frontier | — |
+| CAP-OUT-LINK ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (pinch rigid-invariance; degree-6 vertex) | ✅ (CGAL faces+holes **and exact a+b√d boundary vertices**, rational + irrational radii; △-pinch documented) | ✅ (`link_ok_iff_no_pinch`, bounded ≤6 sectors) | ✅ (`link_ok_spec`: `link_ok ↔ ≤1 run`, axiom-clean over the Aeneas lift, matching Kani; run-counter refinement `cyclic_true_runs_spec` done) — 2-manifold thm = research frontier | — |
 | Link_emitted≅geom ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (`links_consistent` on corpus) | — | ✅ (`link_iso_matches_cyclic_adjacency`, permutations N=4) | 🚧 (Aeneas-lifted, axiom-clean; iso-spec refinement = frontier) | — |
-| completeness bijections [M3e] | arrange2d | ✅ (`separating_boundary_bijection`) | ✅ | ✅ (CGAL faces+holes on non-pinching regime) | — | — | — |
+| completeness bijections [M3e] | arrange2d | ✅ (`separating_boundary_bijection`; `ledge_dom_certified` gate) | ✅ (segments/mixed/degree-6) | ✅ (CGAL faces+holes **+ exact a+b√d boundary vertices**, non-pinching) | — | — | — |
 | device cone chart [M1] | geom | ⬜ | — | — | — | — | ⬜ (golden) |
 | STEP shell [export] | export | ⬜ | — | ⬜ (OCC) | — | — | ⬜ (kernels + hw) |
 | (extend per implementation-plan §1) | | | | | | | |
