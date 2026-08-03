@@ -117,6 +117,22 @@ impl<B: Backend> RatFunc<B> {
             den: self.den.clone(),
         }
     }
+    /// `self / o`. `o` must be nonzero (debug-asserted; panic-free by convention).
+    pub fn div(&self, o: &Self) -> Self {
+        debug_assert!(!o.num.is_zero(), "RatFunc::div: division by zero");
+        RatFunc {
+            num: self.num.mul(&o.den),
+            den: self.den.mul(&o.num),
+        }
+    }
+    /// The reciprocal `1 / self`. `self` must be nonzero (debug-asserted).
+    pub fn recip(&self) -> Self {
+        debug_assert!(!self.num.is_zero(), "RatFunc::recip: reciprocal of zero");
+        RatFunc {
+            num: self.den.clone(),
+            den: self.num.clone(),
+        }
+    }
 
     /// The derivative, by the quotient rule `(n′·d − n·d′) / d²`.
     pub fn derivative(&self) -> Self {
@@ -358,6 +374,20 @@ mod tests {
         assert_eq!(f.eval(&Q::from_i128(3)), Some(Q::from_i128(3))); // 6/2
         assert_eq!(f.eval(&Q::from_i128(1)), None); // denominator vanishes
         assert!(RatFunc::<Bignum>::zero().is_zero());
+    }
+
+    #[test]
+    fn div_and_recip() {
+        let a = rf(&[0, 2], &[-1, 1]); // 2x/(x−1)
+        let b = rf(&[0, 1], &[1]); // x
+        // a/b = 2x/(x(x−1)); at x = 2 that is 2.
+        assert_eq!(a.div(&b).eval(&Q::from_i128(2)), Some(Q::from_i128(2)));
+        assert_eq!(a.div(&b), a.mul(&b.recip())); // a/b = a·(1/b)
+        // recip of x/(x−1) is (x−1)/x; at x = 2 that is 1/2.
+        assert_eq!(
+            rf(&[0, 1], &[-1, 1]).recip().eval(&Q::from_i128(2)),
+            Some(Q::new(1, 2))
+        );
     }
 
     #[test]

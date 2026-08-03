@@ -1,15 +1,13 @@
 #![forbid(unsafe_code)]
-//! `geom` — chart primitives (shell tier; M1).
+//! `geom` — the kernel's geometry primitives: exact 2D content types and the exact
+//! σ-parametric chart layer. Everything is exact over `lattice` numbers; no floating
+//! point.
 //!
-//! Quaternion splines `q(σ)`, h-splines, `C(σ, μ, w)`, `n`/`r`/pedal, primitive
-//! tags, and the hatted stall calculus (`p̂, μ̂, r̂, n̂′, Ĵ`) with the tested
-//! identity `J_raw = p̂·Ĵ` (a positive factor — if you see `/p` where `/p̂` is
-//! meant, that is the fossil bug). Substitution/removability transport, the
-//! `b_J`/`b_i`/`G_i` fields, and `N_i^cut`. The two device fixtures (cone; petal
-//! conical flank) are data in the `fixtures` crate.
-//!
-//! [`content`] — the 2D flat-content primitives (lines, circles, arc/segment
-//! pieces) the §6 arrangement operates on. These are built and used today by
-//! `arrange2d`; the chart/spline layer above is a separate, still-unbuilt scope.
+//! - [`content`] — 2D flat-content primitives (directed lines, circles, arc/segment
+//!   pieces) that the `arrange2d` §6 arrangement operates on.
+//! - [`chart`] — the exact chart field layer (spec §3.2): from a quaternion spline
+//!   `q(σ)` and support spline `h(σ)`, the surface normal `n`, ruling `r`, pedal `c`,
+//!   the thickened map `C(σ,μ,w)`, and `det J` — all exact rational functions of σ.
 
+pub mod chart;
 pub mod content;
