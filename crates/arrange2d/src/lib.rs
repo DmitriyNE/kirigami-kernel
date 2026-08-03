@@ -30,6 +30,7 @@ pub mod coincide;
 pub mod dcel;
 pub mod decompose;
 pub mod event;
+pub mod locate;
 pub mod membership;
 pub mod predicates;
 pub mod spine;

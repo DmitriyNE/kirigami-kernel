@@ -280,6 +280,81 @@ milestone gate, which had been passing **vacuously** (whitespace field split —
   `a+b√d` boundary-set differential both need the same point-location machinery as the face-ID
   follow-up, so they land together there.
 
+### 3e acceptance criteria (CAP-OUT — the region certificate + accurate degenerate handling)
+
+*Authored before implementation, per the rule above.* Slice 3e mints the **region certificate** the
+3d self-diagnostics deliberately did not: spec §8.5:383 **CAP-OUT** (`LEDGE-BRANCH := CAP-IN-D24 ∧
+LEDGE-DOM ∧ CAP-OUT ∧ SEW`, §8.6:422), a per-run output postcondition, **correctness ∧ completeness**.
+It also closes the three degenerate classes 3d left open (disjoint, nested-annulus, tangency), which all
+converge on **one** new machinery: exact point-location (horizontal ray-cast winding) + per-component
+seeding + CAP-OUT-LINK + Face-with-holes nesting. Milestone A's exit (`implementation-plan-v1.md:47`,
+"all CAP-OUT clauses green") is gated on this slice.
+
+**Like 3d, 3e is NOT a pure searcher slice.** The point-location, region rebuild, and CAP-OUT assembly
+are the untrusted **searcher** (in `arrange2d`); but the two new **checkers** — the V_∂ sector
+cyclic-interval test and the `Link_emitted ≅ Link_geometric` identity-fixing cyclic isomorphism — live in
+the pure tier (`certify_core::arrange`), and the `vv-matrix.md` `[M3e]` **CAP-OUT-LINK** and **Link≅geom**
+rows are ★ soundness-critical. Those ★ cells are discharged by **Kani** (bounded sector/link bookkeeping,
+N ≈ 6–10 sectors — §5:73 in scope; the load-bearing discharge that **gates the merge**), **plus** a real
+**Lean-via-Aeneas attempt at the deep theorem** (CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary;
+π₀ faces ⇒ valid closed cycles) — `certify-core` stood up as a **second extraction surface**, targeting
+axiom-clean, else 1-cited-axiom (SturmChecker precedent) or a documented scoped fragment. The deep theorem
+is open-ended research (§5:59, optional-for-D); it **upgrades the Lean cell but does not gate the merge**.
+No runtime-checked-hypothesis shortcut.
+
+**Exact point-location (foundation) — met when:**
+- `arrange2d::locate` computes the exact horizontal-ray ∩ edge crossings — arc crossing
+  `x = cx ± √(r2 − (y0−cy)²)` as a `Surd` in the **new radical** `d = r2−(y0−cy)²` (filtered by `Half`
+  and the arc's `[x_lo, x_hi]`; an upper/lower half is met twice), segment crossing rational — and a
+  ray-cast **crossing-parity** point-in-region test (transverse crossings only; grazing extrema and
+  vertex-height rays excluded by genericity of `y0`), plus a **strict** between and a `Surd`-vs-`Rat`
+  comparator (`Surd::cmp` is cross-radical-safe).
+- Verified: known rational interior/exterior points of a disk / annulus / lens; rigid-motion and
+  lattice-rescale invariance of the point-in-region verdict; parity independent of the `y0` choice
+  (away from vertices).
+
+**The region rebuild (Face-with-holes + per-component seeding) — met when:**
+- `Face` carries an **outer** cycle (CCW) + counter-oriented **holes** (CW); the emitted region nests
+  each hole cycle into its containing face by point-location.
+- Cell labeling **seeds per connected component** of the cycle-adjacency graph (one geometric face — the
+  unbounded one especially — is bounded by several traced cycles; a single BFS seed cannot reach them),
+  computing each seed's `(A,B)` label by ray-cast winding. Disconnected + nested now label consistently ⇒
+  the proven cocycle **closes** correctly instead of failing to `Unresolved`.
+- The `ledge_dom` silent-wrong path is closed (correct on disconnected/nested, not merely `ledge_dom_checked`).
+- Corpus: two disjoint disks ∪ ⇒ two faces; a nested annulus ⇒ one face + one hole; ∩ of nested disks ⇒
+  the inner disk.
+
+**CAP-OUT-LINK + V_∂ membership (the tangency fix, ★) — met when:**
+- The pure `certify_core::arrange` checker computes V_∂ membership from a vertex's cyclic sector-selected
+  mask: **one proper cyclic interval ⇒ v ∈ V_∂**; **full circle or none ⇒ v ∉ V_∂** (interior/exterior);
+  **≥2 disjoint intervals (a pinch) ⇒ reject**. Pure, `no_std`, panic-free; **Kani-proved** over all
+  bounded masks (the second Kani surface in certify-core).
+- Because the sector order is `dir_cmp` (geometric, frame-invariant), tangency's emitted structure stops
+  depending on the decomposition's x-extrema: the pinch vertex is classified deterministically (spec:
+  "π₀ keeps them separate, CAP-OUT-LINK rejects the vertex"). Tangency **leaves the transverse-only test
+  scope** — the 3d.4b rigid-invariance proptest is re-enabled for it and passes.
+
+**Link_emitted ≅ Link_geometric + completeness bijections (the CAP-OUT verdict, ★) — met when:**
+- The pure `certify_core::arrange` `link_iso_ok` checker verifies the stored face-cycle order equals the
+  geometric sort as an **identity-fixing oriented cyclic isomorphism** (not a multiset match — the spec's
+  `a→c→b→d` passes every count yet crosses); **Kani-proved** (bounded).
+- The CAP-OUT verdict asserts the three completeness bijections {components}↔{faces}, {separating
+  edges}↔{boundary edges}, V_∂↔{emitted shell vertices}, plus: selected cycles close, outer/hole cycles
+  counter-oriented, the separation predicate, no duplicates.
+
+**V&V activation — met when:**
+- The emitted region (outer + holes) agrees with **both CGAL oracles**: Option A `Boolean_set_operations_2`
+  per-component `General_polygon_with_holes_2`, and Option B `Arrangement_2` face iteration
+  (`is_unbounded`/`outer_ccb`/`holes_begin`) — on △/∧/∨ over the corpus + generated inputs across the
+  **full** regime (transverse, coincident, disjoint, annulus, tangency), exact `a+b√d` per-edge boundary.
+- Euler-characteristic + rigid/rescale invariance hold over the full regime; CI runs the region configs in
+  the `--features cgal` differential; the three `vv-matrix.md` `[M3e]` rows are filled (the two ★ rows
+  Kani-proved, the Lean cell upgraded by the deep-theorem attempt), `M3e` joins the milestone-gate
+  `landed` set, and the theorems join the `#print axioms` audit.
+
+**Status: not yet started (planning complete).** Discharge decisions taken: Kani (gating) + a Lean-Aeneas
+deep-theorem attempt (non-gating); one phased `m3-3e` branch (3e.0–3e.5).
+
 ---
 
 ## 9. Sequencing
