@@ -24,7 +24,10 @@ The chain identities, by exact ℚ arithmetic on the given sequence `cs`:
 - each `cₖ₊₁` a positive-rational multiple of `−(cₖ₋₁ mod cₖ)` — fraction-free
   positive-proportionality `lead(u)·v = lead(v)·u` + matching-sign leads;
 - strictly descending degrees;
-- terminating: `cₙ₋₂ mod cₙ₋₁ = 0 ⇒` the tail is `gcd(p, p′)`.
+- terminating: `cₙ₋₂ mod cₙ₋₁ = 0 ⇒` the tail is `gcd(p, p′)`;
+- a single-entry chain `[p]` is complete only when `p` is a nonzero constant
+  (`deg p = 0`) — both this and the terminating condition are load-bearing: a
+  truncated sequence satisfies every per-pair identity yet under-counts the roots.
 
 PRS-agnostic (checks positive-multiple, not exact equality — so any polynomial
 remainder sequence passes).

@@ -331,6 +331,26 @@ mod tests {
         assert!(!sc.verify_chain(&p));
     }
 
+    #[test]
+    fn verify_chain_rejects_bare_nonconstant_singleton() {
+        // A one-element "chain" [p] for a non-constant p satisfies every per-pair
+        // identity vacuously but has zero sign variations, so it would under-count. The
+        // checker rejects it (single-entry ⇒ p must be constant) — the completeness
+        // condition the Sturm variation theorem needs.
+        let p = from_roots(&[-1, 1]); // x² − 1
+        let bogus = SturmChain {
+            chain: vec![p.clone()],
+        };
+        assert!(
+            !bogus.verify_chain(&p),
+            "a bare non-constant singleton is not a chain"
+        );
+        // The genuine, complete chain for the same p is accepted and counts both roots.
+        let real = SturmChain::new(&p);
+        assert!(real.verify_chain(&p));
+        assert_eq!(real.count_all(), 2);
+    }
+
     use proptest::prelude::*;
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
