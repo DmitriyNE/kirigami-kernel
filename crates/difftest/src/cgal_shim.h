@@ -28,4 +28,7 @@ rust::String cgal_arrange_edges(rust::Str input);
 // pinch-semantics note.
 rust::String cgal_boolean_count(rust::Str input, rust::Str op);
 
+// Slice-3e Option-B: total holes across all components of the boolean (annulus △ = 1).
+rust::String cgal_boolean_holes(rust::Str input, rust::Str op);
+
 }  // namespace kirigami

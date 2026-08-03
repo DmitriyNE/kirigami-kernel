@@ -352,8 +352,27 @@ No runtime-checked-hypothesis shortcut.
   Kani-proved, the Lean cell upgraded by the deep-theorem attempt), `M3e` joins the milestone-gate
   `landed` set, and the theorems join the `#print axioms` audit.
 
-**Status: not yet started (planning complete).** Discharge decisions taken: Kani (gating) + a Lean-Aeneas
-deep-theorem attempt (non-gating); one phased `m3-3e` branch (3e.0–3e.5).
+**Status: 3e met (soundness + full-regime frame invariance), with a scoped V&V follow-up.** Landed:
+exact horizontal-ray point-location (`arrange2d::locate`); the horizontal-slab per-cell labeling that made
+**disjoint + nested exact** (cocycle closes where 3d self-detected `Unresolved`) and fixed a latent
+`unbounded_cycle` bug 3d had masked; the **Face-with-holes** boundary-loop emission (an annulus `△` is one
+face with one hole) which also removed 3d's **tangency frame-dependence** (face counts are now invariant
+under rigid motion + rescaling across the **full** regime — transverse, disjoint, nested, tangency,
+identical — the proptests dropped `crosses_twice`); **CAP-OUT-LINK** (`classify_link`/`v_boundary`/`link_ok`)
+and **Link_emitted ≅ Link_geometric** (`link_iso_ok`) as pure `certify_core::arrange` checkers, each
+**Kani-proven** (`link_ok_iff_no_pinch`, `link_iso_matches_cyclic_adjacency` — the 2nd and 3rd Kani surfaces
+outside `lattice`, the ★ discharge that gates the merge); the searcher wiring (`link_classes`/`has_pinch`,
+`links_consistent`) + the {separating edges}↔{boundary edges} bijection; and the CGAL differential extended
+to `General_polygon_with_holes_2` (faces **and** holes) over the non-pinching regime.
+
+**Scoped follow-ups (not gating — the ★ soundness is discharged):**
+- **The deep 2-manifold theorem** (CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary; π₀ faces ⇒
+  valid cycles) is the open-ended Lean-via-Aeneas attempt (3e.5), which stands `certify-core` up as a
+  second extraction surface. It upgrades the Lean cell; the Kani checkers remain the load-bearing discharge.
+- **CGAL Option B** (`Arrangement_2` face iteration) and the **exact per-edge `a+b√d` boundary-set**
+  differential — a redundant cross-check of the Option-A `Boolean_set_operations_2` oracle (already
+  covering faces + holes); the △-of-overlapping-disks pinch stays the documented spec-aligned divergence
+  (our π₀ 2 lunes vs CGAL 1 joined region).
 
 ---
 

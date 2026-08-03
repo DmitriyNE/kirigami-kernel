@@ -10,9 +10,11 @@
 //! `difftest` runs alongside from the start.
 //!
 //! **M3a** builds the front half — canonical decomposition + the event spine
-//! (spec §6 steps 1–4); the DCEL / eight-step boolean / CAP-OUT are later slices.
-//! `arrange2d` is an untrusted *searcher*; soundness lives in the M3e
-//! `certify_core::arrange` checkers. The modules, filled across the M3a phases:
+//! (spec §6 steps 1–4); **M3d** the DCEL + eight-step boolean + π₀ quotient
+//! ([`dcel`], [`tangent`], [`boolean`]); **M3e** exact point-location ([`locate`]),
+//! the Face-with-holes region, and CAP-OUT-LINK / Link≅geom. `arrange2d` is an
+//! untrusted *searcher*; soundness lives in the `certify_core::arrange` checkers
+//! (the ℤ₂² cocycle, CAP-OUT-LINK, and Link≅geom — all Kani-proven). The modules:
 //!   * [`predicates`] — PARALLEL / COINCIDENT + circle carrier-coincidence.
 //!   * [`carrier`]    — carrier ∩ carrier → degree-≤2 `Surd` points.
 //!   * [`decompose`]  — canonical x-monotone decomposition (pending-v0.25).

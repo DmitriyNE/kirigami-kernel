@@ -15,7 +15,7 @@
 //! see identical geometry; the segment is far wider than any small-coordinate
 //! intersection.
 
-use crate::cgal::{cgal_arrange, cgal_arrange_edges, cgal_boolean_count};
+use crate::cgal::{cgal_arrange, cgal_arrange_edges, cgal_boolean_count, cgal_boolean_holes};
 use arrange2d::decompose::decompose;
 use arrange2d::event::{CoincEdge, Operand};
 use arrange2d::spine::arrange_events;
@@ -504,5 +504,65 @@ mod tests {
             1,
             "CGAL: one pinch-joined region"
         );
+    }
+
+    /// Our total emitted hole count for `op`.
+    fn our_holes(c1: Disk, c2: Disk, op: BoolOp) -> usize {
+        let mk = |c: Disk, src: u32| {
+            decompose(&Curve::Circle {
+                circle: Circle {
+                    cx: qi(c.0),
+                    cy: qi(c.1),
+                    r2: qi(c.2),
+                },
+                orient: Orient::Ccw,
+                source: CurveId(src),
+            })
+        };
+        let mut edges = mk(c1, 0);
+        edges.extend(mk(c2, 1));
+        let operand = |s: CurveId| if s.0 == 0 { OperandId::A } else { OperandId::B };
+        ledge_dom(&edges, &operand, op)
+            .faces
+            .iter()
+            .map(|f| f.holes.len())
+            .sum()
+    }
+    fn cgal_holes(c1: Disk, c2: Disk, op: &str) -> usize {
+        cgal_boolean_holes(&cgal_bool_input(c1, c2), op)
+            .parse()
+            .unwrap()
+    }
+
+    /// Slice-3e Option-B structural cross-check over the **non-pinching** part of the
+    /// full regime: for disjoint and nested operands our emitted (faces, holes) match
+    /// CGAL's independent `General_polygon_with_holes_2` (component, hole) counts —
+    /// including the **annulus △ = one face with one hole**, the case flat π₀ could not
+    /// represent before 3e.1b. (△ of *overlapping* disks stays the documented pinch
+    /// divergence and is excluded here.)
+    #[test]
+    fn boolean_faces_holes_match_cgal() {
+        // (c1, c2, op) over disjoint + nested configs — all non-pinching.
+        let cases: &[(Disk, Disk, BoolOp, &str)] = &[
+            // disjoint disks: ∪ = two faces, ∩ = empty
+            ((0, 0, 4), (9, 0, 4), BoolOp::Or, "or"),
+            ((0, 0, 4), (9, 0, 4), BoolOp::And, "and"),
+            // nested (inner strictly inside outer): ∪ = outer, ∩ = inner, △ = annulus
+            ((0, 0, 25), (0, 0, 4), BoolOp::Or, "or"),
+            ((0, 0, 25), (0, 0, 4), BoolOp::And, "and"),
+            ((0, 0, 25), (0, 0, 4), BoolOp::Xor, "xor"),
+        ];
+        for &(c1, c2, op, ops) in cases {
+            assert_eq!(
+                our_faces(c1, c2, op),
+                cgal_count(c1, c2, ops),
+                "face count {c1:?} {c2:?} {ops}"
+            );
+            assert_eq!(
+                our_holes(c1, c2, op),
+                cgal_holes(c1, c2, ops),
+                "hole count {c1:?} {c2:?} {ops}"
+            );
+        }
     }
 }

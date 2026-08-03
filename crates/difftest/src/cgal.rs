@@ -31,10 +31,18 @@ mod ffi {
         /// boolean `op` (xor|and|or) over two disk operands (`C cx cy r2 operand`).
         /// See cgal_shim.cc for the pinch-semantics note.
         fn cgal_boolean_count(input: &str, op: &str) -> String;
+
+        /// Slice-3e Option-B structural cross-check: the total number of holes across
+        /// all components of the boolean `op` (a `General_polygon_with_holes_2` counts
+        /// its inner boundaries) — an annulus △ has exactly one. Same input as above.
+        fn cgal_boolean_holes(input: &str, op: &str) -> String;
     }
 }
 
-pub use ffi::{cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_boolean_count, cgal_smoke};
+pub use ffi::{
+    cgal_arr_smoke, cgal_arrange, cgal_arrange_edges, cgal_boolean_count, cgal_boolean_holes,
+    cgal_smoke,
+};
 
 #[cfg(test)]
 mod tests {

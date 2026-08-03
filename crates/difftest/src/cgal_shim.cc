@@ -200,7 +200,10 @@ GPolygon circle_polygon(const CGAL::Gmpq& cx, const CGAL::Gmpq& cy, const CGAL::
 // rejects the vertex"). So counts agree only on the NON-pinching cases (e.g. ∩ of
 // two overlapping disks = one lens); △ of overlapping disks is pinched (CGAL 1, our
 // π₀ 2). The harness compares on the non-pinching case and documents the rest.
-rust::String cgal_boolean_count(rust::Str input, rust::Str op) {
+namespace {
+// The boolean `op` over the two operands built from the input disks, as a vector of
+// components (polygons-with-holes). Input: `C cx cy r2 operand` per line.
+std::vector<GPolygonWH> boolean_components(rust::Str input, rust::Str op) {
   CGAL::General_polygon_set_2<GpsTraits> a, b;
   std::istringstream lines{std::string(input)};
   std::string line;
@@ -229,8 +232,24 @@ rust::String cgal_boolean_count(rust::Str input, rust::Str op) {
   }
   std::vector<GPolygonWH> res;
   r.polygons_with_holes(std::back_inserter(res));
+  return res;
+}
+}  // namespace
+
+rust::String cgal_boolean_count(rust::Str input, rust::Str op) {
   std::ostringstream os;
-  os << res.size();
+  os << boolean_components(input, op).size();
+  return rust::String(os.str());
+}
+
+// Total holes across all components of the boolean `op` — the Option-B structural
+// cross-check (a `General_polygon_with_holes_2` counts its inner boundaries): an
+// annulus △ has exactly one. Same input/semantics as `cgal_boolean_count`.
+rust::String cgal_boolean_holes(rust::Str input, rust::Str op) {
+  std::size_t holes = 0;
+  for (const auto& pwh : boolean_components(input, op)) holes += pwh.number_of_holes();
+  std::ostringstream os;
+  os << holes;
   return rust::String(os.str());
 }
 

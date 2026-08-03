@@ -3,8 +3,8 @@
 Row per certificate/kernel operation; cell per method. Status: ✅ done · 🚧 partial · ⬜ todo · N/A.
 Each Item carries its milestone tag `[Mx]`. CI fails the milestone gate
 (`scripts/lint/vv_matrix_gate.sh`) if a **soundness-critical** row (marked ★) whose
-milestone has **landed** (`[M0]`, `[M3a]`, `[M3c]`, `[M3d]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
-Not-yet-landed ★ rows (`[M2]`/`[M3e]`/`[M4]`/…) are out of scope until their milestone ships.
+milestone has **landed** (`[M0]`, `[M3a]`, `[M3c]`, `[M3d]`, `[M3e]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
+Not-yet-landed ★ rows (`[M2]`/`[M4]`/…) are out of scope until their milestone ships.
 (The gate reads the table columns with `FS="|"`; before slice 3d it split on whitespace, so `$2`
 matched a mid-cell word instead of the ★ Item and passed vacuously — fixed with the M3d landing.)
 (The `arrange2d`/`certify1d` searcher slices `[M3a]`/`[M3c]` are non-★: Kani/Lean = N/A, soundness
@@ -25,9 +25,9 @@ arrangement lattice — the "1D" name is overloaded.)
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
 | quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | ✅ (Euler + rigid/rescale invariance) | 🚧 (CGAL ∪/∩ non-pinch; △-pinch + face-ID follow-up) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
-| CAP-OUT-LINK ★ [M3e] | arrange2d | ⬜ | ⬜ | — | — | ⬜ (research) | — |
-| Link_emitted≅geom ★ [M3e] | sew | ⬜ | ⬜ | — | ⬜ (bounded) | ⬜ | — |
-| completeness bijections [M3e] | arrange2d | ⬜ | ⬜ | — | ⬜ (bounded) | — | — |
+| CAP-OUT-LINK ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (pinch rigid-invariance) | 🚧 (CGAL faces+holes; △-pinch documented) | ✅ (`link_ok_iff_no_pinch`, bounded ≤6 sectors) | 🚧 (deep 2-manifold thm — 3e.5 attempt) | — |
+| Link_emitted≅geom ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (`links_consistent` on corpus) | — | ✅ (`link_iso_matches_cyclic_adjacency`, permutations N=4) | 🚧 (3e.5 attempt) | — |
+| completeness bijections [M3e] | arrange2d | ✅ (`separating_boundary_bijection`) | ✅ | ✅ (CGAL faces+holes on non-pinching regime) | — | — | — |
 | device cone chart [M1] | geom | ⬜ | — | — | — | — | ⬜ (golden) |
 | STEP shell [export] | export | ⬜ | — | ⬜ (OCC) | — | — | ⬜ (kernels + hw) |
 | (extend per implementation-plan §1) | | | | | | | |
