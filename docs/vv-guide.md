@@ -383,10 +383,26 @@ and a Lean refinement.
 **Remaining frontier (not gating — research escalation, §5:59):** only **the topological 2-manifold theorem**
 (CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary; π₀ faces ⇒ valid cycles). The checker-soundness
 proofs (Kani + Lean) are the load-bearing discharge.
-- **CGAL Option B** (`Arrangement_2` face iteration) and the **exact per-edge `a+b√d` boundary-set**
-  differential — a redundant cross-check of the Option-A `Boolean_set_operations_2` oracle (already
-  covering faces + holes); the △-of-overlapping-disks pinch stays the documented spec-aligned divergence
-  (our π₀ 2 lunes vs CGAL 1 joined region).
+- **CGAL Option B** (`Arrangement_2` face iteration) — a redundant DCEL-structure cross-check of the
+  Option-A oracle. The △-of-overlapping-disks pinch stays the documented spec-aligned divergence (our π₀
+  2 lunes vs CGAL 1 joined region).
+
+**Post-merge hardening (arrange2d verification-gap audit, closed).** A three-front audit of `arrange2d`
+surfaced that the proven checkers were largely off the critical path, and the differential/input coverage
+was thin. Closed:
+- **Certified entry** `boolean::ledge_dom_certified → Verdict<CapOut, CapOutFault, ()>`: computes the
+  labeling once and runs *every* proven checker (substrate-link, `cocycle_ok`, per-vertex `link_iso_ok`,
+  separating↔boundary bijection) over the **emitted** region, returning a real `Refuted(fault)` on defect
+  (a corrupted-labeling test confirms the gate fires) plus the CAP-OUT-LINK `V_∂`/pinch classification.
+- **Exact `a+b√d` boundary differential** (`cgal_boolean_boundary`): the emitted region's boundary vertex
+  set matches CGAL exactly (radical-safe, rational + irrational radii) — not just counts.
+- **Input diversity**: boolean tests over polygon (segment) operands, mixed line+circle, and a degree-6
+  vertex (three circles concurrent) — all certify; the disks-only corpus hid no bug.
+- **Slab genericity self-check** (`generic_height` + `debug_assert!` in `slab_locate`): a missing
+  critical-y (incomplete `critical_ys`) is now a detected fault, not a silent-wrong label.
+
+The **trusted front-half** (`carrier`/`decompose`/`membership`/`classify`/`spine` — no checker reads
+coordinates) remains the honest TCB boundary, validated by the CGAL exact-geometry differential.
 
 ---
 
