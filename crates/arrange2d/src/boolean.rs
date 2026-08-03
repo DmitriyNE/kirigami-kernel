@@ -255,6 +255,22 @@ fn critical_ys<B: Backend>(d: &Dcel<B>) -> Vec<Surd<B>> {
     ys
 }
 
+/// Is `y0` a **generic** ray height — strictly avoiding every arrangement vertex `y`
+/// and every circle centre `cy` (the `winding_parity` genericity precondition, `locate`)?
+/// A slab band height is generic by construction *iff* [`critical_ys`] is complete; this
+/// is the self-check that makes an incomplete critical set (a dropped vertex / circle
+/// upstream) a **detected** fault rather than a silent-wrong label. See the
+/// `debug_assert!` in [`slab_locate`] and `slab_heights_generic` (proptest).
+fn generic_height<B: Backend>(d: &Dcel<B>, y0: &Rat<B>) -> bool {
+    let y0s = Surd::from_rat(y0.clone());
+    if d.verts.iter().any(|p| p.y.cmp(&y0s) == Ordering::Equal) {
+        return false;
+    }
+    circles_of(d)
+        .iter()
+        .all(|c| c.cy.cmp(y0) != Ordering::Equal)
+}
+
 /// The sub-edges bounding operand `want` (any covering source maps to it) — the
 /// boundary curve set whose rightward ray-cast parity is that operand's enclosure bit.
 fn operand_edges<B: Backend>(
@@ -360,6 +376,16 @@ fn slab_locate<B: Backend>(
         band_ys.push(rational_between(&w[0], &w[1]));
     }
     band_ys.push(rational_above(&crit[crit.len() - 1]));
+
+    // Genericity self-check (#4): every band ray must strictly avoid all vertex y's and
+    // circle centres. This holds by construction iff `critical_ys` is complete; a fire
+    // here is a dropped-vertex / missing-circle defect that would otherwise mis-count a
+    // parity and silently mislabel a cell. Debug-only (zero release cost); exercised by
+    // the whole property/differential suite.
+    debug_assert!(
+        band_ys.iter().all(|y0| generic_height(d, y0)),
+        "slab band height grazed a vertex y or circle centre — critical_ys is incomplete"
+    );
 
     let a_edges = &a_edges;
     let b_edges = &b_edges;
@@ -1197,6 +1223,23 @@ mod tests {
             certify_from_labels(&d, &ab, BoolOp::Or, labels, reps),
             Verdict::Refuted(CapOutFault::Cocycle)
         ));
+    }
+
+    /// The slab genericity self-check (#4) distinguishes a grazing height (equal to a
+    /// vertex y or a circle centre — the silent-wrong risk) from a generic one. Two disks
+    /// (0,0,25),(8,0,25): vertices at y ∈ {−3,0,3}, centre cy = 0.
+    #[test]
+    fn generic_height_detects_grazing() {
+        let d = Dcel::build(&two_disks());
+        assert!(
+            !generic_height(&d, &Q::from_i128(0)),
+            "y=0 = cy and the extrema y"
+        );
+        assert!(
+            !generic_height(&d, &Q::from_i128(3)),
+            "y=3 = the crossing vertices"
+        );
+        assert!(generic_height(&d, &Q::new(1, 2)), "y=1/2 is generic");
     }
 
     proptest! {
