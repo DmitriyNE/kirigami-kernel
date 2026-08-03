@@ -394,6 +394,9 @@ mod tests {
             let dx = qxr.sub(&qi(cx));
             let dy = qyr.sub(&qi(cy));
             let d2 = dx.mul(&dx).add(&dy.mul(&dy));
+            // Skip points exactly on the circle — winding_parity is defined only off
+            // the boundary (the query-point genericity companion of the ray genericity).
+            prop_assume!(d2.cmp(&c.r2) != Ordering::Equal);
             let truly_inside = d2.cmp(&c.r2) == Ordering::Less;
             prop_assert_eq!(inside0, truly_inside, "parity must match |p−c|² < r²");
 
@@ -431,9 +434,10 @@ mod tests {
             prop_assume!(qyr.sign() != 0); // generic: ≠ cy = 0
             // Must also be within the circle's y-band for a meaningful horizontal
             // chord; otherwise "inside" is trivially false and still consistent.
-            let inside = winding_parity(&qxr, &qyr, &edges);
             let dx = qxr.clone();
             let d2 = dx.mul(&dx).add(&qyr.mul(&qyr));
+            prop_assume!(d2.cmp(&c.r2) != Ordering::Equal); // skip on-boundary points
+            let inside = winding_parity(&qxr, &qyr, &edges);
             let truly_inside = d2.cmp(&c.r2) == Ordering::Less;
             prop_assert_eq!(inside, truly_inside);
         }

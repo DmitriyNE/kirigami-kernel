@@ -13,20 +13,21 @@
 //!
 //! **Scope note (regime handled).** Cells are the traced DCEL cycles, labeled by
 //! **exact point-location** — the horizontal-slab decomposition of [`slab_locate`]
-//! (3e.1), which seeds every cell independently (not a single BFS). This is exact on
-//! **transverse-crossing** overlaps, **identical/coincident** operands, **disjoint**
-//! (disconnected) operands, and **nested** (annulus) operands — the cocycle closes on
-//! all of them, so `ledge_dom` and [`ledge_dom_checked`] return the correct labeling,
-//! and [`Face`] carries an outer loop plus counter-oriented holes (an annulus `△` is
-//! one face with one hole). One case remains:
-//! - **tangency** (internal/external — the operands touch at a point): the cocycle
-//!   closes (connected), but the emitted face count can still be **frame-dependent** —
-//!   after a rotation the tangent point may land on the axis-aligned decomposition's
-//!   x-extremum, changing the piece split. CAP-OUT-LINK (3e.2) is the frame-invariant
-//!   net; until then the property/differential invariants stay scoped to the
-//!   transverse regime (see `crosses_twice`).
+//! (3e.1), which seeds every cell independently (not a single BFS). The boolean is now
+//! exact and **frame-invariant across the full regime**: transverse-crossing overlaps,
+//! identical/coincident, disjoint, nested (annulus), and **tangency** (internal /
+//! external). The cocycle closes on all of them; [`ledge_dom`] emits [`Face`]s carrying
+//! an outer loop plus counter-oriented holes (an annulus `△` is one face with one
+//! hole), and its face counts are invariant under rational rigid motion + rescaling
+//! over the whole regime — the boundary-loop [`emit_region`] (3e.1b) removed the
+//! tangency frame-dependence 3d had (the crescent traces as one face regardless of
+//! where the decomposition splits). Pinch points (a △ touching itself at a crossing or
+//! tangent point) are classified frame-invariantly by CAP-OUT-LINK ([`has_pinch`] /
+//! [`link_classes`], 3e.2, over the Kani-proven `certify_core::arrange::classify_link`):
+//! spec §6 "π₀ keeps them separate, CAP-OUT-LINK rejects the vertex".
 
 use certify_core::Verdict;
+use certify_core::arrange::{LinkClass, classify_link};
 use core::cmp::Ordering;
 use geom::content::{Circle, CurveId, Edge, Half};
 use lattice::{Backend, Rat, Surd};
@@ -530,6 +531,58 @@ pub fn ledge_dom_checked<B: Backend>(
     Verdict::Verified(ledge_dom(edges, operand_of, op))
 }
 
+// ---------------------------------------------------------------------------
+// CAP-OUT-LINK (spec §8.5, slice 3e.2b) — the searcher side of the V_∂ / manifold
+// classifier. At each vertex the incident faces, taken in azimuth order, give a cyclic
+// sector-selected mask; `certify_core::arrange::classify_link` classifies it. The order
+// is `dir_cmp` (geometric), so the per-vertex class is **frame-invariant** — the net
+// for the tangency case whose raw face count is not.
+// ---------------------------------------------------------------------------
+
+/// The outgoing half-edges at vertex `v`, in the rotation-system (azimuth) order.
+fn outgoing_sorted<B: Backend>(d: &Dcel<B>, v: usize) -> Vec<usize> {
+    let mut outs: Vec<usize> = (0..d.halfedges.len())
+        .filter(|&h| d.halfedges[h].origin == v)
+        .collect();
+    let tan = |h: usize| {
+        crate::tangent::outgoing_tangent(&d.edges[d.halfedges[h].edge].edge, d.halfedges[h].dir)
+    };
+    outs.sort_by(|&h1, &h2| crate::tangent::dir_cmp(&tan(h1), &tan(h2)));
+    outs
+}
+
+/// The cyclic sector-selected mask at `v`: for each outgoing half-edge (azimuth order),
+/// the selection bit of the face on its left (the sector CCW-adjacent to it).
+fn sector_mask<B: Backend>(d: &Dcel<B>, sel: &[bool], v: usize) -> Vec<bool> {
+    outgoing_sorted(d, v)
+        .iter()
+        .map(|&h| sel[d.halfedges[h].cycle])
+        .collect()
+}
+
+/// The CAP-OUT-LINK class of every vertex for the selection `sel` (spec §8.5), via the
+/// Kani-proven `certify_core::arrange::classify_link`. `V_∂ = { v : Boundary }`; any
+/// `Pinch` is a non-manifold internal-tangency vertex.
+pub fn link_classes<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> Vec<LinkClass> {
+    (0..d.verts.len())
+        .map(|v| classify_link(&sector_mask(d, sel, v)))
+        .collect()
+}
+
+/// Does the boolean `op` of the operands produce a non-manifold **pinch** (an internal
+/// tangency where the selected region touches itself at a point)? Frame-invariant — the
+/// CAP-OUT-LINK net over geometric sectors, where the emitted face count is not.
+pub fn has_pinch<B: Backend>(
+    edges: &[Edge<B>],
+    operand_of: &impl Fn(CurveId) -> OperandId,
+    op: BoolOp,
+) -> bool {
+    let d = Dcel::build(edges);
+    let (labels, _reps) = slab_locate(&d, operand_of);
+    let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
+    link_classes(&d, &sel).contains(&LinkClass::Pinch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,17 +708,6 @@ mod tests {
             cy: Q::from_i128(cy),
             r2: Q::from_i128(r2),
         }
-    }
-    /// Do the two circles (squared radii `r1`, `r2`) cross in **two transverse
-    /// points** — `|r1−r2| < dist < r1+r2`, i.e. `(dist² − r1 − r2)² < 4·r1·r2`?
-    /// This is the connected, non-degenerate regime the boolean handles robustly.
-    /// Tangency (1 point) and nested/disjoint (0 points) are the deferred degenerate
-    /// cases (see the module scope note) — and internal tangency in particular is not
-    /// frame-independent, because after a rotation the tangent point can land on the
-    /// axis-aligned decomposition's x-extremum where a piece splits.
-    fn crosses_twice(x1: i128, y1: i128, r1: i128, x2: i128, y2: i128, r2: i128) -> bool {
-        let d = (x1 - x2).pow(2) + (y1 - y2).pow(2);
-        (d - r1 - r2).pow(2) < 4 * r1 * r2
     }
     fn two_disk_edges(c1: &Circle<Bignum>, c2: &Circle<Bignum>) -> Vec<Edge<Bignum>> {
         let mut e = crate::decompose::decompose(&Curve::Circle {
@@ -809,11 +851,92 @@ mod tests {
         ));
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(48))]
+    /// **CAP-OUT-LINK detects the internal-tangency pinch** (3e.2): c1=(0,0,4) r=2 and
+    /// c2=(1,0,1) r=1 are internally tangent at (2,0). Their △ (the crescent) pinches to
+    /// a point there — CAP-OUT-LINK classifies that vertex as a non-manifold `Pinch`,
+    /// while ∪ (the outer disk) and ∩ (the inner disk) are smooth at the touch (no pinch).
+    #[test]
+    fn internal_tangency_pinch_detected() {
+        let e = two_disk_edges(&disk(0, 0, 4), &disk(1, 0, 1));
+        assert!(
+            has_pinch(&e, &ab, BoolOp::Xor),
+            "△ pinches at the internal tangency"
+        );
+        assert!(!has_pinch(&e, &ab, BoolOp::Or), "∪ = outer disk, smooth");
+        assert!(!has_pinch(&e, &ab, BoolOp::And), "∩ = inner disk, smooth");
+    }
 
-        /// The boolean's output face count (△/∩/∪) is invariant under a rational
-        /// rigid motion — the whole DCEL + eight-step pipeline is frame-independent.
+    /// The tangency pinch is **frame-invariant** — the net CAP-OUT-LINK provides where
+    /// the raw face count is not (3d.4b): whether △ pinches survives every rational
+    /// rigid motion, even though the motion moves the tangent point off the x-extremum
+    /// and re-splits the decomposition. External tangency likewise pinches under △.
+    #[test]
+    fn tangency_pinch_rigid_invariant() {
+        let cfgs = [
+            (disk(0, 0, 4), disk(1, 0, 1)), // internal tangency at (2,0)
+            (disk(0, 0, 4), disk(4, 0, 4)), // external tangency at (2,0)
+        ];
+        for (c1, c2) in &cfgs {
+            for &(u, v, tx, ty) in &[(1, 0, 0, 0), (2, 1, 0, 0), (1, 2, 3, -1), (3, 1, -2, 4)] {
+                let m = rigid(u, v, tx, ty);
+                let e = two_disk_edges(&rigid_circle(c1, &m), &rigid_circle(c2, &m));
+                assert!(
+                    has_pinch(&e, &ab, BoolOp::Xor),
+                    "△ pinch is frame-invariant: c=({:?},{:?}) motion=({u},{v},{tx},{ty})",
+                    c1.cx,
+                    c2.cx
+                );
+            }
+        }
+    }
+
+    /// The number of `Pinch` (non-manifold) vertices in the △ of two disks.
+    fn pinch_count(edges: &[Edge<Bignum>]) -> usize {
+        let d = Dcel::build(edges);
+        let (labels, _) = slab_locate(&d, &ab);
+        let sel: Vec<bool> = labels.iter().map(|&l| BoolOp::Xor.select(l)).collect();
+        link_classes(&d, &sel)
+            .iter()
+            .filter(|c| **c == LinkClass::Pinch)
+            .count()
+    }
+
+    /// **CAP-OUT-LINK is the frame-invariant net** (3e.2): the pinch count of a △ is the
+    /// same in every frame, even where the raw vertex count is not — a rigid motion moves
+    /// a tangent point off the x-extremum (adding smooth extremum vertices) but never
+    /// changes how many vertices are genuine non-manifold pinches.
+    #[test]
+    fn pinch_count_rigid_invariant() {
+        let cfgs = [
+            (disk(0, 0, 4), disk(1, 0, 1)),   // internal tangency
+            (disk(0, 0, 25), disk(8, 0, 25)), // transverse (2 crossings)
+            (disk(0, 0, 4), disk(4, 0, 4)),   // external tangency
+        ];
+        for (c1, c2) in &cfgs {
+            let base = pinch_count(&two_disk_edges(c1, c2));
+            for &(u, v, tx, ty) in &[(2, 1, 0, 0), (1, 2, 3, -1), (3, 1, -2, 4)] {
+                let m = rigid(u, v, tx, ty);
+                let e = two_disk_edges(&rigid_circle(c1, &m), &rigid_circle(c2, &m));
+                assert_eq!(
+                    pinch_count(&e),
+                    base,
+                    "pinch count is frame-invariant: c=({:?},{:?})",
+                    c1.cx,
+                    c2.cx
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// The boolean's output face count (△/∩/∪) is invariant under a rational rigid
+        /// motion — the whole DCEL + eight-step + point-location pipeline is
+        /// frame-independent across the **full** regime: transverse, tangent, disjoint,
+        /// nested, identical. (3d scoped this to `crosses_twice` because the tangency
+        /// count was frame-dependent under the old π₀-over-cells emission; the 3e.1b
+        /// boundary-loop emission fixed that, so the restriction is lifted.)
         #[test]
         fn boolean_face_count_rigid_invariant(
             x1 in -3i128..=3, y1 in -3i128..=3, r1 in 1i128..=6,
@@ -821,7 +944,6 @@ mod tests {
             u in -3i128..=3, v in -3i128..=3, tx in -4i128..=4, ty in -4i128..=4,
         ) {
             prop_assume!(u != 0 || v != 0);
-            prop_assume!(crosses_twice(x1, y1, r1, x2, y2, r2));
             let (c1, c2) = (disk(x1, y1, r1), disk(x2, y2, r2));
             let m = rigid(u, v, tx, ty);
             let e0 = two_disk_edges(&c1, &c2);
@@ -829,15 +951,14 @@ mod tests {
             prop_assert_eq!(face_counts(&e0), face_counts(&e1));
         }
 
-        /// Invariant under lattice rescaling `p ↦ k·p` (`k > 0`): scaling preserves
-        /// the arrangement's combinatorics, hence the output face counts.
+        /// Invariant under lattice rescaling `p ↦ k·p` (`k > 0`) across the full regime:
+        /// scaling preserves the arrangement's combinatorics, hence the face counts.
         #[test]
         fn boolean_face_count_scale_invariant(
             x1 in -3i128..=3, y1 in -3i128..=3, r1 in 1i128..=6,
             x2 in -3i128..=3, y2 in -3i128..=3, r2 in 1i128..=6,
             k in 1i128..=5,
         ) {
-            prop_assume!(crosses_twice(x1, y1, r1, x2, y2, r2));
             let (c1, c2) = (disk(x1, y1, r1), disk(x2, y2, r2));
             let kk = Q::from_i128(k);
             let e0 = two_disk_edges(&c1, &c2);
