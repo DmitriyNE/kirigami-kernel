@@ -31,3 +31,4 @@ import CertifyCheck.Refine
 import CertifyCheck.GcdReduce
 import CertifyCheck.Reduce
 import CertifyCheck.Resultant
+import CertifyCheck.CapOut

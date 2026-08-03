@@ -25,8 +25,8 @@ arrangement lattice — the "1D" name is overloaded.)
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
 | quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | ✅ (Euler + rigid/rescale invariance) | 🚧 (CGAL ∪/∩ non-pinch; △-pinch + face-ID follow-up) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
-| CAP-OUT-LINK ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (pinch rigid-invariance) | 🚧 (CGAL faces+holes; △-pinch documented) | ✅ (`link_ok_iff_no_pinch`, bounded ≤6 sectors) | 🚧 (deep 2-manifold thm — 3e.5 attempt) | — |
-| Link_emitted≅geom ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (`links_consistent` on corpus) | — | ✅ (`link_iso_matches_cyclic_adjacency`, permutations N=4) | 🚧 (3e.5 attempt) | — |
+| CAP-OUT-LINK ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (pinch rigid-invariance) | 🚧 (CGAL faces+holes; △-pinch documented) | ✅ (`link_ok_iff_no_pinch`, bounded ≤6 sectors) | 🚧 (Aeneas-lifted + axiom-clean dispatch soundness `CapOut.lean`; run-counter refinement + 2-manifold thm = frontier) | — |
+| Link_emitted≅geom ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (`links_consistent` on corpus) | — | ✅ (`link_iso_matches_cyclic_adjacency`, permutations N=4) | 🚧 (Aeneas-lifted, axiom-clean; iso-spec refinement = frontier) | — |
 | completeness bijections [M3e] | arrange2d | ✅ (`separating_boundary_bijection`) | ✅ | ✅ (CGAL faces+holes on non-pinching regime) | — | — | — |
 | device cone chart [M1] | geom | ⬜ | — | — | — | — | ⬜ (golden) |
 | STEP shell [export] | export | ⬜ | — | ⬜ (OCC) | — | — | ⬜ (kernels + hw) |

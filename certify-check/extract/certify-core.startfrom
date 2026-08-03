@@ -1,0 +1,17 @@
+# Start-from set for the Aeneas lift of `crates/certify-core` (charon `--start-from`).
+# One item path per line; blank lines and `#` comments are ignored.
+#
+# After editing this file, regenerate the committed Lean model with
+#   nix run .#extract          (or: scripts/extract.sh inside `nix develop .#extraction`)
+# and commit the result. CI's `extraction-drift` workflow regenerates and
+# `git diff`s the model, so a stale model fails the build.
+#
+# The slice-3e CAP-OUT-LINK + Link≅geom checkers (and their dependency closure:
+# classify_link, cyclic_true_runs, all_true). `cocycle_ok` (slice 3d) is deliberately
+# NOT lifted here — its `slice::get`-returning-`Option` body does not translate under
+# the pinned Aeneas, and it is already discharged by Kani (`cocycle_implies_telescoping`);
+# its Lean lift is a separate follow-up if wanted.
+
+crate::arrange::v_boundary
+crate::arrange::link_ok
+crate::arrange::link_iso_ok

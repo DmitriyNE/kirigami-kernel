@@ -18,22 +18,26 @@ on:
   push:
     paths:
       - 'crates/lattice/**'
+      - 'crates/certify-core/**'
       - 'flake.nix'
       - 'flake.lock'
       - 'scripts/extract.sh'
       - 'scripts/check-externals.sh'
       - 'certify-check/extract/**'
       - 'certify-check/Lattice/**'
+      - 'certify-check/CertifyCore/**'
       - '.github/workflows/extraction-drift.yml'
   pull_request:
     paths:
       - 'crates/lattice/**'
+      - 'crates/certify-core/**'
       - 'flake.nix'
       - 'flake.lock'
       - 'scripts/extract.sh'
       - 'scripts/check-externals.sh'
       - 'certify-check/extract/**'
       - 'certify-check/Lattice/**'
+      - 'certify-check/CertifyCore/**'
       - '.github/workflows/extraction-drift.yml'
 
 jobs:
@@ -55,8 +59,10 @@ jobs:
           if ! git diff --quiet -- \
                certify-check/Lattice/Funs.lean \
                certify-check/Lattice/Types.lean \
+               certify-check/CertifyCore/Funs.lean \
+               certify-check/CertifyCore/Types.lean \
                certify-check/extract/FunsExternal_Template.lean; then
-            echo "::error title=Lean model out of sync with crates/lattice::The committed Aeneas-lifted model does not match crates/lattice at the pinned Charon/Aeneas. Run 'nix run .#extract' (or scripts/extract.sh inside 'nix develop .#extraction') and commit the regenerated model. If you bumped the Charon/Aeneas pins in flake.lock, also expect to fix proofs — see docs/upgrading-extraction-toolchain.md."
+            echo "::error title=Lean model out of sync with the checker crates::The committed Aeneas-lifted model does not match crates/lattice at the pinned Charon/Aeneas. Run 'nix run .#extract' (or scripts/extract.sh inside 'nix develop .#extraction') and commit the regenerated model. If you bumped the Charon/Aeneas pins in flake.lock, also expect to fix proofs — see docs/upgrading-extraction-toolchain.md."
             git --no-pager diff --stat -- certify-check/
             exit 1
           fi

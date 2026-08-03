@@ -365,10 +365,19 @@ outside `lattice`, the ★ discharge that gates the merge); the searcher wiring 
 `links_consistent`) + the {separating edges}↔{boundary edges} bijection; and the CGAL differential extended
 to `General_polygon_with_holes_2` (faces **and** holes) over the non-pinching regime.
 
-**Scoped follow-ups (not gating — the ★ soundness is discharged):**
-- **The deep 2-manifold theorem** (CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary; π₀ faces ⇒
-  valid cycles) is the open-ended Lean-via-Aeneas attempt (3e.5), which stands `certify-core` up as a
-  second extraction surface. It upgrades the Lean cell; the Kani checkers remain the load-bearing discharge.
+**The Lean-via-Aeneas attempt (3e.5) landed a real fragment:** `certify-core` is now a **second Charon+Aeneas
+extraction surface** (`certify-check/CertifyCore/`, registered in the lakefile + extraction-drift), and —
+unlike `lattice::small` — it needs **no hand-written externals** (its lifted TCB is exactly Charon+Aeneas+Lean).
+The link checkers (`v_boundary`/`link_ok`/`link_iso_ok` + closure) lift, typecheck, and are **axiom-clean and
+sorry-free** (`#print axioms … [propext, Classical.choice, Quot.sound]`). `CertifyCheck.CapOut` proves the
+**dispatch-soundness** layer deductively over the lifted model: `link_ok` returns `false` iff the vertex is a
+`Pinch` (the CAP-OUT-LINK reject rule), `v_boundary ↔ Boundary`, and `V_∂ ⊆ accepted` — all axiom-clean.
+
+**Scoped follow-ups (not gating — the ★ soundness is discharged by the Kani checkers):**
+- **The run-counter refinement** (`cyclic_true_runs` = the cyclic-run count via `loop.spec_decr_nat`, hence
+  the full `link_ok ↔ ≤1 run` matching the Kani property in Lean) and above it **the topological 2-manifold
+  theorem** (CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary; π₀ faces ⇒ valid cycles) remain the
+  frontier. The lift + dispatch soundness are done; the Kani checkers remain the load-bearing discharge.
 - **CGAL Option B** (`Arrangement_2` face iteration) and the **exact per-edge `a+b√d` boundary-set**
   differential — a redundant cross-check of the Option-A `Boolean_set_operations_2` oracle (already
   covering faces + holes); the △-of-overlapping-disks pinch stays the documented spec-aligned divergence
