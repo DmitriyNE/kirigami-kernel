@@ -12,16 +12,13 @@
 //! — is slice 3d.3.
 //!
 //! **Scope note (regime handled).** Cells are the traced DCEL cycles, labeled by
-//! **exact point-location** — the horizontal-slab decomposition of [`label_cells`]
+//! **exact point-location** — the horizontal-slab decomposition of [`slab_locate`]
 //! (3e.1), which seeds every cell independently (not a single BFS). This is exact on
 //! **transverse-crossing** overlaps, **identical/coincident** operands, **disjoint**
 //! (disconnected) operands, and **nested** (annulus) operands — the cocycle closes on
-//! all of them, so `ledge_dom` and [`ledge_dom_checked`] return the correct labeling.
-//! Two follow-ups remain:
-//! - **Face-with-holes nesting** (3e.1b): the emitted [`Face`] is still a flat edge
-//!   bag, so an annulus `△` emits its outer and hole boundaries as two faces rather
-//!   than one face with a counter-oriented hole. The labels/selection are correct; the
-//!   *structural* nesting is pending.
+//! all of them, so `ledge_dom` and [`ledge_dom_checked`] return the correct labeling,
+//! and [`Face`] carries an outer loop plus counter-oriented holes (an annulus `△` is
+//! one face with one hole). One case remains:
 //! - **tangency** (internal/external — the operands touch at a point): the cocycle
 //!   closes (connected), but the emitted face count can still be **frame-dependent** —
 //!   after a rotation the tangent point may land on the axis-aligned decomposition's
@@ -38,6 +35,11 @@ use crate::dcel::{Dcel, SubEdge};
 use crate::locate::{
     rational_above, rational_below, rational_between, ray_x_arc, ray_x_seg, winding_parity,
 };
+
+/// An `(A, B)` ℤ₂² cell label.
+type Label = (bool, bool);
+/// A rational sample point `(x, y)` — an interior witness of a cell (3e point-location).
+type Pt<B> = (Rat<B>, Rat<B>);
 
 /// Which operand a source curve bounds (the two-operand ℤ₂² model).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,10 +71,13 @@ impl BoolOp {
     }
 }
 
-/// One emitted output face: the separating boundary edges of a π₀ component of the
-/// selected region (spec §6 step 8 — one face per component, never per cell).
+/// One emitted output face (spec §6 step 8 — one face per π₀ component of the selected
+/// region, never per cell): its **outer** boundary loop (CCW) and its **holes** (CW,
+/// counter-oriented inner loops — the unselected regions strictly enclosed by it).
+/// Together an outer + holes describe a `General_polygon_with_holes` (the CGAL oracle).
 pub struct Face<B: Backend> {
-    pub boundary: Vec<Edge<B>>,
+    pub outer: Vec<Edge<B>>,
+    pub holes: Vec<Vec<Edge<B>>>,
 }
 
 /// The emitted region: the connected components of the selected cells.
@@ -286,13 +291,27 @@ fn label_all_cycles<B: Backend>(
     d: &Dcel<B>,
     operand_of: &impl Fn(CurveId) -> OperandId,
 ) -> Vec<(bool, bool)> {
+    slab_locate(d, operand_of).0
+}
+
+/// The slab decomposition, returning both the per-cycle `(A, B)` labels **and** a
+/// rational interior sample point of each cycle's face — the latter reused by 3e.1b's
+/// boundary-loop orientation / hole-nesting (a point known to be inside a given cell).
+fn slab_locate<B: Backend>(
+    d: &Dcel<B>,
+    operand_of: &impl Fn(CurveId) -> OperandId,
+) -> (Vec<Label>, Vec<Pt<B>>) {
     let a_edges = operand_edges(d, operand_of, OperandId::A);
     let b_edges = operand_edges(d, operand_of, OperandId::B);
-    let mut labels: Vec<Option<(bool, bool)>> = vec![None; d.n_cycles];
+    let mut labels: Vec<Option<Label>> = vec![None; d.n_cycles];
+    let mut reps: Vec<Option<Pt<B>>> = vec![None; d.n_cycles];
 
     let crit = critical_ys(d);
     if crit.is_empty() {
-        return vec![(false, false); d.n_cycles];
+        return (
+            vec![(false, false); d.n_cycles],
+            vec![(Rat::from_i128(0), Rat::from_i128(0)); d.n_cycles],
+        );
     }
     // A generic rational height per gap: below the lowest, between each pair, above
     // the highest. Each is strictly between (or beyond) criticals, so it avoids every
@@ -304,11 +323,19 @@ fn label_all_cycles<B: Backend>(
     }
     band_ys.push(rational_above(&crit[crit.len() - 1]));
 
-    let label_at = |xm: &Rat<B>, y0: &Rat<B>| -> (bool, bool) {
-        (
-            winding_parity(xm, y0, &a_edges),
-            winding_parity(xm, y0, &b_edges),
-        )
+    let a_edges = &a_edges;
+    let b_edges = &b_edges;
+    let assign = |labels: &mut Vec<Option<(bool, bool)>>,
+                  reps: &mut Vec<Option<(Rat<B>, Rat<B>)>>,
+                  cyc: usize,
+                  xm: Rat<B>,
+                  y0: &Rat<B>| {
+        let lab = (
+            winding_parity(&xm, y0, a_edges),
+            winding_parity(&xm, y0, b_edges),
+        );
+        labels[cyc] = Some(lab);
+        reps[cyc] = Some((xm, y0.clone()));
     };
 
     for y0 in &band_ys {
@@ -346,100 +373,146 @@ fn label_all_cycles<B: Backend>(
 
         // Leftmost cell: −x of the first crossing = the upward half-edge's face.
         let xm = rational_below(&xs[0].x);
-        labels[xs[0].up_cycle] = Some(label_at(&xm, y0));
+        assign(&mut labels, &mut reps, xs[0].up_cycle, xm, y0);
         // Cell between consecutive crossings: +x of the left one = the downward face.
         for j in 0..m - 1 {
             let xm = rational_between(&xs[j].x, &xs[j + 1].x);
-            labels[xs[j].down_cycle] = Some(label_at(&xm, y0));
+            assign(&mut labels, &mut reps, xs[j].down_cycle, xm, y0);
         }
         // Rightmost cell: +x of the last crossing.
         let xm = rational_above(&xs[m - 1].x);
-        labels[xs[m - 1].down_cycle] = Some(label_at(&xm, y0));
+        assign(&mut labels, &mut reps, xs[m - 1].down_cycle, xm, y0);
     }
 
-    labels
-        .into_iter()
-        .map(|l| l.unwrap_or((false, false)))
-        .collect()
+    (
+        labels
+            .into_iter()
+            .map(|l| l.unwrap_or((false, false)))
+            .collect(),
+        reps.into_iter()
+            .map(|r| r.unwrap_or((Rat::from_i128(0), Rat::from_i128(0))))
+            .collect(),
+    )
 }
 
-/// Union-find over cells (for the π₀ quotient).
-struct Uf {
-    parent: Vec<usize>,
-}
-impl Uf {
-    fn new(n: usize) -> Self {
-        Uf {
-            parent: (0..n).collect(),
+/// The next boundary half-edge after `h` that keeps the selected region on the left:
+/// follow the arrangement `next`, and whenever it lands on an **internal** edge (both
+/// sides selected — a suppressed merge edge, spec §6 step 7) cross through its twin
+/// into the neighbouring selected cell and continue, until a **separating** edge
+/// (selected on the left, unselected on the right) is reached. This walks the boundary
+/// of the *merged* selected region, so overlapping selected cells share one loop.
+fn boundary_succ<B: Backend>(d: &Dcel<B>, sel: &[bool], h: usize) -> usize {
+    let mut g = d.halfedges[h].next;
+    loop {
+        let twin = d.halfedges[g].twin;
+        if !sel[d.halfedges[twin].cycle] {
+            return g; // separating: unselected on the right — a boundary edge
         }
-    }
-    fn find(&mut self, x: usize) -> usize {
-        let mut r = x;
-        while self.parent[r] != r {
-            r = self.parent[r];
-        }
-        let mut c = x;
-        while self.parent[c] != c {
-            let n = self.parent[c];
-            self.parent[c] = r;
-            c = n;
-        }
-        r
-    }
-    fn union(&mut self, a: usize, b: usize) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            self.parent[ra] = rb;
-        }
+        g = d.halfedges[twin].next; // internal edge: cross into the neighbour
     }
 }
 
-/// The full eight-step boolean: build the DCEL, label the cells, select by `op`,
-/// emit only separating edges, and quotient to π₀ faces (spec §6 steps 1–8).
-/// Returns `Refuted` [`Verdict`] never (searcher); a cocycle failure is surfaced as
-/// an `Unresolved`-free `Verified` whose labeling carries `cocycle_ok = false` for
-/// the checker — but in a correct build the cocycle always closes.
+/// A traced output boundary loop: its edge geometry, a rational interior point of the
+/// selected cell on its **left**, and one of the unselected cell on its **right**.
+struct BoundaryLoop<B: Backend> {
+    edges: Vec<Edge<B>>,
+    left_rep: Pt<B>,
+    right_rep: Pt<B>,
+}
+
+/// Assemble the output region (spec §6 step 8) from the per-cell selection: trace the
+/// selected region's boundary loops, classify each as an outer boundary (the selected
+/// cell to its left is *inside* it) or a hole (it is *outside*), and nest each hole
+/// into its immediate containing outer loop — one [`Face`] (outer + holes) per π₀
+/// component. `reps[c]` is a rational interior point of cell `c` (from [`slab_locate`]).
+fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)]) -> Region<B> {
+    // The selected-side half-edge of each separating edge is a boundary half-edge.
+    let mut is_boundary = vec![false; d.halfedges.len()];
+    for k in 0..d.edges.len() {
+        let (ca, cb) = (d.halfedges[2 * k].cycle, d.halfedges[2 * k + 1].cycle);
+        if sel[ca] != sel[cb] {
+            is_boundary[if sel[ca] { 2 * k } else { 2 * k + 1 }] = true;
+        }
+    }
+
+    // Trace the boundary half-edges into closed loops.
+    let mut visited = vec![false; d.halfedges.len()];
+    let mut loops: Vec<BoundaryLoop<B>> = Vec::new();
+    for start in 0..d.halfedges.len() {
+        if !is_boundary[start] || visited[start] {
+            continue;
+        }
+        let mut edges = Vec::new();
+        let mut h = start;
+        loop {
+            visited[h] = true;
+            edges.push(d.edges[d.halfedges[h].edge].edge.clone());
+            h = boundary_succ(d, sel, h);
+            if h == start {
+                break;
+            }
+        }
+        let left = d.halfedges[start].cycle;
+        let right = d.halfedges[d.halfedges[start].twin].cycle;
+        loops.push(BoundaryLoop {
+            edges,
+            left_rep: reps[left].clone(),
+            right_rep: reps[right].clone(),
+        });
+    }
+
+    // Classify: a loop is an outer boundary iff its (selected) left cell is inside it;
+    // otherwise it is a hole, whose interior is the (unselected) right cell.
+    let mut outers: Vec<(Vec<Edge<B>>, Pt<B>)> = Vec::new();
+    let mut holes: Vec<(Vec<Edge<B>>, Pt<B>)> = Vec::new();
+    for lp in loops {
+        if winding_parity(&lp.left_rep.0, &lp.left_rep.1, &lp.edges) {
+            outers.push((lp.edges, lp.left_rep));
+        } else {
+            holes.push((lp.edges, lp.right_rep));
+        }
+    }
+
+    // One face per outer loop; nest each hole into its immediate containing outer (the
+    // deepest candidate — the one whose own interior point lies inside every other
+    // candidate). Containers are totally ordered by nesting, so this is well-defined.
+    let mut faces: Vec<Face<B>> = outers
+        .iter()
+        .map(|(e, _)| Face {
+            outer: e.clone(),
+            holes: Vec::new(),
+        })
+        .collect();
+    for (hedges, hpt) in holes {
+        let cands: Vec<usize> = (0..outers.len())
+            .filter(|&oi| winding_parity(&hpt.0, &hpt.1, &outers[oi].0))
+            .collect();
+        let container = cands.iter().copied().find(|&oi| {
+            cands.iter().all(|&oj| {
+                oj == oi || winding_parity(&outers[oi].1.0, &outers[oi].1.1, &outers[oj].0)
+            })
+        });
+        if let Some(oi) = container {
+            faces[oi].holes.push(hedges);
+        }
+    }
+
+    Region { faces }
+}
+
+/// The full eight-step boolean: build the DCEL, label the cells by exact point-location
+/// (3e.1), select by `op`, then emit the region as outer + hole loops (spec §6 steps
+/// 1–8). Never `Refuted` (searcher); a cocycle failure is surfaced through
+/// [`ledge_dom_checked`], not here.
 pub fn ledge_dom<B: Backend>(
     edges: &[Edge<B>],
     operand_of: &impl Fn(CurveId) -> OperandId,
     op: BoolOp,
 ) -> Region<B> {
     let d = Dcel::build(edges);
-    let cl = label_cells(&d, operand_of);
-    let sel: Vec<bool> = cl.labels.iter().map(|&l| op.select(l)).collect();
-
-    // π₀: union selected cells joined by a selected|selected edge (the merge edges).
-    let mut uf = Uf::new(d.n_cycles);
-    for &(ca, cb, _, _) in &cl.adj {
-        if sel[ca] && sel[cb] {
-            uf.union(ca, cb);
-        }
-    }
-
-    // Emit only separating edges (selected|unselected), grouped by the π₀ component
-    // of their selected side → one face per component.
-    let mut roots: Vec<usize> = Vec::new();
-    let mut faces: Vec<Face<B>> = Vec::new();
-    for (k, &(ca, cb, _, _)) in cl.adj.iter().enumerate() {
-        if sel[ca] == sel[cb] {
-            continue; // selected|selected (merge, deleted) or unselected|unselected
-        }
-        let sel_cycle = if sel[ca] { ca } else { cb };
-        let root = uf.find(sel_cycle);
-        let fi = match roots.iter().position(|&r| r == root) {
-            Some(i) => i,
-            None => {
-                roots.push(root);
-                faces.push(Face {
-                    boundary: Vec::new(),
-                });
-                roots.len() - 1
-            }
-        };
-        faces[fi].boundary.push(d.edges[k].edge.clone());
-    }
-
-    Region { faces }
+    let (labels, reps) = slab_locate(&d, operand_of);
+    let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
+    emit_region(&d, &sel, &reps)
 }
 
 /// Convenience: the boolean as a `Verdict` carrying the labeling's cocycle verdict
@@ -512,22 +585,16 @@ mod tests {
     fn two_disks_union_one_face() {
         let r = ledge_dom(&two_disks(), &ab, BoolOp::Or);
         assert_eq!(r.faces.len(), 1, "∪ of two overlapping disks is one face");
-        assert_eq!(
-            r.faces[0].boundary.len(),
-            4,
-            "bounded by the four outer arcs"
-        );
+        assert_eq!(r.faces[0].outer.len(), 4, "bounded by the four outer arcs");
+        assert!(r.faces[0].holes.is_empty(), "no holes");
     }
 
     #[test]
     fn two_disks_intersection_one_face() {
         let r = ledge_dom(&two_disks(), &ab, BoolOp::And);
         assert_eq!(r.faces.len(), 1, "∩ is the single lens");
-        assert_eq!(
-            r.faces[0].boundary.len(),
-            4,
-            "bounded by the four inner arcs"
-        );
+        assert_eq!(r.faces[0].outer.len(), 4, "bounded by the four inner arcs");
+        assert!(r.faces[0].holes.is_empty(), "no holes");
     }
 
     #[test]
@@ -539,7 +606,8 @@ mod tests {
             "△ is the two lunes (pinched at the crossings)"
         );
         for f in &r.faces {
-            assert_eq!(f.boundary.len(), 4, "each lune: two outer + two inner arcs");
+            assert_eq!(f.outer.len(), 4, "each lune: two outer + two inner arcs");
+            assert!(f.holes.is_empty(), "a lune has no hole");
         }
     }
 
@@ -707,17 +775,34 @@ mod tests {
             vec![(false, false), (true, false), (true, true)],
             "outside, annulus (A only), inner (A∧B)"
         );
-        assert_eq!(
-            ledge_dom(&e, &ab, BoolOp::And).faces.len(),
-            1,
-            "∩ = inner disk"
+        let inter = ledge_dom(&e, &ab, BoolOp::And);
+        assert_eq!(inter.faces.len(), 1, "∩ = inner disk");
+        assert!(
+            inter.faces[0].holes.is_empty(),
+            "the inner disk has no hole"
         );
-        assert_eq!(
-            ledge_dom(&e, &ab, BoolOp::Or).faces.len(),
-            1,
-            "∪ = outer disk"
+        let uni = ledge_dom(&e, &ab, BoolOp::Or);
+        assert_eq!(uni.faces.len(), 1, "∪ = outer disk");
+        assert!(
+            uni.faces[0].holes.is_empty(),
+            "the filled outer disk has no hole"
         );
-        // △ = the annulus: one face with a hole (checked structurally in 3e.1b).
+
+        // △ = the annulus: ONE face (the ring) with ONE hole (the inner disk) — the
+        // Face-with-holes nesting (3e.1b), where flat π₀ would have emitted two faces.
+        let xor = ledge_dom(&e, &ab, BoolOp::Xor);
+        assert_eq!(xor.faces.len(), 1, "△ = the annulus is one face");
+        assert_eq!(
+            xor.faces[0].outer.len(),
+            2,
+            "outer boundary = the two outer arcs"
+        );
+        assert_eq!(xor.faces[0].holes.len(), 1, "one hole (the inner disk)");
+        assert_eq!(
+            xor.faces[0].holes[0].len(),
+            2,
+            "the hole = the two inner arcs"
+        );
         assert!(matches!(
             ledge_dom_checked(&e, &ab, BoolOp::Xor),
             Verdict::Verified(_)
