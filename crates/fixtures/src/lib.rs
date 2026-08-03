@@ -7,4 +7,5 @@
 //! - The counterexample corpus (`fixtures/corpus.md`, ~30 entries) is transcribed here
 //!   one module per entry, the required verdict asserted, as the checkers land.
 
+pub mod corpus;
 pub mod devices;

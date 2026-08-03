@@ -319,6 +319,7 @@ name = "fixtures"
 version = "0.0.0"
 dependencies = [
  "arrange2d",
+ "certify-core",
  "closure",
  "geom",
  "lattice",

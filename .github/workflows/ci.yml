@@ -59,7 +59,7 @@ jobs:
       # cached and the exact version is pinned at the §7 extraction spike, so this is
       # scoped to the fast (loop-free) harnesses; the CBMC-expensive gcd-loop
       # correctness harnesses are covered by tests until the spike hardens them.
-      - name: Kani (lattice fast-path panic-freedom + M3d cocycle soundness)
+      - name: Kani (lattice fast-path panic-freedom + M3d cocycle + M2 CLIP-σ soundness)
         run: |
           nix develop --command bash -c '
             cargo install --locked kani-verifier && cargo-kani setup &&
@@ -70,7 +70,8 @@ jobs:
             cargo kani -p certify-core \
               --harness cocycle_implies_telescoping \
               --harness link_ok_iff_no_pinch \
-              --harness link_iso_matches_cyclic_adjacency'
+              --harness link_iso_matches_cyclic_adjacency \
+              --harness clip_sigma_signed_disjunction_sound'
 
       # Lean extraction / proof surface (vv-guide §7 spike). Builds `certify-check`
       # (hand-written specs + the Sturm hypothesis-checker + the Aeneas-lifted
