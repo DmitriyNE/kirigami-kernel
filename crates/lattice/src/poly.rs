@@ -40,6 +40,7 @@ impl<B: Backend> Poly<B> {
         Poly { coeffs }
     }
 
+    /// Whether this is the zero polynomial.
     pub fn is_zero(&self) -> bool {
         self.coeffs.is_empty()
     }
@@ -51,12 +52,14 @@ impl<B: Backend> Poly<B> {
     pub fn leading(&self) -> Option<&Rat<B>> {
         self.coeffs.last()
     }
+    /// The coefficients, low-degree first (empty for the zero polynomial).
     pub fn coeffs(&self) -> &[Rat<B>] {
         &self.coeffs
     }
 
     // ---- ring operations -----------------------------------------------------
 
+    /// `self + o`.
     pub fn add(&self, o: &Self) -> Self {
         let n = self.coeffs.len().max(o.coeffs.len());
         let mut c = Vec::with_capacity(n);
@@ -67,6 +70,7 @@ impl<B: Backend> Poly<B> {
         }
         Self::from_coeffs(c)
     }
+    /// `self - o`.
     pub fn sub(&self, o: &Self) -> Self {
         let n = self.coeffs.len().max(o.coeffs.len());
         let mut c = Vec::with_capacity(n);
@@ -77,6 +81,7 @@ impl<B: Backend> Poly<B> {
         }
         Self::from_coeffs(c)
     }
+    /// `-self` (negate every coefficient).
     pub fn neg(&self) -> Self {
         Poly {
             coeffs: self.coeffs.iter().map(|c| c.neg()).collect(),
@@ -91,6 +96,7 @@ impl<B: Backend> Poly<B> {
             coeffs: self.coeffs.iter().map(|c| c.mul(s)).collect(),
         }
     }
+    /// `self * o` (schoolbook convolution).
     pub fn mul(&self, o: &Self) -> Self {
         if self.is_zero() || o.is_zero() {
             return Self::zero();
@@ -155,6 +161,7 @@ impl<B: Backend> Poly<B> {
         }
         (Self::from_coeffs(q), Self::from_coeffs(r))
     }
+    /// Polynomial remainder of `self` divided by `d` (the `.1` of [`Self::divrem`]).
     pub fn rem(&self, d: &Self) -> Self {
         self.divrem(d).1
     }

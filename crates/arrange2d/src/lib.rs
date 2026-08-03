@@ -22,6 +22,45 @@
 //!   vertices and coincidence structure; [`dcel::Dcel::build`] builds the half-edge
 //!   arrangement the boolean runs on.
 //!
+//! # Example
+//!
+//! Union two overlapping disks. Each input curve is decomposed into arrangement
+//! [`Edge`](geom::content::Edge)s carrying a [`CurveId`](geom::content::CurveId);
+//! `operand_of` maps each id to operand `A` or `B`.
+//!
+//! ```
+//! use arrange2d::boolean::{ledge_dom, BoolOp, OperandId};
+//! use arrange2d::decompose::decompose;
+//! use geom::content::{Circle, Curve, CurveId, Orient};
+//! use lattice::{Bignum, Rat};
+//!
+//! // A disk as decomposed edges: centre (cx, cy), squared radius r2, tagged `src`.
+//! let disk = |cx, cy, r2, src| {
+//!     decompose(&Curve::Circle {
+//!         circle: Circle {
+//!             cx: Rat::<Bignum>::from_i128(cx),
+//!             cy: Rat::from_i128(cy),
+//!             r2: Rat::from_i128(r2),
+//!         },
+//!         orient: Orient::Ccw,
+//!         source: CurveId(src),
+//!     })
+//! };
+//!
+//! let mut edges = disk(0, 0, 25, 0); // operand A: centre (0,0), r² = 25
+//! edges.extend(disk(8, 0, 25, 1));   // operand B: centre (8,0), r² = 25
+//!
+//! let region = ledge_dom(
+//!     &edges,
+//!     &|c: CurveId| if c.0 == 0 { OperandId::A } else { OperandId::B },
+//!     BoolOp::Or,
+//! );
+//!
+//! // A ∪ B of two overlapping disks is a single face with no holes.
+//! assert_eq!(region.faces.len(), 1);
+//! assert!(region.faces[0].holes.is_empty());
+//! ```
+//!
 //! # Trust model
 //!
 //! This crate is an untrusted **constructor**: it may use any algorithm to produce a

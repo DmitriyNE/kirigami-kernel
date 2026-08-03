@@ -564,6 +564,30 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
 /// `op` selects, and traces the kept region into faces (outer loop + holes). This is the
 /// plain entry point: it always emits a region. To have the emitted region checked by the
 /// verified checkers, use [`ledge_dom_certified`].
+///
+/// ```
+/// use arrange2d::boolean::{ledge_dom, BoolOp, OperandId};
+/// use arrange2d::decompose::decompose;
+/// use geom::content::{Circle, Curve, CurveId, Orient};
+/// use lattice::{Bignum, Rat};
+///
+/// let disk = |cx, cy, r2, src| decompose(&Curve::Circle {
+///     circle: Circle {
+///         cx: Rat::<Bignum>::from_i128(cx),
+///         cy: Rat::from_i128(cy),
+///         r2: Rat::from_i128(r2),
+///     },
+///     orient: Orient::Ccw,
+///     source: CurveId(src),
+/// });
+/// let mut edges = disk(0, 0, 25, 0);
+/// edges.extend(disk(8, 0, 25, 1));
+/// let operand_of = |c: CurveId| if c.0 == 0 { OperandId::A } else { OperandId::B };
+///
+/// // Intersection of the two overlapping disks is the single lens.
+/// let lens = ledge_dom(&edges, &operand_of, BoolOp::And);
+/// assert_eq!(lens.faces.len(), 1);
+/// ```
 pub fn ledge_dom<B: Backend>(
     edges: &[Edge<B>],
     operand_of: &impl Fn(CurveId) -> OperandId,
@@ -592,6 +616,36 @@ pub fn ledge_dom<B: Backend>(
 /// region together with the CAP-OUT-LINK classification of the arrangement vertices (the
 /// boundary set `V_∂` and the pinch points). Pinches are valid — a symmetric difference
 /// pinches at its crossings — so they are reported, not refused.
+///
+/// ```
+/// use arrange2d::boolean::{ledge_dom_certified, BoolOp, CapOut, OperandId};
+/// use arrange2d::decompose::decompose;
+/// use certify_core::Verdict;
+/// use geom::content::{Circle, Curve, CurveId, Orient};
+/// use lattice::{Bignum, Rat};
+///
+/// let disk = |cx, cy, r2, src| decompose(&Curve::Circle {
+///     circle: Circle {
+///         cx: Rat::<Bignum>::from_i128(cx),
+///         cy: Rat::from_i128(cy),
+///         r2: Rat::from_i128(r2),
+///     },
+///     orient: Orient::Ccw,
+///     source: CurveId(src),
+/// });
+/// let mut edges = disk(0, 0, 25, 0);
+/// edges.extend(disk(8, 0, 25, 1));
+/// let operand_of = |c: CurveId| if c.0 == 0 { OperandId::A } else { OperandId::B };
+///
+/// match ledge_dom_certified(&edges, &operand_of, BoolOp::Or) {
+///     // The region passed every verified checker; `v_boundary` / `pinches` classify
+///     // the arrangement vertices.
+///     Verdict::Verified(CapOut { region, .. }) => assert_eq!(region.faces.len(), 1),
+///     // A fault means a constructor bug, not unsupported input.
+///     Verdict::Refuted(fault) => panic!("CAP-OUT refuted: {fault:?}"),
+///     Verdict::Unresolved(()) => unreachable!(),
+/// }
+/// ```
 pub fn ledge_dom_certified<B: Backend>(
     edges: &[Edge<B>],
     operand_of: &impl Fn(CurveId) -> OperandId,

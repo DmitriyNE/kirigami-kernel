@@ -40,7 +40,9 @@ pub fn sign_variations(signs: &[i8]) -> u32 {
 /// A closed rational interval `[lo, hi]` (root counts are over the half-open
 /// `(lo, hi]`, per Sturm's theorem).
 pub struct Interval<B: Backend = Bignum> {
+    /// Lower endpoint (excluded from the root count).
     pub lo: Rat<B>,
+    /// Upper endpoint (included in the root count).
     pub hi: Rat<B>,
 }
 
