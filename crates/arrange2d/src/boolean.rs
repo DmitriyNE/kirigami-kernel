@@ -11,6 +11,13 @@
 //! checker in `certify_core::arrange` over the flat certificate this module exposes
 //! — is slice 3d.3.
 //!
+//! **Certified vs plain entry.** [`ledge_dom`] emits a [`Region`] unconditionally (fast,
+//! trusted). [`ledge_dom_certified`] is the real CAP-OUT gate (spec §8.5): it computes
+//! the labeling **once** and runs *every* proven checker over the **emitted** region —
+//! substrate-link, `cocycle_ok`, per-vertex `link_iso_ok`, and the separating↔boundary
+//! bijection — returning a real [`CapOutFault`] `Refuted` on any defect (so a searcher
+//! bug is loud, not silent) plus the CAP-OUT-LINK `V_∂`/pinch classification.
+//!
 //! **Scope note (regime handled).** Cells are the traced DCEL cycles, labeled by
 //! **exact point-location** — the horizontal-slab decomposition of [`slab_locate`]
 //! (3e.1), which seeds every cell independently (not a single BFS). The boolean is now
@@ -84,6 +91,36 @@ pub struct Face<B: Backend> {
 /// The emitted region: the connected components of the selected cells.
 pub struct Region<B: Backend> {
     pub faces: Vec<Face<B>>,
+}
+
+/// A **kernel-defect** the CAP-OUT certificate refutes on: the searcher produced a
+/// region that fails an internal-consistency clause a correct build always satisfies
+/// (spec §8.5 — "absence is the silent failure"). These are `Refuted`, not `Unresolved`:
+/// in a correct build they never fire, so a fire is a real bug, not an unhandled input.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CapOutFault {
+    /// The DCEL overlay is malformed (twin pairing / dangling half-edge — spec §6
+    /// substrate-link, [`Dcel::substrate_link_ok`]).
+    SubstrateLink,
+    /// The ℤ₂² labeling is not a valid cochain (a frustrated cycle ⇒ a mis-paired
+    /// twin / dropped event — the Kani-proven `cocycle_ok` rejected it).
+    Cocycle,
+    /// `Link_emitted(v) ≇ Link_geometric(v)`: the stored rotation ≠ the azimuth sort at
+    /// vertex `v` (the Kani-proven `link_iso_ok` rejected it — `link_rotation` is wrong).
+    Link { vertex: usize },
+    /// The `{separating edges} ↔ {emitted boundary edges}` completeness bijection failed
+    /// (emission dropped or duplicated a boundary edge — spec §8.5 CAP-OUT completeness).
+    Bijection,
+}
+
+/// A **certified** boolean output (spec §8.5 CAP-OUT): the emitted [`Region`] together
+/// with the CAP-OUT-LINK classification of its arrangement vertices — `v_boundary` = the
+/// manifold shell vertices `V_∂`, `pinches` = the non-manifold pinch points (valid, but
+/// excluded from `V_∂`: spec "π₀ keeps them separate, CAP-OUT-LINK rejects the vertex").
+pub struct CapOut<B: Backend> {
+    pub region: Region<B>,
+    pub v_boundary: Vec<usize>,
+    pub pinches: Vec<usize>,
 }
 
 /// The **flat certificate** of the cell labeling — a flattened, index-array view of
@@ -516,19 +553,109 @@ pub fn ledge_dom<B: Backend>(
     emit_region(&d, &sel, &reps)
 }
 
-/// Convenience: the boolean as a `Verdict` carrying the labeling's cocycle verdict
-/// (the searcher self-diagnostic). `Refuted` is [`core::convert::Infallible`].
+/// **The certified boolean (spec §8.5 CAP-OUT).** Unlike [`ledge_dom`] (which emits
+/// unconditionally) and the old cocycle-only `ledge_dom_checked`, this runs *every*
+/// proven checker over the **emitted** region and returns a real [`CapOutFault`] on any
+/// defect — so a searcher bug becomes a loud `Refuted`, not a silent wrong region.
+///
+/// Critically, the labeling is computed **once** and the region is emitted from the
+/// *same* labeling that the cocycle checker certified (the old checked path re-ran the
+/// point-location, certifying a recomputation rather than the emitted artifact).
+///
+/// The gates, in order: the DCEL substrate-link integrity; the Kani-proven ℤ₂²
+/// `cocycle_ok` over the emitted labeling; `Link_emitted ≅ Link_geometric` at every
+/// vertex (Kani-proven `link_iso_ok`); and the `{separating}↔{boundary}` edge bijection
+/// over the emitted region. On success it also returns the CAP-OUT-LINK classification
+/// (`V_∂` + the pinch vertices) — pinches are *valid* (a △ pinches at its crossings), so
+/// they are reported, not refuted.
+pub fn ledge_dom_certified<B: Backend>(
+    edges: &[Edge<B>],
+    operand_of: &impl Fn(CurveId) -> OperandId,
+    op: BoolOp,
+) -> Verdict<CapOut<B>, CapOutFault, ()> {
+    let d = Dcel::build(edges);
+    if !d.substrate_link_ok() {
+        return Verdict::Refuted(CapOutFault::SubstrateLink);
+    }
+    let (labels, reps) = slab_locate(&d, operand_of);
+    certify_from_labels(&d, operand_of, op, labels, reps)
+}
+
+/// The certification core, taking the labeling explicitly so the gates can be exercised
+/// on a deliberately-corrupted labeling in tests (a correct searcher never trips them).
+fn certify_from_labels<B: Backend>(
+    d: &Dcel<B>,
+    operand_of: &impl Fn(CurveId) -> OperandId,
+    op: BoolOp,
+    labels: Vec<Label>,
+    reps: Vec<Pt<B>>,
+) -> Verdict<CapOut<B>, CapOutFault, ()> {
+    // (1) ℤ₂² cocycle over THIS labeling (spec §6 step 4) — the Kani-proven checker.
+    let adj: Vec<(usize, usize, bool, bool)> = (0..d.edges.len())
+        .map(|k| {
+            let (fa, fb) = edge_flips(&d.edges[k], operand_of);
+            (
+                d.halfedges[2 * k].cycle,
+                d.halfedges[2 * k + 1].cycle,
+                fa,
+                fb,
+            )
+        })
+        .collect();
+    let seed = labels
+        .iter()
+        .position(|&l| l == (false, false))
+        .unwrap_or(0);
+    let labels_u8: Vec<u8> = labels.iter().map(|&(a, b)| pack(a, b)).collect();
+    let (ea, eb, ef) = flat_edges(&adj);
+    if !certify_core::arrange::cocycle_ok(d.n_cycles, &labels_u8, seed, &ea, &eb, &ef) {
+        return Verdict::Refuted(CapOutFault::Cocycle);
+    }
+
+    // (2) Link_emitted ≅ Link_geometric at every vertex (spec §8.5) — Kani-proven.
+    for v in 0..d.verts.len() {
+        if !link_iso_ok(&link_emitted(d, v), &outgoing_sorted(d, v)) {
+            return Verdict::Refuted(CapOutFault::Link { vertex: v });
+        }
+    }
+
+    // (3) select + emit from THIS labeling (spec §6 steps 6–8).
+    let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
+    let region = emit_region(d, &sel, &reps);
+
+    // (4) {separating edges} ↔ {emitted boundary edges} completeness (spec §8.5).
+    if separating_count(d, &sel) != region_boundary_count(&region) {
+        return Verdict::Refuted(CapOutFault::Bijection);
+    }
+
+    // CAP-OUT-LINK classification (informational): V_∂ = manifold shell vertices,
+    // pinches = non-manifold touch points (valid, but not in V_∂).
+    let classes = link_classes(d, &sel);
+    let v_boundary = (0..classes.len())
+        .filter(|&v| classes[v] == LinkClass::Boundary)
+        .collect();
+    let pinches = (0..classes.len())
+        .filter(|&v| classes[v] == LinkClass::Pinch)
+        .collect();
+    Verdict::Verified(CapOut {
+        region,
+        v_boundary,
+        pinches,
+    })
+}
+
+/// Back-compat convenience: the region as a `Verdict`, now backed by the full
+/// [`ledge_dom_certified`] gate (any [`CapOutFault`] collapses to `Unresolved`, since
+/// this signature's `Refuted` is [`core::convert::Infallible`]).
 pub fn ledge_dom_checked<B: Backend>(
     edges: &[Edge<B>],
     operand_of: &impl Fn(CurveId) -> OperandId,
     op: BoolOp,
 ) -> Verdict<Region<B>, core::convert::Infallible, ()> {
-    let d = Dcel::build(edges);
-    let cl = label_cells(&d, operand_of);
-    if !cl.cocycle_ok {
-        return Verdict::Unresolved(());
+    match ledge_dom_certified(edges, operand_of, op) {
+        Verdict::Verified(c) => Verdict::Verified(c.region),
+        Verdict::Refuted(_) | Verdict::Unresolved(()) => Verdict::Unresolved(()),
     }
-    Verdict::Verified(ledge_dom(edges, operand_of, op))
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1146,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The certified entry accepts the whole corpus** (transverse, disjoint, annulus,
+    /// tangency) for every op — all four CAP-OUT gates (substrate-link, cocycle,
+    /// Link≅geom, bijection) pass over the *emitted* region.
+    #[test]
+    fn certified_verified_on_corpus() {
+        for e in corpus() {
+            for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
+                assert!(
+                    matches!(ledge_dom_certified(&e, &ab, op), Verdict::Verified(_)),
+                    "CAP-OUT must certify a valid boolean ({op:?})"
+                );
+            }
+        }
+    }
+
+    /// The CAP-OUT-LINK classification carried by the certificate: a △ pinches at every
+    /// crossing/tangent point (2 for transverse overlap, 1 for internal tangency), while
+    /// ∪/∩ are manifold (no pinch). These vertices are reported, not refuted.
+    #[test]
+    fn certified_pinch_classification() {
+        let got = |e: &[Edge<Bignum>], op| match ledge_dom_certified(e, &ab, op) {
+            Verdict::Verified(c) => c.pinches.len(),
+            _ => panic!("expected Verified"),
+        };
+        let transverse = two_disk_edges(&disk(0, 0, 25), &disk(8, 0, 25));
+        assert_eq!(got(&transverse, BoolOp::Xor), 2, "transverse △: 2 pinches");
+        assert_eq!(got(&transverse, BoolOp::Or), 0, "∪ is manifold");
+        assert_eq!(got(&transverse, BoolOp::And), 0, "∩ is manifold");
+        let tangency = two_disk_edges(&disk(0, 0, 4), &disk(1, 0, 1));
+        assert_eq!(
+            got(&tangency, BoolOp::Xor),
+            1,
+            "internal tangency △: 1 pinch"
+        );
+    }
+
+    /// **The gate is real, not decorative:** a deliberately-corrupted labeling (one
+    /// cell's A-bit flipped, breaking the ℤ₂² cochain) is *refuted* with `Cocycle` —
+    /// where the plain `ledge_dom` would have silently emitted a wrong region.
+    #[test]
+    fn certified_refutes_corrupted_labeling() {
+        let e = two_disks();
+        let d = Dcel::build(&e);
+        let (mut labels, reps) = slab_locate(&d, &ab);
+        labels[0].0 = !labels[0].0; // break the cochain around cell 0
+        assert!(matches!(
+            certify_from_labels(&d, &ab, BoolOp::Or, labels, reps),
+            Verdict::Refuted(CapOutFault::Cocycle)
+        ));
     }
 
     proptest! {
