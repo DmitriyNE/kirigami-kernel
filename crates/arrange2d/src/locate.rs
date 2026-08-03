@@ -128,6 +128,56 @@ pub fn strict_between<B: Backend>(v: &Surd<B>, a: &Surd<B>, b: &Surd<B>) -> bool
     v.cmp(lo) == Ordering::Greater && v.cmp(hi) == Ordering::Less
 }
 
+/// A rational strictly greater than the surd `s`, found by doubling a bracket. Uses
+/// only the public cross-radical [`Surd::cmp`] — no access to `s`'s internals.
+pub fn rational_above<B: Backend>(s: &Surd<B>) -> Rat<B> {
+    let mut step = Rat::from_i128(1);
+    let mut b = Rat::from_i128(0);
+    while s.cmp(&Surd::from_rat(b.clone())) != Ordering::Less {
+        b = b.add(&step);
+        step = step.add(&step);
+    }
+    b
+}
+
+/// A rational strictly less than the surd `s` (companion of [`rational_above`]).
+pub fn rational_below<B: Backend>(s: &Surd<B>) -> Rat<B> {
+    let mut step = Rat::from_i128(1);
+    let mut a = Rat::from_i128(0);
+    while s.cmp(&Surd::from_rat(a.clone())) != Ordering::Greater {
+        a = a.sub(&step);
+        step = step.add(&step);
+    }
+    a
+}
+
+/// A rational strictly between the surds `lo < hi` — the "rational strictly between
+/// two Surds" primitive the 3e slab decomposition needs to pick generic scanline
+/// heights and interior sample x's. Brackets `[a, b]` with `a < lo`, `b > hi` (via
+/// [`rational_below`]/[`rational_above`]) then bisects until the rational midpoint
+/// lands in the open gap `(lo, hi)`; terminates because the gap has positive width
+/// and the bracket halves each step. Requires `lo < hi`.
+pub fn rational_between<B: Backend>(lo: &Surd<B>, hi: &Surd<B>) -> Rat<B> {
+    debug_assert!(
+        lo.cmp(hi) == Ordering::Less,
+        "rational_between needs lo < hi"
+    );
+    let mut a = rational_below(lo);
+    let mut b = rational_above(hi);
+    let two = Rat::from_i128(2);
+    loop {
+        let m = a.add(&b).div(&two);
+        let ms = Surd::from_rat(m.clone());
+        if lo.cmp(&ms) != Ordering::Less {
+            a = m; // m ≤ lo
+        } else if hi.cmp(&ms) != Ordering::Greater {
+            b = m; // m ≥ hi
+        } else {
+            return m; // lo < m < hi
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +331,33 @@ mod tests {
             !winding_parity(&qi(4), &yy, &edges),
             "beyond the outer is outside"
         );
+    }
+
+    // --- rational-between primitives ---
+
+    #[test]
+    fn rational_strictly_between_surds() {
+        let r2 = Surd::<Bignum>::new(qi(0), qi(1), qi(2)); // √2 ≈ 1.414
+        let r3 = Surd::<Bignum>::new(qi(0), qi(1), qi(3)); // √3 ≈ 1.732
+        let m = rational_between(&r2, &r3);
+        assert_eq!(r2.cmp(&Surd::from_rat(m.clone())), Ordering::Less);
+        assert_eq!(r3.cmp(&Surd::from_rat(m.clone())), Ordering::Greater);
+
+        // Above / below a single surd.
+        let a = rational_above(&r2);
+        let b = rational_below(&r2);
+        assert_eq!(r2.cmp(&Surd::from_rat(a)), Ordering::Less);
+        assert_eq!(r2.cmp(&Surd::from_rat(b)), Ordering::Greater);
+    }
+
+    #[test]
+    fn rational_between_close_surds() {
+        // Two nearby irrationals: √(200) and √(201) (≈14.142 vs 14.177).
+        let lo = Surd::<Bignum>::new(qi(0), qi(1), qi(200));
+        let hi = Surd::<Bignum>::new(qi(0), qi(1), qi(201));
+        let m = rational_between(&lo, &hi);
+        assert_eq!(lo.cmp(&Surd::from_rat(m.clone())), Ordering::Less);
+        assert_eq!(hi.cmp(&Surd::from_rat(m)), Ordering::Greater);
     }
 
     // --- properties ---
