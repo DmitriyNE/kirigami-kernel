@@ -788,10 +788,45 @@ pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geom::content::{Circle, Curve, Orient};
+    use geom::content::{Circle, Curve, Line, Orient, Point2, SegPiece};
     use lattice::{Bignum, Rat};
 
     type Q = Rat<Bignum>;
+
+    /// A closed polygon operand: the CCW loop of segments through `verts`, tagged `src`.
+    fn polygon(verts: &[(i128, i128)], src: u32) -> Vec<Edge<Bignum>> {
+        let n = verts.len();
+        (0..n)
+            .map(|i| {
+                let (sx, sy) = verts[i];
+                let (ex, ey) = verts[(i + 1) % n];
+                let (a, b) = (Q::from_i128(-(ey - sy)), Q::from_i128(ex - sx));
+                let c = a
+                    .mul(&Q::from_i128(sx))
+                    .add(&b.mul(&Q::from_i128(sy)))
+                    .neg();
+                Edge::Seg(Box::new(SegPiece {
+                    line: Line { a, b, c },
+                    start: Point2::from_rat(Q::from_i128(sx), Q::from_i128(sy)),
+                    end: Point2::from_rat(Q::from_i128(ex), Q::from_i128(ey)),
+                    orient: Orient::Ccw,
+                    source: CurveId(src),
+                }))
+            })
+            .collect()
+    }
+    /// The number of certified output faces of `op`, panicking on any CAP-OUT refutation.
+    fn certified_faces(
+        edges: &[Edge<Bignum>],
+        operand_of: &impl Fn(CurveId) -> OperandId,
+        op: BoolOp,
+    ) -> usize {
+        match ledge_dom_certified(edges, operand_of, op) {
+            Verdict::Verified(c) => c.region.faces.len(),
+            Verdict::Refuted(f) => panic!("CAP-OUT refuted a valid boolean: {f:?}"),
+            Verdict::Unresolved(()) => panic!("unresolved"),
+        }
+    }
 
     fn circle_edges(cx: i128, cy: i128, r2: i128, src: u32) -> Vec<Edge<Bignum>> {
         crate::decompose::decompose(&Curve::Circle {
@@ -1240,6 +1275,66 @@ mod tests {
             "y=3 = the crossing vertices"
         );
         assert!(generic_height(&d, &Q::new(1, 2)), "y=1/2 is generic");
+    }
+
+    /// **Boolean over polygon (segment) operands** (#3) — the disks-only corpus never
+    /// exercised line-bounded regions. Two overlapping 4×4 squares: ∪ = one face, ∩ =
+    /// the 2×2 overlap, △ certifies (two L-shapes pinched at the crossings).
+    #[test]
+    fn boolean_over_polygons() {
+        let mut e = polygon(&[(0, 0), (4, 0), (4, 4), (0, 4)], 0);
+        e.extend(polygon(&[(2, 2), (6, 2), (6, 6), (2, 6)], 1));
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::Or),
+            1,
+            "∪ of overlapping squares"
+        );
+        assert_eq!(certified_faces(&e, &ab, BoolOp::And), 1, "∩ is the overlap");
+        assert!(matches!(
+            ledge_dom_certified(&e, &ab, BoolOp::Xor),
+            Verdict::Verified(_)
+        ));
+    }
+
+    /// **Mixed line+circle operands** (#3): a 6×6 square A with a radius-2 disk B fully
+    /// inside it. ∩ = the disk, ∪ = the square, △ = the square with a disk-shaped hole
+    /// (one face, one hole) — the polygon analogue of the annulus.
+    #[test]
+    fn boolean_mixed_line_circle() {
+        let mut e = polygon(&[(0, 0), (6, 0), (6, 6), (0, 6)], 0);
+        e.extend(circle_edges(3, 3, 4, 1));
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::And),
+            1,
+            "∩ = the inner disk"
+        );
+        assert_eq!(certified_faces(&e, &ab, BoolOp::Or), 1, "∪ = the square");
+        match ledge_dom_certified(&e, &ab, BoolOp::Xor) {
+            Verdict::Verified(c) => {
+                assert_eq!(c.region.faces.len(), 1, "△ = one face");
+                assert_eq!(c.region.faces[0].holes.len(), 1, "with a disk hole");
+            }
+            Verdict::Refuted(f) => panic!("△ refuted: {f:?}"),
+            Verdict::Unresolved(()) => panic!("△ unresolved"),
+        }
+    }
+
+    /// **Degree-6 arrangement vertex** (#3): three circles through the common point
+    /// (0,0) — (1,0,1),(0,1,1),(1,1,2) — where the corpus never went past degree 4.
+    /// Operands A = {two circles}, B = {one}. The certified entry must Verify for every
+    /// op (CAP-OUT-LINK is proven up to ≤6 sectors).
+    #[test]
+    fn boolean_degree6_vertex() {
+        let mut e = circle_edges(1, 0, 1, 0);
+        e.extend(circle_edges(0, 1, 1, 1));
+        e.extend(circle_edges(1, 1, 2, 2));
+        let op3 = |s: CurveId| if s.0 <= 1 { OperandId::A } else { OperandId::B };
+        for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
+            assert!(
+                matches!(ledge_dom_certified(&e, &op3, op), Verdict::Verified(_)),
+                "degree-6 boolean must certify ({op:?})"
+            );
+        }
     }
 
     proptest! {
