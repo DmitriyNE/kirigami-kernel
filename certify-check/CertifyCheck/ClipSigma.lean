@@ -1,12 +1,12 @@
 /-
   CLIP-σ signed disjunction — the ★ soundness row of the M2 transversality ladder (spec §8.5),
   now **derived** from the Aeneas-lifted `certify1d::clip_sigma` over Mathlib ℚ (algebra-rehaul
-  R.3c). This replaces the former hand-written ℤ mirror: the ★-critical *decision*
-  `clip_sigma_branch` is proved to **equal** its mathematical spec (`clip_sigma_branch_eq`) by
+  R.3c). This replaces the former hand-written ℤ mirror: BOTH the ★-critical *decision*
+  `clip_sigma_branch` (`clip_sigma_branch_eq`) and the *range* `corner_range` (`corner_range_eq`,
+  a `loop.spec_decr_nat` slice-loop refinement) are proved to **equal** their mathematical spec by
   reducing the *extracted* Rust body — so a change to the running Rust surfaces as a broken
-  refinement proof rather than silent spec drift. The range `corner_range` refinement (a slice-loop
-  proof) is tracked as R.3c-cont (see the note near the end); its spec is proved sound here. The
-  soundness statements are over ℚ, matching the lifted code.
+  refinement proof rather than silent spec drift. The soundness statements are over ℚ, matching the
+  lifted code.
 
   `certify1d::clip_sigma` certifies that the *signed* affine `∂_σG` is single-signed and separated
   across a `(μ, w)` box by ranging it over the four corners. The row exists because the tempting
@@ -172,23 +172,117 @@ theorem clip_sigma_branch_eq {B I R : Type} (inst : lattice.backend.Backend B I 
     compare_gt_iff_gt]
   split_ifs <;> first | rfl | (exfalso; linarith)
 
-/-
-  **Range refinement (tracked, R.3c-cont).** The companion `corner_range` refinement —
-    `certify1d.corner_range (CoreCmpOrd inst) (CoreCloneClone inst) corners
-       = ok (cornerRangeSpec corners.val)`
-  — is a slice-loop proof of the same shape as `Refine.lean`'s `sign_variations_spec`:
-  `loop.spec_decr_nat` over `corner_range_loop` with `measure := len − it.i` and invariant
-  `(corners.val.drop it.i).foldl min lo = (corners.val.drop it0.i).foldl min lo0` (and `max`/`hi`),
-  driven by the reusable `@[step] sliceIter_next_spec`; the body step reduces `.cmp` to `compare`
-  and `lo1 = min lo c` / `hi1 = max hi c` via `compare_lt_iff_lt` + `List.foldl_cons`, and the
-  prelude reduces `Slice.iter`/`next`/`branch` before invoking the loop spec. Landing it lifts
-  `cornerRangeSpec` from a (sound, but hand-written) spec to a derived one — completing the CLIP-σ
-  drift-kill. The ★-critical decision (`clip_sigma_branch_eq`) is already derived below.
--/
+/-! ### Range refinement: the extracted `corner_range` loop computes `cornerRangeSpec` -/
 
--- Axiom audit: the derived decision + the spec-soundness are axiom-clean (no cited axiom, no
+/-- The loop folds `min`/`max` over the remaining slice onto the running `(lo, hi)`. Proved the
+    Aeneas way — `loop.spec_decr_nat` + the reusable `@[step] sliceIter_next_spec` (`Refine.lean`)
+    — with the "answer-preserving" invariant `(drop i).foldl min lo = (drop i₀).foldl min lo₀`. -/
+private theorem corner_range_loop_spec {B I R : Type} (inst : lattice.backend.Backend B I R)
+    (corners : Slice ℚ) (it0 : core.slice.iter.Iter ℚ) (lo0 hi0 : ℚ)
+    (hsl0 : it0.slice = corners) (hle0 : it0.i ≤ corners.val.length) :
+    certify1d.corner_range_loop (lattice.rat.Rat.Insts.CoreCmpOrd inst)
+        (lattice.rat.Rat.Insts.CoreCloneClone inst) it0 lo0 hi0
+      ⦃ r => r.1 = (corners.val.drop it0.i).foldl min lo0 ∧
+             r.2 = (corners.val.drop it0.i).foldl max hi0 ⦄ := by
+  unfold certify1d.corner_range_loop
+  apply loop.spec_decr_nat
+    (measure := fun st => corners.val.length - st.1.i)
+    (inv := fun st => st.1.slice = corners ∧ st.1.i ≤ corners.val.length ∧
+      (corners.val.drop st.1.i).foldl min st.2.1 = (corners.val.drop it0.i).foldl min lo0 ∧
+      (corners.val.drop st.1.i).foldl max st.2.2 = (corners.val.drop it0.i).foldl max hi0)
+  · rintro ⟨it, lo, hi⟩ ⟨hslice, hle, hmin, hmax⟩
+    simp only [] at hslice hle hmin hmax
+    show certify1d.corner_range_loop.body _ _ it lo hi ⦃ _ ⦄
+    unfold certify1d.corner_range_loop.body
+    step as ⟨opt, it', hnext, hsleq⟩
+    have hlenC : it.slice.val.length = corners.val.length := by rw [hslice]
+    by_cases hlt : it.i < it.slice.val.length
+    · rw [if_pos hlt] at hnext
+      obtain ⟨hopt, hi'⟩ := hnext
+      rw [hopt]; simp only []
+      have hltC : it.i < corners.val.length := hlenC ▸ hlt
+      set c := it.slice.val[it.i]! with hcdef
+      have hcval : c = corners.val[it.i]'hltC := by
+        rw [hcdef, hslice, getElem!_pos corners.val it.i (hslice ▸ hlt)]
+      have hdrop : corners.val.drop it.i = c :: corners.val.drop it'.i := by
+        rw [hi', hcval]; exact (List.getElem_cons_drop hltC).symm
+      have hisl : it'.slice = corners := by rw [hsleq, hslice]
+      have hidec : it'.i ≤ corners.val.length := by rw [hi']; omega
+      have hmeas : corners.val.length - it'.i < corners.val.length - it.i := by rw [hi']; omega
+      have hminpres : (corners.val.drop it'.i).foldl min (min lo c)
+          = (corners.val.drop it0.i).foldl min lo0 := by rw [← hmin, hdrop, List.foldl_cons]
+      have hmaxpres : (corners.val.drop it'.i).foldl max (max hi c)
+          = (corners.val.drop it0.i).foldl max hi0 := by rw [← hmax, hdrop, List.foldl_cons]
+      -- the body updates `lo := min lo c`, `hi := max hi c` and continues at `it'`.
+      have hlo1 : (if c < lo then c else lo) = min lo c := by
+        split_ifs with h
+        · exact (min_eq_right h.le).symm
+        · exact (min_eq_left (not_lt.mp h)).symm
+      have hhi1 : (if hi < c then c else hi) = max hi c := by
+        split_ifs with h
+        · exact (max_eq_right h.le).symm
+        · exact (max_eq_left (not_lt.mp h)).symm
+      simp only [lattice.rat.Rat.Insts.CoreCmpOrd.cmp, lattice.rat.Rat.Insts.CoreCloneClone.clone,
+        core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq, compare_lt_iff_lt, compare_gt_iff_gt,
+        decide_eq_true_eq, ← apply_ite ok, hlo1, WP.spec_ok, bind_tc_ok]
+      split_ifs with hchi
+      · exact ⟨hisl, hidec, hminpres, by rw [max_eq_right hchi.le] at hmaxpres; exact hmaxpres, hmeas⟩
+      · exact ⟨hisl, hidec, hminpres,
+          by rw [max_eq_left (not_lt.mp hchi)] at hmaxpres; exact hmaxpres, hmeas⟩
+    · rw [if_neg hlt] at hnext
+      obtain ⟨hopt, _⟩ := hnext
+      rw [hopt]; simp only []
+      have hge : ¬ it.i < corners.val.length := hlenC ▸ hlt
+      have hieq : it.i = corners.val.length := le_antisymm hle (Nat.le_of_not_lt hge)
+      rw [hieq, List.drop_length, List.foldl_nil] at hmin hmax
+      exact ⟨hmin, hmax⟩
+  · exact ⟨hsl0, hle0, rfl, rfl⟩
+
+/-- **Range refinement.** The Aeneas-lifted `corner_range`, at `T = ℚ`, computes `cornerRangeSpec`
+    on the underlying list of corners — so `cornerRangeSpec` is now derived, not a hand mirror. -/
+theorem corner_range_eq {B I R : Type} (inst : lattice.backend.Backend B I R) (corners : Slice ℚ) :
+    certify1d.corner_range (lattice.rat.Rat.Insts.CoreCmpOrd inst)
+        (lattice.rat.Rat.Insts.CoreCloneClone inst) corners
+      ⦃ r => r = cornerRangeSpec corners.val ⦄ := by
+  unfold certify1d.corner_range
+  simp only [core.slice.Slice.iter, core.option.Option.Insts.CoreOpsTry_traitTry.branch,
+    lattice.rat.Rat.Insts.CoreCloneClone.clone, bind_tc_ok]
+  step as ⟨opt, it', hnext, hsleq⟩
+  by_cases hlen : 0 < corners.val.length
+  · rw [if_pos hlen] at hnext
+    obtain ⟨hopt, hit'⟩ := hnext
+    rw [hopt]
+    simp only []
+    have h0 : (0 : ℕ) < corners.val.length := by omega
+    have hc0 : corners.val = corners.val[0]! :: corners.val.drop it'.i := by
+      rw [hit', getElem!_pos corners.val 0 h0]
+      conv_lhs => rw [← List.drop_zero (l := corners.val)]
+      exact (List.getElem_cons_drop h0).symm
+    have hloop := corner_range_loop_spec inst corners it' (corners.val[0]!) (corners.val[0]!)
+      hsleq (by omega)
+    -- the loop succeeds with the min/max fold over the tail; assemble `some (·)` = cornerRangeSpec.
+    cases hcase : corner_range_loop (lattice.rat.Rat.Insts.CoreCmpOrd inst)
+        (lattice.rat.Rat.Insts.CoreCloneClone inst) it' (corners.val[0]!) (corners.val[0]!) with
+    | ok r =>
+      obtain ⟨lo1, hi⟩ := r
+      rw [hcase] at hloop
+      simp only [WP.spec_ok] at hloop
+      obtain ⟨hlo1eq, hhi1eq⟩ := hloop
+      rw [hc0]
+      simp [bind_tc_ok, WP.spec_ok, cornerRangeSpec, hlo1eq, hhi1eq]
+    | fail e => rw [hcase] at hloop; exact hloop.elim
+    | div => rw [hcase] at hloop; exact hloop.elim
+  · rw [if_neg hlen] at hnext
+    obtain ⟨hopt, _⟩ := hnext
+    rw [hopt]
+    have hnil : corners.val = [] := List.length_eq_zero_iff.mp (by omega)
+    simp only [core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual,
+      WP.spec_ok, hnil, cornerRangeSpec]
+
+-- Axiom audit: the derived decision/range + the spec-soundness are axiom-clean (no cited axiom, no
 -- `sorryAx` — in particular the Aeneas Std `get_unchecked` sorries are off this path).
 #print axioms clip_sigma_branch_eq
+#print axioms corner_range_eq
 #print axioms clipSigma_sound_positive
 #print axioms clipSigma_sound_negative
 #print axioms clipSigma_rejects_straddle
