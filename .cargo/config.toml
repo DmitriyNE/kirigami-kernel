@@ -1,3 +1,11 @@
 [alias]
 # `cargo xtask lint` runs the spec/code invariant lints (vv-guide §6). See xtask/.
 xtask = "run --quiet --package xtask --"
+
+# Opt the x86_64-linux target off rust's bundled `rust-lld` (its default linker there since
+# 1.90), back to the system `ld.bfd`. `rust-lld` rejects the `.debug_gdb_scripts` section that
+# recent gcc/glibc (floating nixos-unstable) emit into the CGAL C++ oracle shim via libstdc++'s
+# explicit `.pushsection` directive ("string is not null terminated") — a strictness `bfd` does
+# not share. Linux-only; darwin is unaffected. Root fix tracked: pin nixpkgs (engineering-log).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-self-contained=-linker", "-C", "link-arg=-fuse-ld=bfd"]
