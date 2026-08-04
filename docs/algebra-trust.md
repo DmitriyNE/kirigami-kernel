@@ -28,11 +28,12 @@ now, and (b) shrinks what we trust over time — without blocking on the hard pa
    assume `Int` behaves as `ℤ`, and Kani certifies the representation actually does.
 
 3. **Reference — shrinking the dashu trust.** Modeling `Int=ℤ` *trusts dashu* to implement
-   exact arithmetic. That is one crisp, honest TCB entry. To reduce it: **(1)** write a
-   slow, safe, Aeneas-liftable reference bignum; **(2)** prove it `= ℤ`/`ℚ` in Lean (no
-   trusted hand-model); **(3)** differential-stress dashu against the proven reference. The
-   `Backend` trait already makes the reference a drop-in alternate backend, and the existing
-   `num-rational` differential is the seed of (3).
+   exact arithmetic. That is one crisp, honest TCB entry. To reduce it: **(1)** write a slow,
+   safe, Aeneas-liftable reference bignum — **done**: `lattice::RefBackend` (`refbackend.rs`), an
+   independent `Vec<u64>`-limb sign-magnitude `Backend`; **(2)** prove it `= ℤ`/`ℚ` in Lean (no
+   trusted hand-model) — the tracked deep follow-up; **(3)** differential-stress dashu against the
+   reference — **done**: `rat::differential::{int,rat}_dashu_matches_ref` runs dashu ≡ `RefBackend`
+   over the full i128 range. The `Backend` trait makes the reference a drop-in alternate backend.
 
 ## The linchpin invariant — the representation must never leak
 
@@ -57,6 +58,11 @@ faithfully — it observes an implementation detail the `ℚ` model has erased.
 ## Status
 
 - The two-tier is **benchmark-justified** (keep it) — see [two-tier-benchmark.md](two-tier-benchmark.md).
-- The `Int→ℤ`/`Rat→ℚ` lift + opaque encapsulation + reference bignum + proof + differential
-  is the **post-B "algebra-trust rehaul"** (tracked; see the milestone-B plan). It is
-  orthogonal to the two-tier (which it abstracts away), so both proceed independently.
+- The **algebra-trust rehaul** (post-B) lands in pillars, orthogonal to the two-tier (which it
+  abstracts away):
+  - **R.1–R.3 (merged):** opaque `Int`/`Rat`; the ℤ/ℚ-mapping spike (GO, no pin bump); and
+    `certify1d::clip_sigma` lifted over ℚ with *both* cores derived from the extracted Rust
+    (`ClipSigma.lean`, axiom-clean) — the hand-mirror spec-drift class killed for the ★ CLIP-σ row.
+  - **R.4 (reference bignum) — steps (1)+(3) done:** `RefBackend` is differentially cross-checked
+    against dashu over the full i128 range; the Lean proof `RefBackend = ℤ/ℚ` (step 2) is the
+    tracked deep follow-up that would turn the cross-check into a proof-backed oracle.
