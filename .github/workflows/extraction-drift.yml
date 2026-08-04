@@ -63,6 +63,7 @@ jobs:
                certify-check/CertifyCore/Funs.lean \
                certify-check/CertifyCore/Types.lean \
                certify-check/extract/lattice.FunsExternal_Template.lean \
+               certify-check/extract/lattice.TypesExternal_Template.lean \
                certify-check/extract/certify_core.FunsExternal_Template.lean \
                certify-check/extract/certify_core.TypesExternal_Template.lean; then
             echo "::error title=Lean model out of sync with the checker crates::The committed Aeneas-lifted model does not match crates/lattice at the pinned Charon/Aeneas. Run 'nix run .#extract' (or scripts/extract.sh inside 'nix develop .#extraction') and commit the regenerated model. If you bumped the Charon/Aeneas pins in flake.lock, also expect to fix proofs — see docs/upgrading-extraction-toolchain.md."

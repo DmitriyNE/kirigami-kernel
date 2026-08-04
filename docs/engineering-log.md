@@ -70,6 +70,23 @@ fine — this is a log, not a schema.
   inline allow markers. Deferred until that allow-list is designed.
   *2026-08-04 · open · `xtask/src/main.rs`*
 
+- **`certify_core.lattice.backend.Backend` qualification in the certify-core externals.** The
+  `refbackend` lift (algebra-rehaul R.4b) adds a *concrete* `lattice.backend.Backend` (the trait,
+  pulled in by `impl Backend for RefBackend`) to the **Lattice** model. The certify-core model
+  independently carries an *opaque* `Backend` (bound to ℚ), which — because Aeneas wraps a crate's
+  model in `namespace <crate>` — is named `certify_core.lattice.backend.Backend`. The two coexist
+  fine (different namespaces), but the hand-written `open certify_core` files (`CertifyCore/
+  FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`) referenced `Backend` *bare*, and bare now
+  resolves to the Lattice model's concrete one (exact global match beats an `open`) instead of the
+  intended opaque one. Worked around by fully-qualifying those references to
+  `certify_core.lattice.backend.Backend`. This is explicit-and-correct but couples the hand-written
+  externals to Aeneas's namespace-wrapping convention (stable at the pins; drift-checked). Cleaner
+  long-term options if it ever bites: (a) extract `refbackend` into its own Lean lib so `Backend`
+  never enters the shared `Lattice` model, or (b) move `impl Backend for RefBackend` to a sibling
+  Rust module excluded from the `crate::refbackend` start-from (needs `pub(crate)` on the `RefInt`/
+  `RefRat`/`RefNat` internals it touches).
+  *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
+
 ## Findings
 
 - **Developable ≠ constant curvature.** A cone's nonzero principal radius is `R₁ = ρ·tan β`

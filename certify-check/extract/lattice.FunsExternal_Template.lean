@@ -15,6 +15,15 @@ set_option maxHeartbeats 1000000
 set_option maxRecDepth 2048
 open lattice
 
+/-- [core::cmp::{impl core::cmp::PartialEq<core::cmp::Ordering> for core::cmp::Ordering}::eq]:
+    Source: '/rustc/library/core/src/cmp.rs', lines 398:43-398:52
+    Name pattern: [core::cmp::{core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>}::eq]
+    Visibility: public -/
+@[rust_fun
+  "core::cmp::{core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>}::eq"]
+axiom core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq
+  : Ordering → Ordering → Result Bool
+
 /-- [core::convert::num::{impl core::convert::TryFrom<u128, core::num::error::TryFromIntError> for i128}::try_from]:
     Source: '/rustc/library/core/src/convert/num.rs', lines 300:12-300:64
     Name pattern: [core::convert::num::{core::convert::TryFrom<i128, u128, core::num::error::TryFromIntError>}::try_from]
@@ -33,6 +42,13 @@ axiom I128.Insts.CoreConvertTryFromU128TryFromIntError.try_from
 @[rust_fun "core::num::{i128}::checked_neg"]
 axiom core.num.I128.checked_neg : Std.I128 → Result (Option Std.I128)
 
+/-- [core::num::{i128}::wrapping_neg]:
+    Source: '/rustc/library/core/src/num/int_macros.rs', lines 2363:8-2363:47
+    Name pattern: [core::num::{i128}::wrapping_neg]
+    Visibility: public -/
+@[rust_fun "core::num::{i128}::wrapping_neg"]
+axiom core.num.I128.wrapping_neg : Std.I128 → Result Std.I128
+
 /-- [core::num::{i128}::unsigned_abs]:
     Source: '/rustc/library/core/src/num/int_macros.rs', lines 2486:8-2486:53
     Name pattern: [core::num::{i128}::unsigned_abs]
@@ -46,6 +62,13 @@ axiom core.num.I128.unsigned_abs : Std.I128 → Result Std.U128
     Visibility: public -/
 @[rust_fun "core::num::{i128}::signum"]
 axiom core.num.I128.signum : Std.I128 → Result Std.I128
+
+/-- [core::num::{usize}::div_ceil]:
+    Source: '/rustc/library/core/src/num/uint_macros.rs', lines 3755:8-3755:54
+    Name pattern: [core::num::{usize}::div_ceil]
+    Visibility: public -/
+@[rust_fun "core::num::{usize}::div_ceil"]
+axiom core.num.Usize.div_ceil : Std.Usize → Std.Usize → Result Std.Usize
 
 /-- [core::option::{impl core::ops::try_trait::Try for core::option::Option<T>}::branch]:
     Source: '/rustc/library/core/src/option.rs', lines 2779:4-2779:64
@@ -75,4 +98,21 @@ axiom
 @[rust_fun "core::result::{core::result::Result<@T, @E>}::ok"]
 axiom core.result.Result.ok
   {T : Type} {E : Type} : core.result.Result T E → Result (Option T)
+
+/-- [alloc::vec::{alloc::vec::Vec<T>}::pop]:
+    Source: '/rustc/library/alloc/src/vec/mod.rs', lines 2850:4-2850:38
+    Name pattern: [alloc::vec::{alloc::vec::Vec<@T>}::pop]
+    Visibility: public -/
+@[rust_fun "alloc::vec::{alloc::vec::Vec<@T>}::pop"]
+axiom alloc.vec.Vec.pop
+  {T : Type} (A : Type) :
+  alloc.vec.Vec T → Result ((Option T) × (alloc.vec.Vec T))
+
+/-- [alloc::vec::{alloc::vec::Vec<T>}::is_empty]:
+    Source: '/rustc/library/alloc/src/vec/mod.rs', lines 3085:4-3085:40
+    Name pattern: [alloc::vec::{alloc::vec::Vec<@T>}::is_empty]
+    Visibility: public -/
+@[rust_fun "alloc::vec::{alloc::vec::Vec<@T>}::is_empty"]
+axiom alloc.vec.Vec.is_empty
+  {T : Type} (A : Type) : alloc.vec.Vec T → Result Bool
 

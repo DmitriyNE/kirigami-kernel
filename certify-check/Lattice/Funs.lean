@@ -19,6 +19,1440 @@ noncomputable section
 
 namespace lattice
 
+/-- Trait implementation: [core::cmp::{impl core::cmp::PartialEq<core::cmp::Ordering> for core::cmp::Ordering}]
+    Source: '/rustc/library/core/src/cmp.rs', lines 398:43-398:52
+    Name pattern: [core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>] -/
+@[reducible, rust_trait_impl
+  "core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>"]
+impl_def core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering : core.cmp.PartialEq
+  Ordering Ordering := {
+  eq := core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering
+}
+
+/-- [lattice::backend::Backend::int_div]:
+    Source: 'crates/lattice/src/backend.rs', lines 89:4-91:5
+    Visibility: public -/
+@[trait_default]
+def backend.Backend.int_div.default
+  {Self : Type} {Clause0_Int : Type} {Clause0_Rat : Type} (BackendInst :
+  backend.Backend Self Clause0_Int Clause0_Rat) (a : Clause0_Int)
+  (b : Clause0_Int) :
+  Result Clause0_Int
+  := do
+  let (t, _) ← BackendInst.int_divrem a b
+  ok t
+
+/-- [lattice::backend::Backend::int_rem]:
+    Source: 'crates/lattice/src/backend.rs', lines 93:4-95:5
+    Visibility: public -/
+@[trait_default]
+def backend.Backend.int_rem.default
+  {Self : Type} {Clause0_Int : Type} {Clause0_Rat : Type} (BackendInst :
+  backend.Backend Self Clause0_Int Clause0_Rat) (a : Clause0_Int)
+  (b : Clause0_Int) :
+  Result Clause0_Int
+  := do
+  let (_, t) ← BackendInst.int_divrem a b
+  ok t
+
+/-- [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefNat}::clone]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:9-25:14
+    Visibility: public -/
+def refbackend.RefNat.Insts.CoreCloneClone.clone
+  (self : refbackend.RefNat) : Result refbackend.RefNat := do
+  let v ← alloc.vec.CloneVec.clone core.clone.CloneU64 self.limbs
+  ok { limbs := v }
+
+/-- Trait implementation: [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefNat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:9-25:14 -/
+@[reducible]
+def refbackend.RefNat.Insts.CoreCloneClone : core.clone.Clone refbackend.RefNat
+  := {
+  clone := refbackend.RefNat.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [lattice::refbackend::{impl core::marker::StructuralPartialEq for lattice::refbackend::RefNat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:16-25:25 -/
+@[reducible]
+def refbackend.RefNat.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq refbackend.RefNat := {
+}
+
+/-- [lattice::refbackend::{impl core::cmp::PartialEq<lattice::refbackend::RefNat> for lattice::refbackend::RefNat}::eq]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:16-25:25
+    Visibility: public -/
+def refbackend.RefNat.Insts.CoreCmpPartialEqRefNat.eq
+  (self : refbackend.RefNat) (other : refbackend.RefNat) : Result Bool := do
+  alloc.vec.partial_eq.PartialEqVec.eq core.cmp.PartialEqU64 self.limbs
+    other.limbs
+
+/-- Trait implementation: [lattice::refbackend::{impl core::cmp::PartialEq<lattice::refbackend::RefNat> for lattice::refbackend::RefNat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:16-25:25 -/
+@[reducible]
+impl_def refbackend.RefNat.Insts.CoreCmpPartialEqRefNat : core.cmp.PartialEq
+  refbackend.RefNat refbackend.RefNat := {
+  eq := refbackend.RefNat.Insts.CoreCmpPartialEqRefNat.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    refbackend.RefNat.Insts.CoreCmpPartialEqRefNat
+}
+
+/-- [lattice::refbackend::{impl core::cmp::Eq for lattice::refbackend::RefNat}::assert_fields_are_eq]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:27-25:29
+    Visibility: public -/
+def refbackend.RefNat.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : refbackend.RefNat) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [lattice::refbackend::{impl core::cmp::Eq for lattice::refbackend::RefNat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:27-25:29 -/
+@[reducible]
+def refbackend.RefNat.Insts.CoreCmpEq : core.cmp.Eq refbackend.RefNat := {
+  partialEqInst := refbackend.RefNat.Insts.CoreCmpPartialEqRefNat
+  assert_fields_are_eq :=
+    refbackend.RefNat.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefNat}::fmt]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:31-25:36
+    Visibility: public -/
+def refbackend.RefNat.Insts.CoreFmtDebug.fmt
+  (self : refbackend.RefNat) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  let dyn :=
+    Dyn.mk _ (core.fmt.DebugShared (core.fmt.DebugVec core.fmt.DebugU64))
+      self.limbs
+  core.fmt.Formatter.debug_struct_field1_finish f (toStr "RefNat") (toStr
+    "limbs") dyn
+
+/-- Trait implementation: [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefNat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 25:31-25:36 -/
+@[reducible]
+def refbackend.RefNat.Insts.CoreFmtDebug : core.fmt.Debug refbackend.RefNat
+  := {
+  fmt := refbackend.RefNat.Insts.CoreFmtDebug.fmt
+}
+
+/-- [lattice::refbackend::normalize]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 31:4-33:5 -/
+@[rust_loop_body]
+def refbackend.normalize_loop.body
+  (limbs : alloc.vec.Vec Std.U64) :
+  Result (ControlFlow (alloc.vec.Vec Std.U64) (alloc.vec.Vec Std.U64))
+  := do
+  let b ← alloc.vec.Vec.is_empty Global limbs
+  if b
+  then ok (done limbs)
+  else
+    let i := alloc.vec.Vec.len limbs
+    let i1 ← i - 1#usize
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) limbs
+        i1
+    if i2 = 0#u64
+    then let (_, limbs1) ← alloc.vec.Vec.pop Global limbs
+         ok (cont limbs1)
+    else ok (done limbs)
+
+/-- [lattice::refbackend::normalize]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 31:4-33:5 -/
+@[rust_loop]
+def refbackend.normalize_loop
+  (limbs : alloc.vec.Vec Std.U64) : Result (alloc.vec.Vec Std.U64) := do
+  loop
+    (fun limbs1 => refbackend.normalize_loop.body limbs1)
+    limbs
+
+/-- [lattice::refbackend::normalize]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 30:0-34:1 -/
+@[reducible]
+def refbackend.normalize
+  (limbs : alloc.vec.Vec Std.U64) : Result (alloc.vec.Vec Std.U64) := do
+  refbackend.normalize_loop limbs
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 37:4-39:5 -/
+def refbackend.RefNat.zero : Result refbackend.RefNat := do
+  ok { limbs := (alloc.vec.Vec.new Std.U64) }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::from_u128]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 40:4-46:5 -/
+def refbackend.RefNat.from_u128 (v : Std.U128) : Result refbackend.RefNat := do
+  let lo ← lift (UScalar.cast .U64 v)
+  let i ← v >>> 64#i32
+  let hi ← lift (UScalar.cast .U64 i)
+  let y ←
+    lift (Std.Array.to_slice (Array.make 2#usize [ lo, hi ] : Array Std.U64
+      2#usize))
+  let ret := alloc.slice.Slice.into_vec y
+  let ret1 ← refbackend.normalize ret
+  ok { limbs := ret1 }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::is_zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 47:4-49:5 -/
+def refbackend.RefNat.is_zero (self : refbackend.RefNat) : Result Bool := do
+  alloc.vec.Vec.is_empty Global self.limbs
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::cmp]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 57:8-64:5 -/
+@[rust_loop_body]
+def refbackend.RefNat.cmp_loop.body
+  (v : alloc.vec.Vec Std.U64) (v1 : alloc.vec.Vec Std.U64) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Ordering)
+  := do
+  if i > 0#usize
+  then
+    let i1 ← i - 1#usize
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v i1
+    let i3 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v1 i1
+    if i2 != i3
+    then let o ← lift (core.cmp.impls.OrdU64.cmp i2 i3)
+         ok (done o)
+    else ok (cont i1)
+  else ok (done Ordering.eq)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::cmp]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 57:8-64:5 -/
+@[rust_loop]
+def refbackend.RefNat.cmp_loop
+  (v : alloc.vec.Vec Std.U64) (v1 : alloc.vec.Vec Std.U64) (i : Std.Usize) :
+  Result Ordering
+  := do
+  loop
+    (fun i1 => refbackend.RefNat.cmp_loop.body v v1 i1)
+    i
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::cmp]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 52:4-64:5 -/
+def refbackend.RefNat.cmp
+  (self : refbackend.RefNat) (o : refbackend.RefNat) : Result Ordering := do
+  let i := alloc.vec.Vec.len self.limbs
+  let i1 := alloc.vec.Vec.len o.limbs
+  if i != i1
+  then
+    let i2 := alloc.vec.Vec.len self.limbs
+    let i3 := alloc.vec.Vec.len o.limbs
+    ok (core.cmp.impls.OrdUsize.cmp i2 i3)
+  else
+    let i2 := alloc.vec.Vec.len self.limbs
+    refbackend.RefNat.cmp_loop self.limbs o.limbs i2
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::add]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 79:8-94:9 -/
+@[rust_loop_body]
+def refbackend.RefNat.add_loop.body
+  (v : alloc.vec.Vec Std.U64) (v1 : alloc.vec.Vec Std.U64) (n : Std.Usize)
+  (out : alloc.vec.Vec Std.U64) (carry : Std.U128) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.U128 × Std.Usize)
+    ((alloc.vec.Vec Std.U64) × Std.U128))
+  := do
+  if i < n
+  then
+    let i1 := alloc.vec.Vec.len v
+    let a ←
+      if i < i1
+      then
+        do
+        let i2 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v
+            i
+        ok (UScalar.cast .U128 i2)
+      else ok 0#u128
+    let i2 := alloc.vec.Vec.len v1
+    let b ←
+      if i < i2
+      then
+        do
+        let i3 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+            v1 i
+        ok (UScalar.cast .U128 i3)
+      else ok 0#u128
+    let i3 ← a + b
+    let s ← i3 + carry
+    let i4 ← lift (UScalar.cast .U64 s)
+    let out1 ← alloc.vec.Vec.push out i4
+    let carry1 ← s >>> 64#i32
+    let i5 ← i + 1#usize
+    ok (cont (out1, carry1, i5))
+  else ok (done (out, carry))
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::add]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 79:8-94:9 -/
+@[rust_loop]
+def refbackend.RefNat.add_loop
+  (v : alloc.vec.Vec Std.U64) (v1 : alloc.vec.Vec Std.U64) (n : Std.Usize)
+  (out : alloc.vec.Vec Std.U64) (carry : Std.U128) (i : Std.Usize) :
+  Result ((alloc.vec.Vec Std.U64) × Std.U128)
+  := do
+  loop
+    (fun (out1, carry1, i1) => refbackend.RefNat.add_loop.body v v1 n out1
+      carry1 i1)
+    (out, carry, i)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::add]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 67:4-100:5 -/
+def refbackend.RefNat.add
+  (self : refbackend.RefNat) (o : refbackend.RefNat) :
+  Result refbackend.RefNat
+  := do
+  let i := alloc.vec.Vec.len self.limbs
+  let i1 := alloc.vec.Vec.len o.limbs
+  let n ←
+    if i >= i1
+    then ok (alloc.vec.Vec.len self.limbs)
+    else ok (alloc.vec.Vec.len o.limbs)
+  let i2 ← n + 1#usize
+  let out := alloc.vec.Vec.with_capacity Std.U64 i2
+  let (out1, carry) ←
+    refbackend.RefNat.add_loop self.limbs o.limbs n out 0#u128 0#usize
+  let out2 ←
+    if carry != 0#u128
+    then
+      do
+      let i3 ← lift (UScalar.cast .U64 carry)
+      alloc.vec.Vec.push out1 i3
+    else ok out1
+  let out3 ← refbackend.normalize out2
+  ok { limbs := out3 }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::sub]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 107:8-123:9 -/
+@[rust_loop_body]
+def refbackend.RefNat.sub_loop.body
+  (v : alloc.vec.Vec Std.U64) (o : refbackend.RefNat)
+  (out : alloc.vec.Vec Std.U64) (borrow : Std.I128) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.I128 × Std.Usize)
+    (alloc.vec.Vec Std.U64))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v i
+    let a ← lift (UScalar.hcast .I128 i2)
+    let i3 := alloc.vec.Vec.len o.limbs
+    let b ←
+      if i < i3
+      then
+        do
+        let i4 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+            o.limbs i
+        ok (UScalar.hcast .I128 i4)
+      else ok 0#i128
+    let i4 ← a - b
+    let d ← i4 - borrow
+    let (borrow1, d1) ←
+      if d < 0#i128
+      then do
+           let i5 ← 1#i128 <<< 64#i32
+           let d2 ← d + i5
+           ok (1#i128, d2)
+      else ok (0#i128, d)
+    let i5 ← lift (IScalar.hcast .U64 d1)
+    let out1 ← alloc.vec.Vec.push out i5
+    let i6 ← i + 1#usize
+    ok (cont (out1, borrow1, i6))
+  else ok (done out)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::sub]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 107:8-123:9 -/
+@[rust_loop]
+def refbackend.RefNat.sub_loop
+  (v : alloc.vec.Vec Std.U64) (o : refbackend.RefNat)
+  (out : alloc.vec.Vec Std.U64) (borrow : Std.I128) (i : Std.Usize) :
+  Result (alloc.vec.Vec Std.U64)
+  := do
+  loop
+    (fun (out1, borrow1, i1) => refbackend.RefNat.sub_loop.body v o out1
+      borrow1 i1)
+    (out, borrow, i)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::sub]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 103:4-126:5 -/
+def refbackend.RefNat.sub
+  (self : refbackend.RefNat) (o : refbackend.RefNat) :
+  Result refbackend.RefNat
+  := do
+  let i := alloc.vec.Vec.len self.limbs
+  let out := alloc.vec.Vec.with_capacity Std.U64 i
+  let out1 ← refbackend.RefNat.sub_loop self.limbs o out 0#i128 0#usize
+  let out2 ← refbackend.normalize out1
+  ok { limbs := out2 }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]: loop body 1:
+    Source: 'crates/lattice/src/refbackend.rs', lines 139:12-144:13 -/
+@[rust_loop_body]
+def refbackend.RefNat.mul_loop0_loop0.body
+  (v : alloc.vec.Vec Std.U64) (i : Std.Usize) (ai : Std.U128)
+  (out : alloc.vec.Vec Std.U64) (carry : Std.U128) (j : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.U128 × Std.Usize)
+    ((alloc.vec.Vec Std.U64) × Std.U128))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if j < i1
+  then
+    let i2 ← i + j
+    let i3 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) out
+        i2
+    let i4 ← lift (UScalar.cast .U128 i3)
+    let i5 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v j
+    let i6 ← lift (UScalar.cast .U128 i5)
+    let i7 ← ai * i6
+    let i8 ← i4 + i7
+    let cur ← i8 + carry
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U64)
+        out i2
+    let i9 ← lift (UScalar.cast .U64 cur)
+    let carry1 ← cur >>> 64#i32
+    let j1 ← j + 1#usize
+    let out1 := index_mut_back i9
+    ok (cont (out1, carry1, j1))
+  else ok (done (out, carry))
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]: loop 1:
+    Source: 'crates/lattice/src/refbackend.rs', lines 139:12-144:13 -/
+@[rust_loop]
+def refbackend.RefNat.mul_loop0_loop0
+  (v : alloc.vec.Vec Std.U64) (out : alloc.vec.Vec Std.U64) (i : Std.Usize)
+  (carry : Std.U128) (ai : Std.U128) (j : Std.Usize) :
+  Result ((alloc.vec.Vec Std.U64) × Std.U128)
+  := do
+  loop
+    (fun (out1, carry1, j1) => refbackend.RefNat.mul_loop0_loop0.body v i ai
+      out1 carry1 j1)
+    (out, carry, j)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]: loop body 2:
+    Source: 'crates/lattice/src/refbackend.rs', lines 147:12-152:13 -/
+@[rust_loop_body]
+def refbackend.RefNat.mul_loop0_loop1.body
+  (out : alloc.vec.Vec Std.U64) (carry : Std.U128) (k : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.U128 × Std.Usize)
+    (alloc.vec.Vec Std.U64))
+  := do
+  if carry != 0#u128
+  then
+    let i ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) out k
+    let i1 ← lift (UScalar.cast .U128 i)
+    let cur ← i1 + carry
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U64)
+        out k
+    let i2 ← lift (UScalar.cast .U64 cur)
+    let carry1 ← cur >>> 64#i32
+    let k1 ← k + 1#usize
+    let out1 := index_mut_back i2
+    ok (cont (out1, carry1, k1))
+  else ok (done out)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]: loop 2:
+    Source: 'crates/lattice/src/refbackend.rs', lines 147:12-152:13 -/
+@[rust_loop]
+def refbackend.RefNat.mul_loop0_loop1
+  (out : alloc.vec.Vec Std.U64) (carry : Std.U128) (k : Std.Usize) :
+  Result (alloc.vec.Vec Std.U64)
+  := do
+  loop
+    (fun (out1, carry1, k1) => refbackend.RefNat.mul_loop0_loop1.body out1
+      carry1 k1)
+    (out, carry, k)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 135:8-154:9 -/
+@[rust_loop_body]
+def refbackend.RefNat.mul_loop0.body
+  (v : alloc.vec.Vec Std.U64) (v1 : alloc.vec.Vec Std.U64)
+  (out : alloc.vec.Vec Std.U64) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.Usize) (alloc.vec.Vec
+    Std.U64))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v i
+    let ai ← lift (UScalar.cast .U128 i2)
+    let (out1, carry) ←
+      refbackend.RefNat.mul_loop0_loop0 v1 out i 0#u128 ai 0#usize
+    let i3 := alloc.vec.Vec.len v1
+    let k ← i + i3
+    let out2 ← refbackend.RefNat.mul_loop0_loop1 out1 carry k
+    let i4 ← i + 1#usize
+    ok (cont (out2, i4))
+  else ok (done out)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 135:8-154:9 -/
+@[rust_loop]
+def refbackend.RefNat.mul_loop0
+  (v : alloc.vec.Vec Std.U64) (v1 : alloc.vec.Vec Std.U64)
+  (out : alloc.vec.Vec Std.U64) (i : Std.Usize) :
+  Result (alloc.vec.Vec Std.U64)
+  := do
+  loop
+    (fun (out1, i1) => refbackend.RefNat.mul_loop0.body v v1 out1 i1)
+    (out, i)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::mul]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 129:4-157:5 -/
+def refbackend.RefNat.mul
+  (self : refbackend.RefNat) (o : refbackend.RefNat) :
+  Result refbackend.RefNat
+  := do
+  let b ← refbackend.RefNat.is_zero self
+  if b
+  then refbackend.RefNat.zero
+  else
+    let b1 ← refbackend.RefNat.is_zero o
+    if b1
+    then refbackend.RefNat.zero
+    else
+      let i := alloc.vec.Vec.len self.limbs
+      let i1 := alloc.vec.Vec.len o.limbs
+      let i2 ← i + i1
+      let out ← alloc.vec.from_elem core.clone.CloneU64 0#u64 i2
+      let out1 ← refbackend.RefNat.mul_loop0 self.limbs o.limbs out 0#usize
+      let out2 ← refbackend.normalize out1
+      ok { limbs := out2 }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::bit_len]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 160:4-166:5 -/
+def refbackend.RefNat.bit_len
+  (self : refbackend.RefNat) : Result Std.Usize := do
+  let b ← refbackend.RefNat.is_zero self
+  if b
+  then ok 0#usize
+  else
+    let i := alloc.vec.Vec.len self.limbs
+    let top ← i - 1#usize
+    let i1 ← top * 64#usize
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+        self.limbs top
+    let i3 ← lift (core.num.U64.leading_zeros i2)
+    let i4 ← lift (UScalar.cast .Usize i3)
+    let i5 ← 64#usize - i4
+    i1 + i5
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::testbit]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 168:4-174:5 -/
+def refbackend.RefNat.testbit
+  (self : refbackend.RefNat) (i : Std.Usize) : Result Bool := do
+  let limb ← i / 64#usize
+  let i1 := alloc.vec.Vec.len self.limbs
+  if limb >= i1
+  then ok false
+  else
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+        self.limbs limb
+    let i3 ← i % 64#usize
+    let i4 ← i2 >>> i3
+    let i5 ← lift (i4 &&& 1#u64)
+    ok (i5 = 1#u64)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::shl1]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 180:8-185:9 -/
+@[rust_loop_body]
+def refbackend.RefNat.shl1_loop.body
+  (v : alloc.vec.Vec Std.U64) (out : alloc.vec.Vec Std.U64) (carry : Std.U64)
+  (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.U64 × Std.Usize)
+    ((alloc.vec.Vec Std.U64) × Std.U64))
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let v1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v i
+    let i2 ← v1 <<< 1#i32
+    let i3 ← lift (i2 ||| carry)
+    let out1 ← alloc.vec.Vec.push out i3
+    let carry1 ← v1 >>> 63#i32
+    let i4 ← i + 1#usize
+    ok (cont (out1, carry1, i4))
+  else ok (done (out, carry))
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::shl1]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 180:8-185:9 -/
+@[rust_loop]
+def refbackend.RefNat.shl1_loop
+  (v : alloc.vec.Vec Std.U64) (out : alloc.vec.Vec Std.U64) (carry : Std.U64)
+  (i : Std.Usize) :
+  Result ((alloc.vec.Vec Std.U64) × Std.U64)
+  := do
+  loop
+    (fun (out1, carry1, i1) => refbackend.RefNat.shl1_loop.body v out1 carry1
+      i1)
+    (out, carry, i)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::shl1]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 176:4-191:5 -/
+def refbackend.RefNat.shl1
+  (self : refbackend.RefNat) : Result refbackend.RefNat := do
+  let i := alloc.vec.Vec.len self.limbs
+  let i1 ← i + 1#usize
+  let out := alloc.vec.Vec.with_capacity Std.U64 i1
+  let (out1, carry) ←
+    refbackend.RefNat.shl1_loop self.limbs out 0#u64 0#usize
+  let out2 ←
+    if carry != 0#u64
+    then alloc.vec.Vec.push out1 carry
+    else ok out1
+  let out3 ← refbackend.normalize out2
+  ok { limbs := out3 }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::divrem]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 204:14-215:41 -/
+@[rust_loop_body]
+def refbackend.RefNat.divrem_loop.body
+  (self : refbackend.RefNat) (d : refbackend.RefNat)
+  (q : alloc.vec.Vec Std.U64) (r : refbackend.RefNat) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × refbackend.RefNat ×
+    Std.Usize) ((alloc.vec.Vec Std.U64) × refbackend.RefNat))
+  := do
+  if i > 0#usize
+  then
+    let i1 ← i - 1#usize
+    let r1 ← refbackend.RefNat.shl1 r
+    let b ← refbackend.RefNat.testbit self i1
+    let r2 ←
+      if b
+      then
+        do
+        let b1 ← alloc.vec.Vec.is_empty Global r1.limbs
+        let v ←
+          if b1
+          then alloc.vec.Vec.push r1.limbs 1#u64
+          else
+            do
+            let (i2, index_mut_back) ←
+              alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+                Std.U64) r1.limbs 0#usize
+            let i3 ← lift (i2 ||| 1#u64)
+            ok (index_mut_back i3)
+        ok ({ limbs := v } : refbackend.RefNat)
+      else ok r1
+    let o ← refbackend.RefNat.cmp r2 d
+    let b1 ←
+      core.cmp.PartialEq.ne.trait_default
+        core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering o Ordering.lt
+    if b1
+    then
+      let r3 ← refbackend.RefNat.sub r2 d
+      let i2 ← i1 % 64#usize
+      let i3 ← 1#u64 <<< i2
+      let i4 ← i1 / 64#usize
+      let (i5, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U64)
+          q i4
+      let i6 ← lift (i5 ||| i3)
+      let q1 := index_mut_back i6
+      ok (cont (q1, r3, i1))
+    else ok (cont (q, r2, i1))
+  else ok (done (q, r))
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::divrem]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 204:14-215:41 -/
+@[rust_loop]
+def refbackend.RefNat.divrem_loop
+  (self : refbackend.RefNat) (d : refbackend.RefNat)
+  (q : alloc.vec.Vec Std.U64) (r : refbackend.RefNat) (i : Std.Usize) :
+  Result ((alloc.vec.Vec Std.U64) × refbackend.RefNat)
+  := do
+  loop
+    (fun (q1, r1, i1) => refbackend.RefNat.divrem_loop.body self d q1 r1 i1)
+    (q, r, i)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::divrem]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 195:4-222:5 -/
+def refbackend.RefNat.divrem
+  (self : refbackend.RefNat) (d : refbackend.RefNat) :
+  Result (refbackend.RefNat × refbackend.RefNat)
+  := do
+  let b ← refbackend.RefNat.is_zero d
+  massert (¬ b)
+  let o ← refbackend.RefNat.cmp self d
+  let b1 ← core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq o Ordering.lt
+  if b1
+  then
+    let rn ← refbackend.RefNat.zero
+    let rn1 ← refbackend.RefNat.Insts.CoreCloneClone.clone self
+    ok (rn, rn1)
+  else
+    let n ← refbackend.RefNat.bit_len self
+    let i ← core.num.Usize.div_ceil n 64#usize
+    let q ← alloc.vec.from_elem core.clone.CloneU64 0#u64 i
+    let r ← refbackend.RefNat.zero
+    let (q1, r1) ← refbackend.RefNat.divrem_loop self d q r n
+    let q2 ← refbackend.normalize q1
+    ok ({ limbs := q2 }, r1)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::gcd]: loop body 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 228:8-232:9 -/
+@[rust_loop_body]
+def refbackend.RefNat.gcd_loop.body
+  (x : refbackend.RefNat) (y : refbackend.RefNat) :
+  Result (ControlFlow (refbackend.RefNat × refbackend.RefNat)
+    refbackend.RefNat)
+  := do
+  let b ← refbackend.RefNat.is_zero y
+  if b
+  then ok (done x)
+  else let (_, r) ← refbackend.RefNat.divrem x y
+       ok (cont (y, r))
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::gcd]: loop 0:
+    Source: 'crates/lattice/src/refbackend.rs', lines 228:8-232:9 -/
+@[rust_loop]
+def refbackend.RefNat.gcd_loop
+  (x : refbackend.RefNat) (y : refbackend.RefNat) :
+  Result refbackend.RefNat
+  := do
+  loop
+    (fun (x1, y1) => refbackend.RefNat.gcd_loop.body x1 y1)
+    (x, y)
+
+/-- [lattice::refbackend::{lattice::refbackend::RefNat}::gcd]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 225:4-234:5 -/
+def refbackend.RefNat.gcd
+  (self : refbackend.RefNat) (o : refbackend.RefNat) :
+  Result refbackend.RefNat
+  := do
+  let x ← refbackend.RefNat.Insts.CoreCloneClone.clone self
+  let y ← refbackend.RefNat.Insts.CoreCloneClone.clone o
+  refbackend.RefNat.gcd_loop x y
+
+/-- [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefInt}::clone]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:9-258:14
+    Visibility: public -/
+def refbackend.RefInt.Insts.CoreCloneClone.clone
+  (self : refbackend.RefInt) : Result refbackend.RefInt := do
+  let b ← lift (core.clone.impls.CloneBool.clone self.neg)
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone self.mag
+  ok { neg := b, mag := rn }
+
+/-- Trait implementation: [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefInt}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:9-258:14 -/
+@[reducible]
+def refbackend.RefInt.Insts.CoreCloneClone : core.clone.Clone refbackend.RefInt
+  := {
+  clone := refbackend.RefInt.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [lattice::refbackend::{impl core::marker::StructuralPartialEq for lattice::refbackend::RefInt}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:16-258:25 -/
+@[reducible]
+def refbackend.RefInt.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq refbackend.RefInt := {
+}
+
+/-- [lattice::refbackend::{impl core::cmp::PartialEq<lattice::refbackend::RefInt> for lattice::refbackend::RefInt}::eq]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:16-258:25
+    Visibility: public -/
+def refbackend.RefInt.Insts.CoreCmpPartialEqRefInt.eq
+  (self : refbackend.RefInt) (other : refbackend.RefInt) : Result Bool := do
+  if self.neg = other.neg
+  then refbackend.RefNat.Insts.CoreCmpPartialEqRefNat.eq self.mag other.mag
+  else ok false
+
+/-- Trait implementation: [lattice::refbackend::{impl core::cmp::PartialEq<lattice::refbackend::RefInt> for lattice::refbackend::RefInt}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:16-258:25 -/
+@[reducible]
+impl_def refbackend.RefInt.Insts.CoreCmpPartialEqRefInt : core.cmp.PartialEq
+  refbackend.RefInt refbackend.RefInt := {
+  eq := refbackend.RefInt.Insts.CoreCmpPartialEqRefInt.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    refbackend.RefInt.Insts.CoreCmpPartialEqRefInt
+}
+
+/-- [lattice::refbackend::{impl core::cmp::Eq for lattice::refbackend::RefInt}::assert_fields_are_eq]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:27-258:29
+    Visibility: public -/
+def refbackend.RefInt.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : refbackend.RefInt) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [lattice::refbackend::{impl core::cmp::Eq for lattice::refbackend::RefInt}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:27-258:29 -/
+@[reducible]
+def refbackend.RefInt.Insts.CoreCmpEq : core.cmp.Eq refbackend.RefInt := {
+  partialEqInst := refbackend.RefInt.Insts.CoreCmpPartialEqRefInt
+  assert_fields_are_eq :=
+    refbackend.RefInt.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefInt}::fmt]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:31-258:36
+    Visibility: public -/
+def refbackend.RefInt.Insts.CoreFmtDebug.fmt
+  (self : refbackend.RefInt) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  let dyn := Dyn.mk _ core.fmt.DebugBool self.neg
+  let dyn1 :=
+    Dyn.mk _ (core.fmt.DebugShared refbackend.RefNat.Insts.CoreFmtDebug)
+      self.mag
+  core.fmt.Formatter.debug_struct_field2_finish f (toStr "RefInt") (toStr
+    "neg") dyn (toStr "mag") dyn1
+
+/-- Trait implementation: [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefInt}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 258:31-258:36 -/
+@[reducible]
+def refbackend.RefInt.Insts.CoreFmtDebug : core.fmt.Debug refbackend.RefInt
+  := {
+  fmt := refbackend.RefInt.Insts.CoreFmtDebug.fmt
+}
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 265:4-270:5 -/
+def refbackend.RefInt.zero : Result refbackend.RefInt := do
+  let rn ← refbackend.RefNat.zero
+  ok { neg := false, mag := rn }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::make]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 272:4-278:5 -/
+def refbackend.RefInt.make
+  (neg : Bool) (mag : refbackend.RefNat) : Result refbackend.RefInt := do
+  let b ← refbackend.RefNat.is_zero mag
+  if b
+  then ok { neg := false, mag }
+  else ok { neg, mag }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::from_i128]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 279:4-281:5 -/
+def refbackend.RefInt.from_i128 (v : Std.I128) : Result refbackend.RefInt := do
+  let i ← core.num.I128.unsigned_abs v
+  let rn ← refbackend.RefNat.from_u128 i
+  refbackend.RefInt.make (v < 0#i128) rn
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::is_zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 282:4-284:5 -/
+def refbackend.RefInt.is_zero (self : refbackend.RefInt) : Result Bool := do
+  refbackend.RefNat.is_zero self.mag
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::add]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 285:4-295:5 -/
+def refbackend.RefInt.add
+  (self : refbackend.RefInt) (o : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  if self.neg = o.neg
+  then
+    let rn ← refbackend.RefNat.add self.mag o.mag
+    refbackend.RefInt.make self.neg rn
+  else
+    let o1 ← refbackend.RefNat.cmp self.mag o.mag
+    match o1 with
+    | Ordering.lt =>
+      let rn ← refbackend.RefNat.sub o.mag self.mag
+      refbackend.RefInt.make o.neg rn
+    | Ordering.eq => refbackend.RefInt.zero
+    | Ordering.gt =>
+      let rn ← refbackend.RefNat.sub self.mag o.mag
+      refbackend.RefInt.make self.neg rn
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::neg]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 296:4-298:5 -/
+def refbackend.RefInt.impl.neg
+  (self : refbackend.RefInt) : Result refbackend.RefInt := do
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone self.mag
+  refbackend.RefInt.make (¬ self.neg) rn
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::sub]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 299:4-301:5 -/
+def refbackend.RefInt.sub
+  (self : refbackend.RefInt) (o : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  let ri ← refbackend.RefInt.impl.neg o
+  refbackend.RefInt.add self ri
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::mul]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 302:4-304:5 -/
+def refbackend.RefInt.mul
+  (self : refbackend.RefInt) (o : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  let rn ← refbackend.RefNat.mul self.mag o.mag
+  refbackend.RefInt.make (self.neg != o.neg) rn
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::cmp]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 305:4-312:5 -/
+def refbackend.RefInt.cmp
+  (self : refbackend.RefInt) (o : refbackend.RefInt) : Result Ordering := do
+  if self.neg
+  then if o.neg
+       then refbackend.RefNat.cmp o.mag self.mag
+       else ok Ordering.lt
+  else if o.neg
+       then ok Ordering.gt
+       else refbackend.RefNat.cmp self.mag o.mag
+
+/-- [lattice::refbackend::{lattice::refbackend::RefInt}::sign]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 313:4-321:5 -/
+def refbackend.RefInt.sign (self : refbackend.RefInt) : Result Std.I8 := do
+  let b ← refbackend.RefNat.is_zero self.mag
+  if b
+  then ok 0#i8
+  else if self.neg
+       then ok (-1)#i8
+       else ok 1#i8
+
+/-- [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefRat}::clone]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:9-329:14
+    Visibility: public -/
+def refbackend.RefRat.Insts.CoreCloneClone.clone
+  (self : refbackend.RefRat) : Result refbackend.RefRat := do
+  let ri ← refbackend.RefInt.Insts.CoreCloneClone.clone self.num
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone self.den
+  ok { num := ri, den := rn }
+
+/-- Trait implementation: [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefRat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:9-329:14 -/
+@[reducible]
+def refbackend.RefRat.Insts.CoreCloneClone : core.clone.Clone refbackend.RefRat
+  := {
+  clone := refbackend.RefRat.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [lattice::refbackend::{impl core::marker::StructuralPartialEq for lattice::refbackend::RefRat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:16-329:25 -/
+@[reducible]
+def refbackend.RefRat.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq refbackend.RefRat := {
+}
+
+/-- [lattice::refbackend::{impl core::cmp::PartialEq<lattice::refbackend::RefRat> for lattice::refbackend::RefRat}::eq]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:16-329:25
+    Visibility: public -/
+def refbackend.RefRat.Insts.CoreCmpPartialEqRefRat.eq
+  (self : refbackend.RefRat) (other : refbackend.RefRat) : Result Bool := do
+  let b ←
+    refbackend.RefInt.Insts.CoreCmpPartialEqRefInt.eq self.num other.num
+  if b
+  then refbackend.RefNat.Insts.CoreCmpPartialEqRefNat.eq self.den other.den
+  else ok false
+
+/-- Trait implementation: [lattice::refbackend::{impl core::cmp::PartialEq<lattice::refbackend::RefRat> for lattice::refbackend::RefRat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:16-329:25 -/
+@[reducible]
+impl_def refbackend.RefRat.Insts.CoreCmpPartialEqRefRat : core.cmp.PartialEq
+  refbackend.RefRat refbackend.RefRat := {
+  eq := refbackend.RefRat.Insts.CoreCmpPartialEqRefRat.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    refbackend.RefRat.Insts.CoreCmpPartialEqRefRat
+}
+
+/-- [lattice::refbackend::{impl core::cmp::Eq for lattice::refbackend::RefRat}::assert_fields_are_eq]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:27-329:29
+    Visibility: public -/
+def refbackend.RefRat.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : refbackend.RefRat) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [lattice::refbackend::{impl core::cmp::Eq for lattice::refbackend::RefRat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:27-329:29 -/
+@[reducible]
+def refbackend.RefRat.Insts.CoreCmpEq : core.cmp.Eq refbackend.RefRat := {
+  partialEqInst := refbackend.RefRat.Insts.CoreCmpPartialEqRefRat
+  assert_fields_are_eq :=
+    refbackend.RefRat.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefRat}::fmt]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:31-329:36
+    Visibility: public -/
+def refbackend.RefRat.Insts.CoreFmtDebug.fmt
+  (self : refbackend.RefRat) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  let dyn := Dyn.mk _ refbackend.RefInt.Insts.CoreFmtDebug self.num
+  let dyn1 :=
+    Dyn.mk _ (core.fmt.DebugShared refbackend.RefNat.Insts.CoreFmtDebug)
+      self.den
+  core.fmt.Formatter.debug_struct_field2_finish f (toStr "RefRat") (toStr
+    "num") dyn (toStr "den") dyn1
+
+/-- Trait implementation: [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefRat}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 329:31-329:36 -/
+@[reducible]
+def refbackend.RefRat.Insts.CoreFmtDebug : core.fmt.Debug refbackend.RefRat
+  := {
+  fmt := refbackend.RefRat.Insts.CoreFmtDebug.fmt
+}
+
+/-- [lattice::refbackend::{lattice::refbackend::RefRat}::reduce]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 337:4-351:5 -/
+def refbackend.RefRat.reduce
+  (neg : Bool) (num_mag : refbackend.RefNat) (den_mag : refbackend.RefNat) :
+  Result refbackend.RefRat
+  := do
+  let b ← refbackend.RefNat.is_zero num_mag
+  if b
+  then
+    let ri ← refbackend.RefInt.zero
+    let y ←
+      lift (Std.Array.to_slice (Array.make 1#usize [ 1#u64 ] : Array Std.U64
+        1#usize))
+    let ret := alloc.slice.Slice.into_vec y
+    ok { num := ri, den := { limbs := ret } }
+  else
+    let g ← refbackend.RefNat.gcd num_mag den_mag
+    let (nq, _) ← refbackend.RefNat.divrem num_mag g
+    let (dq, _) ← refbackend.RefNat.divrem den_mag g
+    let ri ← refbackend.RefInt.make neg nq
+    ok { num := ri, den := dq }
+
+/-- [lattice::refbackend::{lattice::refbackend::RefRat}::from_i128]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 352:4-357:5 -/
+def refbackend.RefRat.from_i128 (v : Std.I128) : Result refbackend.RefRat := do
+  let ri ← refbackend.RefInt.from_i128 v
+  let y ←
+    lift (Std.Array.to_slice (Array.make 1#usize [ 1#u64 ] : Array Std.U64
+      1#usize))
+  let ret := alloc.slice.Slice.into_vec y
+  ok { num := ri, den := { limbs := ret } }
+
+/-- [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefBackend}::clone]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:9-365:14
+    Visibility: public -/
+def refbackend.RefBackend.Insts.CoreCloneClone.clone
+  (self : refbackend.RefBackend) : Result refbackend.RefBackend := do
+  ok self
+
+/-- Trait implementation: [lattice::refbackend::{impl core::clone::Clone for lattice::refbackend::RefBackend}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:9-365:14 -/
+@[reducible]
+def refbackend.RefBackend.Insts.CoreCloneClone : core.clone.Clone
+  refbackend.RefBackend := {
+  clone := refbackend.RefBackend.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [lattice::refbackend::{impl core::marker::Copy for lattice::refbackend::RefBackend}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:16-365:20 -/
+@[reducible]
+def refbackend.RefBackend.Insts.CoreMarkerCopy : core.marker.Copy
+  refbackend.RefBackend := {
+  cloneInst := refbackend.RefBackend.Insts.CoreCloneClone
+}
+
+/-- [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefBackend}::fmt]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:22-365:27
+    Visibility: public -/
+def refbackend.RefBackend.Insts.CoreFmtDebug.fmt
+  (self : refbackend.RefBackend) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  core.fmt.Formatter.write_str f (toStr "RefBackend")
+
+/-- Trait implementation: [lattice::refbackend::{impl core::fmt::Debug for lattice::refbackend::RefBackend}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:22-365:27 -/
+@[reducible]
+def refbackend.RefBackend.Insts.CoreFmtDebug : core.fmt.Debug
+  refbackend.RefBackend := {
+  fmt := refbackend.RefBackend.Insts.CoreFmtDebug.fmt
+}
+
+/-- [lattice::refbackend::{impl core::default::Default for lattice::refbackend::RefBackend}::default]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:29-365:36
+    Visibility: public -/
+def refbackend.RefBackend.Insts.CoreDefaultDefault.default
+  : Result refbackend.RefBackend := do
+  ok ()
+
+/-- Trait implementation: [lattice::refbackend::{impl core::default::Default for lattice::refbackend::RefBackend}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 365:29-365:36 -/
+@[reducible]
+def refbackend.RefBackend.Insts.CoreDefaultDefault : core.default.Default
+  refbackend.RefBackend := {
+  default := refbackend.RefBackend.Insts.CoreDefaultDefault.default
+}
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_denom]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 521:4-523:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_denom
+  (a : refbackend.RefRat) : Result refbackend.RefInt := do
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone a.den
+  refbackend.RefInt.make false rn
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_numer]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 518:4-520:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_numer
+  (a : refbackend.RefRat) : Result refbackend.RefInt := do
+  refbackend.RefInt.Insts.CoreCloneClone.clone a.num
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_is_zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 515:4-517:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_is_zero
+  (a : refbackend.RefRat) : Result Bool := do
+  refbackend.RefInt.is_zero a.num
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_sign]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 512:4-514:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_sign
+  (a : refbackend.RefRat) : Result Std.I8 := do
+  refbackend.RefInt.sign a.num
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_cmp]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 506:4-511:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_cmp
+  (a : refbackend.RefRat) (b : refbackend.RefRat) : Result Ordering := do
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone b.den
+  let ri ← refbackend.RefInt.make false rn
+  let l ← refbackend.RefInt.mul a.num ri
+  let rn1 ← refbackend.RefNat.Insts.CoreCloneClone.clone a.den
+  let ri1 ← refbackend.RefInt.make false rn1
+  let r ← refbackend.RefInt.mul b.num ri1
+  refbackend.RefInt.cmp l r
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_neg]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 500:4-505:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_neg
+  (a : refbackend.RefRat) : Result refbackend.RefRat := do
+  let ri ← refbackend.RefInt.impl.neg a.num
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone a.den
+  ok { num := ri, den := rn }
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_div]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 491:4-499:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_div
+  (a : refbackend.RefRat) (b : refbackend.RefRat) :
+  Result refbackend.RefRat
+  := do
+  let b1 ← refbackend.RefInt.is_zero b.num
+  massert (¬ b1)
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone b.den
+  let ri ← refbackend.RefInt.make false rn
+  let n ← refbackend.RefInt.mul a.num ri
+  let rn1 ← refbackend.RefNat.mul a.den b.num.mag
+  refbackend.RefRat.reduce (n.neg != b.num.neg) n.mag rn1
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_mul]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 487:4-490:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_mul
+  (a : refbackend.RefRat) (b : refbackend.RefRat) :
+  Result refbackend.RefRat
+  := do
+  let n ← refbackend.RefInt.mul a.num b.num
+  let rn ← refbackend.RefNat.mul a.den b.den
+  refbackend.RefRat.reduce n.neg n.mag rn
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_add]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 473:4-479:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_add
+  (a : refbackend.RefRat) (b : refbackend.RefRat) :
+  Result refbackend.RefRat
+  := do
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone b.den
+  let ri ← refbackend.RefInt.make false rn
+  let n1 ← refbackend.RefInt.mul a.num ri
+  let rn1 ← refbackend.RefNat.Insts.CoreCloneClone.clone a.den
+  let ri1 ← refbackend.RefInt.make false rn1
+  let n2 ← refbackend.RefInt.mul b.num ri1
+  let n ← refbackend.RefInt.add n1 n2
+  let rn2 ← refbackend.RefNat.mul a.den b.den
+  refbackend.RefRat.reduce n.neg n.mag rn2
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_sub]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 480:4-486:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_sub
+  (a : refbackend.RefRat) (b : refbackend.RefRat) :
+  Result refbackend.RefRat
+  := do
+  let ri ← refbackend.RefInt.impl.neg b.num
+  let rn ← refbackend.RefNat.Insts.CoreCloneClone.clone b.den
+  refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_add a
+    { num := ri, den := rn }
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_from_ints]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 462:4-471:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_from_ints
+  (num : refbackend.RefInt) (den : refbackend.RefInt) :
+  Result refbackend.RefRat
+  := do
+  let b ← refbackend.RefInt.is_zero den
+  massert (¬ b)
+  refbackend.RefRat.reduce (num.neg != den.neg) num.mag den.mag
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_from_i128]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 459:4-461:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_from_i128
+  (v : Std.I128) : Result refbackend.RefRat := do
+  refbackend.RefRat.from_i128 v
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_divrem]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 449:4-457:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_divrem
+  (a : refbackend.RefInt) (b : refbackend.RefInt) :
+  Result (refbackend.RefInt × refbackend.RefInt)
+  := do
+  let b1 ← refbackend.RefInt.is_zero b
+  massert (¬ b1)
+  let (q, r) ← refbackend.RefNat.divrem a.mag b.mag
+  let ri ← refbackend.RefInt.make (a.neg != b.neg) q
+  let ri1 ← refbackend.RefInt.make a.neg r
+  ok (ri, ri1)
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_lcm]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 441:4-448:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_lcm
+  (a : refbackend.RefInt) (b : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  let b1 ← refbackend.RefInt.is_zero a
+  if b1
+  then refbackend.RefInt.zero
+  else
+    let b2 ← refbackend.RefInt.is_zero b
+    if b2
+    then refbackend.RefInt.zero
+    else
+      let g ← refbackend.RefNat.gcd a.mag b.mag
+      let rn ← refbackend.RefNat.mul a.mag b.mag
+      let (q, _) ← refbackend.RefNat.divrem rn g
+      refbackend.RefInt.make false q
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_gcd]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 438:4-440:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_gcd
+  (a : refbackend.RefInt) (b : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  let rn ← refbackend.RefNat.gcd a.mag b.mag
+  refbackend.RefInt.make false rn
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_is_zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 435:4-437:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_is_zero
+  (a : refbackend.RefInt) : Result Bool := do
+  refbackend.RefInt.is_zero a
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_sign]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 432:4-434:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_sign
+  (a : refbackend.RefInt) : Result Std.I8 := do
+  refbackend.RefInt.sign a
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_cmp]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 429:4-431:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_cmp
+  (a : refbackend.RefInt) (b : refbackend.RefInt) : Result Ordering := do
+  refbackend.RefInt.cmp a b
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_neg]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 426:4-428:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_neg
+  (a : refbackend.RefInt) : Result refbackend.RefInt := do
+  refbackend.RefInt.impl.neg a
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_mul]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 423:4-425:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_mul
+  (a : refbackend.RefInt) (b : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  refbackend.RefInt.mul a b
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_sub]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 420:4-422:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_sub
+  (a : refbackend.RefInt) (b : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  refbackend.RefInt.sub a b
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_add]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 417:4-419:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_add
+  (a : refbackend.RefInt) (b : refbackend.RefInt) :
+  Result refbackend.RefInt
+  := do
+  refbackend.RefInt.add a b
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_try_to_i128]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 388:4-415:5
+    Visibility: public -/
+def
+  refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_try_to_i128
+  (a : refbackend.RefInt) : Result (Option Std.I128) := do
+  let i := alloc.vec.Vec.len a.mag.limbs
+  if i > 2#usize
+  then ok none
+  else
+    let b ← alloc.vec.Vec.is_empty Global a.mag.limbs
+    let lo ←
+      if b
+      then ok 0#u128
+      else
+        do
+        let i1 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+            a.mag.limbs 0#usize
+        ok (UScalar.cast .U128 i1)
+    let i1 := alloc.vec.Vec.len a.mag.limbs
+    let hi ←
+      if i1 >= 2#usize
+      then
+        do
+        let i2 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+            a.mag.limbs 1#usize
+        ok (UScalar.cast .U128 i2)
+      else ok 0#u128
+    let i2 ← hi <<< 64#i32
+    let m ← lift (i2 ||| lo)
+    if a.neg
+    then
+      let i3 ← 1#u128 <<< 127#i32
+      if m <= i3
+      then
+        let i4 ← lift (UScalar.hcast .I128 m)
+        let i5 ← core.num.I128.wrapping_neg i4
+        ok (some i5)
+      else ok none
+    else
+      let i3 ← lift (IScalar.hcast .U128 core.num.I128.MAX)
+      if m <= i3
+      then let i4 ← lift (UScalar.hcast .I128 m)
+           ok (some i4)
+      else ok none
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_from_i128]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 385:4-387:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_from_i128
+  (v : Std.I128) : Result refbackend.RefInt := do
+  refbackend.RefInt.from_i128 v
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_one]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 382:4-384:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_one
+  : Result refbackend.RefInt := do
+  refbackend.RefInt.from_i128 1#i128
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_zero]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 379:4-381:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_zero
+  : Result refbackend.RefInt := do
+  refbackend.RefInt.zero
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::rat_clone]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 375:4-377:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_clone
+  (a : refbackend.RefRat) : Result refbackend.RefRat := do
+  refbackend.RefRat.Insts.CoreCloneClone.clone a
+
+/-- [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}::int_clone]:
+    Source: 'crates/lattice/src/refbackend.rs', lines 372:4-374:5
+    Visibility: public -/
+def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_clone
+  (a : refbackend.RefInt) : Result refbackend.RefInt := do
+  refbackend.RefInt.Insts.CoreCloneClone.clone a
+
+/-- Trait implementation: [lattice::refbackend::{impl lattice::backend::Backend<lattice::refbackend::RefInt, lattice::refbackend::RefRat> for lattice::refbackend::RefBackend}]
+    Source: 'crates/lattice/src/refbackend.rs', lines 368:0-524:1 -/
+@[reducible]
+impl_def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat :
+  backend.Backend refbackend.RefBackend refbackend.RefInt refbackend.RefRat
+  := {
+  int_clone :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_clone
+  rat_clone :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_clone
+  int_zero :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_zero
+  int_one :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_one
+  int_from_i128 :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_from_i128
+  int_try_to_i128 :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_try_to_i128
+  int_add :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_add
+  int_sub :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_sub
+  int_mul :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_mul
+  int_neg :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_neg
+  int_cmp :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_cmp
+  int_sign :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_sign
+  int_is_zero :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_is_zero
+  int_gcd :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_gcd
+  int_lcm :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_lcm
+  int_divrem :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_divrem
+  int_div := backend.Backend.int_div.default
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat
+  int_rem := backend.Backend.int_rem.default
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat
+  rat_from_i128 :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_from_i128
+  rat_from_ints :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_from_ints
+  rat_add :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_add
+  rat_sub :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_sub
+  rat_mul :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_mul
+  rat_div :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_div
+  rat_neg :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_neg
+  rat_cmp :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_cmp
+  rat_sign :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_sign
+  rat_is_zero :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_is_zero
+  rat_numer :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_numer
+  rat_denom :=
+    refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_denom
+}
+
 /-- [lattice::small::gcd_u128]: loop body 0:
     Source: 'crates/lattice/src/small.rs', lines 12:4-16:5 -/
 @[rust_loop_body]
@@ -115,9 +1549,11 @@ def small.SmallRat.Insts.CoreCmpPartialEqSmallRat.eq
 /-- Trait implementation: [lattice::small::{impl core::cmp::PartialEq<lattice::small::SmallRat> for lattice::small::SmallRat}]
     Source: 'crates/lattice/src/small.rs', lines 38:22-38:31 -/
 @[reducible]
-def small.SmallRat.Insts.CoreCmpPartialEqSmallRat : core.cmp.PartialEq
+impl_def small.SmallRat.Insts.CoreCmpPartialEqSmallRat : core.cmp.PartialEq
   small.SmallRat small.SmallRat := {
   eq := small.SmallRat.Insts.CoreCmpPartialEqSmallRat.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    small.SmallRat.Insts.CoreCmpPartialEqSmallRat
 }
 
 /-- [lattice::small::{impl core::cmp::Eq for lattice::small::SmallRat}::assert_fields_are_eq]:

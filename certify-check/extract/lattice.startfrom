@@ -14,3 +14,13 @@
 
 crate::sturm::sign_variations
 crate::small
+
+# The reference bignum (algebra-rehaul R.4b): `RefBackend`, an independent
+# `Vec<u64>`-limb sign-magnitude `Backend` (schoolbook add/sub/mul, bit-serial
+# long-division divrem, Euclid gcd). Lifted so each op can be PROVEN = Mathlib
+# ℤ/ℚ over a limb→ℕ denotation (docs/refbackend-lift.md), turning the dashu
+# differential into a proof-backed oracle. Unlike the certify-core lift, `rat`/
+# `backend` are NOT opaque here — the whole point is to lift the concrete limb
+# arithmetic. Pulls in the `Backend` trait def (dup-free since R.3a) + RefNat/
+# RefInt/RefRat + normalize.
+crate::refbackend

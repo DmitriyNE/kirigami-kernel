@@ -1,9 +1,10 @@
 # R.4b — proving `RefBackend = ℤ/ℚ` in Lean: feasibility (GO) + the proof plan
 
-*Status: **R.4b.0 spike — GO.** The reference bignum (`crates/lattice/src/refbackend.rs`) lifts
-cleanly through charon+aeneas at the pinned toolchain; the proof machinery is the established
-`loop.spec_decr_nat` + `step` idiom over a limb→ℕ denotation. The op proofs themselves (R.4b.1+) are
-a large, incremental verification effort — each op a loop-invariant proof — tracked below.*
+*Status: **R.4b.1 landed.** The reference bignum (`crates/lattice/src/refbackend.rs`) is lifted and
+built into the committed `Lattice` model; `CertifyCheck/RefBackend.lean` proves the denotation lemmas
+and the first two ops — `is_zero` (`= true ↔ den = 0`) and `cmp` (`= compare (den ·) (den ·)`) —
+axiom-clean over a limb→ℕ denotation. The remaining ops (R.4b.2+) are a large, incremental
+verification effort — each op a loop-invariant proof — tracked below.*
 
 ## The feasibility GO (spike)
 
@@ -41,9 +42,15 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 | `RefRat` | `ratDen = ℚ` ops | `intDen num / den`; `reduce` = lowest terms via gcd |
 
 ## Phasing (each phase = a committed, axiom-audited proof; pause per phase)
-`R.4b.1` model wiring + denotation + `is_zero`/`cmp` · `.2` `add`/`sub` · `.3` `mul` · `.4` `divrem`
-· `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
+`R.4b.1` model wiring + denotation + `is_zero`/`cmp` **— done** · `.2` `add`/`sub` · `.3` `mul`
+· `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
 
-R.4b.1 also wires the committed extraction (a `refbackend` start-from + the model + the ~7 external
-models, drift-checked like the other lifts). The `u128`-scalar reasoning in `add` prices the hardest
-recurring sub-lemma; `mul` (nested) and `divrem` (bit-serial) are the effort peaks.
+R.4b.1 wired the committed extraction (`crate::refbackend` added to `lattice.startfrom`; the model
++ the external models in `Lattice/{Funs,Types}External.lean` + `CommonExtern`, drift-checked like the
+other lifts) and proved the denotation core + `is_zero`/`cmp` in `CertifyCheck/RefBackend.lean`
+(axiom-clean, CI-audited). Two shaping notes from R.4b.1: `RefNat::add`'s `usize::max` was rewritten
+to an explicit `if` (the `Ord::max` default method mis-lifts at the pin), and the certify-core
+externals were qualified to `certify_core.lattice.backend.Backend` (the `refbackend` lift adds a
+concrete `Backend` to the shared model that would otherwise shadow the opaque one — see
+`docs/engineering-log.md`). The `u128`-scalar reasoning in `add` prices the hardest recurring
+sub-lemma; `mul` (nested) and `divrem` (bit-serial) are the effort peaks ahead.

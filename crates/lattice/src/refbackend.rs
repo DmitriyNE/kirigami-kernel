@@ -65,7 +65,14 @@ impl RefNat {
 
     /// `self + o` (schoolbook, `u128` carry).
     fn add(&self, o: &RefNat) -> RefNat {
-        let n = self.limbs.len().max(o.limbs.len());
+        // Explicit `if` rather than `usize::max` — the `Ord::max` *default* method does not lift
+        // cleanly under the pinned Aeneas (it mis-applies `Ord::max.default` to the `Ord` instance).
+        // Same liftability-driven shaping as the R.3a `Backend` refactor; see docs/engineering-log.md.
+        let n = if self.limbs.len() >= o.limbs.len() {
+            self.limbs.len()
+        } else {
+            o.limbs.len()
+        };
         let mut out = Vec::with_capacity(n + 1);
         let mut carry: u128 = 0;
         let mut i = 0;

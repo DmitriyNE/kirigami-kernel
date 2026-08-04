@@ -63,6 +63,9 @@ faithfully — it observes an implementation detail the `ℚ` model has erased.
   - **R.1–R.3 (merged):** opaque `Int`/`Rat`; the ℤ/ℚ-mapping spike (GO, no pin bump); and
     `certify1d::clip_sigma` lifted over ℚ with *both* cores derived from the extracted Rust
     (`ClipSigma.lean`, axiom-clean) — the hand-mirror spec-drift class killed for the ★ CLIP-σ row.
-  - **R.4 (reference bignum) — steps (1)+(3) done:** `RefBackend` is differentially cross-checked
-    against dashu over the full i128 range; the Lean proof `RefBackend = ℤ/ℚ` (step 2) is the
-    tracked deep follow-up that would turn the cross-check into a proof-backed oracle.
+  - **R.4 (reference bignum) — steps (1)+(3) done, (2) underway:** `RefBackend` is differentially
+    cross-checked against dashu over the full i128 range; the Lean proof `RefBackend = ℤ/ℚ` (step 2)
+    is in progress — `RefBackend` is Aeneas-lifted and its `RefNat` `is_zero`/`cmp` are proven correct
+    over a limb→ℕ denotation (`CertifyCheck/RefBackend.lean`, axiom-clean; R.4b.1). Each further op
+    (`add`/`sub`/`mul`/`divrem`/`gcd`, then `RefInt`/`RefRat` → ℤ/ℚ) is its own loop-invariant proof
+    (`docs/refbackend-lift.md`); completing them turns the cross-check into a proof-backed oracle.

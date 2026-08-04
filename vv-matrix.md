@@ -13,7 +13,7 @@ arrangement lattice — the "1D" name is overloaded.)
 
 | Item | crate | unit | property | differential | Kani | Lean | validation |
 |---|---|---|---|---|---|---|---|
-| lattice cmp/sign ★ [M0] | lattice | ✅ | ✅ (randomized diff) | ✅ (num-rational + `RefBackend` limb backend, R.4 — two independent oracles) | ✅ (panic-free full i128; fast≡slow via exhaustive+diff) | ⬜ (spike GO; gcd/reduce Lean gated Phase 5) | — |
+| lattice cmp/sign ★ [M0] | lattice | ✅ | ✅ (randomized diff) | ✅ (num-rational + `RefBackend` limb backend, R.4 — two independent oracles; `RefBackend`'s `cmp`/`is_zero` Aeneas-lifted + **proven = ℕ** over a limb→ℕ denotation, R.4b.1 — the oracle is becoming proof-backed) | ✅ (panic-free full i128; fast≡slow via exhaustive+diff) | ⬜ (spike GO; gcd/reduce Lean gated Phase 5) | — |
 | Sturm isolate ★ [M0] | lattice | ✅ | ✅ (proptest) | ✅ (constructed roots) | ✅ (sign-count) | 🚧 `SturmChecker.lean` (checker formalized; Sturm = 1 cited axiom) · `sign_variations` proven axiom-clean, incl. the **Aeneas-lifted model** end-to-end (`Refine.lean`) · rc-hyp ✅ | — |
 | resultant ★ [M0] | lattice | ✅ | ✅ | ✅ (vs Poly::gcd) | — | ✅ `verify_common_factor_sound` (`Resultant.lean`): witness ⟹ `¬IsCoprime f g` ⟹ `resultant f g = 0`, **axiom-clean, NO cited axiom** (Mathlib `resultant_eq_zero_iff` closed the gap) · rc-hyp ✅ | — |
 | decomposition [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL + resultant) | N/A | N/A | — |
