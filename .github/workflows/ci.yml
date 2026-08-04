@@ -19,7 +19,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: spec + code invariant lints (:= census, tuple-predicate, no-float, no-repr-leak, vv-matrix gate)
+      - name: spec + code invariant lints (:= census, tuple-predicate, no-float, vv-matrix gate)
         run: nix develop --command cargo xtask lint
 
       - name: fmt

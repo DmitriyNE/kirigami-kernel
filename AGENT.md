@@ -34,7 +34,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 - **Kani** (bounded model checking): the lattice fast≡slow bridge, finite combinatorial functions, bounded DCEL bookkeeping. See vv-guide §5.
 - **Lean 4 + Mathlib** (deductive): the certificate theorems, via **Rust→Lean** lifting (hax for pure parts, Aeneas for locally-mutable parts — direction is Rust→Lean, there is no Lean→Rust codegen). See vv-guide §4. **Run the §7 spike before committing the extraction approach.**
 - **proptest / cargo-fuzz**: stratum-weighted generators (degenerate-heavy — the bugs live on degenerate strata). **CGAL** and **OpenCascade** are differential oracles in `difftest/`, never in a certified path.
-- CI runs: the corpus, property tests, Kani harnesses, `cargo xtask lint` (the `:=` census + tuple-predicate checks over doc-comments, no-float, no-repr-leak, and the milestone-gate matrix check — vv-guide §6).
+- CI runs: the corpus, property tests, Kani harnesses, `cargo xtask lint` (the `:=` census + tuple-predicate checks over doc-comments, no-float, and the milestone-gate matrix check — vv-guide §6). The `Int`/`Rat` tier is now type-enforced private (opaque newtypes), superseding the former no-repr-leak lint.
 
 ## Current task queue
 

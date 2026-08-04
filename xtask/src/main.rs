@@ -120,31 +120,6 @@ fn no_float(files: &[SrcFile]) -> Vec<Finding> {
     out
 }
 
-/// **no-repr-leak** (`docs/algebra-trust.md`): the two-tier `Int`/`Rat` `Fast`/`Slow`
-/// representation must stay private to `lattice::{rat,proof}` — anything that names a variant
-/// elsewhere cannot be lifted to the `Int=ℤ`/`Rat=ℚ` model soundly.
-fn no_repr_leak(files: &[SrcFile]) -> Vec<Finding> {
-    const VARIANTS: &[&str] = &["Int::Fast", "Int::Slow", "Rat::Fast", "Rat::Slow"];
-    let mut out = Vec::new();
-    for f in files {
-        if f.rel == "crates/lattice/src/rat.rs" || f.rel == "crates/lattice/src/proof.rs" {
-            continue;
-        }
-        for (i, line) in f.text.lines().enumerate() {
-            for v in VARIANTS {
-                if contains_word(line, v) {
-                    out.push(Finding {
-                        rel: f.rel.clone(),
-                        line: i + 1,
-                        msg: format!("Int/Rat representation leaked: `{v}`"),
-                    });
-                }
-            }
-        }
-    }
-    out
-}
-
 /// **tuple-predicate** (spec §8.2 / glossary): the adjective "proportional" is banned in
 /// doc-comments — predicates on multi-component objects name the tuple.
 fn tuple_predicate(files: &[SrcFile]) -> Vec<Finding> {
@@ -298,7 +273,6 @@ fn run_lint() -> bool {
     };
 
     report("no-float-certified", no_float(&crate_rs));
-    report("no-repr-leak", no_repr_leak(&crate_rs));
     report("tuple-predicate", tuple_predicate(&crate_rs));
     report(":= census", census(&crate_rs));
     report("vv-matrix gate", vv_matrix(&matrix));
@@ -399,22 +373,6 @@ mod tests {
             file("crates/lattice/src/testgen.rs", "let a: f64 = 0;"), // excepted
         ];
         assert!(no_float(&clean).is_empty());
-    }
-
-    #[test]
-    fn no_repr_leak_fires_outside_lattice_rat() {
-        let bad = vec![file(
-            "crates/geom/src/x.rs",
-            "match r { Rat::Fast(_) => {} }",
-        )];
-        assert_eq!(no_repr_leak(&bad).len(), 1);
-        // allowed inside the two private files; and a false friend elsewhere
-        let clean = vec![
-            file("crates/lattice/src/rat.rs", "Rat::Fast(x)"),
-            file("crates/lattice/src/proof.rs", "Rat::Slow(y)"),
-            file("crates/geom/src/x.rs", "MyRat::FastX"), // not the variant
-        ];
-        assert!(no_repr_leak(&clean).is_empty());
     }
 
     #[test]
