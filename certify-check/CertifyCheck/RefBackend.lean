@@ -44,6 +44,10 @@ theorem den_append (a b : List Std.U64) :
     simp only [List.cons_append, den_cons, ih, List.length_cons]
     rw [hpow]; ring
 
+/-- A trailing zero limb is redundant — the key to `normalize` preserving the denotation. -/
+@[simp] theorem den_snoc_zero (l : List Std.U64) : den (l ++ [0#u64]) = den l := by
+  rw [den_append]; simp [den]
+
 /-- Every limb is `< 2⁶⁴`, so an `n`-limb value is `< 2^(64n)`. -/
 theorem den_lt (l : List Std.U64) : den l < 2 ^ (64 * l.length) := by
   induction l with
@@ -240,7 +244,45 @@ theorem cmp_eq (a b : RefNat) (ha : Normalized a.limbs.val) (hb : Normalized b.l
     simp only [hcond, if_true, core.cmp.impls.OrdUsize.cmp]
     rw [hlenA, hlenB, len_compare a.limbs.val b.limbs.val ha hb hlen]
 
--- Axiom audit: the two op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
+/-! ### `normalize` preserves the denotation (it only drops trailing zero limbs) -/
+
+/-- The lifted `normalize` pops trailing zero limbs, so it leaves the denotation unchanged. -/
+private theorem normalize_den (l : alloc.vec.Vec Std.U64) :
+    lattice.refbackend.normalize l ⦃ r => den r.val = den l.val ⦄ := by
+  unfold lattice.refbackend.normalize normalize_loop
+  apply loop.spec_decr_nat
+    (measure := fun s => s.val.length)
+    (inv := fun s => den s.val = den l.val)
+  · rintro s hinv
+    show normalize_loop.body s ⦃ _ ⦄
+    unfold normalize_loop.body alloc.vec.Vec.is_empty
+    simp only [bind_tc_ok]
+    by_cases hb : (s.val).isEmpty = true
+    · rw [if_pos hb]; simp only [WP.spec_ok]; exact hinv
+    · rw [if_neg hb]
+      have hne : s.val ≠ [] := by simpa using hb
+      have hlen1 : 0 < s.len.val := by
+        rw [alloc.vec.Vec.len_val]; exact List.length_pos_of_ne_nil hne
+      step
+      step
+      have hlen0 : 0 < s.val.length := List.length_pos_of_ne_nil hne
+      have hidx : i1.val = s.val.length - 1 := by rw [i1_post1, alloc.vec.Vec.len_val]
+      have hidx_lt : i1.val < s.val.length := by omega
+      by_cases hz : i2 = 0#u64
+      · -- the top limb is zero: pop it (den unchanged, length strictly drops).
+        rw [if_pos hz]
+        unfold alloc.vec.Vec.pop
+        simp only [bind_tc_ok]
+        have hden : den s.val.dropLast = den s.val := by
+          have hsucc := den_take_succ s.val i1.val hidx_lt
+          rw [(by omega : i1.val + 1 = s.val.length), List.take_length] at hsucc
+          have hi2z : (s.val[i1.val]'hidx_lt).val = 0 := by rw [← i2_post, hz]; rfl
+          rw [List.dropLast_eq_take, ← hidx, hsucc, hi2z]; ring
+        exact ⟨by rw [hden]; exact hinv, by rw [List.length_dropLast]; omega⟩
+      · rw [if_neg hz]; simp only [WP.spec_ok]; exact hinv
+  · rfl
+
+-- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
 #print axioms cmp_eq

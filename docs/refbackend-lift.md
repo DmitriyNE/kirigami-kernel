@@ -42,8 +42,18 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 | `RefRat` | `ratDen = ℚ` ops | `intDen num / den`; `reduce` = lowest terms via gcd |
 
 ## Phasing (each phase = a committed, axiom-audited proof; pause per phase)
-`R.4b.1` model wiring + denotation + `is_zero`/`cmp` **— done** · `.2` `add`/`sub` · `.3` `mul`
-· `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
+`R.4b.1` model wiring + denotation + `is_zero`/`cmp` **— done** · `.2` `add`/`sub` **— in progress**
+(`normalize` den-preservation + `den_snoc_zero` landed; the `add`/`sub` carry/borrow loops remain) ·
+`.3` `mul` · `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
+
+**R.4b.2 recipe (validated, for continuation).** The carry loop is a `loop.spec_decr_nat` with the
+invariant `den out + carry·2^(64i) = den(take i v) + den(take i v1)`, `len out = i`, `carry ≤ 1`.
+In the body: `dsimp only []` zeta-reduces the `let i1 := v.len` bindings, then `by_cases` on
+`i' < v.len` / `i' < v1.len` + `if_pos`/`if_neg` resolves the padded limb loads, and `step` advances
+the rest. The one deep bit is the **u128 split** `lo = s as u64` (truncating cast → `s % 2^64`) and
+`carry1 = s >>> 64` (→ `s / 2^64`), giving `lo + 2^64·carry1 = s` via `Nat.mod_add_div`; `ShiftRight`
+has a `@[step]` spec, the truncating `UScalar.cast` needs the general (mod) cast value. `den_take_succ`
+(and a padded variant) closes the per-limb den bookkeeping; `sub` is the dual with an `i128` borrow.
 
 R.4b.1 wired the committed extraction (`crate::refbackend` added to `lattice.startfrom`; the model
 + the external models in `Lattice/{Funs,Types}External.lean` + `CommonExtern`, drift-checked like the
