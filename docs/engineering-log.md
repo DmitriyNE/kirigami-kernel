@@ -29,6 +29,14 @@ fine — this is a log, not a schema.
   I couldn't verify from the sandbox). Also: watch the first real CI run of the step.
   *2026-08-04 · open*
 
+- **Pin `nixpkgs` off `nixos-unstable`.** `flake.nix` floats `nixos-unstable`, so a toolchain
+  bump silently regresses CI with **no code change** — e.g. `gcc-15.3`/`glibc-2.42` emitting a
+  `.debug_gdb_scripts` section that `rust-lld` rejected when linking the CGAL oracle shim (worked
+  around with `.debug(false)` in `crates/difftest/build.rs`, commit `5276957`). Pin to a
+  known-good rev (or a stable release) so CI is reproducible; the `.debug(false)` band-aid can
+  then be reconsidered. Revisit floating-vs-pinned deliberately.
+  *2026-08-04 · open*
+
 ## Tech debt / sketchy
 
 - **The mesh κ-cap corner-min is representation-conditional.** It is sound only while `R₁`
