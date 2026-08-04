@@ -5,7 +5,7 @@
 # The Lean extraction target lives in certify-check/ (a lake project, not a crate).
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "xtask"]
 # The backend-selection benchmark is a throwaway, self-contained workspace under
 # benchmarks/ (its own Cargo.lock). Excluded so criterion + all four candidate
 # bignum crates never enter this lockfile or the `--workspace --all-targets`

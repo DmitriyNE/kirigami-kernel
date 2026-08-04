@@ -2,7 +2,7 @@
 
 Row per certificate/kernel operation; cell per method. Status: ✅ done · 🚧 partial · ⬜ todo · N/A.
 Each Item carries its milestone tag `[Mx]`. CI fails the milestone gate
-(`scripts/lint/vv_matrix_gate.sh`) if a **soundness-critical** row (marked ★) whose
+(`cargo xtask lint`'s vv-matrix gate) if a **soundness-critical** row (marked ★) whose
 milestone has **landed** (`[M0]`, `[M1]`, `[M2]`, `[M3a]`, `[M3c]`, `[M3d]`, `[M3e]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
 Not-yet-landed ★ rows (`[M4]`/…) are out of scope until their milestone ships.
 (The gate reads the table columns with `FS="|"`; before slice 3d it split on whitespace, so `$2`

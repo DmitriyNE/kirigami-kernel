@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask lint` runs the spec/code invariant lints (vv-guide §6). See xtask/.
+xtask = "run --quiet --package xtask --"

@@ -47,7 +47,7 @@ For the `Int=ℤ`/`Rat=ℚ` model to be **sound**, no code that gets lifted may 
 Any `match Rat::Fast(..)` in a checker is a value that could not be lifted to `ℚ`
 faithfully — it observes an implementation detail the `ℚ` model has erased.
 
-- **Enforced now** by `scripts/lint/no_repr_leak.sh` (in `run-all.sh` / CI): fails if
+- **Enforced now** by `cargo xtask lint`'s no-repr-leak check (CI): fails if
   `Int::Fast|Slow` / `Rat::Fast|Slow` appear outside `lattice::rat`. The surface is clean
   today (all references are inside `rat.rs`).
 - **To be type-enforced** in the algebra rehaul: make `Int`/`Rat` opaque

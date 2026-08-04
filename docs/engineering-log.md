@@ -33,10 +33,12 @@ fine — this is a log, not a schema.
   hand-verified, not unsound.
   *2026-08-04 · open · `fixtures::devices::certified_cone`, `certify1d::corner_range`*
 
-- **The code-invariant lints scan code only.** `no_repr_leak`, `tuple-predicate`, and the
-  `:= census` each carry a stated TODO to also scan spec text; today they cover only code and
-  doc-comments.
-  *2026-08-04 · open · `scripts/lint/*.sh`*
+- **The invariant lints scan code/doc-comments only, not spec text.** `tuple-predicate` and
+  `:= census` (now in `cargo xtask lint`) should also scan `spec/`, but that needs an
+  allow-list for the frozen spec's own meta-discussion of the rules (it explains *why*
+  "proportional" is banned, using the word), and the spec is frozen — so we can't sprinkle
+  inline allow markers. Deferred until that allow-list is designed.
+  *2026-08-04 · open · `xtask/src/main.rs`*
 
 ## Findings
 

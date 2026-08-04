@@ -19,8 +19,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: spec + code invariant lints (:= census, tuple-predicate, no-float-in-certified)
-        run: nix develop --command bash scripts/lint/run-all.sh
+      - name: spec + code invariant lints (:= census, tuple-predicate, no-float, no-repr-leak, vv-matrix gate)
+        run: nix develop --command cargo xtask lint
 
       - name: fmt
         run: nix develop --command cargo fmt --all --check
@@ -42,11 +42,9 @@ jobs:
       - name: CGAL differential + degenerate-heavy stratum suite
         run: nix develop --command bash -c 'ARRANGE_STRATUM_WEIGHT=8 cargo nextest run -p arrange2d -p difftest --features cgal'
 
-      # Milestone gate (vv-guide §6/§8): a LANDED soundness-critical (★) vv-matrix
-      # row must carry a {Kani ∨ Lean ∨ runtime-checked-hypothesis} proof cell.
-      # Not-yet-landed ★ rows (M3d/M3e/…) are out of scope until their milestone ships.
-      - name: milestone gate (vv-matrix.md)
-        run: nix develop --command bash scripts/lint/vv_matrix_gate.sh
+      # The vv-guide §6/§8 milestone gate (a LANDED ★ vv-matrix row must carry a
+      # {Kani ∨ Lean ∨ runtime-checked-hypothesis} proof cell) now runs inside
+      # `cargo xtask lint`, above (the `vv-matrix gate` check).
 
       # no_std + alloc gate: the pure-tier `lattice` (and its dashu backend) must
       # build for a bare-metal, std-less target. This is the standing form of the
