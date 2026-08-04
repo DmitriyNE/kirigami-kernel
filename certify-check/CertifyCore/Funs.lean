@@ -2,6 +2,7 @@
 -- [certify_core]: function definitions
 import Aeneas
 import CertifyCore.Types
+import CertifyCore.FunsExternal
 open Aeneas Aeneas.Std Result ControlFlow Error
 set_option linter.dupNamespace false
 set_option linter.hashCommand false
@@ -13,10 +14,92 @@ set_option maxHeartbeats 1000000
 /- You can set the `maxRecDepth` value with the `-max-recdepth` CLI option -/
 set_option maxRecDepth 2048
 
+/- You can remove the following line by using the CLI option `-all-computable`: -/
+noncomputable section
+
 namespace certify_core
 
+/-- Trait implementation: [core::cmp::{impl core::cmp::PartialEq<core::cmp::Ordering> for core::cmp::Ordering}]
+    Source: '/rustc/library/core/src/cmp.rs', lines 398:43-398:52
+    Name pattern: [core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>] -/
+@[reducible, rust_trait_impl
+  "core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>"]
+impl_def core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering : core.cmp.PartialEq
+  Ordering Ordering := {
+  eq := core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering
+}
+
+/-- Trait implementation: [lattice::rat::{impl core::clone::Clone for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
+    Source: 'crates/lattice/src/rat.rs', lines 347:0-347:33
+    Name pattern: [core::clone::Clone<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
+@[reducible, rust_trait_impl
+  "core::clone::Clone<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
+def lattice.rat.Rat.Insts.CoreCloneClone {B : Type} {Clause0_Int : Type}
+  {Clause0_Rat : Type} (backendBackendInst : lattice.backend.Backend B
+  Clause0_Int Clause0_Rat) : core.clone.Clone (lattice.rat.Rat B Clause0_Int
+  Clause0_Rat) := {
+  clone := lattice.rat.Rat.Insts.CoreCloneClone.clone backendBackendInst
+}
+
+/-- Trait implementation: [lattice::rat::{impl core::cmp::PartialEq<lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>> for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
+    Source: 'crates/lattice/src/rat.rs', lines 355:0-355:37
+    Name pattern: [core::cmp::PartialEq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
+@[reducible, rust_trait_impl
+  "core::cmp::PartialEq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
+impl_def lattice.rat.Rat.Insts.CoreCmpPartialEqRat {B : Type} {Clause0_Int :
+  Type} {Clause0_Rat : Type} (backendBackendInst : lattice.backend.Backend B
+  Clause0_Int Clause0_Rat) : core.cmp.PartialEq (lattice.rat.Rat B Clause0_Int
+  Clause0_Rat) (lattice.rat.Rat B Clause0_Int Clause0_Rat) := {
+  eq := lattice.rat.Rat.Insts.CoreCmpPartialEqRat.eq backendBackendInst
+  ne := core.cmp.PartialEq.ne.trait_default
+    (lattice.rat.Rat.Insts.CoreCmpPartialEqRat backendBackendInst)
+}
+
+/-- Trait implementation: [lattice::rat::{impl core::cmp::Eq for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
+    Source: 'crates/lattice/src/rat.rs', lines 360:0-360:30
+    Name pattern: [core::cmp::Eq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
+@[reducible, rust_trait_impl
+  "core::cmp::Eq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
+def lattice.rat.Rat.Insts.CoreCmpEq {B : Type} {Clause0_Int : Type}
+  {Clause0_Rat : Type} (backendBackendInst : lattice.backend.Backend B
+  Clause0_Int Clause0_Rat) : core.cmp.Eq (lattice.rat.Rat B Clause0_Int
+  Clause0_Rat) := {
+  partialEqInst := lattice.rat.Rat.Insts.CoreCmpPartialEqRat backendBackendInst
+}
+
+/-- Trait implementation: [lattice::rat::{impl core::cmp::PartialOrd<lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>> for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
+    Source: 'crates/lattice/src/rat.rs', lines 361:0-361:38
+    Name pattern: [core::cmp::PartialOrd<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
+@[reducible, rust_trait_impl
+  "core::cmp::PartialOrd<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
+def lattice.rat.Rat.Insts.CoreCmpPartialOrdRat {B : Type} {Clause0_Int : Type}
+  {Clause0_Rat : Type} (backendBackendInst : lattice.backend.Backend B
+  Clause0_Int Clause0_Rat) : core.cmp.PartialOrd (lattice.rat.Rat B Clause0_Int
+  Clause0_Rat) (lattice.rat.Rat B Clause0_Int Clause0_Rat) := {
+  partialEqInst := lattice.rat.Rat.Insts.CoreCmpPartialEqRat backendBackendInst
+  partial_cmp := lattice.rat.Rat.Insts.CoreCmpPartialOrdRat.partial_cmp
+    backendBackendInst
+}
+
+/-- Trait implementation: [lattice::rat::{impl core::cmp::Ord for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
+    Source: 'crates/lattice/src/rat.rs', lines 366:0-366:31
+    Name pattern: [core::cmp::Ord<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
+@[reducible, rust_trait_impl
+  "core::cmp::Ord<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
+def lattice.rat.Rat.Insts.CoreCmpOrd {B : Type} {Clause0_Int : Type}
+  {Clause0_Rat : Type} (backendBackendInst : lattice.backend.Backend B
+  Clause0_Int Clause0_Rat) : core.cmp.Ord (lattice.rat.Rat B Clause0_Int
+  Clause0_Rat) := {
+  eqInst := lattice.rat.Rat.Insts.CoreCmpEq backendBackendInst
+  partialOrdInst := lattice.rat.Rat.Insts.CoreCmpPartialOrdRat
+    backendBackendInst
+  cmp := lattice.rat.Rat.Insts.CoreCmpOrd.cmp backendBackendInst
+}
+
 /-- [certify_core::arrange::cyclic_true_runs]: loop body 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 99:4-105:5 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 104:4-110:5 -/
 @[rust_loop_body]
 def arrange.cyclic_true_runs_loop.body
   (sectors : Slice Bool) (n : Std.Usize) (runs : Std.Usize) (i : Std.Usize) :
@@ -42,7 +125,7 @@ def arrange.cyclic_true_runs_loop.body
   else ok (done runs)
 
 /-- [certify_core::arrange::cyclic_true_runs]: loop 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 99:4-105:5 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 104:4-110:5 -/
 @[rust_loop]
 def arrange.cyclic_true_runs_loop
   (sectors : Slice Bool) (n : Std.Usize) (runs : Std.Usize) (i : Std.Usize) :
@@ -53,7 +136,7 @@ def arrange.cyclic_true_runs_loop
     (runs, i)
 
 /-- [certify_core::arrange::cyclic_true_runs]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 92:0-108:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 97:0-113:1 -/
 def arrange.cyclic_true_runs (sectors : Slice Bool) : Result Std.Usize := do
   let n := Slice.len sectors
   if n = 0#usize
@@ -69,7 +152,7 @@ def arrange.cyclic_true_runs (sectors : Slice Bool) : Result Std.Usize := do
     else ok runs
 
 /-- [certify_core::arrange::all_true]: loop body 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 131:4-138:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 136:4-143:1 -/
 @[rust_loop_body]
 def arrange.all_true_loop.body
   (sectors : Slice Bool) (i : Std.Usize) :
@@ -86,7 +169,7 @@ def arrange.all_true_loop.body
   else ok (done true)
 
 /-- [certify_core::arrange::all_true]: loop 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 131:4-138:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 136:4-143:1 -/
 @[rust_loop]
 def arrange.all_true_loop
   (sectors : Slice Bool) (i : Std.Usize) : Result Bool := do
@@ -95,13 +178,13 @@ def arrange.all_true_loop
     i
 
 /-- [certify_core::arrange::all_true]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 129:0-138:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 134:0-143:1 -/
 @[reducible]
 def arrange.all_true (sectors : Slice Bool) : Result Bool := do
   arrange.all_true_loop sectors 0#usize
 
 /-- [certify_core::arrange::classify_link]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 114:0-126:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 119:0-131:1
     Visibility: public -/
 def arrange.classify_link
   (sectors : Slice Bool) : Result arrange.LinkClass := do
@@ -116,7 +199,7 @@ def arrange.classify_link
   | _ => ok arrange.LinkClass.Pinch
 
 /-- [certify_core::arrange::v_boundary]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 142:0-144:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 147:0-149:1
     Visibility: public -/
 def arrange.v_boundary (sectors : Slice Bool) : Result Bool := do
   let lc ← arrange.classify_link sectors
@@ -127,7 +210,7 @@ def arrange.v_boundary (sectors : Slice Bool) : Result Bool := do
   | arrange.LinkClass.Pinch => ok false
 
 /-- [certify_core::arrange::link_ok]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 148:0-150:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 153:0-155:1
     Visibility: public -/
 def arrange.link_ok (sectors : Slice Bool) : Result Bool := do
   let lc ← arrange.classify_link sectors
@@ -140,7 +223,7 @@ def arrange.link_ok (sectors : Slice Bool) : Result Bool := do
   ok (¬ b)
 
 /-- [certify_core::arrange::link_iso_ok]: loop body 1:
-    Source: 'crates/certify-core/src/arrange.rs', lines 172:8-178:9
+    Source: 'crates/certify-core/src/arrange.rs', lines 177:8-183:9
     Visibility: public -/
 @[rust_loop_body]
 def arrange.link_iso_ok_loop0_loop0.body
@@ -161,7 +244,7 @@ def arrange.link_iso_ok_loop0_loop0.body
   else ok (done true)
 
 /-- [certify_core::arrange::link_iso_ok]: loop 1:
-    Source: 'crates/certify-core/src/arrange.rs', lines 172:8-178:9
+    Source: 'crates/certify-core/src/arrange.rs', lines 177:8-183:9
     Visibility: public -/
 @[rust_loop]
 def arrange.link_iso_ok_loop0_loop0
@@ -174,7 +257,7 @@ def arrange.link_iso_ok_loop0_loop0
     i
 
 /-- [certify_core::arrange::link_iso_ok]: loop body 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 169:4-185:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 174:4-190:1
     Visibility: public -/
 @[rust_loop_body]
 def arrange.link_iso_ok_loop0.body
@@ -192,7 +275,7 @@ def arrange.link_iso_ok_loop0.body
   else ok (done false)
 
 /-- [certify_core::arrange::link_iso_ok]: loop 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 169:4-185:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 174:4-190:1
     Visibility: public -/
 @[rust_loop]
 def arrange.link_iso_ok_loop0
@@ -205,7 +288,7 @@ def arrange.link_iso_ok_loop0
     off
 
 /-- [certify_core::arrange::link_iso_ok]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 159:0-185:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 164:0-190:1
     Visibility: public -/
 def arrange.link_iso_ok
   (a : Slice Std.Usize) (b : Slice Std.Usize) : Result Bool := do
@@ -216,5 +299,124 @@ def arrange.link_iso_ok
   else if n = 0#usize
        then ok true
        else arrange.link_iso_ok_loop0 a b n 0#usize
+
+/-- [certify_core::certify1d::corner_range]: loop body 0:
+    Source: 'crates/certify-core/src/certify1d.rs', lines 127:8-130:9
+    Visibility: public -/
+@[rust_loop_body]
+def certify1d.corner_range_loop.body
+  {T : Type} (corecmpOrdInst : core.cmp.Ord T) (corecloneCloneInst :
+  core.clone.Clone T) (iter : core.slice.iter.Iter T) (lo : T) (hi : T) :
+  Result (ControlFlow ((core.slice.iter.Iter T) × T × T) (T × T))
+  := do
+  let (o, iter1) ← core.slice.iter.IteratorSliceIter.next iter
+  match o with
+  | none => ok (done (lo, hi))
+  | some c =>
+    let o1 ← corecmpOrdInst.cmp c lo
+    let b ←
+      core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq o1 Ordering.lt
+    let lo1 ← if b
+                then corecloneCloneInst.clone c
+                else ok lo
+    let o2 ← corecmpOrdInst.cmp c hi
+    let b1 ←
+      core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq o2 Ordering.gt
+    if b1
+    then let hi1 ← corecloneCloneInst.clone c
+         ok (cont (iter1, lo1, hi1))
+    else ok (cont (iter1, lo1, hi))
+
+/-- [certify_core::certify1d::corner_range]: loop 0:
+    Source: 'crates/certify-core/src/certify1d.rs', lines 127:8-130:9
+    Visibility: public -/
+@[rust_loop]
+def certify1d.corner_range_loop
+  {T : Type} (corecmpOrdInst : core.cmp.Ord T) (corecloneCloneInst :
+  core.clone.Clone T) (iter : core.slice.iter.Iter T) (lo : T) (hi : T) :
+  Result (T × T)
+  := do
+  loop
+    (fun (iter1, lo1, hi1) => certify1d.corner_range_loop.body corecmpOrdInst
+      corecloneCloneInst iter1 lo1 hi1)
+    (iter, lo, hi)
+
+/-- [certify_core::certify1d::corner_range]:
+    Source: 'crates/certify-core/src/certify1d.rs', lines 123:0-136:1
+    Visibility: public -/
+def certify1d.corner_range
+  {T : Type} (corecmpOrdInst : core.cmp.Ord T) (corecloneCloneInst :
+  core.clone.Clone T) (corners : Slice T) :
+  Result (Option (T × T))
+  := do
+  let it ← core.slice.Slice.iter corners
+  let (o, it1) ← core.slice.iter.IteratorSliceIter.next it
+  let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let lo ← corecloneCloneInst.clone val
+    let (lo1, hi) ←
+      certify1d.corner_range_loop corecmpOrdInst corecloneCloneInst it1 lo lo
+    ok (some (lo1, hi))
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+      (T × T) residual
+
+/-- [certify_core::certify1d::clip_sigma_branch]:
+    Source: 'crates/certify-core/src/certify1d.rs', lines 222:0-238:1 -/
+def certify1d.clip_sigma_branch
+  {T : Type} (corecmpOrdInst : core.cmp.Ord T) (lo : T) (hi : T) (m : T)
+  (neg_m : T) (m_positive : Bool) :
+  Result (Option certify1d.ClipBranch)
+  := do
+  if m_positive
+  then
+    let o ← corecmpOrdInst.cmp lo m
+    let b ←
+      core.cmp.PartialEq.ne.trait_default
+        core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering o Ordering.lt
+    if b
+    then ok (some certify1d.ClipBranch.Positive)
+    else
+      let o1 ← corecmpOrdInst.cmp hi neg_m
+      let b1 ←
+        core.cmp.PartialEq.ne.trait_default
+          core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering o1 Ordering.gt
+      if b1
+      then ok (some certify1d.ClipBranch.Negative)
+      else ok none
+  else ok none
+
+/-- [certify_core::certify1d::clip_sigma]:
+    Source: 'crates/certify-core/src/certify1d.rs', lines 198:0-210:1
+    Visibility: public -/
+def certify1d.clip_sigma
+  {B : Type} {Clause0_Int : Type} {Clause0_Rat : Type}
+  (latticebackendBackendInst : lattice.backend.Backend B Clause0_Int
+  Clause0_Rat) (cert : certify1d.ClipSigmaCert B Clause0_Int Clause0_Rat) :
+  Result (verdict.Verdict certify1d.ClipBranch Unit (lattice.rat.Rat B
+    Clause0_Int Clause0_Rat))
+  := do
+  let s ← lift (Array.to_slice cert.corners)
+  let o ←
+    certify1d.corner_range (lattice.rat.Rat.Insts.CoreCmpOrd
+      latticebackendBackendInst) (lattice.rat.Rat.Insts.CoreCloneClone
+      latticebackendBackendInst) s
+  match o with
+  | none =>
+    let r ← lattice.rat.Rat.from_i128 latticebackendBackendInst 0#i128
+    ok (verdict.Verdict.Unresolved r)
+  | some r =>
+    let (lo, hi) := r
+    let neg_m ← lattice.rat.Rat.neg latticebackendBackendInst cert.m_sigma
+    let i ← lattice.rat.Rat.sign latticebackendBackendInst cert.m_sigma
+    let o1 ←
+      certify1d.clip_sigma_branch (lattice.rat.Rat.Insts.CoreCmpOrd
+        latticebackendBackendInst) lo hi cert.m_sigma neg_m (i > 0#i8)
+    match o1 with
+    | none =>
+      let r1 ← lattice.rat.Rat.sub latticebackendBackendInst hi lo
+      ok (verdict.Verdict.Unresolved r1)
+    | some branch => ok (verdict.Verdict.Verified branch)
 
 end certify_core

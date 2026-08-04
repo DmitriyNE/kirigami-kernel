@@ -57,25 +57,46 @@ extract_crate() {
   done < "$manifest"
   [ "${#start_args[@]}" -gt 0 ] || { echo "error: no start-from entries in $manifest" >&2; exit 1; }
 
-  echo "extract: charon ($crate_dir, $(( ${#start_args[@]} / 2 )) start-from entries) …"
-  ( cd "$crate_dir" && charon cargo --preset=aeneas "${start_args[@]}" --dest "$work" )
+  # Optional `<crate>.opaque` sibling manifest: charon `--opaque` name-matcher patterns held
+  # opaque (their bodies not lifted) and bound to hand-written models in {Types,Funs}External.
+  # certify-core holds `lattice::rat`/`backend` opaque → bound to Mathlib ℤ/ℚ (algebra-rehaul).
+  local opaque_args=()
+  local opaque_manifest="${manifest%.startfrom}.opaque"
+  if [ -f "$opaque_manifest" ]; then
+    while IFS= read -r line; do
+      line="${line%%#*}"
+      line="$(echo "$line" | xargs || true)"
+      [ -z "$line" ] && continue
+      opaque_args+=(--opaque "$line")
+    done < "$opaque_manifest"
+  fi
+
+  echo "extract: charon ($crate_dir, $(( ${#start_args[@]} / 2 )) start-from, $(( ${#opaque_args[@]} / 2 )) opaque) …"
+  ( cd "$crate_dir" && charon cargo --preset=aeneas "${start_args[@]}" "${opaque_args[@]}" --dest "$work" )
 
   echo "extract: aeneas → Lean ($llbc_stem) …"
   aeneas -backend lean "$work/$llbc_stem.llbc" -dest "$work" -split-files
 
-  # Generated model (proven about) → <lean_dir>/. NOT FunsExternal.lean (hand-written).
+  # Generated model (proven about) → <lean_dir>/. NOT {Funs,Types}External.lean (hand-written).
   cp "$work/Funs.lean"  "$lean_dir/Funs.lean"
   cp "$work/Types.lean" "$lean_dir/Types.lean"
-  # Generated externals template (never built) → extract/, for the coverage check —
-  # only when the lift produced one (a pure crate needs no externals). Only `lattice`
-  # emits externals today, so the filename stays unprefixed (what check-externals.sh
-  # and the drift check expect); revisit if a second crate ever needs its own template.
-  if [ -f "$work/FunsExternal_Template.lean" ]; then
-    cp "$work/FunsExternal_Template.lean" "$EXTRACT_DIR/FunsExternal_Template.lean"
-    echo "extract: wrote $lean_dir/{Funs,Types}.lean + extract/FunsExternal_Template.lean"
-  else
-    echo "extract: wrote $lean_dir/{Funs,Types}.lean (no externals)"
-  fi
+  # Generated externals templates (never built) → extract/, PER-CRATE prefixed by the llbc
+  # stem, for the coverage check (check-externals.sh). A crate may emit a Funs template
+  # (core-library holes) and/or a Types template (opaque types — e.g. certify-core holds
+  # `lattice::rat` opaque and binds it to ℚ, algebra-rehaul). A pure crate emits neither; a
+  # stale prefixed template is removed so the committed set stays exactly what the lift needs.
+  local wrote=""
+  local kind tmpl dest
+  for kind in Funs Types; do
+    tmpl="$work/${kind}External_Template.lean"
+    dest="$EXTRACT_DIR/${llbc_stem}.${kind}External_Template.lean"
+    if [ -f "$tmpl" ]; then
+      cp "$tmpl" "$dest"; wrote="$wrote ${llbc_stem}.${kind}External_Template.lean"
+    else
+      rm -f "$dest"
+    fi
+  done
+  echo "extract: wrote $lean_dir/{Funs,Types}.lean${wrote:+ + extract/$wrote}"
 
   rm -rf "$work"
 }

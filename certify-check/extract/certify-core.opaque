@@ -1,0 +1,12 @@
+# Opaque set for the Aeneas lift of `crates/certify-core` (charon `--opaque`, name-matcher
+# syntax). One pattern per line; blank lines and `#` comments ignored. Paired with
+# certify-core.startfrom; consumed by scripts/extract.sh.
+#
+# The two-tier `lattice::Int`/`Rat` and the `Backend` trait are held OPAQUE so their bodies
+# (which bottom out in the external dashu bignum) are not lifted; instead the opaque types are
+# bound to their Mathlib ideals `ℤ`/`ℚ` and the ops to Mathlib ops in
+# CertifyCore/{Types,Funs}External.lean (algebra-rehaul; docs/algebra-trust.md). This is what
+# lets a `Rat`-using checker's lifted predicate reason over real ℚ instead of a bignum model.
+
+lattice::rat
+lattice::backend

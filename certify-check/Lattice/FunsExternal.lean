@@ -13,13 +13,14 @@
 -- These are the ONLY hand-written pieces of the `small` model, and thus its
 -- entire TCB surface beyond Aeneas/Charon/Lean/Mathlib.  Each is small and
 -- directly auditable against the Rust reference cited in its doc-comment.
---   * On the `reduce` proof path: `unsigned_abs`, `try_from`, `branch`,
---     `from_residual`, `Result.ok`.
+--   * On the `reduce` proof path: `unsigned_abs`, `try_from`, `Result.ok` (and the
+--     `?`-operator `branch`/`from_residual`, shared with certify-core, in `CommonExtern`).
 --   * Off-path (only reached by the sibling `neg`/`sign`): `checked_neg`,
 --     `signum` — modelled faithfully too, so the whole `small` model stays
 --     axiom-free, but not exercised by any current proof.
 import Aeneas
 import Lattice.Types
+import CommonExtern
 open Aeneas Aeneas.Std Result ControlFlow Error
 set_option linter.dupNamespace false
 set_option linter.hashCommand false
@@ -50,22 +51,8 @@ def I128.Insts.CoreConvertTryFromU128TryFromIntError.try_from (u : Std.U128) :
     (by rw [i128FitBound_def] at h; constructor <;> scalar_tac)))
   else ok (.Err ())
 
-/-- `<Option<T> as Try>::branch` — the `?`-operator split on an `Option`. -/
-@[rust_fun
-  "core::option::{core::ops::try_trait::Try<core::option::Option<@T>>}::branch"]
-def core.option.Option.Insts.CoreOpsTry_traitTry.branch {T : Type} (o : Option T) :
-    Result (core.ops.control_flow.ControlFlow (Option core.convert.Infallible) T) :=
-  ok (match o with
-      | some x => .Continue x
-      | none   => .Break none)
-
-/-- `<Option<T> as FromResidual<Option<Infallible>>>::from_residual` — the
-    residual of a `None` is always `None` (`Infallible` is uninhabited). -/
-@[rust_fun
-  "core::option::{core::ops::try_trait::FromResidual<core::option::Option<@T>, core::option::Option<core::convert::Infallible>>}::from_residual"]
-def core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
-    (T : Type) (_r : Option core.convert.Infallible) : Result (Option T) :=
-  ok none
+-- The `?`-operator glue (`Try::branch`, `FromResidual::from_residual`) is shared with the
+-- certify-core lift, so it lives in `CommonExtern` (imported above), not duplicated here.
 
 /-- `Result::ok` — discard the error, keep `Some` on success. -/
 @[rust_fun "core::result::{core::result::Result<@T, @E>}::ok"]
