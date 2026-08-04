@@ -282,9 +282,230 @@ private theorem normalize_den (l : alloc.vec.Vec Std.U64) :
       · rw [if_neg hz]; simp only [WP.spec_ok]; exact hinv
   · rfl
 
+/-! ### `add` — the schoolbook carry loop computes `den a + den b`
+
+The one non-bookkeeping ingredient is the **`u128` split**: writing `s = a + b + carry`, the emitted
+limb `s as u64` is `s mod 2⁶⁴` and the new carry `s >>> 64` is `s / 2⁶⁴`, so
+`(s as u64) + 2⁶⁴·(s >>> 64) = s`. -/
+
+/-- The truncating `u128 → u64` cast keeps the low 64 bits. -/
+private theorem cast_u64_val (s : Std.U128) : (UScalar.cast .U64 s).val = s.val % 2 ^ 64 := by
+  simp only [UScalar.cast, UScalar.val, BitVec.toNat_setWidth, UScalarTy.numBits]
+
+/-- The `u128` limb/carry split: `(s as u64) + 2⁶⁴·(s >>> 64) = s`. -/
+private theorem u128_split (s : Std.U128) :
+    (UScalar.cast .U64 s).val + 2 ^ 64 * (s.val >>> (64 : ℕ)) = s.val := by
+  rw [cast_u64_val, Nat.shiftRight_eq_div_pow]
+  exact Nat.mod_add_div s.val (2 ^ 64)
+
+/-- The widening `u64 → u128` cast preserves the value. -/
+private theorem cast_u128_val (x : Std.U64) : (UScalar.cast .U128 x).val = x.val := by
+  simp only [UScalar.cast, UScalar.val, BitVec.toNat_setWidth, UScalarTy.numBits]
+  apply Nat.mod_eq_of_lt
+  calc x.bv.toNat < 2 ^ 64 := x.bv.isLt
+    _ ≤ 2 ^ 128 := Nat.pow_le_pow_right (by norm_num) (by norm_num)
+
+/-- Unified `take`-successor: the new most-significant limb is `l[i]` (or `0` past the end). -/
+private theorem den_take_succ_pad (l : List Std.U64) (i : ℕ) :
+    den (l.take (i + 1)) = den (l.take i)
+      + 2 ^ (64 * i) * (if h : i < l.length then (l[i]'h).val else 0) := by
+  by_cases h : i < l.length
+  · rw [dif_pos h, den_take_succ l i h]
+  · rw [dif_neg h, List.take_of_length_le (by omega), List.take_of_length_le (by omega),
+      mul_zero, add_zero]
+
+/-- `add`'s carry loop, at step `i`: the emitted `i` limbs plus the pending carry (always `≤ 1`)
+    account for the low-`i` denotations of both inputs (padding missing high limbs with `0`). -/
+private theorem add_loop_spec (v v1 : alloc.vec.Vec Std.U64) (n : Std.Usize)
+    (out : alloc.vec.Vec Std.U64) (carry : Std.U128) (i : Std.Usize) (hi : i.val ≤ n.val)
+    (hlen : out.val.length = i.val) (hcar : carry.val ≤ 1)
+    (hinv : den out.val + carry.val * 2 ^ (64 * i.val)
+      = den (v.val.take i.val) + den (v1.val.take i.val)) :
+    RefNat.add_loop v v1 n out carry i
+      ⦃ r => (den r.1.val + r.2.val * 2 ^ (64 * n.val)
+          = den (v.val.take n.val) + den (v1.val.take n.val))
+        ∧ r.1.val.length = n.val ∧ r.2.val ≤ 1 ⦄ := by
+  unfold RefNat.add_loop
+  apply loop.spec_decr_nat
+    (measure := fun st => n.val - st.2.2.val)
+    (inv := fun st => st.2.2.val ≤ n.val ∧ st.1.val.length = st.2.2.val ∧ st.2.1.val ≤ 1 ∧
+      den st.1.val + st.2.1.val * 2 ^ (64 * st.2.2.val)
+        = den (v.val.take st.2.2.val) + den (v1.val.take st.2.2.val))
+  · rintro ⟨out', carry', i'⟩ ⟨hi', hlen', hcar', hinv'⟩
+    show RefNat.add_loop.body v v1 n out' carry' i' ⦃ _ ⦄
+    unfold RefNat.add_loop.body
+    simp only [] at hi' hlen' hcar' hinv'
+    by_cases hlt : i' < n
+    · rw [if_pos hlt]
+      dsimp only []
+      have hvlen : (v.len).val = v.val.length := alloc.vec.Vec.len_val v
+      have hv1len : (v1.len).val = v1.val.length := alloc.vec.Vec.len_val v1
+      -- resolve the two padded limb loads to concrete `u128` values
+      set av : Std.U128 := if h : i'.val < v.val.length
+        then UScalar.cast .U128 (v.val[i'.val]'h) else 0#u128 with hav_def
+      set bv : Std.U128 := if h : i'.val < v1.val.length
+        then UScalar.cast .U128 (v1.val[i'.val]'h) else 0#u128 with hbv_def
+      have ha : (if i' < v.len then (do
+          let i2 ← alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v i'
+          ok (UScalar.cast .U128 i2)) else ok 0#u128) = ok av := by
+        rw [alloc.vec.Vec.index_slice_index]
+        by_cases h : i'.val < v.val.length
+        · rw [if_pos (by scalar_tac), hav_def, dif_pos h,
+            show v.index_usize i' = ok (v.val[i'.val]'h) from by
+              simp only [alloc.vec.Vec.index_usize, alloc.vec.Vec.getElem?_Nat_eq,
+                List.getElem?_eq_getElem h]]
+          rfl
+        · rw [if_neg (by scalar_tac), hav_def, dif_neg h]
+      have hb : (if i' < v1.len then (do
+          let i2 ← alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64) v1 i'
+          ok (UScalar.cast .U128 i2)) else ok 0#u128) = ok bv := by
+        rw [alloc.vec.Vec.index_slice_index]
+        by_cases h : i'.val < v1.val.length
+        · rw [if_pos (by scalar_tac), hbv_def, dif_pos h,
+            show v1.index_usize i' = ok (v1.val[i'.val]'h) from by
+              simp only [alloc.vec.Vec.index_usize, alloc.vec.Vec.getElem?_Nat_eq,
+                List.getElem?_eq_getElem h]]
+          rfl
+        · rw [if_neg (by scalar_tac), hbv_def, dif_neg h]
+      -- bounds on the padded values
+      have hav_lt : av.val < 2 ^ 64 := by
+        rw [hav_def]; split
+        · rw [cast_u128_val]; have := (v.val[i'.val]'(by assumption)).hBounds
+          simp only [UScalar.val] at this ⊢; omega
+        · simp
+      have hbv_lt : bv.val < 2 ^ 64 := by
+        rw [hbv_def]; split
+        · rw [cast_u128_val]; have := (v1.val[i'.val]'(by assumption)).hBounds
+          simp only [UScalar.val] at this ⊢; omega
+        · simp
+      rw [ha, hb]
+      -- symbolically execute the u128 arithmetic
+      step; step; step; step; step; step
+      -- padded-value forms + the u128 split, for the den bookkeeping
+      have hav_eq : av.val = (if h : i'.val < v.val.length then (v.val[i'.val]'h).val else 0) := by
+        rw [hav_def]; split
+        · exact cast_u128_val _
+        · rfl
+      have hbv_eq : bv.val = (if h : i'.val < v1.val.length then (v1.val[i'.val]'h).val else 0) := by
+        rw [hbv_def]; split
+        · exact cast_u128_val _
+        · rfl
+      have hsval : s.val = av.val + bv.val + carry'.val := by rw [s_post, a_post]
+      have hsplit : i4.val + 2 ^ 64 * carry1.val = s.val := by
+        rw [i4_post, carry1_post1]; exact u128_split s
+      have hs65 : s.val < 2 ^ 65 := by
+        have hp : (2 : ℕ) ^ 64 + 2 ^ 64 = 2 ^ 65 := by ring
+        rw [hsval]; omega
+      refine ⟨by scalar_tac, ?_, ?_, ?_, by scalar_tac⟩
+      · rw [out1_post, List.length_append, hlen', i5_post]; simp
+      · rw [carry1_post1, Nat.shiftRight_eq_div_pow]
+        have hlt2 : s.val / 2 ^ 64 < 2 := (Nat.div_lt_iff_lt_mul (by positivity)).mpr (by
+          have hp : (2 : ℕ) * 2 ^ 64 = 2 ^ 65 := by ring
+          omega)
+        omega
+      · -- the denotation carry-invariant at i'+1
+        have hpow : (2 : ℕ) ^ (64 * i5.val) = 2 ^ (64 * i'.val) * 2 ^ 64 := by
+          rw [i5_post, Nat.mul_add, Nat.mul_one, pow_add]
+        have hcarry_grp : 2 ^ (64 * i'.val) * i4.val
+            + carry1.val * (2 ^ (64 * i'.val) * 2 ^ 64)
+            = 2 ^ (64 * i'.val) * (av.val + bv.val + carry'.val) := by
+          have hr : 2 ^ (64 * i'.val) * i4.val + carry1.val * (2 ^ (64 * i'.val) * 2 ^ 64)
+              = 2 ^ (64 * i'.val) * (i4.val + 2 ^ 64 * carry1.val) := by ring
+          rw [hr, hsplit, hsval]
+        rw [out1_post, den_append, den_singleton, hlen', hpow, i5_post,
+          den_take_succ_pad v.val i'.val, den_take_succ_pad v1.val i'.val, ← hav_eq, ← hbv_eq,
+          add_assoc, hcarry_grp, mul_add, mul_add]
+        have hc := hinv'
+        rw [mul_comm carry'.val] at hc
+        omega
+    · rw [if_neg hlt]
+      simp only [WP.spec_ok]
+      have hin : i'.val = n.val := by scalar_tac
+      rw [hin] at hinv' hlen'
+      exact ⟨hinv', hlen', hcar'⟩
+  · exact ⟨hi, hlen, hcar, hinv⟩
+
+/-- The `add` loop result, plus the optional final carry limb and `normalize`, denotes `den a + den b`
+    — the shared tail of `add` for any `n` = `max` of the two limb counts. -/
+private theorem add_tail (a b : RefNat) (n : Std.Usize)
+    (hnmax : n.val = max a.limbs.val.length b.limbs.val.length) (hcap : n.val + 1 ≤ Std.Usize.max) :
+    (do
+      let i2 ← n + 1#usize
+      let out := alloc.vec.Vec.with_capacity Std.U64 i2
+      let r ← RefNat.add_loop a.limbs b.limbs n out 0#u128 0#usize
+      let out2 ← if r.2 != 0#u128 then (do
+          let i3 ← lift (UScalar.cast .U64 r.2); alloc.vec.Vec.push r.1 i3) else ok r.1
+      let out3 ← lattice.refbackend.normalize out2
+      ok ({ limbs := out3 } : RefNat))
+    ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ⦄ := by
+  have hna : a.limbs.val.length ≤ n.val := by rw [hnmax]; omega
+  have hnb : b.limbs.val.length ≤ n.val := by rw [hnmax]; omega
+  step
+  simp only [alloc.vec.Vec.with_capacity]
+  have hloop := add_loop_spec a.limbs b.limbs n (alloc.vec.Vec.new Std.U64) 0#u128 0#usize
+    (by simp) (by simp) (by simp) (by simp [den])
+  cases hcase : RefNat.add_loop a.limbs b.limbs n (alloc.vec.Vec.new Std.U64) 0#u128 0#usize with
+  | ok r =>
+    obtain ⟨out1, carry⟩ := r
+    rw [hcase] at hloop; simp only [WP.spec_ok] at hloop
+    obtain ⟨hden, hlen1, hcar1⟩ := hloop
+    rw [List.take_of_length_le hna, List.take_of_length_le hnb] at hden
+    have hout2 : ∀ out2 : alloc.vec.Vec Std.U64, den out2.val = den a.limbs.val + den b.limbs.val →
+        (do let out3 ← lattice.refbackend.normalize out2; ok ({ limbs := out3 } : RefNat))
+          ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ⦄ := by
+      intro out2 hout2den
+      have hnorm := normalize_den out2
+      cases hnc : lattice.refbackend.normalize out2 with
+      | ok o =>
+        rw [hnc] at hnorm; simp only [WP.spec_ok] at hnorm
+        simp only [bind_tc_ok, WP.spec_ok]
+        show den o.val = _; rw [hnorm, hout2den]
+      | fail e => rw [hnc] at hnorm; exact hnorm.elim
+      | div => rw [hnc] at hnorm; exact hnorm.elim
+    simp only [bind_tc_ok]
+    by_cases hcz : carry = 0#u128
+    · subst hcz
+      simp only [bne_self_eq_false, Bool.false_eq_true, if_false, bind_tc_ok]
+      apply hout2
+      simpa using hden
+    · rw [if_pos (by simp only [ne_eq, bne_iff_ne]; exact hcz)]
+      step
+      step
+      rename_i i3 hi3
+      apply hout2
+      rw [out2_post, den_append, den_singleton, hlen1, hi3, cast_u64_val,
+        Nat.mod_eq_of_lt (lt_of_le_of_lt hcar1 (by norm_num))]
+      rw [mul_comm] at hden; omega
+  | fail e => rw [hcase] at hloop; exact hloop.elim
+  | div => rw [hcase] at hloop; exact hloop.elim
+
+/-- **`add` refinement.** The lifted `RefNat::add` computes `den a + den b` on the limb denotations
+    (for inputs whose limb count leaves room for the carry — always the case in practice). -/
+theorem add_eq (a b : RefNat)
+    (hcap : max a.limbs.val.length b.limbs.val.length + 1 ≤ Std.Usize.max) :
+    RefNat.add a b ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ⦄ := by
+  unfold RefNat.add
+  dsimp only []
+  have hlA : (a.limbs.len).val = a.limbs.val.length := alloc.vec.Vec.len_val a.limbs
+  have hlB : (b.limbs.len).val = b.limbs.val.length := alloc.vec.Vec.len_val b.limbs
+  by_cases hge : a.limbs.len ≥ b.limbs.len
+  · rw [if_pos hge]
+    simp only [bind_tc_ok]
+    have hge' : b.limbs.val.length ≤ a.limbs.val.length := by scalar_tac
+    apply add_tail a b a.limbs.len
+    · rw [hlA]; omega
+    · rw [hlA]; omega
+  · rw [if_neg hge]
+    simp only [bind_tc_ok]
+    have hge' : a.limbs.val.length ≤ b.limbs.val.length := by scalar_tac
+    apply add_tail a b b.limbs.len
+    · rw [hlB]; omega
+    · rw [hlB]; omega
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
 #print axioms cmp_eq
+#print axioms add_eq
 
 end CertifyCheck.RefBackend
