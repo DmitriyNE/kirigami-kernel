@@ -44,7 +44,25 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 ## Phasing (each phase = a committed, axiom-audited proof; pause per phase)
 `R.4b.1` model wiring + denotation + `is_zero`/`cmp` **— done** · `.2` `add`/`sub` **— done**
 (`normalize` den-preservation, `add` = the u128 carry loop, `sub` = the i128-borrow dual over ℤ) ·
-`.3` `mul` · `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
+`.3` `mul` **— done** (nested schoolbook multiply; in-place `out[i+j]` writes via `den_set`; three
+loops — inner row-accumulate, carry-propagate, outer row-sum — with a magnitude bound keeping the
+carry loop in range) · `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the
+`Backend`-instance corollary.
+
+**R.4b.3 recipe (validated).** `mul` differs from `add`/`sub`: it writes `out` in place, so the
+workhorse is **`den_set`** (`den (l.set p x) = den l + (x − l[p])·2^(64p)`, over ℤ). Three
+`loop.spec_decr_nat` proofs: (i) the inner `j`-loop accumulates one row `ai·v1` at offset `i`, invariant
+`den out + carry·2^(64(i+j)) = den out0 + ai·den(take j v1)·2^(64i)` with `carry < 2^64`; the u128
+overflow side-goals need the **tight** product bound `ai·o[j] ≤ (2^64−1)²` (a plain `< 2^128` is too weak
+for the subsequent `i4 + ai·o[j]` add) so `step` can auto-discharge; the den step closes by `den_set` +
+`u128_split` + a `linear_combination` in the split power basis `2^(64i)·2^(64j)` (not `2^(64·i2)` — `ring`
+can't identify variable-exponent atoms). (ii) The carry `k`-loop keeps `den out + carry·2^(64k)`
+invariant; in-bounds (`k < len out`) comes from a magnitude bound `value < 2^(64B)`, `B ≤ len out`:
+a nonzero carry forces `2^(64k) ≤ value`, hence `k < B`. (iii) The outer `i`-loop composes the two via
+`have spec … + cases hcase : loop … + WP.spec_ok`, invariant `den out = den(take i v)·den v1`, using
+`den_take_succ` for the row step. `mul_eq` wraps: `isEmpty` zero-guards (no `Normalized` needed —
+`[].isEmpty` gives `den = 0` directly), `from_elem 0 (n+m)` (`den_replicate_zero`), the outer loop,
+`normalize_den`.
 
 **R.4b.2 recipe (validated).** The carry loop is a `loop.spec_decr_nat` with the invariant
 `den out + carry·2^(64i) = den(take i v) + den(take i v1)`, `len out = i`, `carry ≤ 1`. In the body:
