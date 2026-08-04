@@ -19,10 +19,14 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Verify the dylint CI step on a real runner.** The `cargo dylint` step (rustup nightly,
-  outside nix — `.github/workflows/ci.yml`) is written and verified *locally*, but couldn't be
-  run on GitHub Actions from the dev sandbox. Watch the first CI run of the branch; tune if the
-  runner env differs (toolchain/component fetch, `cargo-dylint` install time, package scoping).
+- **Make the dylint CI step fenix-native.** `cargo dylint`'s toolchain management is
+  rustup-centric — it reads `lints/no_float/rust-toolchain` and runs that nightly *via rustup* —
+  so the CI step (`.github/workflows/ci.yml`) runs on the **runner's rustup, outside nix** (like
+  the Kani `cargo install` step) rather than a fenix-pinned toolchain. Functional and verified
+  locally, but not consistent with the rest of the toolchain (fenix / `flake.nix`). Follow-up:
+  supply `nightly-2026-05-28` + `rustc-dev`/`llvm-tools` via `fenix.toolchainOf` and run dylint
+  inside `nix develop` — needs a rustup shim or dylint toolchain-env plumbing (the fiddly part
+  I couldn't verify from the sandbox). Also: watch the first real CI run of the step.
   *2026-08-04 · open*
 
 ## Tech debt / sketchy
