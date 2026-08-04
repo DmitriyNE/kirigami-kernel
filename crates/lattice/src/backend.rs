@@ -14,8 +14,10 @@
 //! The surface is deliberately minimal: constructors, add/sub/mul/neg, exact
 //! cmp/sign/gcd, is_zero, numerator/denominator. Higher-level operations
 //! (polynomial arithmetic, Sturm, resultants, interval-plus-separation) are built
-//! on top rather than added here; the minimal `Clone + Eq` associated bounds leave
-//! room for them without churn.
+//! on top rather than added here. The associated types would naturally carry a
+//! `Clone + Eq` bound, but the pinned Charon lift cannot disambiguate the two
+//! parent-clause witnesses (`Int` and `Rat` both bounded `Clone`), so clone is an
+//! explicit method instead — see [`Backend::int_clone`] and `docs/engineering-log.md`.
 
 use core::cmp::Ordering;
 
@@ -30,9 +32,22 @@ use core::cmp::Ordering;
 /// not any lattice comparison.
 pub trait Backend {
     /// Arbitrary-precision integer (BigInt slow path; matches Lean `Int`).
-    type Int: Clone + Eq;
+    type Int;
     /// Arbitrary-precision rational, reduced with denominator `> 0` (matches Lean `Rat`).
-    type Rat: Clone + Eq;
+    type Rat;
+
+    // ---- explicit clone (Charon lift workaround) -----------------------------
+    // These would naturally be a `Clone` bound on the associated types
+    // (`type Int: Clone`), but the pinned Charon (0.1.225) names the parent-clause
+    // witnesses of BOTH `Int` and `Rat` identically when it lifts the trait, so the
+    // generated Lean structure carries duplicate fields and does not typecheck. The
+    // bound is therefore expressed as an explicit method until Charon disambiguates.
+    // TODO(charon-dedup): restore `type Int: Clone + Eq` / `type Rat: Clone + Eq` and
+    // delete these — see the `docs/engineering-log.md` "To do" entry.
+    /// Clone an integer.
+    fn int_clone(a: &Self::Int) -> Self::Int;
+    /// Clone a rational.
+    fn rat_clone(a: &Self::Rat) -> Self::Rat;
 
     // ---- integer constructors ------------------------------------------------
     /// The integer `0`.

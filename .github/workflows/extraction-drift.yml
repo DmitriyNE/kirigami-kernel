@@ -1,10 +1,11 @@
 name: extraction-drift
 
-# Enforces that the committed Aeneas-lifted Lean model
-# (certify-check/Lattice/{Funs,Types}.lean) still matches `crates/lattice` at the
-# pinned Charon/Aeneas — i.e. that nobody changed the Rust (or bumped the tool
-# pins) without regenerating the model we PROVE ABOUT. Output is byte-deterministic
-# at our pins, so the check is a plain `git diff`.
+# Enforces that the committed Aeneas-lifted Lean models
+# (certify-check/{Lattice,CertifyCore}/{Funs,Types}.lean + the per-crate externals
+# templates) still match `crates/{lattice,certify-core}` at the pinned Charon/Aeneas —
+# i.e. that nobody changed the Rust (or bumped the tool pins) without regenerating the
+# model we PROVE ABOUT. Output is byte-deterministic at our pins, so the check is a
+# plain `git diff`.
 #
 # Path-filtered: only runs when the crate, the extraction pins, the manifest, the
 # scripts, or the model itself change (the `.#extraction` shell builds Charon/Aeneas
@@ -49,8 +50,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      # Regenerate `Lattice/{Funs,Types}.lean` + `extract/FunsExternal_Template.lean`
-      # from the current Rust with the pinned Charon/Aeneas.
+      # Regenerate `{Lattice,CertifyCore}/{Funs,Types}.lean` + the per-crate
+      # `extract/*External_Template.lean` from the current Rust with the pinned Charon/Aeneas.
       - name: Regenerate lifted model
         run: nix develop .#extraction --command bash scripts/extract.sh
 
@@ -61,7 +62,9 @@ jobs:
                certify-check/Lattice/Types.lean \
                certify-check/CertifyCore/Funs.lean \
                certify-check/CertifyCore/Types.lean \
-               certify-check/extract/FunsExternal_Template.lean; then
+               certify-check/extract/lattice.FunsExternal_Template.lean \
+               certify-check/extract/certify_core.FunsExternal_Template.lean \
+               certify-check/extract/certify_core.TypesExternal_Template.lean; then
             echo "::error title=Lean model out of sync with the checker crates::The committed Aeneas-lifted model does not match crates/lattice at the pinned Charon/Aeneas. Run 'nix run .#extract' (or scripts/extract.sh inside 'nix develop .#extraction') and commit the regenerated model. If you bumped the Charon/Aeneas pins in flake.lock, also expect to fix proofs — see docs/upgrading-extraction-toolchain.md."
             git --no-pager diff --stat -- certify-check/
             exit 1

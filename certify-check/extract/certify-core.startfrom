@@ -15,3 +15,8 @@
 crate::arrange::v_boundary
 crate::arrange::link_ok
 crate::arrange::link_iso_ok
+
+# CLIP-σ ★ (algebra-rehaul R.3): the first `Rat`-using checker lifted over ℚ. Its
+# `lattice::rat`/`backend` dependency is made opaque (see certify-core.opaque) and bound to
+# Mathlib ℚ in CertifyCore/{Types,Funs}External.lean, so the lifted body reasons over real ℚ.
+crate::certify1d::clip_sigma

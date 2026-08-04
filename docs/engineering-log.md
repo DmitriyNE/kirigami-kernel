@@ -19,6 +19,22 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
+  trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
+  `structure` whose parent-clause witnesses for *both* associated types (`type Int: Clone + Eq`
+  and `type Rat: Clone + Eq`) are named identically (`corecloneCloneInst` / `corecmpEqInst`),
+  so the structure has duplicate fields and does not typecheck — which blocks lifting any
+  `Rat`-using checker (all `<B: Backend>`). Investigated exhaustively: no charon flag fixes it
+  (`--remove-adt-clauses` targets ADTs not trait decls; `--exclude` leaves a dangling `sorry`
+  and collapses the assoc-type lifting; `--hide-allocator` / `--opaque` variants keep the
+  colliding structure). **Workaround (algebra-rehaul R.3):** dropped the `Clone + Eq` bounds
+  from the trait's associated types (`Eq` was unused; `Clone` had exactly 4 call sites in
+  `rat.rs`) and expressed clone as explicit `Backend::int_clone` / `rat_clone` methods (one impl,
+  `Bignum`). This is contained and semantically inert, but it is a workaround: when Charon names
+  those witnesses distinctly (check its releases past `0.1.225`), restore the associated-type
+  bounds, delete `int_clone`/`rat_clone` + their impl, revert the 4 `rat.rs` sites to `.clone()`,
+  and re-extract. Coordinated with a charon/aeneas pin bump (drags Lean/Mathlib). *2026-08-04 · open*
+
 - **Make the dylint CI step fenix-native.** `cargo dylint`'s toolchain management is
   rustup-centric — it reads `lints/no_float/rust-toolchain` and runs that nightly *via rustup* —
   so the CI step (`.github/workflows/ci.yml`) runs on the **runner's rustup, outside nix** (like

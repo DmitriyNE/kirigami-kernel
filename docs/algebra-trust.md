@@ -47,12 +47,12 @@ For the `Int=ℤ`/`Rat=ℚ` model to be **sound**, no code that gets lifted may 
 Any `match Rat::Fast(..)` in a checker is a value that could not be lifted to `ℚ`
 faithfully — it observes an implementation detail the `ℚ` model has erased.
 
-- **Enforced now** by `cargo xtask lint`'s no-repr-leak check (CI): fails if
-  `Int::Fast|Slow` / `Rat::Fast|Slow` appear outside `lattice::rat`. The surface is clean
-  today (all references are inside `rat.rs`).
-- **To be type-enforced** in the algebra rehaul: make `Int`/`Rat` opaque
-  (`pub struct Int(Repr)` over a private `Repr`), so the representation is unreachable by
-  construction, not just by lint.
+- **Type-enforced** (algebra rehaul R.1): `Int`/`Rat` are opaque newtypes —
+  `pub struct Int(IntRepr)` / `pub struct Rat(RatRepr)` over a *private* `IntRepr`/`RatRepr`
+  in `lattice::rat`. The tier is unnameable outside that module, so a checker *cannot* `match`
+  on `Fast/Slow` — it is a compile error, not a lint hit. This supersedes the former
+  `no-repr-leak` grep lint (retired): the guarantee is now carried by the type system, which
+  the earlier lint could only approximate over text.
 
 ## Status
 

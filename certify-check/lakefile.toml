@@ -20,6 +20,11 @@ git = "https://github.com/AeneasVerif/aeneas.git"
 rev = "3a8586facab25b31bdb1e1f5f45acd60d1cc5ff0"
 subDir = "backends/lean"
 
+# Shared faithful models of `core` items externalised by more than one crate lift
+# (the `?`-operator glue), imported by both `Lattice.FunsExternal` and `CertifyCore.FunsExternal`.
+[[lean_lib]]
+name = "CommonExtern"
+
 # Hand-written specs + the Sturm checker + the equivalence proofs.
 [[lean_lib]]
 name = "CertifyCheck"

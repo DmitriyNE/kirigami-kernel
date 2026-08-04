@@ -2,6 +2,13 @@
 //! (`small`) over the BigInt slow path (`Backend`), promoting on overflow and
 //! demoting back when a result fits `i128` again.
 //!
+//! **The tier is opaque.** `Int` and `Rat` are newtypes over a *private* two-tier
+//! representation — no consumer can name, observe, or branch on whether a value
+//! lives in `Fast` or `Slow`. This is enforced by the type system (an unreachable
+//! private field), not by a lint: it is the soundness linchpin for modelling
+//! `Int = ℤ` / `Rat = ℚ` at the Aeneas boundary (a leaked tier would let a proof
+//! reason about an `i128` where the model says `ℤ`).
+//!
 //! **Soundness-first invariant:** `Eq`/`Ord` compare **by value, not by tier** —
 //! a `Fast(1/2)` and a `Slow` holding `1/2` are equal. Canonicalization ("live in
 //! `Fast` iff the reduced value fits `i128`") is therefore a *performance /
@@ -23,8 +30,17 @@ use core::fmt;
 // Int — two-tier integer
 // ===========================================================================
 
-/// Exact integer: `i128` fast path over the backend BigInt slow path.
-pub enum Int<B: Backend = Bignum> {
+/// Exact integer: an `i128` fast path over the backend BigInt slow path.
+///
+/// **Opaque.** The two-tier representation is a private field — no consumer can
+/// observe or depend on the tier (spec invariant 5). Arithmetic stays on the
+/// `i128` fast path, promoting to the backend BigInt on overflow and demoting
+/// back when a result fits `i128` again; `Eq`/`Ord` are by value, not by tier.
+pub struct Int<B: Backend = Bignum>(IntRepr<B>);
+
+/// Private two-tier representation of [`Int`]. Never exposed outside this module:
+/// the tier is an implementation detail, and every trait comparison is by value.
+enum IntRepr<B: Backend = Bignum> {
     /// Value fits in `i128` — arithmetic stays on the fast path until it overflows.
     Fast(i128),
     /// Value exceeded `i128`; held in the backend's arbitrary-precision integer.
@@ -33,65 +49,65 @@ pub enum Int<B: Backend = Bignum> {
 
 fn to_slow_int<B: Backend>(a: &Int<B>) -> B::Int {
     match a {
-        Int::Fast(x) => B::int_from_i128(*x),
-        Int::Slow(i) => i.clone(),
+        Int(IntRepr::Fast(x)) => B::int_from_i128(*x),
+        Int(IntRepr::Slow(i)) => B::int_clone(i),
     }
 }
 
 /// Pull a backend integer back to `Fast` when it fits `i128` (canonicalization).
 fn demote_int<B: Backend>(i: B::Int) -> Int<B> {
     match B::int_try_to_i128(&i) {
-        Some(x) => Int::Fast(x),
-        None => Int::Slow(i),
+        Some(x) => Int(IntRepr::Fast(x)),
+        None => Int(IntRepr::Slow(i)),
     }
 }
 
 impl<B: Backend> Int<B> {
     /// The integer with value `v` (on the fast path).
     pub fn from_i128(v: i128) -> Self {
-        Int::Fast(v)
+        Int(IntRepr::Fast(v))
     }
     /// The integer `0`.
     pub fn zero() -> Self {
-        Int::Fast(0)
+        Int(IntRepr::Fast(0))
     }
     /// The integer `1`.
     pub fn one() -> Self {
-        Int::Fast(1)
+        Int(IntRepr::Fast(1))
     }
 
     /// `self + o` (stays on the fast path until it overflows `i128`).
     pub fn add(&self, o: &Self) -> Self {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             if let Some(r) = a.checked_add(*b) {
-                return Int::Fast(r);
+                return Int(IntRepr::Fast(r));
             }
         }
         demote_int::<B>(B::int_add(&to_slow_int(self), &to_slow_int(o)))
     }
     /// `self - o`.
     pub fn sub(&self, o: &Self) -> Self {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             if let Some(r) = a.checked_sub(*b) {
-                return Int::Fast(r);
+                return Int(IntRepr::Fast(r));
             }
         }
         demote_int::<B>(B::int_sub(&to_slow_int(self), &to_slow_int(o)))
     }
     /// `self * o`.
     pub fn mul(&self, o: &Self) -> Self {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             if let Some(r) = a.checked_mul(*b) {
-                return Int::Fast(r);
+                return Int(IntRepr::Fast(r));
             }
         }
         demote_int::<B>(B::int_mul(&to_slow_int(self), &to_slow_int(o)))
     }
     /// `-self`.
     pub fn neg(&self) -> Self {
-        if let Int::Fast(a) = self {
+        if let Int(IntRepr::Fast(a)) = self {
             if let Some(r) = a.checked_neg() {
-                return Int::Fast(r);
+                return Int(IntRepr::Fast(r));
             }
         }
         demote_int::<B>(B::int_neg(&to_slow_int(self)))
@@ -99,36 +115,36 @@ impl<B: Backend> Int<B> {
     /// `-1 | 0 | 1`.
     pub fn sign(&self) -> i8 {
         match self {
-            Int::Fast(a) => a.signum() as i8,
-            Int::Slow(i) => B::int_sign(i),
+            Int(IntRepr::Fast(a)) => a.signum() as i8,
+            Int(IntRepr::Slow(i)) => B::int_sign(i),
         }
     }
     /// Whether `self == 0`.
     pub fn is_zero(&self) -> bool {
         match self {
-            Int::Fast(a) => *a == 0,
-            Int::Slow(i) => B::int_is_zero(i),
+            Int(IntRepr::Fast(a)) => *a == 0,
+            Int(IntRepr::Slow(i)) => B::int_is_zero(i),
         }
     }
     /// gcd, always `≥ 0`.
     pub fn gcd(&self, o: &Self) -> Self {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             if let Some(g) = small::i128_gcd(*a, *b) {
-                return Int::Fast(g);
+                return Int(IntRepr::Fast(g));
             }
         }
         demote_int::<B>(B::int_gcd(&to_slow_int(self), &to_slow_int(o)))
     }
     /// lcm, always `≥ 0`.
     pub fn lcm(&self, o: &Self) -> Self {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             if *a == 0 || *b == 0 {
-                return Int::Fast(0);
+                return Int(IntRepr::Fast(0));
             }
             if let Some(g) = small::i128_gcd(*a, *b) {
                 if let Some(prod) = (a / g).checked_mul(*b) {
                     if let Ok(l) = i128::try_from(prod.unsigned_abs()) {
-                        return Int::Fast(l);
+                        return Int(IntRepr::Fast(l));
                     }
                 }
             }
@@ -138,10 +154,10 @@ impl<B: Backend> Int<B> {
     /// Truncated quotient and remainder: `self = q·o + r`, `r` the sign of `self`,
     /// `|r| < |o|`. `o != 0` by contract.
     pub fn divrem(&self, o: &Self) -> (Self, Self) {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             // `i128::MIN / -1` overflows the quotient → fall through to the backend.
             if *b != 0 && !(*a == i128::MIN && *b == -1) {
-                return (Int::Fast(a / b), Int::Fast(a % b));
+                return (Int(IntRepr::Fast(a / b)), Int(IntRepr::Fast(a % b)));
             }
         }
         let (q, r) = B::int_divrem(&to_slow_int(self), &to_slow_int(o));
@@ -160,8 +176,8 @@ impl<B: Backend> Int<B> {
 impl<B: Backend> Clone for Int<B> {
     fn clone(&self) -> Self {
         match self {
-            Int::Fast(x) => Int::Fast(*x),
-            Int::Slow(i) => Int::Slow(i.clone()),
+            Int(IntRepr::Fast(x)) => Int(IntRepr::Fast(*x)),
+            Int(IntRepr::Slow(i)) => Int(IntRepr::Slow(B::int_clone(i))),
         }
     }
 }
@@ -178,7 +194,7 @@ impl<B: Backend> PartialOrd for Int<B> {
 }
 impl<B: Backend> Ord for Int<B> {
     fn cmp(&self, o: &Self) -> Ordering {
-        if let (Int::Fast(a), Int::Fast(b)) = (self, o) {
+        if let (Int(IntRepr::Fast(a)), Int(IntRepr::Fast(b))) = (self, o) {
             return a.cmp(b);
         }
         B::int_cmp(&to_slow_int(self), &to_slow_int(o))
@@ -187,8 +203,8 @@ impl<B: Backend> Ord for Int<B> {
 impl<B: Backend> fmt::Debug for Int<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Int::Fast(x) => write!(f, "Int::Fast({x})"),
-            Int::Slow(_) => write!(f, "Int::Slow(..)"),
+            Int(IntRepr::Fast(x)) => write!(f, "Int::Fast({x})"),
+            Int(IntRepr::Slow(_)) => write!(f, "Int::Slow(..)"),
         }
     }
 }
@@ -197,9 +213,18 @@ impl<B: Backend> fmt::Debug for Int<B> {
 // Rat — two-tier rational
 // ===========================================================================
 
-/// Exact rational: L0 `SmallRat` fast path over the backend `Rat` slow path.
+/// Exact rational: an L0 `SmallRat` fast path over the backend `Rat` slow path.
 /// Always canonical (reduced, `den > 0`).
-pub enum Rat<B: Backend = Bignum> {
+///
+/// **Opaque.** The two-tier representation is a private field — no consumer can
+/// observe or depend on the tier (spec invariant 5). `Eq`/`Ord` are by value, not
+/// by tier; arithmetic promotes to the backend on `i128` overflow and demotes back
+/// when a reduced result fits `i128` again.
+pub struct Rat<B: Backend = Bignum>(RatRepr<B>);
+
+/// Private two-tier representation of [`Rat`]. Never exposed outside this module:
+/// the tier is an implementation detail, and every trait comparison is by value.
+enum RatRepr<B: Backend = Bignum> {
     /// Numerator and denominator both fit `i128` — arithmetic stays on the fast path.
     Fast(SmallRat),
     /// Overflowed the fast path; held in the backend's arbitrary-precision rational.
@@ -211,8 +236,8 @@ fn promote_rat<B: Backend>(x: &SmallRat) -> B::Rat {
 }
 fn to_slow_rat<B: Backend>(a: &Rat<B>) -> B::Rat {
     match a {
-        Rat::Fast(x) => promote_rat::<B>(x),
-        Rat::Slow(r) => r.clone(),
+        Rat(RatRepr::Fast(x)) => promote_rat::<B>(x),
+        Rat(RatRepr::Slow(r)) => B::rat_clone(r),
     }
 }
 /// Pull a backend rational (already reduced, `den > 0`) back to `Fast` when both
@@ -222,15 +247,15 @@ fn demote_rat<B: Backend>(r: B::Rat) -> Rat<B> {
         B::int_try_to_i128(&B::rat_numer(&r)),
         B::int_try_to_i128(&B::rat_denom(&r)),
     ) {
-        (Some(n), Some(d)) => Rat::Fast(SmallRat::from_reduced(n, d)),
-        _ => Rat::Slow(r),
+        (Some(n), Some(d)) => Rat(RatRepr::Fast(SmallRat::from_reduced(n, d))),
+        _ => Rat(RatRepr::Slow(r)),
     }
 }
 
 impl<B: Backend> Rat<B> {
     /// The integer `v` as `v/1`.
     pub fn from_i128(v: i128) -> Self {
-        Rat::Fast(SmallRat::int(v))
+        Rat(RatRepr::Fast(SmallRat::int(v)))
     }
     /// `num/den`, reduced. `den == 0` is out of contract (debug-assert + a defined
     /// zero fallback; never panics).
@@ -240,7 +265,7 @@ impl<B: Backend> Rat<B> {
             return Rat::from_i128(0);
         }
         match SmallRat::reduce(num, den) {
-            Some(s) => Rat::Fast(s),
+            Some(s) => Rat(RatRepr::Fast(s)),
             // reduce only returns None here at the den-magnitude-2^127 edge → promote.
             None => demote_rat::<B>(B::rat_from_ints(
                 B::int_from_i128(num),
@@ -251,54 +276,54 @@ impl<B: Backend> Rat<B> {
 
     /// `self + o` (stays on the fast path until it overflows `i128`).
     pub fn add(&self, o: &Self) -> Self {
-        if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
+        if let (Rat(RatRepr::Fast(x)), Rat(RatRepr::Fast(y))) = (self, o) {
             if let Some(r) = small::add(x, y) {
-                return Rat::Fast(r);
+                return Rat(RatRepr::Fast(r));
             }
         }
         demote_rat::<B>(B::rat_add(&to_slow_rat(self), &to_slow_rat(o)))
     }
     /// `self - o`.
     pub fn sub(&self, o: &Self) -> Self {
-        if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
+        if let (Rat(RatRepr::Fast(x)), Rat(RatRepr::Fast(y))) = (self, o) {
             if let Some(r) = small::sub(x, y) {
-                return Rat::Fast(r);
+                return Rat(RatRepr::Fast(r));
             }
         }
         demote_rat::<B>(B::rat_sub(&to_slow_rat(self), &to_slow_rat(o)))
     }
     /// `self * o`.
     pub fn mul(&self, o: &Self) -> Self {
-        if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
+        if let (Rat(RatRepr::Fast(x)), Rat(RatRepr::Fast(y))) = (self, o) {
             if let Some(r) = small::mul(x, y) {
-                return Rat::Fast(r);
+                return Rat(RatRepr::Fast(r));
             }
         }
         demote_rat::<B>(B::rat_mul(&to_slow_rat(self), &to_slow_rat(o)))
     }
     /// Exact division `self / o`. `o != 0` by contract.
     pub fn div(&self, o: &Self) -> Self {
-        if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
+        if let (Rat(RatRepr::Fast(x)), Rat(RatRepr::Fast(y))) = (self, o) {
             if let Some(r) = small::div(x, y) {
-                return Rat::Fast(r);
+                return Rat(RatRepr::Fast(r));
             }
         }
         demote_rat::<B>(B::rat_div(&to_slow_rat(self), &to_slow_rat(o)))
     }
     /// Reciprocal `1 / self`. `self != 0` by contract.
     pub fn recip(&self) -> Self {
-        if let Rat::Fast(x) = self {
+        if let Rat(RatRepr::Fast(x)) = self {
             if let Some(r) = small::recip(x) {
-                return Rat::Fast(r);
+                return Rat(RatRepr::Fast(r));
             }
         }
         demote_rat::<B>(B::rat_div(&B::rat_from_i128(1), &to_slow_rat(self)))
     }
     /// `-self`.
     pub fn neg(&self) -> Self {
-        if let Rat::Fast(x) = self {
+        if let Rat(RatRepr::Fast(x)) = self {
             if let Some(r) = small::neg(x) {
-                return Rat::Fast(r);
+                return Rat(RatRepr::Fast(r));
             }
         }
         demote_rat::<B>(B::rat_neg(&to_slow_rat(self)))
@@ -306,15 +331,15 @@ impl<B: Backend> Rat<B> {
     /// `-1 | 0 | 1`.
     pub fn sign(&self) -> i8 {
         match self {
-            Rat::Fast(x) => small::sign(x),
-            Rat::Slow(r) => B::rat_sign(r),
+            Rat(RatRepr::Fast(x)) => small::sign(x),
+            Rat(RatRepr::Slow(r)) => B::rat_sign(r),
         }
     }
     /// Whether `self == 0`.
     pub fn is_zero(&self) -> bool {
         match self {
-            Rat::Fast(x) => x.num == 0,
-            Rat::Slow(r) => B::rat_is_zero(r),
+            Rat(RatRepr::Fast(x)) => x.num == 0,
+            Rat(RatRepr::Slow(r)) => B::rat_is_zero(r),
         }
     }
 }
@@ -322,8 +347,8 @@ impl<B: Backend> Rat<B> {
 impl<B: Backend> Clone for Rat<B> {
     fn clone(&self) -> Self {
         match self {
-            Rat::Fast(x) => Rat::Fast(*x),
-            Rat::Slow(r) => Rat::Slow(r.clone()),
+            Rat(RatRepr::Fast(x)) => Rat(RatRepr::Fast(*x)),
+            Rat(RatRepr::Slow(r)) => Rat(RatRepr::Slow(B::rat_clone(r))),
         }
     }
 }
@@ -340,7 +365,7 @@ impl<B: Backend> PartialOrd for Rat<B> {
 }
 impl<B: Backend> Ord for Rat<B> {
     fn cmp(&self, o: &Self) -> Ordering {
-        if let (Rat::Fast(x), Rat::Fast(y)) = (self, o) {
+        if let (Rat(RatRepr::Fast(x)), Rat(RatRepr::Fast(y))) = (self, o) {
             if let Some(ord) = small::cmp(x, y) {
                 return ord;
             }
@@ -351,8 +376,8 @@ impl<B: Backend> Ord for Rat<B> {
 impl<B: Backend> fmt::Debug for Rat<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Rat::Fast(s) => write!(f, "Rat::Fast({}/{})", s.num, s.den),
-            Rat::Slow(_) => write!(f, "Rat::Slow(..)"),
+            Rat(RatRepr::Fast(s)) => write!(f, "Rat::Fast({}/{})", s.num, s.den),
+            Rat(RatRepr::Slow(_)) => write!(f, "Rat::Slow(..)"),
         }
     }
 }
@@ -418,9 +443,15 @@ mod tests {
     #[test]
     fn fast_path_reduces() {
         let half = Q::new(2, 4);
-        assert!(matches!(half, Rat::Fast(SmallRat { num: 1, den: 2 })));
+        assert!(matches!(
+            half,
+            Rat(RatRepr::Fast(SmallRat { num: 1, den: 2 }))
+        ));
         let one = half.add(&Q::new(1, 2));
-        assert!(matches!(one, Rat::Fast(SmallRat { num: 1, den: 1 })));
+        assert!(matches!(
+            one,
+            Rat(RatRepr::Fast(SmallRat { num: 1, den: 1 }))
+        ));
         assert_eq!(one.cmp(&Q::from_i128(1)), Ordering::Equal);
     }
 
@@ -431,7 +462,10 @@ mod tests {
         let a = Q::new(1, i128::MAX);
         let b = Q::new(1, i128::MAX - 2); // gcd(MAX, MAX−2) = 1 (both odd)
         let s = a.sub(&b); // 1/MAX − 1/(MAX−2) < 0, lcm overflows i128
-        assert!(matches!(s, Rat::Slow(_)), "must promote to the slow path");
+        assert!(
+            matches!(s, Rat(RatRepr::Slow(_))),
+            "must promote to the slow path"
+        );
         assert_eq!(s.sign(), -1);
         // value-based Eq across tiers: a Slow negative is < a Fast zero.
         assert_eq!(s.cmp(&Q::from_i128(0)), Ordering::Less);
@@ -442,9 +476,12 @@ mod tests {
     #[test]
     fn demotes_when_fits() {
         let big = Q::new(1, i128::MAX).sub(&Q::new(1, i128::MAX - 2)); // Slow
-        assert!(matches!(big, Rat::Slow(_)));
+        assert!(matches!(big, Rat(RatRepr::Slow(_))));
         let zero = big.sub(&big);
-        assert!(matches!(zero, Rat::Fast(_)), "0 must demote back to Fast");
+        assert!(
+            matches!(zero, Rat(RatRepr::Fast(_))),
+            "0 must demote back to Fast"
+        );
         assert!(zero.is_zero());
     }
 
@@ -452,7 +489,7 @@ mod tests {
     #[test]
     fn int_promotes_and_gcd() {
         let big = I::from_i128(i128::MAX).mul(&I::from_i128(4)); // overflows → Slow
-        assert!(matches!(big, Int::Slow(_)));
+        assert!(matches!(big, Int(IntRepr::Slow(_))));
         // gcd(4·MAX, 2·MAX) = 2·MAX (also Slow), > 0
         let big2 = I::from_i128(i128::MAX).mul(&I::from_i128(2));
         let g = big.gcd(&big2);
@@ -574,8 +611,8 @@ mod differential {
             let q1 = Q::new(n1, d1);
             let q2 = Q::new(n2, d2);
             // Force the slow tier by wrapping the materialized backend value.
-            let s1 = Rat::Slow(to_slow_rat(&q1));
-            let s2 = Rat::Slow(to_slow_rat(&q2));
+            let s1 = Rat(RatRepr::Slow(to_slow_rat(&q1)));
+            let s2 = Rat(RatRepr::Slow(to_slow_rat(&q2)));
             for (fast, slow) in [
                 (q1.add(&q2), s1.add(&s2)),
                 (q1.sub(&q2), s1.sub(&s2)),
@@ -584,14 +621,14 @@ mod differential {
             ] {
                 prop_assert_eq!(&fast, &slow);
                 // canonicalization: equal value ⇒ equal tier
-                prop_assert_eq!(matches!(fast, Rat::Fast(_)), matches!(slow, Rat::Fast(_)));
+                prop_assert_eq!(matches!(fast, Rat(RatRepr::Fast(_))), matches!(slow, Rat(RatRepr::Fast(_))));
             }
             prop_assert_eq!(q1.cmp(&q2), s1.cmp(&s2));
             prop_assert_eq!(q1.sign(), s1.sign());
             if n2 != 0 {
                 let (f, s) = (q1.div(&q2), s1.div(&s2));
                 prop_assert_eq!(&f, &s);
-                prop_assert_eq!(matches!(f, Rat::Fast(_)), matches!(s, Rat::Fast(_)));
+                prop_assert_eq!(matches!(f, Rat(RatRepr::Fast(_))), matches!(s, Rat(RatRepr::Fast(_))));
             }
             if n1 != 0 {
                 prop_assert_eq!(q1.recip(), s1.recip());

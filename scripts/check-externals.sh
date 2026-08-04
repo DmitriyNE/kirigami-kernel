@@ -17,36 +17,46 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null \
   || { cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd; })"
-TEMPLATE="$ROOT/certify-check/extract/FunsExternal_Template.lean"
-PROVIDED="$ROOT/certify-check/Lattice/FunsExternal.lean"
+# check_pair <template> <provided> <label>: <provided> must be all faithful `def`/`abbrev`
+# models (no `axiom`), and every `axiom` the template externalises must have a matching model.
+# A crate that emits no such template (a pure lift) is skipped. Temp files + `comm` (not
+# `mapfile`) so it runs on macOS bash 3.2 too.
+check_pair() {
+  local template="$1" provided="$2" label="$3"
+  [ -f "$template" ] || return 0
+  [ -f "$provided" ] || { echo "error: $provided missing (its template $template exists)" >&2; exit 1; }
 
-[ -f "$TEMPLATE" ] || { echo "error: $TEMPLATE missing — run scripts/extract.sh first" >&2; exit 1; }
-[ -f "$PROVIDED" ] || { echo "error: $PROVIDED missing" >&2; exit 1; }
+  # 1) No `axiom` in the hand-written model — an axiom here would silently enter the certified
+  #    proofs' footprint without being `sorryAx`.
+  if grep -qE '^[[:space:]]*axiom[[:space:]]' "$provided"; then
+    echo "::error title=Externalisation axiom ($label)::$provided must contain only faithful \`def\`/\`abbrev\` models, no \`axiom\`." >&2
+    grep -nE '^[[:space:]]*axiom[[:space:]]' "$provided" >&2
+    exit 1
+  fi
 
-# 1) FunsExternal.lean must be all faithful `def`s — no `axiom`.
-if grep -qE '^[[:space:]]*axiom[[:space:]]' "$PROVIDED"; then
-  echo "::error title=Externalisation axiom in FunsExternal.lean::FunsExternal.lean must contain only faithful \`def\` models, no \`axiom\` (an axiom here silently enters the certified proofs' footprint)." >&2
-  grep -nE '^[[:space:]]*axiom[[:space:]]' "$PROVIDED" >&2
-  exit 1
-fi
+  # 2) Every externalised item (template `axiom`) has a model.
+  local needed prov
+  needed="$(mktemp)"; prov="$(mktemp)"
+  awk '
+    /^axiom[ \t]*$/ { getline; gsub(/^[ \t]+/, ""); print $1; next }
+    /^axiom[ \t]+/  { sub(/^axiom[ \t]+/, ""); print $1; next }
+  ' "$template" | sort -u > "$needed"
+  # Models may live in the crate's own file OR the shared `CommonExtern.lean` it imports.
+  grep -hoE '^(def|abbrev) [A-Za-z0-9_.]+' "$provided" "$ROOT/certify-check/CommonExtern.lean" \
+    | awk '{print $2}' | sort -u > "$prov"
 
-# 2) Every core item Aeneas externalised (template `axiom`s) has a model.
-#    (Uses temp files + `comm`, not `mapfile`, so it runs on macOS bash 3.2 too.)
-needed="$(mktemp)"; provided="$(mktemp)"
-trap 'rm -f "$needed" "$provided"' EXIT
+  local missing
+  missing="$(comm -23 "$needed" "$prov")"
+  if [ -n "$missing" ]; then
+    echo "::error title=Missing faithful model ($label)::$template externalises items with no \`def\`/\`abbrev\` in $provided — add a faithful model (not an axiom):" >&2
+    echo "$missing" | sed 's/^/  /' >&2
+    rm -f "$needed" "$prov"; exit 1
+  fi
+  echo "externals-coverage OK ($label): $(wc -l < "$needed" | tr -d ' ') item(s) modelled in $(basename "$provided")."
+  rm -f "$needed" "$prov"
+}
 
-awk '
-  /^axiom[ \t]*$/ { getline; gsub(/^[ \t]+/, ""); print $1; next }
-  /^axiom[ \t]+/  { sub(/^axiom[ \t]+/, ""); print $1; next }
-' "$TEMPLATE" | sort -u > "$needed"
-
-grep -oE '^def [A-Za-z0-9_.]+' "$PROVIDED" | awk '{print $2}' | sort -u > "$provided"
-
-missing="$(comm -23 "$needed" "$provided")"
-if [ -n "$missing" ]; then
-  echo "::error title=Missing faithful model::Aeneas externalised these core items (certify-check/extract/FunsExternal_Template.lean) but Lattice/FunsExternal.lean has no \`def\` for them — add a faithful model (not an axiom):" >&2
-  echo "$missing" | sed 's/^/  /' >&2
-  exit 1
-fi
-
-echo "externals-coverage OK: all $(wc -l < "$needed" | tr -d ' ') externalised core items have faithful models in FunsExternal.lean."
+E="$ROOT/certify-check/extract"
+check_pair "$E/lattice.FunsExternal_Template.lean"       "$ROOT/certify-check/Lattice/FunsExternal.lean"      "lattice funs"
+check_pair "$E/certify_core.FunsExternal_Template.lean"  "$ROOT/certify-check/CertifyCore/FunsExternal.lean"  "certify-core funs"
+check_pair "$E/certify_core.TypesExternal_Template.lean" "$ROOT/certify-check/CertifyCore/TypesExternal.lean" "certify-core types"
