@@ -23,7 +23,12 @@ fn main() {
         .std("c++17")
         .define("CGAL_HEADER_ONLY", "1")
         // CGAL's headers flood the log with benign GCC ABI notes (`-Wpsabi`).
-        .flag_if_supported("-Wno-psabi");
+        .flag_if_supported("-Wno-psabi")
+        // No debug info on the oracle shim: recent gcc/glibc (the flake floats
+        // nixos-unstable) emit a `.debug_gdb_scripts` section that `rust-lld` rejects
+        // ("string is not null terminated") when linking the C++ object. Debug info buys
+        // nothing on a differential-test oracle.
+        .debug(false);
 
     for var in ["CGAL_INCLUDE_DIR", "BOOST_INCLUDE_DIR", "GMP_INCLUDE_DIR"] {
         if let Some(dir) = std::env::var_os(var) {
