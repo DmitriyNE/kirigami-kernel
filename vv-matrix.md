@@ -21,7 +21,7 @@ arrangement lattice — the "1D" name is overloaded.)
 | membership [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL) | N/A | N/A | — |
 | event spine + classify [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL) | N/A | N/A | — |
 | 1D coincidence lattice [M3c] | arrange2d | ✅ | ✅ | ✅ (CGAL overlap-edge) | N/A | N/A | — |
-| CLIP-σ signed ★ [M2] | certify1d | ✅ | ✅ (`cx-sigma-mu-crossing` → Unresolved) | — | ✅ (`clip_sigma_signed_disjunction_sound`: corner-range signed disjunction sound over i128; rejects the σμ class) | ✅ `ClipSigma.lean` (hand-mirror over ℤ, axiom-clean, NO cited axiom; **not** an Aeneas lift — Rat-carrying lift deferred to the algebra rehaul) | — |
+| CLIP-σ signed ★ [M2] | certify1d | ✅ | ✅ (`cx-sigma-mu-crossing` → Unresolved) | — | ✅ (`clip_sigma_signed_disjunction_sound`: corner-range signed disjunction sound over i128; rejects the σμ class) | ✅ `ClipSigma.lean` — **Aeneas-lifted over ℚ** (algebra-rehaul R.3c): `clip_sigma_branch_eq` + `corner_range_eq` prove the extracted `clip_sigma`'s two cores (decision + affine range) EQUAL their spec, so the predicate is derived from the running Rust, not mirrored; soundness + σμ-rejection axiom-clean, NO cited axiom | — |
 | certify1d checkers [M2] | certify-core | ✅ | ✅ (corpus + cone fields) | — | N/A | N/A | — |
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
