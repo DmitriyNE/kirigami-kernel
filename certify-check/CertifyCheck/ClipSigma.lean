@@ -1,87 +1,78 @@
 /-
-  CLIP-σ signed disjunction — the ★ soundness row of the M2 transversality ladder
-  (spec §8.5), as an unbounded-ℤ deductive witness complementing the bounded Kani proof
-  `certify_core::proof::clip_sigma_signed_disjunction_sound`.
+  CLIP-σ signed disjunction — the ★ soundness row of the M2 transversality ladder (spec §8.5),
+  now **derived** from the Aeneas-lifted `certify1d::clip_sigma` over Mathlib ℚ (algebra-rehaul
+  R.3c). This replaces the former hand-written ℤ mirror: the ★-critical *decision*
+  `clip_sigma_branch` is proved to **equal** its mathematical spec (`clip_sigma_branch_eq`) by
+  reducing the *extracted* Rust body — so a change to the running Rust surfaces as a broken
+  refinement proof rather than silent spec drift. The range `corner_range` refinement (a slice-loop
+  proof) is tracked as R.3c-cont (see the note near the end); its spec is proved sound here. The
+  soundness statements are over ℚ, matching the lifted code.
 
-  `certify1d::clip_sigma` certifies that the *signed* affine `∂_σG` is single-signed and
-  separated across a `(μ, w)` box by ranging it over the four corners. The row exists
-  because the tempting *squared* corner test is unsound: an affine form minimizes in the
-  box interior, so `G = σμ` (`∂_σG = μ`, zero on `μ = 0`) passes `|∂_σG|² ≥ m` with a
-  margin while the crossing is singular. This file proves the signed test does not — a
-  certified verdict forces *every* corner strictly single-signed and separated, so any
-  mixed-sign corner set (the `σμ` class) is rejected.
-
-  This is a **hand-written** spec over Mathlib ℤ, mirroring the Rust decision core
-  `certify1d::clip_sigma_branch` / `corner_range` field-for-field. Unlike the Aeneas-lifted
-  `CapOut` specs it is not extracted: the public `clip_sigma` bottoms out in `lattice::Rat`
-  arithmetic (dashu), which the pinned Aeneas cannot lift — the algebra-lift wall folded
-  into the post-B `Int = ℤ / Rat = ℚ` rehaul (`docs/algebra-trust.md`). Fidelity to the
-  running code is anchored by the Kani harness, which executes the *actual* Rust
-  `clip_sigma_branch`; this file adds unbounded-domain deductive confidence. No axiom is
-  cited — each theorem is proved about the mirrored function (`#print axioms` below).
+  `certify1d::clip_sigma` certifies that the *signed* affine `∂_σG` is single-signed and separated
+  across a `(μ, w)` box by ranging it over the four corners. The row exists because the tempting
+  *squared* corner test is unsound: an affine form minimizes in the box interior, so `G = σμ`
+  (`∂_σG = μ`, zero on `μ = 0`) passes `|∂_σG|² ≥ m` with a margin while the crossing is singular.
+  A certified verdict forces *every* corner strictly single-signed and separated, so the `σμ` class
+  (a mixed-sign corner set) is rejected — proved below about the lifted code. Axiom-clean
+  (`#print axioms` at the end).
 -/
 import Mathlib
+import CertifyCore.Funs
+import CertifyCheck.Refine
 
 namespace CertifyCheck.ClipSigma
+open Aeneas Aeneas.Std Result certify_core certify_core.certify1d
 
-/-- A certified single sign of the affine trim form (Rust `certify1d::ClipBranch`). -/
-inductive Branch
-  | positive
-  | negative
-  deriving DecidableEq, Repr
+/-- The certified single sign of the affine trim form — the extracted `certify1d::ClipBranch`. -/
+abbrev Branch := certify1d.ClipBranch
 
-/-- The CLIP-σ signed-disjunction decision, mirroring `certify1d::clip_sigma_branch`:
-    `positive` iff `lo ≥ m`, `negative` iff `hi ≤ -m`, both gated on `m > 0`; else `none`.
-    (Rust passes `neg_m = -m` and `m_positive = 0 < m` precomputed, to stay generic over
-    the ordered type; over ℤ they are inlined.) -/
-def clipSigmaBranch (lo hi m : ℤ) : Option Branch :=
-  if 0 < m then
-    if m ≤ lo then some .positive
-    else if hi ≤ -m then some .negative
+/-! ### Mathematical spec (the reduced form of the extracted decision, over ℚ) -/
+
+/-- The CLIP-σ signed-disjunction decision: `Positive` iff `m ≤ lo`, else `Negative` iff
+    `hi ≤ neg_m`, both gated on `m_positive` (`clip_sigma` passes `neg_m = -m` and
+    `m_positive = 0 < m` precomputed, to stay generic over the ordered type). -/
+def clipSigmaBranchSpec (lo hi m neg_m : ℚ) (mPositive : Bool) : Option Branch :=
+  if mPositive then
+    if m ≤ lo then some .Positive
+    else if hi ≤ neg_m then some .Negative
     else none
   else none
 
-/-- The corner range, mirroring `certify1d::corner_range`: the `(min, max)` of a nonempty
-    corner list, `none` when empty. -/
-def cornerRange : List ℤ → Option (ℤ × ℤ)
+/-- The corner range: the `(min, max)` of a nonempty corner list, `none` when empty. -/
+def cornerRangeSpec : List ℚ → Option (ℚ × ℚ)
   | [] => none
   | c :: cs => some (cs.foldl min c, cs.foldl max c)
 
-/-! ### The decision is sound (pure branch, no range) -/
+/-! ### The decision spec is sound (pure branch, no range) -/
 
-/-- A `positive` verdict means the threshold is a real separation and the low corner
-    clears it. -/
-theorem clipSigmaBranch_positive_sound {lo hi m : ℤ}
-    (h : clipSigmaBranch lo hi m = some Branch.positive) : 0 < m ∧ m ≤ lo := by
-  unfold clipSigmaBranch at h
-  by_cases hm : 0 < m
+theorem branch_positive_sound {lo hi m neg_m : ℚ} {mp : Bool}
+    (h : clipSigmaBranchSpec lo hi m neg_m mp = some ClipBranch.Positive) : mp = true ∧ m ≤ lo := by
+  unfold clipSigmaBranchSpec at h
+  by_cases hm : mp
   · by_cases hlo : m ≤ lo
     · exact ⟨hm, hlo⟩
     · simp [hm, hlo] at h
   · simp [hm] at h
 
-/-- A `negative` verdict means the threshold is a real separation and the high corner
-    clears `-m`. -/
-theorem clipSigmaBranch_negative_sound {lo hi m : ℤ}
-    (h : clipSigmaBranch lo hi m = some Branch.negative) : 0 < m ∧ hi ≤ -m := by
-  unfold clipSigmaBranch at h
-  by_cases hm : 0 < m
+theorem branch_negative_sound {lo hi m neg_m : ℚ} {mp : Bool}
+    (h : clipSigmaBranchSpec lo hi m neg_m mp = some ClipBranch.Negative) : mp = true ∧ hi ≤ neg_m := by
+  unfold clipSigmaBranchSpec at h
+  by_cases hm : mp
   · by_cases hlo : m ≤ lo
     · simp [hm, hlo] at h
-    · by_cases hhi : hi ≤ -m
+    · by_cases hhi : hi ≤ neg_m
       · exact ⟨hm, hhi⟩
       · simp [hm, hlo, hhi] at h
   · simp [hm] at h
 
 /-! ### The corner range brackets every corner -/
 
-private theorem foldl_min_le_acc (c : ℤ) (cs : List ℤ) : cs.foldl min c ≤ c := by
+private theorem foldl_min_le_acc (c : ℚ) (cs : List ℚ) : cs.foldl min c ≤ c := by
   induction cs generalizing c with
   | nil => simp
   | cons a t ih => exact le_trans (ih (min c a)) (min_le_left c a)
 
-private theorem foldl_min_le_mem (c : ℤ) (cs : List ℤ) :
-    ∀ x ∈ cs, cs.foldl min c ≤ x := by
+private theorem foldl_min_le_mem (c : ℚ) (cs : List ℚ) : ∀ x ∈ cs, cs.foldl min c ≤ x := by
   induction cs generalizing c with
   | nil => simp
   | cons a t ih =>
@@ -90,13 +81,12 @@ private theorem foldl_min_le_mem (c : ℤ) (cs : List ℤ) :
     · rw [h]; exact le_trans (foldl_min_le_acc (min c a) t) (min_le_right c a)
     · exact ih (min c a) x h
 
-private theorem le_foldl_max_acc (c : ℤ) (cs : List ℤ) : c ≤ cs.foldl max c := by
+private theorem le_foldl_max_acc (c : ℚ) (cs : List ℚ) : c ≤ cs.foldl max c := by
   induction cs generalizing c with
   | nil => simp
   | cons a t ih => exact le_trans (le_max_left c a) (ih (max c a))
 
-private theorem mem_le_foldl_max (c : ℤ) (cs : List ℤ) :
-    ∀ x ∈ cs, x ≤ cs.foldl max c := by
+private theorem mem_le_foldl_max (c : ℚ) (cs : List ℚ) : ∀ x ∈ cs, x ≤ cs.foldl max c := by
   induction cs generalizing c with
   | nil => simp
   | cons a t ih =>
@@ -105,13 +95,12 @@ private theorem mem_le_foldl_max (c : ℤ) (cs : List ℤ) :
     · rw [h]; exact le_trans (le_max_right c a) (le_foldl_max_acc (max c a) t)
     · exact ih (max c a) x h
 
-/-- `lo` from `cornerRange` is a lower bound on every corner. -/
-theorem cornerRange_lower {cs : List ℤ} {lo hi : ℤ}
-    (hr : cornerRange cs = some (lo, hi)) : ∀ c ∈ cs, lo ≤ c := by
+theorem cornerRange_lower {cs : List ℚ} {lo hi : ℚ}
+    (hr : cornerRangeSpec cs = some (lo, hi)) : ∀ c ∈ cs, lo ≤ c := by
   cases cs with
-  | nil => simp [cornerRange] at hr
+  | nil => simp [cornerRangeSpec] at hr
   | cons a t =>
-    simp only [cornerRange, Option.some.injEq, Prod.mk.injEq] at hr
+    simp only [cornerRangeSpec, Option.some.injEq, Prod.mk.injEq] at hr
     obtain ⟨hlo, _⟩ := hr
     intro x hx
     rw [← hlo]
@@ -119,13 +108,12 @@ theorem cornerRange_lower {cs : List ℤ} {lo hi : ℤ}
     · rw [h]; exact foldl_min_le_acc a t
     · exact foldl_min_le_mem a t x h
 
-/-- `hi` from `cornerRange` is an upper bound on every corner. -/
-theorem cornerRange_upper {cs : List ℤ} {lo hi : ℤ}
-    (hr : cornerRange cs = some (lo, hi)) : ∀ c ∈ cs, c ≤ hi := by
+theorem cornerRange_upper {cs : List ℚ} {lo hi : ℚ}
+    (hr : cornerRangeSpec cs = some (lo, hi)) : ∀ c ∈ cs, c ≤ hi := by
   cases cs with
-  | nil => simp [cornerRange] at hr
+  | nil => simp [cornerRangeSpec] at hr
   | cons a t =>
-    simp only [cornerRange, Option.some.injEq, Prod.mk.injEq] at hr
+    simp only [cornerRangeSpec, Option.some.injEq, Prod.mk.injEq] at hr
     obtain ⟨_, hhi⟩ := hr
     intro x hx
     rw [← hhi]
@@ -133,46 +121,74 @@ theorem cornerRange_upper {cs : List ℤ} {lo hi : ℤ}
     · rw [h]; exact le_foldl_max_acc a t
     · exact mem_le_foldl_max a t x h
 
-/-! ### The ★ soundness statement (range ∘ branch) -/
+/-! ### The ★ soundness statement about the spec (range ∘ branch) -/
 
-/-- CLIP-σ soundness, positive branch: a `positive` verdict certifies that **every** corner
-    is separated above zero by `m` (so `∂_σG ≥ m > 0` across the affine box). -/
-theorem clipSigma_sound_positive {cs : List ℤ} {lo hi m : ℤ}
-    (hr : cornerRange cs = some (lo, hi))
-    (hb : clipSigmaBranch lo hi m = some Branch.positive) :
+/-- Positive branch: certifies **every** corner is separated above zero by `m` (`∂_σG ≥ m`),
+    given the caller's `neg_m = -m` and `mPositive = (0 < m)`. -/
+theorem clipSigma_sound_positive {cs : List ℚ} {lo hi m : ℚ}
+    (hr : cornerRangeSpec cs = some (lo, hi))
+    (hb : clipSigmaBranchSpec lo hi m (-m) (decide (0 < m)) = some ClipBranch.Positive) :
     0 < m ∧ ∀ c ∈ cs, m ≤ c := by
-  obtain ⟨hm, hlo⟩ := clipSigmaBranch_positive_sound hb
-  exact ⟨hm, fun c hc => le_trans hlo (cornerRange_lower hr c hc)⟩
+  obtain ⟨hm, hlo⟩ := branch_positive_sound hb
+  exact ⟨by simpa using hm, fun c hc => le_trans hlo (cornerRange_lower hr c hc)⟩
 
-/-- CLIP-σ soundness, negative branch: a `negative` verdict certifies that **every** corner
-    is separated below zero by `m` (so `∂_σG ≤ -m < 0` across the affine box). -/
-theorem clipSigma_sound_negative {cs : List ℤ} {lo hi m : ℤ}
-    (hr : cornerRange cs = some (lo, hi))
-    (hb : clipSigmaBranch lo hi m = some Branch.negative) :
+/-- Negative branch: certifies **every** corner is separated below zero by `m` (`∂_σG ≤ -m`). -/
+theorem clipSigma_sound_negative {cs : List ℚ} {lo hi m : ℚ}
+    (hr : cornerRangeSpec cs = some (lo, hi))
+    (hb : clipSigmaBranchSpec lo hi m (-m) (decide (0 < m)) = some ClipBranch.Negative) :
     0 < m ∧ ∀ c ∈ cs, c ≤ -m := by
-  obtain ⟨hm, hhi⟩ := clipSigmaBranch_negative_sound hb
-  exact ⟨hm, fun c hc => le_trans (cornerRange_upper hr c hc) hhi⟩
+  obtain ⟨hm, hhi⟩ := branch_negative_sound hb
+  exact ⟨by simpa using hm, fun c hc => le_trans (cornerRange_upper hr c hc) hhi⟩
 
-/-- The `σμ` falsely-certifying class is rejected: a corner set with a strictly positive
-    **and** a strictly negative corner is never certified (any margin) — the affine range
-    straddles zero, exactly where a squared corner test would falsely `Verify`. -/
-theorem clipSigma_rejects_straddle {cs : List ℤ} {lo hi m : ℤ}
-    (hr : cornerRange cs = some (lo, hi))
+/-- The `σμ` falsely-certifying class is rejected: a corner set with a strictly positive **and** a
+    strictly negative corner is never certified (any margin) — the affine range straddles zero. -/
+theorem clipSigma_rejects_straddle {cs : List ℚ} {lo hi m : ℚ}
+    (hr : cornerRangeSpec cs = some (lo, hi))
     (hpos : ∃ c ∈ cs, 0 < c) (hneg : ∃ c ∈ cs, c < 0) :
-    clipSigmaBranch lo hi m = none := by
+    clipSigmaBranchSpec lo hi m (-m) (decide (0 < m)) = none := by
   obtain ⟨cp, hcp, hcppos⟩ := hpos
   obtain ⟨cn, hcn, hcnneg⟩ := hneg
   have hlo : lo ≤ cn := cornerRange_lower hr cn hcn
   have hhi : cp ≤ hi := cornerRange_upper hr cp hcp
-  unfold clipSigmaBranch
+  unfold clipSigmaBranchSpec
   by_cases hm : 0 < m
-  · have h1 : ¬ m ≤ lo := by omega
-    have h2 : ¬ hi ≤ -m := by omega
+  · have h1 : ¬ m ≤ lo := by linarith
+    have h2 : ¬ hi ≤ -m := by linarith
     simp [hm, h1, h2]
   · simp [hm]
 
--- The ★ soundness theorems are axiom-clean (no Sturm-style cited axiom): the decision is
--- proved directly about the mirrored function.
+/-! ### The refinements: the extracted Rust body equals the spec (the drift-kill) -/
+
+/-- **Branch refinement.** The Aeneas-lifted `clip_sigma_branch`, at `T = ℚ` with the lifted `Ord`
+    instance (`compare`), computes `clipSigmaBranchSpec`. -/
+theorem clip_sigma_branch_eq {B I R : Type} (inst : lattice.backend.Backend B I R)
+    (lo hi m neg_m : ℚ) (mp : Bool) :
+    certify1d.clip_sigma_branch (lattice.rat.Rat.Insts.CoreCmpOrd inst) lo hi m neg_m mp
+      = ok (clipSigmaBranchSpec lo hi m neg_m mp) := by
+  -- Reduce the extracted body: `.cmp` = `compare`, `ne` = `!eq`, then `compare _ _ = .lt ↔ <`.
+  simp [certify1d.clip_sigma_branch, lattice.rat.Rat.Insts.CoreCmpOrd.cmp,
+    core.cmp.PartialEq.ne.trait_default, core.cmp.PartialEq.ne.default,
+    core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq, clipSigmaBranchSpec, compare_lt_iff_lt,
+    compare_gt_iff_gt]
+  split_ifs <;> first | rfl | (exfalso; linarith)
+
+/-
+  **Range refinement (tracked, R.3c-cont).** The companion `corner_range` refinement —
+    `certify1d.corner_range (CoreCmpOrd inst) (CoreCloneClone inst) corners
+       = ok (cornerRangeSpec corners.val)`
+  — is a slice-loop proof of the same shape as `Refine.lean`'s `sign_variations_spec`:
+  `loop.spec_decr_nat` over `corner_range_loop` with `measure := len − it.i` and invariant
+  `(corners.val.drop it.i).foldl min lo = (corners.val.drop it0.i).foldl min lo0` (and `max`/`hi`),
+  driven by the reusable `@[step] sliceIter_next_spec`; the body step reduces `.cmp` to `compare`
+  and `lo1 = min lo c` / `hi1 = max hi c` via `compare_lt_iff_lt` + `List.foldl_cons`, and the
+  prelude reduces `Slice.iter`/`next`/`branch` before invoking the loop spec. Landing it lifts
+  `cornerRangeSpec` from a (sound, but hand-written) spec to a derived one — completing the CLIP-σ
+  drift-kill. The ★-critical decision (`clip_sigma_branch_eq`) is already derived below.
+-/
+
+-- Axiom audit: the derived decision + the spec-soundness are axiom-clean (no cited axiom, no
+-- `sorryAx` — in particular the Aeneas Std `get_unchecked` sorries are off this path).
+#print axioms clip_sigma_branch_eq
 #print axioms clipSigma_sound_positive
 #print axioms clipSigma_sound_negative
 #print axioms clipSigma_rejects_straddle
