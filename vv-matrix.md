@@ -3,8 +3,8 @@
 Row per certificate/kernel operation; cell per method. Status: ✅ done · 🚧 partial · ⬜ todo · N/A.
 Each Item carries its milestone tag `[Mx]`. CI fails the milestone gate
 (`scripts/lint/vv_matrix_gate.sh`) if a **soundness-critical** row (marked ★) whose
-milestone has **landed** (`[M0]`, `[M3a]`, `[M3c]`, `[M3d]`, `[M3e]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
-Not-yet-landed ★ rows (`[M2]`/`[M4]`/…) are out of scope until their milestone ships.
+milestone has **landed** (`[M0]`, `[M1]`, `[M2]`, `[M3a]`, `[M3c]`, `[M3d]`, `[M3e]`) has empty {Kani ∨ Lean ∨ runtime-checked-hypothesis}.
+Not-yet-landed ★ rows (`[M4]`/…) are out of scope until their milestone ships.
 (The gate reads the table columns with `FS="|"`; before slice 3d it split on whitespace, so `$2`
 matched a mid-cell word instead of the ★ Item and passed vacuously — fixed with the M3d landing.)
 (The `arrange2d`/`certify1d` searcher slices `[M3a]`/`[M3c]` are non-★: Kani/Lean = N/A, soundness
@@ -21,14 +21,15 @@ arrangement lattice — the "1D" name is overloaded.)
 | membership [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL) | N/A | N/A | — |
 | event spine + classify [M3a] | arrange2d | ✅ | ✅ | ✅ (CGAL) | N/A | N/A | — |
 | 1D coincidence lattice [M3c] | arrange2d | ✅ | ✅ | ✅ (CGAL overlap-edge) | N/A | N/A | — |
-| CLIP-σ signed ★ [M2] | certify1d | ⬜ | ⬜ | — | — | ⬜ | — |
+| CLIP-σ signed ★ [M2] | certify1d | ✅ | ✅ (`cx-sigma-mu-crossing` → Unresolved) | — | ✅ (`clip_sigma_signed_disjunction_sound`: corner-range signed disjunction sound over i128; rejects the σμ class) | ✅ `ClipSigma.lean` (hand-mirror over ℤ, axiom-clean, NO cited axiom; **not** an Aeneas lift — Rat-carrying lift deferred to the algebra rehaul) | — |
+| certify1d checkers [M2] | certify-core | ✅ | ✅ (corpus + cone fields) | — | N/A | N/A | — |
 | strict Sylvester ★ [M4] | certify1d | ⬜ | ⬜ | — | ⬜ | ⬜ | — |
 | occupancy→row ★ [M4] | sew | ⬜ | ⬜ | — | ⬜ (≤6 bits) | ⬜ | — |
 | quotient emission ★ [M3d] | arrange2d → certify-core | ✅ | ✅ (Euler + rigid/rescale invariance) | 🚧 (CGAL ∪/∩ non-pinch; △-pinch + face-ID follow-up) | ✅ (`cocycle_implies_telescoping`, bounded DCEL ≤4 cells) | — (Kani sufficed) | — |
 | CAP-OUT-LINK ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (pinch rigid-invariance; degree-6 vertex) | ✅ (CGAL faces+holes **and exact a+b√d boundary vertices**, rational + irrational radii; △-pinch documented) | ✅ (`link_ok_iff_no_pinch`, bounded ≤6 sectors) | ✅ (`link_ok_spec`: `link_ok ↔ ≤1 run`, axiom-clean over the Aeneas lift, matching Kani; run-counter refinement `cyclic_true_runs_spec` done) — 2-manifold thm = research frontier | — |
 | Link_emitted≅geom ★ [M3e] | arrange2d → certify-core | ✅ | ✅ (`links_consistent` on corpus) | — | ✅ (`link_iso_matches_cyclic_adjacency`, permutations N=4) | 🚧 (Aeneas-lifted, axiom-clean; iso-spec refinement = frontier) | — |
 | completeness bijections [M3e] | arrange2d | ✅ (`separating_boundary_bijection`; `ledge_dom_certified` gate) | ✅ (segments/mixed/degree-6) | ✅ (CGAL faces+holes **+ exact a+b√d boundary vertices**, non-pinching) | — | — | — |
-| device cone chart [M1] | geom | ⬜ | — | — | — | — | ⬜ (golden) |
+| device cone chart [M1] | geom → fixtures | ✅ | ✅ (n·n=1, n·n′=0, c·r=0, offsets-in-family; R₁ σ-law) | ✅ (golden n·ẑ ≡ 65/97 ≈ sin 42°; κ-cap = 65/194) | N/A | N/A | ✅ (`certified_cone`: REG-Q \|q\|², REG-Q \|n′\|², SLAB-S0, mesh κ-cap — all Verified) |
 | STEP shell [export] | export | ⬜ | — | ⬜ (OCC) | — | — | ⬜ (kernels + hw) |
 | (extend per implementation-plan §1) | | | | | | | |
 

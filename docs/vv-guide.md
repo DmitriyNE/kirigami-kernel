@@ -492,6 +492,15 @@ history-free (no slice/phase tags), with worked runnable doctests on the entry p
 M4-adjacent); the full EDGE-REG verdict logic (lives in `sew`/M5); deep substitution/removability
 transport; the σ-parametric function-field surd (M3 / Tier-C).
 
+**Status: B met.** Phases B.0–B.7 landed on `milestone-b`: `lattice::ratfunc`; the `geom` chart layer
+(`chart`/`tags`/`stall`/`reparam`/`record`); the `certify_core::certify1d` engine (REG-Q, SLAB-S0,
+the CLIP ladder with the **★ CLIP-σ signed** checker, TRIM-LOCAL, CLIP-DOM census, EDGE-REG/Pending);
+the certified device-cone `ChartRecord` (`fixtures::devices::certified_cone` — REG-Q `|q|²`/`|n′|²`,
+SLAB-S0, mesh κ-cap 65/194, all Verified); and the M2 corpus. The ★ CLIP-σ discharge is the Kani proof
+`clip_sigma_signed_disjunction_sound` (gating), with `ClipSigma.lean` an axiom-clean ℤ second witness
+(hand-mirror; the Rat-carrying Aeneas lift is the post-B algebra rehaul). Deferred items above are
+carried forward, not dropped.
+
 ---
 
 ## 9. Sequencing

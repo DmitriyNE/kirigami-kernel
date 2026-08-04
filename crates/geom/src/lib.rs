@@ -14,9 +14,12 @@
 //!   including the `J_raw = p̂·Ĵ` identity.
 //! - [`reparam`] — the REPARAM verb: regenerate a stalled record as a regular one
 //!   (spec §7).
+//! - [`record`] — the certified single-chart record: a chart plus its M2 verdicts and the
+//!   mesh curvature cap (spec §8, the Milestone-B exit artifact).
 
 pub mod chart;
 pub mod content;
+pub mod record;
 pub mod reparam;
 pub mod stall;
 pub mod tags;
