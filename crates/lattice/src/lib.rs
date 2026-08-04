@@ -1,5 +1,19 @@
 #![no_std]
 #![forbid(unsafe_code)]
+// Pure-tier panic-freedom (docs/trusted-invariants.md): the panic-capable constructs are
+// forbidden in production code. Every surviving `#[allow]` must carry a `// PANIC-FREEDOM:`
+// tag, checked by `cargo xtask lint`. Tests may panic freely (gated by `not(test)`).
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 //! `lattice` — exact-arithmetic substrate for the Kirigami kernel.
 //!
 //! Pure tier (see `docs/environment-and-crate-layout.md §1`): everything above

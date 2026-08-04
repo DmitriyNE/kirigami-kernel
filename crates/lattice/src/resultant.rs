@@ -38,9 +38,13 @@ pub fn resultant<B: Backend>(f: &Poly<B>, g: &Poly<B>) -> Rat<B> {
     let mut f = f.clone();
     let mut g = g.clone();
     let mut acc = Rat::from_i128(1);
+    // `f`, `g` are kept nonzero throughout, so every `degree`/`leading` is `Some`. The
+    // `None` arms are unreachable, but return the total, correct value (a zero operand ⇒
+    // resultant 0) — so the loop is panic-free by construction, not by a bare `unwrap`.
     loop {
-        let m = f.degree().unwrap();
-        let n = g.degree().unwrap();
+        let (Some(m), Some(n)) = (f.degree(), g.degree()) else {
+            return Rat::from_i128(0);
+        };
         if m < n {
             core::mem::swap(&mut f, &mut g);
             if (m * n) % 2 == 1 {
@@ -50,17 +54,26 @@ pub fn resultant<B: Backend>(f: &Poly<B>, g: &Poly<B>) -> Rat<B> {
         }
         if n == 0 {
             // g is a nonzero constant b: Res(f, b) = b^{deg f}.
-            return acc.mul(&rat_pow(g.leading().unwrap(), m));
+            return match g.leading() {
+                Some(gl) => acc.mul(&rat_pow(gl, m)),
+                None => Rat::from_i128(0),
+            };
         }
         let r = f.rem(&g);
         if r.is_zero() {
             return Rat::from_i128(0); // g | f, deg g ≥ 1 ⇒ common factor
         }
-        let s = r.degree().unwrap();
+        let Some(s) = r.degree() else {
+            return Rat::from_i128(0);
+        };
         if (m * n) % 2 == 1 {
             acc = acc.neg();
         }
-        acc = acc.mul(&rat_pow(&g.leading().unwrap().clone(), m - s));
+        let contribution = match g.leading() {
+            Some(gl) => rat_pow(gl, m - s),
+            None => return Rat::from_i128(0),
+        };
+        acc = acc.mul(&contribution);
         f = g;
         g = r;
     }

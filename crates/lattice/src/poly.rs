@@ -143,7 +143,12 @@ impl<B: Backend> Poly<B> {
         if self.coeffs.len() <= dd {
             return (Self::zero(), self.clone());
         }
-        let dlead = d.leading().unwrap().clone();
+        // `dd = d.degree()` was `Some`, so `d` is nonzero and `d.leading()` is `Some`; the
+        // `None` arm is unreachable but total (a zero divisor yields `(0, self)`).
+        let dlead = match d.leading() {
+            Some(l) => l.clone(),
+            None => return (Self::zero(), self.clone()),
+        };
         let mut r = self.coeffs.clone();
         let mut q = vec![q0::<B>(); self.coeffs.len() - dd];
         while r.len() > dd {

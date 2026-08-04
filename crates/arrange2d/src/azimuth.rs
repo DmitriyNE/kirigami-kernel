@@ -31,12 +31,14 @@ pub struct Tag<B: Backend = Bignum> {
 impl<B: Backend> Tag<B> {
     /// The tag of `p` (assumed on `c`). No division is performed.
     pub fn of(c: &Circle<B>, p: &Point2<B>) -> Self {
-        let num = p.y.sub(&Surd::from_rat(c.cy.clone())).unwrap_surd();
+        let num = p.y.sub(&Surd::from_rat(c.cy.clone())).try_surd().unwrap();
         let den =
             p.x.sub(&Surd::from_rat(c.cx.clone()))
-                .unwrap_surd()
+                .try_surd()
+                .unwrap()
                 .add(&root_r2(c))
-                .unwrap_surd();
+                .try_surd()
+                .unwrap();
         Tag { num, den }
     }
     /// Is this the pole (θ = π, the x-min extremal `L`)? Then `t = ∞`.
@@ -78,9 +80,11 @@ pub fn tag_cmp<B: Backend>(c: &Circle<B>, a: &Point2<B>, b: &Point2<B>) -> Order
     let cross = ta
         .num
         .mul(&tb.den)
-        .unwrap_surd()
-        .sub(&tb.num.mul(&ta.den).unwrap_surd())
-        .unwrap_surd();
+        .try_surd()
+        .unwrap()
+        .sub(&tb.num.mul(&ta.den).try_surd().unwrap())
+        .try_surd()
+        .unwrap();
     cross.sign().cmp(&0)
 }
 

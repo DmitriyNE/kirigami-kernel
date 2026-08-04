@@ -302,7 +302,57 @@ fn run_lint() -> bool {
     report("tuple-predicate", tuple_predicate(&crate_rs));
     report(":= census", census(&crate_rs));
     report("vv-matrix gate", vv_matrix(&matrix));
+    report(
+        "panic-freedom discharge",
+        panic_freedom_discharge(&crate_rs),
+    );
     ok
+}
+
+/// **panic-freedom discharge** (`docs/trusted-invariants.md`): in the pure tier (`lattice`,
+/// `certify-core`), every `#[allow(clippy::…)]` for a panic-capable lint must carry a nearby
+/// `// PANIC-FREEDOM:` justification — so a bare `#[allow]` cannot silently defeat the
+/// crate-root `deny`. The `deny` itself is enforced by clippy; this guards its exceptions.
+fn panic_freedom_discharge(files: &[SrcFile]) -> Vec<Finding> {
+    const PANIC_LINTS: &[&str] = &[
+        "unwrap_used",
+        "expect_used",
+        "panic",
+        "unreachable",
+        "todo",
+        "unimplemented",
+    ];
+    let mut out = Vec::new();
+    for f in files {
+        let pure = f.rel.starts_with("crates/lattice/src/")
+            || f.rel.starts_with("crates/certify-core/src/");
+        if !pure {
+            continue;
+        }
+        let lines: Vec<&str> = f.text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let is_panic_allow = line.contains("#[allow(clippy::")
+                && PANIC_LINTS
+                    .iter()
+                    .any(|l| line.contains(&format!("clippy::{l}")));
+            if !is_panic_allow {
+                continue;
+            }
+            // require a `// PANIC-FREEDOM:` within the 4 lines up to and including this one
+            let start = i.saturating_sub(4);
+            let discharged = lines[start..=i]
+                .iter()
+                .any(|l| l.contains("PANIC-FREEDOM:"));
+            if !discharged {
+                out.push(Finding {
+                    rel: f.rel.clone(),
+                    line: i + 1,
+                    msg: "pure-tier #[allow(clippy::…)] for a panic lint lacks a nearby `// PANIC-FREEDOM:` discharge (docs/trusted-invariants.md)".into(),
+                });
+            }
+        }
+    }
+    out
 }
 
 fn main() -> ExitCode {
@@ -412,6 +462,28 @@ mod tests {
         // non-★ landed row is out of scope
         let nonstar = format!("{header}| foo [M0] | c | ✅ | — | — | — | — | — |\n");
         assert!(vv_matrix(&nonstar).is_empty());
+    }
+
+    #[test]
+    fn panic_freedom_requires_a_discharge_tag() {
+        // bad: a pure-tier allow for a panic lint with no PANIC-FREEDOM tag
+        let bad = vec![file(
+            "crates/lattice/src/x.rs",
+            "#[allow(clippy::unwrap_used)]\nfn f() {}",
+        )];
+        assert_eq!(panic_freedom_discharge(&bad).len(), 1);
+        // ok: tagged nearby; and a non-pure-tier allow is out of scope
+        let clean = vec![
+            file(
+                "crates/lattice/src/x.rs",
+                "// PANIC-FREEDOM: guarded, see docs/trusted-invariants.md\n#[allow(clippy::unwrap_used)]\nfn f() {}",
+            ),
+            file(
+                "crates/geom/src/x.rs",
+                "#[allow(clippy::unwrap_used)]\nfn g() {}",
+            ),
+        ];
+        assert!(panic_freedom_discharge(&clean).is_empty());
     }
 
     #[test]

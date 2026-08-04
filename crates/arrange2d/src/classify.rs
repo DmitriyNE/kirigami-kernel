@@ -24,8 +24,14 @@ fn tangent_vec<B: Backend>(edge: &Edge<B>, p: &Point2<B>) -> (Surd<B>, Surd<B>) 
             Surd::from_rat(s.line.a.neg()),
         ),
         Edge::Arc(a) => {
-            let dx = p.x.sub(&Surd::from_rat(a.circle.cx.clone())).unwrap_surd();
-            let dy = p.y.sub(&Surd::from_rat(a.circle.cy.clone())).unwrap_surd();
+            let dx =
+                p.x.sub(&Surd::from_rat(a.circle.cx.clone()))
+                    .try_surd()
+                    .unwrap();
+            let dy =
+                p.y.sub(&Surd::from_rat(a.circle.cy.clone()))
+                    .try_surd()
+                    .unwrap();
             (dy.neg(), dx)
         }
     }
@@ -35,9 +41,11 @@ fn tangent_vec<B: Backend>(edge: &Edge<B>, p: &Point2<B>) -> (Surd<B>, Surd<B>) 
 /// rational carrier data, so the products stay in one radical and never escalate.
 fn cross<B: Backend>(u: &(Surd<B>, Surd<B>), v: &(Surd<B>, Surd<B>)) -> Surd<B> {
     u.0.mul(&v.1)
-        .unwrap_surd()
-        .sub(&u.1.mul(&v.0).unwrap_surd())
-        .unwrap_surd()
+        .try_surd()
+        .unwrap()
+        .sub(&u.1.mul(&v.0).try_surd().unwrap())
+        .try_surd()
+        .unwrap()
 }
 
 /// The classification determinant `det(ċ_A, ċ_B)` at `p`; its sign is the whole

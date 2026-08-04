@@ -64,11 +64,11 @@ fn surd_lin(
 ) -> Surd<Bignum> {
     let (t1, t2) = (a.scale(k1), b.scale(k2));
     let s = if minus {
-        t1.sub(&t2).unwrap_surd()
+        t1.sub(&t2).try_surd().unwrap()
     } else {
-        t1.add(&t2).unwrap_surd()
+        t1.add(&t2).try_surd().unwrap()
     };
-    s.add(&Surd::from_rat(t.clone())).unwrap_surd()
+    s.add(&Surd::from_rat(t.clone())).try_surd().unwrap()
 }
 
 pub(crate) fn rigid_pt(p: &P, m: &Rigid) -> P {
@@ -147,20 +147,24 @@ pub(crate) fn on_circle_pt(cx: &Q, cy: &Q, r: &Q, tn: i128, td: i128) -> P {
 pub(crate) fn on_line(l: &Line<Bignum>, p: &P) -> bool {
     p.x.scale(&l.a)
         .add(&p.y.scale(&l.b))
-        .unwrap_surd()
+        .try_surd()
+        .unwrap()
         .add(&Surd::from_rat(l.c.clone()))
-        .unwrap_surd()
+        .try_surd()
+        .unwrap()
         .sign()
         == 0
 }
 pub(crate) fn on_circle(c: &Circle<Bignum>, p: &P) -> bool {
-    let dx = p.x.sub(&Surd::from_rat(c.cx.clone())).unwrap_surd();
-    let dy = p.y.sub(&Surd::from_rat(c.cy.clone())).unwrap_surd();
+    let dx = p.x.sub(&Surd::from_rat(c.cx.clone())).try_surd().unwrap();
+    let dy = p.y.sub(&Surd::from_rat(c.cy.clone())).try_surd().unwrap();
     dx.square()
         .add(&dy.square())
-        .unwrap_surd()
+        .try_surd()
+        .unwrap()
         .sub(&Surd::from_rat(c.r2.clone()))
-        .unwrap_surd()
+        .try_surd()
+        .unwrap()
         .sign()
         == 0
 }

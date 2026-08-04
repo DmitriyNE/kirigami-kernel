@@ -1,5 +1,19 @@
 #![no_std]
 #![forbid(unsafe_code)]
+// Pure-tier panic-freedom (docs/trusted-invariants.md): the panic-capable constructs are
+// forbidden in production code. Every surviving `#[allow]` must carry a `// PANIC-FREEDOM:`
+// tag, checked by `cargo xtask lint`. Tests may panic freely (gated by `not(test)`).
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 //! `certify-core` — the verified checker surface.
 //!
 //! Pure, total, panic-free (spec invariant 4; `vv-guide §1`). This is the

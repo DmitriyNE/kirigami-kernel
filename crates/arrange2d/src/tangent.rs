@@ -83,10 +83,12 @@ pub fn outgoing_tangent<B: Backend>(edge: &Edge<B>, from_start: bool) -> Outgoin
             };
             let nx =
                 v.x.sub(&Surd::from_rat(arc.circle.cx.clone()))
-                    .unwrap_surd();
+                    .try_surd()
+                    .unwrap();
             let ny =
                 v.y.sub(&Surd::from_rat(arc.circle.cy.clone()))
-                    .unwrap_surd();
+                    .try_surd()
+                    .unwrap();
             // is `v` the smaller-x endpoint of this x-monotone piece?
             let v_is_left = v.x.cmp(&w.x) == Ordering::Less;
             let ccw = match (arc.half, v_is_left) {
@@ -130,9 +132,11 @@ fn phase<B: Backend>(dx: &Surd<B>, dy: &Surd<B>) -> u8 {
 /// stay in a single radical (mirrors [`super::classify`]'s `cross`).
 fn cross_sign<B: Backend>(a: &Outgoing<B>, b: &Outgoing<B>) -> i8 {
     a.dx.mul(&b.dy)
-        .unwrap_surd()
-        .sub(&a.dy.mul(&b.dx).unwrap_surd())
-        .unwrap_surd()
+        .try_surd()
+        .unwrap()
+        .sub(&a.dy.mul(&b.dx).try_surd().unwrap())
+        .try_surd()
+        .unwrap()
         .sign()
 }
 
@@ -340,8 +344,8 @@ mod tests {
         let rot = |o: &Outgoing<Bignum>| {
             // (u,v)=(3,4): (dx,dy) ↦ (u·dx − v·dy, v·dx + u·dy).
             let (u, v) = (Q::from_i128(3), Q::from_i128(4));
-            let dx = o.dx.scale(&u).sub(&o.dy.scale(&v)).unwrap_surd();
-            let dy = o.dx.scale(&v).add(&o.dy.scale(&u)).unwrap_surd();
+            let dx = o.dx.scale(&u).sub(&o.dy.scale(&v)).try_surd().unwrap();
+            let dy = o.dx.scale(&v).add(&o.dy.scale(&u)).try_surd().unwrap();
             Outgoing {
                 dx,
                 dy,

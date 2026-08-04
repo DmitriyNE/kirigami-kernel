@@ -82,6 +82,10 @@ impl<B: Backend> Surd<B> {
         }
     }
     /// A squarefree defining polynomial + isolating interval for this number.
+    // PANIC-FREEDOM: the `unreachable!` below is a fail-fast Sturm-isolation guard, discharged
+    // by argument — not a total fallback (a wrong value would mask the regression). See
+    // docs/trusted-invariants.md (`Surd::to_algreal`).
+    #[allow(clippy::unreachable)]
     pub fn to_algreal(&self) -> AlgReal<B> {
         if self.b.is_zero() || self.d.is_zero() {
             return AlgReal::from_rat(&self.a);
@@ -99,6 +103,9 @@ impl<B: Backend> Surd<B> {
                 return AlgReal { poly, iv };
             }
         }
+        // The loop always returns: `a+b√d` is a root of `poly`, and `isolate_all` covers every
+        // real root of `poly` (Sturm), so exactly one interval contains it. See the fn-level
+        // PANIC-FREEDOM tag / docs/trusted-invariants.md.
         unreachable!("a+b√d must lie in one isolating interval")
     }
 
@@ -303,13 +310,14 @@ pub enum Alg<B: Backend = Bignum> {
 }
 
 impl<B: Backend> Alg<B> {
-    /// The [`Surd`] when the arithmetic stayed in one radical field; panics on the
-    /// cross-radical [`AlgReal`] case. The arrangement carrier/membership path
-    /// never escalates (all coordinates share `d = Δ`), so it uses this.
-    pub fn unwrap_surd(self) -> Surd<B> {
+    /// The [`Surd`] when the arithmetic stayed in one radical field, else `None` (the
+    /// cross-radical [`AlgReal`] escape). **Total** — the pure tier never panics; the caller
+    /// decides how to treat an escape. The arrangement carrier/membership path never
+    /// escalates (all coordinates share `d = Δ`), so it unwraps the `Some` in the shell tier.
+    pub fn try_surd(self) -> Option<Surd<B>> {
         match self {
-            Alg::Surd(s) => s,
-            Alg::Alg(_) => panic!("Alg::unwrap_surd: value escaped its radical field"),
+            Alg::Surd(s) => Some(s),
+            Alg::Alg(_) => None,
         }
     }
 
@@ -353,8 +361,18 @@ fn isolate_prod<B: Backend>(minpoly: &Poly<B>, mut a: AlgReal<B>, mut b: AlgReal
             a.iv.hi.mul(&b.iv.lo),
             a.iv.hi.mul(&b.iv.hi),
         ];
-        let lo = corners.iter().min().unwrap().clone();
-        let hi = corners.iter().max().unwrap().clone();
+        // `corners` is a fixed 4-element array, so `min`/`max` are always `Some`; the
+        // fallback is unreachable but keeps this total (no `unwrap`).
+        let lo = corners
+            .iter()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| corners[0].clone());
+        let hi = corners
+            .iter()
+            .max()
+            .cloned()
+            .unwrap_or_else(|| corners[0].clone());
         if sc.count_in(&lo, &hi) == 1 {
             return AlgReal {
                 poly: sf,
@@ -557,19 +575,19 @@ mod tests {
         assert_eq!(s.scale(&Q::from_i128(2)), surd(2, 2, 2)); // 2 + 2√2
         assert_eq!(s.neg(), surd(-1, -1, 2)); // −1 − √2
         // add / sub with equal radical
-        assert_eq!(s.add(&surd(3, 2, 2)).unwrap_surd(), surd(4, 3, 2)); // 4 + 3√2
-        assert_eq!(surd(3, 2, 2).sub(&s).unwrap_surd(), surd(2, 1, 2)); // 2 + √2
+        assert_eq!(s.add(&surd(3, 2, 2)).try_surd().unwrap(), surd(4, 3, 2)); // 4 + 3√2
+        assert_eq!(surd(3, 2, 2).sub(&s).try_surd().unwrap(), surd(2, 1, 2)); // 2 + √2
         // rational operand stays in-field
         assert_eq!(
-            s.add(&S::from_rat(Q::from_i128(3))).unwrap_surd(),
+            s.add(&S::from_rat(Q::from_i128(3))).try_surd().unwrap(),
             surd(4, 1, 2)
         );
         assert_eq!(
-            s.mul(&S::from_rat(Q::from_i128(2))).unwrap_surd(),
+            s.mul(&S::from_rat(Q::from_i128(2))).try_surd().unwrap(),
             surd(2, 2, 2)
         );
         // (1 + √2)² = 3 + 2√2
-        assert_eq!(s.mul(&s).unwrap_surd(), surd(3, 2, 2));
+        assert_eq!(s.mul(&s).try_surd().unwrap(), surd(3, 2, 2));
     }
 
     #[test]

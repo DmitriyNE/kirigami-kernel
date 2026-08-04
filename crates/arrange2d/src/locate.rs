@@ -8,7 +8,7 @@
 //! **The arc crossing lives in a new radical.** A ray `y = y0` (rational) meets the
 //! circle `(x−cx)² + (y0−cy)² = r2` at `x = cx ± √disc`, `disc = r2 − (y0−cy)²` — a
 //! [`Surd`] in the radical `d = disc`, which is *not* the vertex radical `Δ`, so the
-//! `unwrap_surd` carrier idiom does not apply here. We compare these crossings with
+//! `try_surd` carrier idiom does not apply here. We compare these crossings with
 //! the rational query `x` (and the arc's `[x_lo, x_hi]`) through the cross-radical
 //! [`Surd::cmp`], which is exact for differing radicals.
 //!
@@ -410,9 +410,9 @@ mod tests {
             prop_assume!(p2.y != Surd::from_rat(c2.cy.clone()));
             // p2 has Surd coords in general (rotation); membership by the exact
             // predicate is the invariant we assert (winding needs a rational y).
-            let ddx = p2.x.sub(&Surd::from_rat(c2.cx.clone())).unwrap_surd();
-            let ddy = p2.y.sub(&Surd::from_rat(c2.cy.clone())).unwrap_surd();
-            let d2b = ddx.mul(&ddx).unwrap_surd().add(&ddy.mul(&ddy).unwrap_surd()).unwrap_surd();
+            let ddx = p2.x.sub(&Surd::from_rat(c2.cx.clone())).try_surd().unwrap();
+            let ddy = p2.y.sub(&Surd::from_rat(c2.cy.clone())).try_surd().unwrap();
+            let d2b = ddx.mul(&ddx).try_surd().unwrap().add(&ddy.mul(&ddy).try_surd().unwrap()).try_surd().unwrap();
             let inside1 = d2b.cmp(&Surd::from_rat(c2.r2.clone())) == Ordering::Less;
             prop_assert_eq!(inside0, inside1, "membership is rigid-invariant");
         }

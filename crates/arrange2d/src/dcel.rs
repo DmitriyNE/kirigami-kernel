@@ -330,17 +330,25 @@ fn on_carrier<B: Backend>(p: &Point2<B>, e: &Edge<B>) -> bool {
         Edge::Seg(s) => {
             p.x.scale(&s.line.a)
                 .add(&p.y.scale(&s.line.b))
-                .unwrap_surd()
+                .try_surd()
+                .unwrap()
                 .add(&Surd::from_rat(s.line.c.clone()))
                 .sign()
                 == 0
         }
         Edge::Arc(a) => {
-            let nx = p.x.sub(&Surd::from_rat(a.circle.cx.clone())).unwrap_surd();
-            let ny = p.y.sub(&Surd::from_rat(a.circle.cy.clone())).unwrap_surd();
+            let nx =
+                p.x.sub(&Surd::from_rat(a.circle.cx.clone()))
+                    .try_surd()
+                    .unwrap();
+            let ny =
+                p.y.sub(&Surd::from_rat(a.circle.cy.clone()))
+                    .try_surd()
+                    .unwrap();
             nx.square()
                 .add(&ny.square())
-                .unwrap_surd()
+                .try_surd()
+                .unwrap()
                 .sub(&Surd::from_rat(a.circle.r2.clone()))
                 .sign()
                 == 0
