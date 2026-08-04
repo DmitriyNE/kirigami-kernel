@@ -12,7 +12,7 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 matrix="$root/vv-matrix.md"
 
 # Landed milestones — extend as each ships.
-landed="M0 M3a M3c M3d M3e"
+landed="M0 M1 M2 M3a M3c M3d M3e"
 
 awk -v landed="$landed" '
   # FS="|" so the table columns are the awk fields: $2 = Item, $3 = crate,

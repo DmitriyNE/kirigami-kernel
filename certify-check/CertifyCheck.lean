@@ -33,3 +33,4 @@ import CertifyCheck.Reduce
 import CertifyCheck.Resultant
 import CertifyCheck.CapOut
 import CertifyCheck.CapOutRefine
+import CertifyCheck.ClipSigma

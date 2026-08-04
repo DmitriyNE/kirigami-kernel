@@ -5,6 +5,7 @@ set -eu
 here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 rc=0
 bash "$here/no_float_certified.sh" || rc=1
+bash "$here/no_repr_leak.sh" || rc=1
 bash "$here/tuple_predicate.sh" || rc=1
 bash "$here/census.sh" || rc=1
 exit "$rc"

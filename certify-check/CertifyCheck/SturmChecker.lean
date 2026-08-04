@@ -43,9 +43,17 @@ def PosMultiple (q r : Polynomial ℚ) : Prop := ∃ c : ℚ, 0 < c ∧ q = c �
 structure IsSturmChainData (p : Polynomial ℚ) (cs : List (Polynomial ℚ)) : Prop where
   nonempty   : cs ≠ []
   head       : PosMultiple cs[0]! p
+  /-- A single-entry chain is only complete when `p` itself is a nonzero constant
+      (`verify_chain`'s `c.len() == 1 ⇒ p.degree() == Some(0)`). Without this, `[p]`
+      for a non-constant `p` passes vacuously yet has zero sign variations. -/
+  single     : cs.length = 1 → p.degree = 0
   deriv      : 1 < cs.length → PosMultiple cs[1]! (derivative p)
   recurrence : ∀ i, i + 2 < cs.length → PosMultiple cs[i + 2]! (-(cs[i]! % cs[i + 1]!))
   descending : ∀ i, i + 1 < cs.length → (cs[i + 1]!).degree < (cs[i]!).degree
+  /-- The chain is **complete**: the final division is exact, so the tail is
+      `gcd(p, p')` (`verify_chain`'s `c[n-2] % c[n-1] == 0`). Without this, a truncated
+      sequence passes every per-pair identity yet under-counts the roots. -/
+  terminal   : 1 < cs.length → cs[cs.length - 2]! % cs[cs.length - 1]! = 0
 
 /-- The number of sign variations `V(cs, x)` of the chain evaluated at `x`, using
     the *same* `signVariations` the Rust computes and we proved correct. -/
@@ -90,5 +98,19 @@ theorem verify_chain_sound
     {a b : ℚ} (hab : a < b) :
     realRootsIn p a b = variationAt cs a - variationAt cs b :=
   sturm_root_count p cs hchain hsqf hab
+
+/-- **Regression witness for the completeness fix.** A bare single-element "chain" of a
+    non-constant polynomial is rejected — the `single` field forces `p` constant. Without
+    it, `IsSturmChainData (X²−1) [X²−1]` held vacuously; since a one-element chain has zero
+    sign variations, `sturm_root_count` then claimed `X²−1` has no roots in any interval,
+    an inconsistent axiom. (`verify_chain` always checked this — Rust `c.len()==1 ⇒
+    p.degree()==Some(0)` — so only the Lean spec had drifted weaker.) -/
+theorem not_isSturmChainData_singleton_nonconstant :
+    ¬ IsSturmChainData (X ^ 2 - 1 : Polynomial ℚ) [X ^ 2 - 1] := by
+  intro h
+  have hdeg : (X ^ 2 - 1 : Polynomial ℚ).degree = 0 := h.single rfl
+  rw [show (1 : Polynomial ℚ) = C 1 from (map_one C).symm,
+      degree_X_pow_sub_C (by norm_num) (1 : ℚ)] at hdeg
+  exact absurd hdeg (by decide)
 
 end CertifyCheck

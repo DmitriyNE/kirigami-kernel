@@ -406,6 +406,103 @@ coordinates) remains the honest TCB boundary, validated by the CGAL exact-geomet
 
 ---
 
+### Milestone B acceptance criteria (device-cone chart + the 1D certificate engine — M1 `geom` + M2 `certify1d`)
+
+*Authored before implementation, per the rule above.* Milestone B builds the first chart layer (M1
+`geom`) and the 1D certificate engine (M2 `certify_core::certify1d`) — independent of Milestone A, and the
+gate that unblocks C (closure + sew). Exit (`implementation-plan-v1.md:49`): **a certified single-chart
+record for the device cone** — evaluated, REG/SLAB certified, the CLIP ladder exercised on a synthetic
+trim, mesh κ-cap emitted.
+
+**B has no real searcher.** The M2 checkers verify certificates *about* M1 `geom` chart fields, and the
+searcher that produces those (the `closure` crate) is M4. So B is exercised by the device-cone golden +
+the M2 corpus fixtures + hand-built flat certificates. Scope boundary, pinned here: `geom` owns the
+**total-exact field computations** (untrusted searcher); `certify_core::certify1d` owns the **certified
+predicates**. The one ★ soundness-critical row is **CLIP-σ signed** (`[M2]`), discharged by **Kani**
+(bounded corner-range signed-disjunction; gates the merge) **plus** a non-gating **Lean-via-Aeneas**
+stretch on the certify-core extraction surface. No runtime-checked-hypothesis shortcut.
+
+**The rational-function substrate — met when:**
+- `lattice::ratfunc` provides `RatFunc = (num, den)` over `Poly` and a common-denominator `Vec3Rat`
+  (`{num:[Poly;3], den}`) with dot / cross / derivative (quotient rule) and a gcd-`reduce`. Stays strictly
+  rational: the quaternion sandwich auto-normalizes `n` (numerator norm = `|q|²`), so no unsquared norm
+  appears in B; the σ-parametric √ (`ρ = |n̂′|`) is deferred to M3 and is **not** `Surd` (constant radicand).
+- Verified: ring axioms; derivative = quotient rule; `reduce` canonicalizes; differential vs a
+  `num-rational` oracle at sample σ; stays `no_std` (the `thumbv7em` gate).
+
+**M1 `geom` chart fields (total exact) — met when:**
+- `geom::chart` computes `q` (polynomial quaternion spline), `h` (positive-weight rational spline), and
+  `n = q·e₃·q̄/|q|²`, `n′`, `r = n×n′`, `|n′|²`, pedal `c = h·n + (h′/|n′|²)·n′`, `X = c+μr`, `C = X+w·n`,
+  `det J = (c′+μr′)·n′ + w|n′|²`, `ψ′` (spec §3.2) — all exact over ℚ(σ).
+- `geom::tags` computes `CONE(A,a)` (linear solve `h≡n·A`), CYLINDER / CIRC-CYL / CONSLOPE / PLANE
+  (spec §3.6), origin-explicit witnesses.
+- The hatted stall calculus (`geom::stall`, spec §3.2.2): `p̂=εp`, `μ̂=p̂μ`, `r̂`, `n̂′=εn′/p`, `Ĵ`, the
+  stall-limit condition — and the tested identity **`J_raw = p̂·Ĵ`** (one positive factor; guards the `/p`
+  fossil and its second site `ĝ_x′ = −Ĵ`). REPARAM (`geom::reparam`, spec §7) is a pure old→new record
+  transform, **not** a checker.
+- Verified: the unconditional identities (`n` numerator = `|q|²`, developability, offsets-in-family,
+  `c·r=0`) as property tests; differential vs num-rational; `J_raw = p̂·Ĵ` on synthetic stall spans (the
+  cone has none). These M1 fields are total-exact, checked by structure — **not ★**.
+
+**The device-cone golden — met when:**
+- The cone device (β=42°, ID 5 mm, `h≡0`, `CONE(0)`, deg-1 G1 spans, w∈[−120,+120]µm; spec §13) is data
+  under `crates/fixtures/`, evaluated through the chart layer, and its golden numbers hold: κ₁≈0.297 mm⁻¹,
+  developed sector 2π sin β≈240.9°, ≈1.49 wraps, SLAB slack R₁+w⁻≈3.24 mm.
+- The **certified single-chart cone record** assembles the REG-Q / SLAB-S0 / CLIP verdicts + mesh κ-cap
+  (`min(s_max, 1/κ₁)`) — the B exit artifact. The `device cone chart [M1]` vv-matrix row is the golden
+  (non-★) validation lane.
+
+**M2 `certify_core::certify1d` checkers (pure, `no_std`, total, panic-free) — met when:**
+- The corner min/max evaluator carries an explicit **min-or-max tag validated against convexity** (spec
+  §8.2 rider) — the utility that makes a corner range sound.
+- REG-Q and SLAB-S0 (spec §8.5): consume `Poly` + a **supplied `SturmChain` re-verified via `verify_chain`
+  before counting** + `MarginSq` + `Interval`; positive-denominator discipline; SLAB-S0 collapses `+w` at
+  `w⁻` and adds the stall-limit ring checks. `MarginSq` is correct here (√-carrying-cleared squares).
+- The CLIP ladder (spec §8.5): CLIP-W → CLIP-μ → common-zero isolation (Sturm on `b²+d²`) → per zero
+  {CLIP-a | CLIP-σ | reject}, terminating in {certified, rejected}.
+- **CLIP-σ signed ★**: `clip_sigma` ranges the **signed** affine `∂_σG` over the four corners (min *and*
+  max), `Verified(sign)` iff single-signed and separated by `m_σ`, straddle ⇒ `Unresolved` (subdivide).
+  The threshold `m_σ` is a plain **signed `Rat`, never `MarginSq`** — squaring reintroduces the
+  interior-minimizing `|·|` unsoundness this row exists to kill (the stored `G=σμ` counterexample,
+  `cx-sigma-mu-crossing`).
+- TRIM-LOCAL (`G_i>0` at the four outer-fiber corners; catches re-entry) + the CLIP-DOM corner-sign census
+  (four G-sign event classes Sturm-isolated + connectivity + consumer re-pointing).
+- EDGE-REG returns `EdgeReg{ Pass | Fail | Stall }` — the `Stall→Pending` fourth state is a
+  **domain-specific enum, not a `Verdict` variant**; `to_verdict` lowers `Stall → Refuted(Stalled)`
+  (gate-failing as stored), never `Unresolved`.
+- Verified: the M2 corpus (`cx-sigma-mu-crossing` → `Unresolved`; `cx-clip-common-zero` → `Verified` via
+  CLIP-a; `cx-stall-reparam` → `Pending`, then `Verified` after REPARAM); property tests against the cone
+  fields.
+
+**★ CLIP-σ discharge — met when:**
+- A bounded **Kani** harness (`clip_sigma` over `[Rat;4]`, allocation-free) proves the corner-range
+  signed-disjunction correct and rejects the `σμ` falsely-certifying class; registered by name in
+  `ci.yml`. This is the load-bearing ★ discharge that **gates the merge**.
+- A **Lean-via-Aeneas** stretch lifts `clip_sigma` onto the certify-core extraction surface with a
+  `CertifyCheck/ClipSigma.lean` spec under the `#print axioms` audit, landing its honest result
+  (axiom-clean / 1-cited-axiom / documented fragment). **Upgrades the Lean cell but does not gate.**
+
+**Documentation (a merge gate, not a retrofit) — met when:** every new public item across
+`lattice::ratfunc`, the `geom` chart modules, and `certify_core::certify1d` is documented usage-first and
+history-free (no slice/phase tags), with worked runnable doctests on the entry points; `-W missing_docs`
+= 0 on the new surface; `cargo doc` clean under `-D` broken/private intra-doc links.
+
+**Deferred to later milestones** (documented, not silently dropped): the petal cone-flank fixture
+(geometry not yet pinned by spec §13 — needed for C); SLAB-S1 / QPOS Bernstein (no Bernstein primitive;
+M4-adjacent); the full EDGE-REG verdict logic (lives in `sew`/M5); deep substitution/removability
+transport; the σ-parametric function-field surd (M3 / Tier-C).
+
+**Status: B met.** Phases B.0–B.7 landed on `milestone-b`: `lattice::ratfunc`; the `geom` chart layer
+(`chart`/`tags`/`stall`/`reparam`/`record`); the `certify_core::certify1d` engine (REG-Q, SLAB-S0,
+the CLIP ladder with the **★ CLIP-σ signed** checker, TRIM-LOCAL, CLIP-DOM census, EDGE-REG/Pending);
+the certified device-cone `ChartRecord` (`fixtures::devices::certified_cone` — REG-Q `|q|²`/`|n′|²`,
+SLAB-S0, mesh κ-cap 65/194, all Verified); and the M2 corpus. The ★ CLIP-σ discharge is the Kani proof
+`clip_sigma_signed_disjunction_sound` (gating), with `ClipSigma.lean` an axiom-clean ℤ second witness
+(hand-mirror; the Rat-carrying Aeneas lift is the post-B algebra rehaul). Deferred items above are
+carried forward, not dropped.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.

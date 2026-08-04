@@ -3,6 +3,69 @@
 //! `lattice` — the slice-3d ℤ₂² cocycle proof.
 
 use crate::arrange::{cocycle_ok, link_iso_ok, link_ok, v_boundary};
+use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
+
+// Soundness of the ★ CLIP-σ signed disjunction (spec §8.5). `clip_sigma` ranges the
+// **signed** affine `∂_σG` over four box corners and certifies a single sign; the row
+// exists because the tempting *squared* `|∂_σG|² ≥ m` test is unsound — an affine form
+// minimizes in the box interior, so `G = σμ` (whose `∂_σG = μ` vanishes on `μ = 0`)
+// passes the corner test with margin while the crossing is singular. This proves the
+// signed test does not: a certified verdict forces **every** corner strictly single-
+// signed and separated, so any mixed-sign corner set (the `σμ` class) is rejected.
+//
+// The decision is factored (`corner_range` ∘ `clip_sigma_branch`, both generic over the
+// order) so the proof runs on `i128` — the exact functions `clip_sigma` applies at
+// `T = Rat`. Running Kani through `Rat<Bignum>` instead is a trap: the two-tier fast/slow
+// dispatch's dead `Slow` branch drags in dashu's unbounded `gcd` loop, which CBMC unwinds
+// forever. That the `i128` order and `Rat`'s order agree is `lattice`'s obligation (its
+// `cmp` panic-freedom + differential proofs), cleanly separated from this logic proof.
+// `i32` corners bound the state; the property is scale-free, so the bound loses nothing.
+#[kani::proof]
+#[kani::unwind(6)]
+fn clip_sigma_signed_disjunction_sound() {
+    let cs32: [i32; 4] = kani::any();
+    let m32: i32 = kani::any();
+    // Widen to i128 so the margin negation `-m` never overflows (i32::MIN as i128 negates
+    // cleanly); this mirrors the exact rationals `clip_sigma` builds via `Rat::from_i128`.
+    let cs: [i128; 4] = [
+        cs32[0] as i128,
+        cs32[1] as i128,
+        cs32[2] as i128,
+        cs32[3] as i128,
+    ];
+    let m = m32 as i128;
+
+    // The exact body of `clip_sigma`, at T = i128.
+    let (lo, hi) = corner_range(&cs).expect("four corners is non-empty");
+    let neg_m = -m;
+    let branch = clip_sigma_branch(&lo, &hi, &m, &neg_m, m > 0);
+
+    // Soundness: a certified sign is the true single sign of *all* corners, separated by a
+    // positive margin.
+    match branch {
+        Some(ClipBranch::Positive) => {
+            assert!(m > 0);
+            for &c in &cs {
+                assert!(c >= m);
+            }
+        }
+        Some(ClipBranch::Negative) => {
+            assert!(m > 0);
+            for &c in &cs {
+                assert!(c <= -m);
+            }
+        }
+        None => {} // the honest three-valued middle carries no obligation
+    }
+
+    // The `σμ` falsely-certifying class, stated directly: a mixed-sign corner set — some
+    // `∂_σG > 0` and some `∂_σG < 0` — is never certified.
+    let has_pos = cs.iter().any(|&c| c > 0);
+    let has_neg = cs.iter().any(|&c| c < 0);
+    if has_pos && has_neg {
+        assert!(branch.is_none());
+    }
+}
 
 // The soundness of the cocycle checker, as **bounded DCEL bookkeeping** (vv-guide
 // §5): if `cocycle_ok` accepts a labeling, then bit propagation is *path

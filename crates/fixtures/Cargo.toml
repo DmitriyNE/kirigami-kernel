@@ -7,7 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+lattice.workspace = true
 geom.workspace = true
+certify-core.workspace = true
 arrange2d.workspace = true
 closure.workspace = true
 sew.workspace = true
