@@ -35,6 +35,13 @@ impl Backend for Bignum {
     type Int = BigInt;
     type Rat = BigRat;
 
+    fn int_clone(a: &BigInt) -> BigInt {
+        BigInt(a.0.clone())
+    }
+    fn rat_clone(a: &BigRat) -> BigRat {
+        BigRat(a.0.clone())
+    }
+
     fn int_zero() -> BigInt {
         BigInt(IBig::ZERO)
     }

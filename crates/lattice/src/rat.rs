@@ -50,7 +50,7 @@ enum IntRepr<B: Backend = Bignum> {
 fn to_slow_int<B: Backend>(a: &Int<B>) -> B::Int {
     match a {
         Int(IntRepr::Fast(x)) => B::int_from_i128(*x),
-        Int(IntRepr::Slow(i)) => i.clone(),
+        Int(IntRepr::Slow(i)) => B::int_clone(i),
     }
 }
 
@@ -177,7 +177,7 @@ impl<B: Backend> Clone for Int<B> {
     fn clone(&self) -> Self {
         match self {
             Int(IntRepr::Fast(x)) => Int(IntRepr::Fast(*x)),
-            Int(IntRepr::Slow(i)) => Int(IntRepr::Slow(i.clone())),
+            Int(IntRepr::Slow(i)) => Int(IntRepr::Slow(B::int_clone(i))),
         }
     }
 }
@@ -237,7 +237,7 @@ fn promote_rat<B: Backend>(x: &SmallRat) -> B::Rat {
 fn to_slow_rat<B: Backend>(a: &Rat<B>) -> B::Rat {
     match a {
         Rat(RatRepr::Fast(x)) => promote_rat::<B>(x),
-        Rat(RatRepr::Slow(r)) => r.clone(),
+        Rat(RatRepr::Slow(r)) => B::rat_clone(r),
     }
 }
 /// Pull a backend rational (already reduced, `den > 0`) back to `Fast` when both
@@ -348,7 +348,7 @@ impl<B: Backend> Clone for Rat<B> {
     fn clone(&self) -> Self {
         match self {
             Rat(RatRepr::Fast(x)) => Rat(RatRepr::Fast(*x)),
-            Rat(RatRepr::Slow(r)) => Rat(RatRepr::Slow(r.clone())),
+            Rat(RatRepr::Slow(r)) => Rat(RatRepr::Slow(B::rat_clone(r))),
         }
     }
 }
