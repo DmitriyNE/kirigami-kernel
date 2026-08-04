@@ -1,4 +1,4 @@
-# V&V matrix (stub — CI gates on this)
+# V&V matrix (CI gates on this)
 
 Row per certificate/kernel operation; cell per method. Status: ✅ done · 🚧 partial · ⬜ todo · N/A.
 Each Item carries its milestone tag `[Mx]`. CI fails the milestone gate

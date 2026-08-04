@@ -10,7 +10,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 
 ## Read order (do not skip)
 
-1. **`docs/agent-glossary.md`** — the 30 terms and acronyms you must know to parse the spec (REG-V, CLIP-DOM, MITER-FIT, EDGE-OCCUPANCY, V_cand/V_∂, the lattice tiers, ...). Read this first or the spec is noise.
+1. **`docs/agent-glossary.md`** — the terms and acronyms you must know to parse the spec (REG-V, CLIP-DOM, MITER-FIT, EDGE-OCCUPANCY, V_cand/V_∂, the lattice tiers, ...). Read this first or the spec is noise.
 2. **`docs/implementation-plan-v1.md`** — module decomposition, dependency order, milestones. This is your map. Then **`docs/environment-and-crate-layout.md`** — the resolved crate layout, toolchain/edition pins, Lean/Mathlib, and Nix flake; read it before you scaffold anything.
 3. **`docs/vv-guide.md`** — the verification & validation architecture. **Non-negotiable; it constrains how you write every function.** The core idea: verified *checkers*, tested *searchers*, a hard pure-core/imperative-shell split.
 4. **`fixtures/corpus.md`** — ~30 counterexamples with required verdicts. These are your regression suite from commit one. Each is a real bug a real reviewer found; reproducing its verdict is how you know a module works.
@@ -30,7 +30,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 
 ## Toolchain
 
-- **Rust, edition 2024** (MSRV floor 1.85). `certify-core` + `lattice` are hard `#![no_std]` + `alloc`; the bignum backend sits behind a `lattice` trait so `no_std` lives at the API, not the backend. Bignum: benchmark `malachite` vs `num-rational` at M0 — winner must be **no_std + alloc** *and* fast on the yardstick (`lattice` doc). No `unsafe`. Environment is pinned via a **Nix flake** (fenix-managed toolchain). **Crate layout, edition/tool pins, Lean/Mathlib, and the flake are all resolved in `docs/environment-and-crate-layout.md` — read it before scaffolding.**
+- **Rust, edition 2024** (MSRV floor 1.85). `certify-core` + `lattice` are hard `#![no_std]` + `alloc`; the bignum backend sits behind a `lattice` trait so `no_std` lives at the API, not the backend. Bignum: **dashu** — chosen at M0 (passes the hard **no_std + alloc** gate, ties malachite for fastest; `docs/lattice-backend-benchmark.md`). No `unsafe`. Environment is pinned via a **Nix flake** (fenix-managed toolchain). **Crate layout, edition/tool pins, Lean/Mathlib, and the flake are all resolved in `docs/environment-and-crate-layout.md` — read it before scaffolding.**
 - **Kani** (bounded model checking): the lattice fast≡slow bridge, finite combinatorial functions, bounded DCEL bookkeeping. See vv-guide §5.
 - **Lean 4 + Mathlib** (deductive): the certificate theorems, via **Rust→Lean** lifting (hax for pure parts, Aeneas for locally-mutable parts — direction is Rust→Lean, there is no Lean→Rust codegen). See vv-guide §4. **Run the §7 spike before committing the extraction approach.**
 - **proptest / cargo-fuzz**: stratum-weighted generators (degenerate-heavy — the bugs live on degenerate strata). **CGAL** and **OpenCascade** are differential oracles in `difftest/`, never in a certified path.

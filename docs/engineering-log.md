@@ -19,12 +19,9 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Launder the bench build-artifact blobs out of git history.** 853 files under
-  `benchmarks/two-tier-vs-dashu/target/` entered history via `c7f67a6` and rode into `main`
-  through merge `8554ad1`. They are untracked going forward (`.gitignore` + a `chore`
-  commit) but not stripped. Rewrite with `git filter-repo` **before** pushing `main`, so the
-  remote never sees them.
-  *2026-08-04 · open · `benchmarks/two-tier-vs-dashu/`*
+- **Push the laundered `main` to `gho`.** Deferred until the tidy sweep lands, so we push one
+  clean state. The history rewrite is done (see Resolved); the push is a clean fast-forward.
+  *2026-08-04 · open*
 
 ## Tech debt / sketchy
 
@@ -80,4 +77,9 @@ fine — this is a log, not a schema.
 
 ## Resolved
 
-*(Move bullets here on close, keeping the date and a one-line outcome. Empty so far.)*
+- **Launder the bench build-artifact blobs out of git history.** *Done 2026-08-04:* rewrote
+  `main` + `milestone-b` with `git filter-branch --index-filter` (filter-repo unavailable),
+  stripping all 853 `benchmarks/two-tier-vs-dashu/target/` blobs — branch histories clean, the
+  milestone merge + tree intact, `cargo build` green. Objects survive only via the
+  `refs/original` backup + a bundle (won't be pushed; gc when convenient). The rewritten `main`
+  still descends from `gho/main`, so the pending push is a clean fast-forward.

@@ -7,7 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-fixtures.workspace = true
 # The C++ FFI (CGAL / OpenCascade, JSON in/out) is behind the `cgal` feature so
 # the default workspace build needs no system C++ libs. `nix develop` (CI) ships
 # CGAL 6.2 + gmp/mpfr/boost; build with `--features cgal`.

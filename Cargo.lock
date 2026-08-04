@@ -266,7 +266,6 @@ dependencies = [
  "certify-core",
  "cxx",
  "cxx-build",
- "fixtures",
  "geom",
  "lattice",
  "pkg-config",
