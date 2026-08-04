@@ -42,8 +42,8 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 | `RefRat` | `ratDen = ℚ` ops | `intDen num / den`; `reduce` = lowest terms via gcd |
 
 ## Phasing (each phase = a committed, axiom-audited proof; pause per phase)
-`R.4b.1` model wiring + denotation + `is_zero`/`cmp` **— done** · `.2` `add`/`sub` **— in progress**
-(`normalize` den-preservation + `add` **done**; `sub` — the `i128`-borrow dual — remains) ·
+`R.4b.1` model wiring + denotation + `is_zero`/`cmp` **— done** · `.2` `add`/`sub` **— done**
+(`normalize` den-preservation, `add` = the u128 carry loop, `sub` = the i128-borrow dual over ℤ) ·
 `.3` `mul` · `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
 
 **R.4b.2 recipe (validated).** The carry loop is a `loop.spec_decr_nat` with the invariant

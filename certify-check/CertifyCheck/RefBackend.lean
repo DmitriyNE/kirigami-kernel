@@ -502,10 +502,181 @@ theorem add_eq (a b : RefNat)
     · rw [hlB]; omega
     · rw [hlB]; omega
 
+/-- Widening `u64 → i128` (zero-extend) preserves the value. -/
+private theorem uhcast_i128_val (x : Std.U64) : (UScalar.hcast .I128 x).val = (x.val : ℤ) := by
+  have h := UScalar.hcast_inBounds_spec .I128 x (by scalar_tac)
+  simpa [lift, WP.spec_ok] using h
+
+/-- Truncating `i128 → u64`: for a value in `[0, 2⁶⁴)` the low 64 bits are exactly that value. -/
+private theorem ihcast_u64_val (d : Std.I128) (h0 : 0 ≤ d.val) (h64 : d.val < 2 ^ 64) :
+    ((IScalar.hcast .U64 d).val : ℤ) = d.val := by
+  have h := IScalar.hcast_inBounds_spec .U64 d ⟨h0, by scalar_tac⟩
+  simpa [lift, WP.spec_ok] using h
+
+/-! ### `sub` — the schoolbook borrow loop computes `den self − den o`
+
+Dual of `add`, but the per-limb arithmetic is signed `i128` (`d = a − b − borrow`, with a `d < 0`
+branch), so the loop invariant lives over ℤ. The final borrow is `0` exactly when `den o ≤ den self`
+(the Rust contract), which forces the truncated result to be `den self − den o`. -/
+
+set_option maxHeartbeats 800000 in
+/-- `sub`'s borrow loop, at step `i` (over ℤ): the emitted `i` limbs plus the pending borrow account
+    for the low-`i` denotation difference. The final borrow (existential) is `0`/`1`. -/
+private theorem sub_loop_spec (self o : RefNat) (out : alloc.vec.Vec Std.U64)
+    (borrow : Std.I128) (i : Std.Usize) (hlo : o.limbs.val.length ≤ self.limbs.val.length)
+    (hi : i.val ≤ self.limbs.val.length) (hlen : out.val.length = i.val)
+    (hbor : borrow.val = 0 ∨ borrow.val = 1)
+    (hinv : (den (self.limbs.val.take i.val) : ℤ) + borrow.val * 2 ^ (64 * i.val)
+      = (den out.val : ℤ) + (den (o.limbs.val.take i.val) : ℤ)) :
+    RefNat.sub_loop self.limbs o out borrow i
+      ⦃ r => (∃ bf : ℤ, (bf = 0 ∨ bf = 1) ∧
+          (den self.limbs.val : ℤ) + bf * 2 ^ (64 * self.limbs.val.length)
+            = (den r.val : ℤ) + (den o.limbs.val : ℤ)) ∧ r.val.length = self.limbs.val.length ⦄ := by
+  unfold RefNat.sub_loop
+  apply loop.spec_decr_nat
+    (measure := fun st => self.limbs.val.length - st.2.2.val)
+    (inv := fun st => st.2.2.val ≤ self.limbs.val.length ∧ st.1.val.length = st.2.2.val ∧
+      (st.2.1.val = 0 ∨ st.2.1.val = 1) ∧
+      (den (self.limbs.val.take st.2.2.val) : ℤ) + st.2.1.val * 2 ^ (64 * st.2.2.val)
+        = (den st.1.val : ℤ) + (den (o.limbs.val.take st.2.2.val) : ℤ))
+  · rintro ⟨out', borrow', i'⟩ ⟨hi', hlen', hbor', hinv'⟩
+    show RefNat.sub_loop.body self.limbs o out' borrow' i' ⦃ _ ⦄
+    unfold RefNat.sub_loop.body
+    simp only [] at hi' hlen' hbor' hinv'
+    dsimp only []
+    by_cases hlt : i' < self.limbs.len
+    · rw [if_pos hlt]
+      step; step
+      have hiv : i'.val < self.limbs.val.length := by scalar_tac
+      have ha_val : a.val = ((self.limbs.val[i'.val]'hiv).val : ℤ) := by
+        rw [a_post, uhcast_i128_val, i2_post]
+      have ha_lt : a.val < 2 ^ 64 := by rw [ha_val]; exact_mod_cast (self.limbs.val[i'.val]'hiv).bv.isLt
+      have ha_ge : (0 : ℤ) ≤ a.val := by rw [ha_val]; positivity
+      set bv : Std.I128 := if h : i'.val < o.limbs.val.length
+        then UScalar.hcast .I128 (o.limbs.val[i'.val]'h) else 0#i128 with hbv_def
+      have hb : (if i' < o.limbs.len then (do
+          let i4 ← o.limbs.index_usize i'
+          ok (UScalar.hcast .I128 i4)) else ok 0#i128) = ok bv := by
+        by_cases h : i'.val < o.limbs.val.length
+        · rw [if_pos (by scalar_tac), hbv_def, dif_pos h,
+            show o.limbs.index_usize i' = ok (o.limbs.val[i'.val]'h) from by
+              simp only [alloc.vec.Vec.index_usize, alloc.vec.Vec.getElem?_Nat_eq,
+                List.getElem?_eq_getElem h]]
+          rfl
+        · rw [if_neg (by scalar_tac), hbv_def, dif_neg h]
+      have hbv_val : bv.val = (if h : i'.val < o.limbs.val.length
+          then ((o.limbs.val[i'.val]'h).val : ℤ) else 0) := by
+        rw [hbv_def]; split
+        · exact uhcast_i128_val _
+        · rfl
+      have hbv_lt : bv.val < 2 ^ 64 := by
+        rw [hbv_val]; split
+        · exact_mod_cast (o.limbs.val[i'.val]'(by assumption)).bv.isLt
+        · norm_num
+      have hbv_ge : (0 : ℤ) ≤ bv.val := by rw [hbv_val]; split <;> positivity
+      have hbor'0 : 0 ≤ borrow'.val := by rcases hbor' with h | h <;> omega
+      have hbor'1 : borrow'.val ≤ 1 := by rcases hbor' with h | h <;> omega
+      have hpad_s : (den (self.limbs.val.take (i'.val + 1)) : ℤ)
+          = (den (self.limbs.val.take i'.val) : ℤ) + 2 ^ (64 * i'.val) * a.val := by
+        rw [den_take_succ_pad, dif_pos hiv, ha_val]; push_cast; ring
+      have hpad_o : (den (o.limbs.val.take (i'.val + 1)) : ℤ)
+          = (den (o.limbs.val.take i'.val) : ℤ) + 2 ^ (64 * i'.val) * bv.val := by
+        rw [den_take_succ_pad, hbv_val]; split <;> push_cast <;> ring
+      rw [hb]
+      step; step
+      -- shared den reconstruction as a plain ℤ identity (an explicit `⦃match⦄` post would compile to
+      -- a different match-motive than the loop body's, so it never unifies — inline the `step`s instead).
+      have recon : ∀ (bc dd : ℤ) (i5 : Std.U64) (out1 : alloc.vec.Vec Std.U64) (i6 : Std.Usize),
+          i6.val = i'.val + 1 → out1.val = out'.val ++ [i5] → (i5.val : ℤ) = dd →
+          a.val - bv.val - borrow'.val + bc * 2 ^ 64 = dd →
+          (den (self.limbs.val.take i6.val) : ℤ) + bc * 2 ^ (64 * i6.val)
+            = (den out1.val : ℤ) + (den (o.limbs.val.take i6.val) : ℤ) := by
+        intro bc dd i5 out1 i6 hi6 hout1 hlov hrel
+        have hpow : (2 : ℤ) ^ (64 * i6.val) = 2 ^ (64 * i'.val) * 2 ^ 64 := by
+          rw [hi6, Nat.mul_add, Nat.mul_one, pow_add]
+        rw [hpow, hi6, hpad_s, hpad_o, hout1, den_append, den_singleton, hlen']
+        push_cast [hlov]
+        linear_combination hinv' + (2 : ℤ) ^ (64 * i'.val) * hrel
+      have hd_val : d.val = a.val - bv.val - borrow'.val := by rw [d_post, b_post]
+      have hd_lo : -2 ^ 64 ≤ d.val := by rw [hd_val]; omega
+      have hd_hi : d.val < 2 ^ 64 := by rw [hd_val]; omega
+      by_cases hd : d < 0#i128
+      · rw [if_pos hd]
+        step; step
+        have hd0 : d.val < 0 := by scalar_tac
+        have hshift : borrow1.val = 2 ^ 64 := by
+          rw [d1, Int.shiftLeft_eq, one_mul]
+          refine Int.bmod_eq_of_le_mul_two ?_ ?_ <;> scalar_tac
+        have hxlo : 0 ≤ x.val := by rw [x_post, hshift]; omega
+        have hxhi : x.val < 2 ^ 64 := by rw [x_post, hshift]; omega
+        step; step
+        · scalar_tac
+        step
+        · scalar_tac
+        have hlov : (i5.val : ℤ) = x.val := by rw [i5_post]; exact ihcast_u64_val x hxlo hxhi
+        refine ⟨by scalar_tac, ?_, Or.inr (by decide), ?_, by scalar_tac⟩
+        · rw [out1_post, List.length_append, hlen', i6_post]; simp
+        · refine recon _ _ i5 out1 i6 i6_post out1_post hlov ?_
+          rw [x_post, hshift, hd_val]; norm_num
+      · rw [if_neg hd]
+        simp only [bind_tc_ok]
+        have hd0 : 0 ≤ d.val := by scalar_tac
+        step; step
+        · scalar_tac
+        step
+        · scalar_tac
+        have hlov : (r.val : ℤ) = d.val := by rw [r_post]; exact ihcast_u64_val d hd0 hd_hi
+        refine ⟨by scalar_tac, ?_, Or.inl (by decide), ?_, by scalar_tac⟩
+        · rw [out1_post, List.length_append, hlen', i6_post]; simp
+        · refine recon _ _ r out1 i6 i6_post out1_post hlov ?_
+          rw [hd_val]; norm_num
+    · rw [if_neg hlt]
+      simp only [WP.spec_ok]
+      have hin : i'.val = self.limbs.val.length := by scalar_tac
+      rw [hin] at hinv' hlen'
+      rw [List.take_length, List.take_of_length_le hlo] at hinv'
+      exact ⟨⟨borrow'.val, hbor', by linarith [hinv']⟩, hlen'⟩
+  · exact ⟨hi, hlen, hbor, hinv⟩
+
+/-- **`sub` refinement.** For `den o ≤ den self` (and `len o ≤ len self`), the lifted `RefNat::sub`
+    computes `den self − den o` on the limb denotations. -/
+theorem sub_eq (self o : RefNat) (hlo : o.limbs.val.length ≤ self.limbs.val.length)
+    (hle : den o.limbs.val ≤ den self.limbs.val) :
+    RefNat.sub self o ⦃ r => den r.limbs.val = den self.limbs.val - den o.limbs.val ⦄ := by
+  unfold RefNat.sub
+  simp only [alloc.vec.Vec.with_capacity]
+  have hloop := sub_loop_spec self o (alloc.vec.Vec.new Std.U64) 0#i128 0#usize hlo
+    (by simp) (by simp) (Or.inl rfl) (by simp [den])
+  cases hcase : RefNat.sub_loop self.limbs o (alloc.vec.Vec.new Std.U64) 0#i128 0#usize with
+  | ok out1 =>
+    rw [hcase] at hloop; simp only [WP.spec_ok] at hloop
+    obtain ⟨⟨bf, hbf, heq⟩, hlen1⟩ := hloop
+    have hout1lt : (den out1.val : ℤ) < 2 ^ (64 * self.limbs.val.length) := by
+      have h := den_lt out1.val; rw [hlen1] at h; exact_mod_cast h
+    have hleZ : (den o.limbs.val : ℤ) ≤ (den self.limbs.val : ℤ) := by exact_mod_cast hle
+    have hbf0 : bf = 0 := by
+      rcases hbf with h | h
+      · exact h
+      · exfalso; rw [h] at heq; omega
+    rw [hbf0, zero_mul, add_zero] at heq
+    have heqN : den self.limbs.val = den out1.val + den o.limbs.val := by exact_mod_cast heq
+    simp only [bind_tc_ok]
+    have hnorm := normalize_den out1
+    cases hnc : lattice.refbackend.normalize out1 with
+    | ok o2 =>
+      rw [hnc] at hnorm; simp only [WP.spec_ok] at hnorm
+      simp only [bind_tc_ok, WP.spec_ok]
+      show den o2.val = _; rw [hnorm]; omega
+    | fail e => rw [hnc] at hnorm; exact hnorm.elim
+    | div => rw [hnc] at hnorm; exact hnorm.elim
+  | fail e => rw [hcase] at hloop; exact hloop.elim
+  | div => rw [hcase] at hloop; exact hloop.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
 #print axioms cmp_eq
 #print axioms add_eq
+#print axioms sub_eq
 
 end CertifyCheck.RefBackend
