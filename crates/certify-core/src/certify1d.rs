@@ -23,9 +23,19 @@
 //! [`clip_sigma`] is the one √-free rung: its threshold is a **plain signed [`Rat`]**,
 //! never a [`MarginSq`] — squaring an affine form reintroduces the interior-minimizing
 //! `|·|` slip that falsely certifies the `G = σμ` singular crossing.
+//!
+//! Around the ladder sit the clipped-domain checkers (spec §8.5). [`trim_local`] keeps the
+//! clip local — `G_i > 0` at every outer-fiber corner plus interior confinement — catching
+//! the wrap re-entry a w-only test misses. [`clip_dom`] is the corner-sign census:
+//! [`classify_fiber`] types each fiber `D ∩ {G ≥ 0}`, and the sweep reports the retained
+//! support's connectivity. [`edge_reg`] certifies edge regularity `|e′|² ≥ m_e` with a
+//! fourth [`EdgeReg::Stall`] state — a *removable* parametrization artifact routed to
+//! REPARAM (spec §7), kept as a domain enum and lowered by [`EdgeReg::to_verdict`] to
+//! `Refuted` (gate-failing as stored), **never** a new [`Verdict`] variant.
 
 use crate::margin::MarginSq;
 use crate::verdict::Verdict;
+use alloc::vec::Vec;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, SturmChain};
 
 /// A REG-Q / positivity certificate: `num/den > m` on `span`, with `den` structurally
@@ -311,9 +321,178 @@ pub fn clip<B: Backend>(w: &RegCert<B>, mu: &[RegCert<B>], zeros: &[ZeroClip<B>]
     }
 }
 
+/// A TRIM-LOCAL certificate: the `G_i` corner values on each outer support fiber, plus the
+/// interior-confinement positivity certificate.
+pub struct TrimLocalCert<B: Backend = Bignum> {
+    /// `G_i` at the four corners of each non-exempt outer support fiber (the fiber's own
+    /// spline μ-bounds × the w-range), one `[Rat; 4]` per fiber. Chart-boundary support
+    /// ends are exempt — nothing beyond them exists to protect.
+    pub outer_fibers: Vec<[Rat<B>; 4]>,
+    /// Interior confinement: `G_i > 0` across the support σ-span (a [`reg_q`] positivity on
+    /// the cleared `G_i` numerator) — the Sturm half a corner test alone cannot supply.
+    pub confinement: RegCert<B>,
+}
+
+/// TRIM-LOCAL (spec §8.5): the clip stays local — every outer-fiber corner is strictly
+/// retained (`G_i > 0`) **and** the interior is confined. Catches the re-entry a w-only
+/// quantification misses: a 1.49-wrap flank re-crosses the trim plane at distant σ.
+/// `Verified(m)` (the confinement margin) or `Refuted(G_i)` at the first failure.
+pub fn trim_local<B: Backend>(cert: &TrimLocalCert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+    for fiber in &cert.outer_fibers {
+        for g in fiber {
+            if g.sign() <= 0 {
+                return Verdict::Refuted(g.clone());
+            }
+        }
+    }
+    reg_q(&cert.confinement)
+}
+
+/// The combinatorial type of a clipped fiber `D ∩ {G ≥ 0}` (spec §8.5), fixed by the signs
+/// of `G` at the four rectangle corners — `G` is affine on the fiber, so the per-corner
+/// signs determine the cell exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FiberCell {
+    /// Every corner `G < 0`: the fiber is entirely clipped away.
+    Empty,
+    /// Every corner `G ≥ 0`: the whole rectangle is retained (the clip is inactive here).
+    Full,
+    /// Mixed corner signs: the half-plane cuts the rectangle into a convex polygon.
+    Clipped,
+}
+
+/// Classify a fiber from the `G`-signs at its four corners (spec §8.5). A `G = 0` corner is
+/// retained (`≥ 0`), so `Full` needs no strictly-negative corner and `Empty` needs all four.
+pub fn classify_fiber<B: Backend>(corners: &[Rat<B>; 4]) -> FiberCell {
+    let neg = corners.iter().filter(|g| g.sign() < 0).count();
+    match neg {
+        4 => FiberCell::Empty,
+        0 => FiberCell::Full,
+        _ => FiberCell::Clipped,
+    }
+}
+
+/// The CLIP-DOM census result (spec §8.5): the retained σ-support's connectivity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipDomCensus {
+    /// The number of maximal runs of retained (non-`Empty`) fibers. `1` is a connected
+    /// support; `> 1` a disconnected support that splits into administrative sub-charts.
+    pub retained_components: usize,
+    /// Whether some fiber is a partial (`Clipped`) cell — the clip is active somewhere.
+    pub has_clip: bool,
+}
+
+/// CLIP-DOM census (spec §8.5): sweep the σ-ordered fiber cells — the searcher has Sturm-
+/// isolated the corner-sign events, one representative fiber per cell — and report the
+/// retained support's connectivity, the datum consumers re-point onto `D^closure`. A
+/// `retained_components > 1` is the disconnected-support split into sub-charts.
+pub fn clip_dom<B: Backend>(cells: &[[Rat<B>; 4]]) -> ClipDomCensus {
+    let mut retained_components = 0;
+    let mut has_clip = false;
+    let mut prev_retained = false;
+    for cell in cells {
+        let fc = classify_fiber(cell);
+        if fc == FiberCell::Clipped {
+            has_clip = true;
+        }
+        let retained = fc != FiberCell::Empty;
+        if retained && !prev_retained {
+            retained_components += 1;
+        }
+        prev_retained = retained;
+    }
+    ClipDomCensus {
+        retained_components,
+        has_clip,
+    }
+}
+
+/// An EDGE-REG failure witness (spec §8.5): both cases gate-fail, but the road back differs.
+pub enum EdgeFail<B: Backend = Bignum> {
+    /// A geometric cusp (the point set has a genuine corner, e.g. `y² = x³`) at this
+    /// parameter: reject to a band (spec §14). Reparametrization cannot remove it.
+    Cusp(Rat<B>),
+    /// A removable parametrization stall: the point set is regular, the road back REPARAM.
+    Stalled {
+        /// The stall parameter `t*`.
+        t_star: Rat<B>,
+        /// The removal order.
+        order: usize,
+    },
+}
+
+/// EDGE-REG's verdict (spec §8.5): edge-curve regularity `|e′|² ≥ m_e`, with a fourth state
+/// beyond the shared [`Verdict`]. [`EdgeReg::Stall`] is a *removable* parametrization
+/// artifact, kept distinct from a geometric [`EdgeReg::Fail`] because the road back differs
+/// (REPARAM vs band). It is a domain-specific enum, **never** a new [`Verdict`] variant —
+/// that blast radius on the shared TCB type is exactly what keeping it here avoids. Lower it
+/// with [`EdgeReg::to_verdict`].
+pub enum EdgeReg<B: Backend = Bignum> {
+    /// `|e′|² ≥ m_e > 0` on the open interval: a regular immersion.
+    Pass(MarginSq<Rat<B>>),
+    /// `e′` vanishes at a geometric cusp: reject to band.
+    Fail(Rat<B>),
+    /// `e′` vanishes at an isolated `t*` but the point set is regular — a removable stall.
+    Stall {
+        /// The stall parameter `t*`.
+        t_star: Rat<B>,
+        /// The removal order.
+        order: usize,
+    },
+}
+
+impl<B: Backend> EdgeReg<B> {
+    /// Lower to the shared [`Verdict`] for gate propagation. `Stall → Refuted(Stalled)`:
+    /// **gate-failing as stored** — `Pending` is not "undecided" (never `Unresolved`), it is
+    /// "decided: fails, pending a REPARAM". The witness keeps the cusp/stall distinction so
+    /// the caller routes `Stalled → REPARAM` (spec §7) and `Cusp → band` (spec §14).
+    pub fn to_verdict(&self) -> Verdict<MarginSq<Rat<B>>, EdgeFail<B>, ()> {
+        match self {
+            EdgeReg::Pass(m) => Verdict::Verified(m.clone()),
+            EdgeReg::Fail(t) => Verdict::Refuted(EdgeFail::Cusp(t.clone())),
+            EdgeReg::Stall { t_star, order } => Verdict::Refuted(EdgeFail::Stalled {
+                t_star: t_star.clone(),
+                order: *order,
+            }),
+        }
+    }
+}
+
+/// An EDGE-REG certificate: the cleared `|e′|²` positivity, plus — used only when that
+/// fails — the searcher's classification of the speed zero.
+pub struct EdgeRegCert<B: Backend = Bignum> {
+    /// The cleared `|e′|² ≥ m_e` positivity certificate (a [`reg_q`] instance on the edge's
+    /// squared speed). Verifying it is the **only** path to a gate-pass.
+    pub speed_sq: RegCert<B>,
+    /// The searcher's classification of a speed zero, consulted only when `speed_sq` fails:
+    /// `Some(Cusp)` for a geometric cusp, `Some(Stalled)` for a removable stall, `None` for
+    /// an unclassified failure (treated conservatively as a cusp).
+    pub failure: Option<EdgeFail<B>>,
+}
+
+/// EDGE-REG (spec §8.5): `Pass` iff the cleared `|e′|² ≥ m_e` positivity verifies (Sturm) —
+/// the authoritative regular-immersion witness. Otherwise the edge is not regular and the
+/// searcher's [`EdgeRegCert::failure`] tag routes the (gate-failing either way) recovery. A
+/// wrong tag cannot manufacture a `Pass`; it only misdirects the recovery, which REPARAM's
+/// re-certification then catches — so the checker trusts the tag on the failing path alone.
+pub fn edge_reg<B: Backend>(cert: &EdgeRegCert<B>) -> EdgeReg<B> {
+    if let Verdict::Verified(m) = reg_q(&cert.speed_sq) {
+        return EdgeReg::Pass(m);
+    }
+    match &cert.failure {
+        Some(EdgeFail::Stalled { t_star, order }) => EdgeReg::Stall {
+            t_star: t_star.clone(),
+            order: *order,
+        },
+        Some(EdgeFail::Cusp(t)) => EdgeReg::Fail(t.clone()),
+        None => EdgeReg::Fail(cert.speed_sq.span.lo.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use lattice::Bignum;
 
     type Q = Rat<Bignum>;
@@ -514,5 +693,99 @@ mod tests {
         assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Subdivide);
         // No zeros supplied at all ⇒ also Subdivide (failure not yet localized).
         assert_eq!(clip::<Bignum>(&w, &[], &[]), ClipVerdict::Subdivide);
+    }
+
+    #[test]
+    fn trim_local_certifies_all_positive_corners_and_confinement() {
+        let ok = TrimLocalCert {
+            outer_fibers: vec![corners(1, 2, 3, 4)],
+            confinement: reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2)),
+        };
+        assert!(matches!(trim_local(&ok), Verdict::Verified(_)));
+    }
+
+    #[test]
+    fn trim_local_refutes_a_re_entrant_corner() {
+        // A single corner on the deleted side (G_i < 0) ⇒ Refuted, even though a w-only
+        // test on the other corners would pass — the re-entry TRIM-LOCAL exists to catch.
+        let bad = TrimLocalCert {
+            outer_fibers: vec![corners(1, -2, 3, 4)],
+            confinement: reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2)),
+        };
+        assert!(matches!(trim_local(&bad), Verdict::Refuted(_)));
+    }
+
+    #[test]
+    fn classify_fiber_over_all_corner_sign_patterns() {
+        for &a in &[-1i128, 0, 1] {
+            for &b in &[-1i128, 0, 1] {
+                for &c in &[-1i128, 0, 1] {
+                    for &d in &[-1i128, 0, 1] {
+                        let neg = [a, b, c, d].iter().filter(|&&x| x < 0).count();
+                        let expected = match neg {
+                            4 => FiberCell::Empty,
+                            0 => FiberCell::Full,
+                            _ => FiberCell::Clipped,
+                        };
+                        assert_eq!(classify_fiber(&corners(a, b, c, d)), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clip_dom_counts_retained_components() {
+        let full = corners(1, 1, 1, 1); // Full (retained)
+        let empty = corners(-1, -1, -1, -1); // Empty
+        let clipped = corners(1, -1, 1, 1); // Clipped (retained, clip active)
+        // retained | empty | retained ⇒ two disconnected components; the clip is active.
+        let split = [full.clone(), empty, clipped.clone()];
+        let census = clip_dom(&split);
+        assert_eq!(census.retained_components, 2);
+        assert!(census.has_clip);
+        // A single connected run of retained fibers.
+        let connected = [full.clone(), clipped, full];
+        assert_eq!(clip_dom(&connected).retained_components, 1);
+    }
+
+    #[test]
+    fn edge_reg_passes_a_regular_speed() {
+        let cert = EdgeRegCert::<Bignum> {
+            speed_sq: reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2)), // reg_q Verifies
+            failure: None,
+        };
+        assert!(matches!(edge_reg(&cert), EdgeReg::Pass(_)));
+        assert!(matches!(edge_reg(&cert).to_verdict(), Verdict::Verified(_)));
+    }
+
+    #[test]
+    fn edge_reg_stall_lowers_to_refuted_stalled_never_unresolved() {
+        let cert = EdgeRegCert::<Bignum> {
+            speed_sq: reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2)), // reg_q Refutes
+            failure: Some(EdgeFail::Stalled {
+                t_star: Q::from_i128(0),
+                order: 2,
+            }),
+        };
+        assert!(matches!(edge_reg(&cert), EdgeReg::Stall { order: 2, .. }));
+        // Gate-failing as stored: Refuted(Stalled), never Unresolved.
+        match edge_reg(&cert).to_verdict() {
+            Verdict::Refuted(EdgeFail::Stalled { order, .. }) => assert_eq!(order, 2),
+            _ => panic!("a stall must lower to Refuted(Stalled)"),
+        }
+    }
+
+    #[test]
+    fn edge_reg_cusp_lowers_to_refuted_cusp() {
+        let cert = EdgeRegCert::<Bignum> {
+            speed_sq: reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2)), // reg_q Refutes
+            failure: Some(EdgeFail::Cusp(Q::from_i128(0))),
+        };
+        assert!(matches!(edge_reg(&cert), EdgeReg::Fail(_)));
+        assert!(matches!(
+            edge_reg(&cert).to_verdict(),
+            Verdict::Refuted(EdgeFail::Cusp(_))
+        ));
     }
 }
