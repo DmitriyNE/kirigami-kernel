@@ -19,8 +19,10 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Push the laundered `main` to `gho`.** Deferred until the tidy sweep lands, so we push one
-  clean state. The history rewrite is done (see Resolved); the push is a clean fast-forward.
+- **Verify the dylint CI step on a real runner.** The `cargo dylint` step (rustup nightly,
+  outside nix — `.github/workflows/ci.yml`) is written and verified *locally*, but couldn't be
+  run on GitHub Actions from the dev sandbox. Watch the first CI run of the branch; tune if the
+  runner env differs (toolchain/component fetch, `cargo-dylint` install time, package scoping).
   *2026-08-04 · open*
 
 ## Tech debt / sketchy
@@ -84,4 +86,15 @@ fine — this is a log, not a schema.
   stripping all 853 `benchmarks/two-tier-vs-dashu/target/` blobs — branch histories clean, the
   milestone merge + tree intact, `cargo build` green. Objects survive only via the
   `refs/original` backup + a bundle (won't be pushed; gc when convenient). The rewritten `main`
-  still descends from `gho/main`, so the pending push is a clean fast-forward.
+  still descends from `gho/main`, so the push was a clean fast-forward.
+
+- **Push the laundered `main` to `gho`.** *Done 2026-08-04:* the remote fast-forwarded
+  `c2a73c4 → 98005ea` (Milestone B + engineering-log + tidy Phases A/B), verified blob-free.
+
+- **dylint `no_float` lint (float literals in certified paths).** *Done 2026-08-04:* a
+  `rustc_private` `LateLintPass` (`lints/no_float`, pinned `nightly-2026-05-28`) flags float
+  *literals* in `lattice`/`certify_core`/`arrange2d` — the type-aware complement to the
+  `cargo xtask lint` token scan. Verified locally: compiles clean, the UI test fires on
+  `1.5`/`2.0`/`3.0`, and the real certified crates are float-literal-free (it correctly ignores
+  the `.1.0` tuple access at `boolean.rs:550`, where a text scan would false-flag `1.0`). CI
+  wiring is written but pending a real-runner check (see To do).

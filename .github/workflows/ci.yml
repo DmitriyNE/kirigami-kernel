@@ -102,6 +102,18 @@ jobs:
       - name: Extraction externals coverage (faithful FunsExternal models)
         run: bash scripts/check-externals.sh
 
+      # Custom dylint lint (rustc_private / nightly): the type-aware `no_float` — catches
+      # float *literals* in the certified paths, the complement to `cargo xtask lint`'s token
+      # scan (a literal like `1.5`, or the tuple access `x.1.0`, carries no `f32`/`f64` token
+      # and text can't judge it). Runs on the runner's rustup toolchain, NOT in nix — dylint
+      # manages its own pinned nightly via lints/no_float/rust-toolchain.toml. Scoped to the
+      # certified crates (`-p`) to skip difftest's C++ build deps. Heavy (installs
+      # cargo-dylint + fetches the nightly + builds clippy_utils).
+      - name: dylint (no-float literals in certified paths)
+        run: |
+          cargo install --locked cargo-dylint dylint-link
+          cargo dylint --all -- -p lattice -p certify-core -p arrange2d
+
       # Added as their targets land:
       #   - the *_correct_i16 fast≡slow Kani harnesses, once the spike's loop-bounded
       #     gcd model makes them tractable

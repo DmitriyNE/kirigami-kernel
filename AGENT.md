@@ -19,7 +19,7 @@ The mathematics was specified and adversarially reviewed across 24 spec revision
 
 ## The invariants — violating any of these is a defect, not a style choice
 
-1. **No floats in certified paths.** Floats live behind a `diagnostics` feature flag, for plots and viewers only. A float that reaches a predicate is a bug.
+1. **No floats in certified paths.** Floats live behind a `diagnostics` feature flag, for plots and viewers only. A float that reaches a predicate is a bug. Enforced by `cargo xtask lint` (the `f32`/`f64` token scan) plus the `no_float` dylint lint (`lints/`) for float *literals*, which carry no token.
 2. **Three-valued verdicts, always.** `Verified(Evidence) | Refuted(Witness) | Unresolved(Margin)`. Never a bare `bool` for a geometric decision. A result whose checker cannot run is `Unresolved`, never `Verified`.
 3. **Certifying algorithms.** Constructors (searchers) return `(claim, certificate)`. Checkers are separate, pure, and verify the claim from the certificate. The searcher is never trusted; its output always flows through its checker. This is the soundness architecture — see vv-guide §0–1.
 4. **Pure-core / imperative-shell.** `certify-core` = checkers + their algebra: pure, total, panic-free, `no_std`, the Lean-extraction surface. `kernel-search` = the clever imperative code: only tested + differentially checked. Keep the boundary clean; it is simultaneously the TCB boundary and the extraction boundary.

@@ -1,0 +1,23 @@
+[package]
+name = "no_float"
+version = "0.1.0"
+description = "dylint lint: no floating-point literals in the certified paths (invariant 1) — the type-aware complement to the `cargo xtask lint` token scan."
+edition = "2024"
+publish = false
+
+# Standalone workspace: this crate uses a pinned rustc_private nightly, so it must not join
+# the repo's stable workspace (it is also listed in the root manifest's `exclude`).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clippy_utils = { git = "https://github.com/rust-lang/rust-clippy", rev = "9fca3bc9fc2bc83c60bde26d18ed68f11564b228" }
+dylint_linting = "6.0"
+
+[dev-dependencies]
+dylint_testing = "6.0"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

@@ -1,0 +1,27 @@
+error: floating-point literal in a certified path
+  --> $DIR/lattice.rs:4:14
+   |
+LL |     let _x = 1.5; // ~ NO_FLOAT: a float literal, invisible to the `f32`/`f64` token scan
+   |              ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+   = note: `#[deny(no_float)]` on by default
+
+error: floating-point literal in a certified path
+  --> $DIR/lattice.rs:5:14
+   |
+LL |     let _y = 2.0 + 3.0;
+   |              ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: floating-point literal in a certified path
+  --> $DIR/lattice.rs:5:20
+   |
+LL |     let _y = 2.0 + 3.0;
+   |                    ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: aborting due to 3 previous errors
+
