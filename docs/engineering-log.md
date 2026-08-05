@@ -19,16 +19,23 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Finish R.4b.6: `RefRat` → ℚ + the `Backend`-instance corollary.** The `RefNat` (= ℕ) and `RefInt`
-  (= ℤ, ordered ring: zero/neg/add/sub/mul/cmp/sign) layers are proven + pushed on `algebra-rehaul-r4`.
-  Remaining, both sizable: **(1)** `qden : RefRat → ℚ` denotation + `RefRat.reduce` (gcd-reduce
-  `neg·num/den` to lowest terms, `den > 0`, `gcd(|num|,den)=1`) — composes `gcd_eq` + `divrem_eq`, its
-  own meaty proof — plus `RefRat.from_i128`. **(2)** the `Backend`-instance corollary: wrap each trait
-  method (`int_add/sub/mul/neg/cmp/sign/gcd/lcm/divrem/try_to_i128/from_i128`, `rat_from_i128/from_ints/
-  add/sub/mul/…`) as thin lemmas over the proven ops — this is the literal `RefBackend = ℤ/ℚ` statement,
-  ~20 lemmas. The proven `RefInt` op refinements (`make_spec`→`int_*_eq`) are the exact template; findings
-  in memory `algebra-rehaul.md`. Then R.5 V&V finalize (vv-matrix rows, `docs/algebra-trust.md` TCB
-  update, extraction-drift). *2026-08-05 · open*
+- **Finish R.4b.6: the rest of the `RefBackend = ℤ/ℚ` `Backend`-method corollary.** `RefNat` (= ℕ),
+  `RefInt` (= ℤ, ordered ring), and `RefRat.reduce` (= ℚ gcd-reduce keystone) are proven + pushed on
+  `algebra-rehaul-r4`. **Landed since:** the `int_*` arithmetic Backend methods (add/sub/mul/neg/cmp/
+  sign/is_zero/zero — thin `unfold; exact` wrappers — + `int_gcd`) and the rat non-product methods
+  (neg/numer/denom/is_zero/sign/cmp/from_ints), with reusable helpers `refnat_clone_eq`/
+  `refint_clone_eq`/`int_is_zero_eq`/`compare_div_div`. **Remaining, two heavier pieces:** **(1)** the
+  rat *arithmetic* methods (`rat_mul`/`add`/`sub`/`div`) — each funnels a *product* through `reduce`, so
+  they need a **mul-length bound** lemma (`Normalized r ∧ den r = den x · den y → r.length ≤ x.length +
+  y.length`, derivable from `den_lower`/`den_lt` + `pow_lt_pow_iff_right`) to discharge reduce's
+  `len·64 ≤ usize::MAX` caps (and `add` also needs a sum-length bound); note `n.mag` of `RefInt.mul` is
+  literally the `RefNat.mul` result (make only flips the sign), so unfold rather than reuse `int_mul_eq`.
+  **(2)** the **i128 boundary**: `RefInt.from_i128` (→ `from_u128` + `unsigned_abs`) and
+  `int_try_to_i128` (limbs → i128) — unblocks `rat_from_i128`/`int_from_i128`/`int_one`/`int_try_to_i128`.
+  Plus `int_lcm`/`int_divrem` (sign handling over the nat ops). The proven refinements are the template;
+  findings in memory `algebra-rehaul.md`. Then R.5 V&V finalize (vv-matrix rows, `docs/algebra-trust.md`
+  TCB update, extraction-drift), and promote the audit surface to a public `Backend`-instance corollary
+  (local `#print axioms` block + `ci.yml`). *2026-08-05 · open*
 
 - **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
   trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
