@@ -1093,6 +1093,55 @@ theorem shl1_eq (x : RefNat) (hcap : x.limbs.val.length + 1 ≤ Std.Usize.max) :
   | fail e => rw [hcase] at hloop; exact hloop.elim
   | div => rw [hcase] at hloop; exact hloop.elim
 
+/-! ### `testbit` — reads bit `i` of the limb denotation -/
+
+/-- Bit `64q+r` (`r < 64`) of the limb denotation is bit `r` of limb `q` (the 64-bit-aligned view). -/
+private theorem den_testBit_lt (l : List Std.U64) (q r : ℕ) (hq : q < l.length) (hr : r < 64) :
+    Nat.testBit (den l) (64 * q + r) = Nat.testBit (l[q]'hq).val r := by
+  induction l generalizing q with
+  | nil => exact absurd hq (by simp)
+  | cons x xs ih =>
+    have hb : x.val < 2 ^ 64 := by scalar_tac
+    rw [den_cons, show (x.val : ℕ) + 2 ^ 64 * den xs = 2 ^ 64 * den xs + x.val from Nat.add_comm _ _,
+      Nat.testBit_two_pow_mul_add (den xs) hb]
+    cases q with
+    | zero => simp only [Nat.mul_zero, Nat.zero_add, List.getElem_cons_zero, if_pos hr]
+    | succ q' =>
+      have hq' : q' < xs.length := by simpa using hq
+      rw [if_neg (by omega), show 64 * (q' + 1) + r - 64 = 64 * q' + r from by omega,
+        List.getElem_cons_succ]
+      exact ih q' hq'
+
+/-- **`testbit`.** `testbit self i` returns bit `i` of the limb denotation. -/
+theorem testbit_eq (self : RefNat) (i : Std.Usize) :
+    RefNat.testbit self i ⦃ b => b = Nat.testBit (den self.limbs.val) i.val ⦄ := by
+  unfold RefNat.testbit
+  step
+  have hlen : (self.limbs.len).val = self.limbs.val.length := alloc.vec.Vec.len_val self.limbs
+  by_cases hge : limb ≥ self.limbs.len
+  · rw [if_pos hge]
+    simp only [WP.spec_ok]
+    symm
+    apply Nat.testBit_eq_false_of_lt
+    have hb : 64 * self.limbs.val.length ≤ i.val := by
+      have h1 : self.limbs.val.length ≤ i.val / 64 := by scalar_tac
+      omega
+    calc den self.limbs.val < 2 ^ (64 * self.limbs.val.length) := den_lt _
+      _ ≤ 2 ^ i.val := Nat.pow_le_pow_right (by norm_num) hb
+  · rw [if_neg hge]
+    have hlt : limb.val < self.limbs.val.length := by scalar_tac
+    step; step; step; step
+    have hi3lt : i3.val < 64 := by rw [i3_post]; omega
+    have hidx : i.val = 64 * limb.val + i3.val := by rw [limb_post, i3_post]; omega
+    have hi5v : i5.val = i2.val / 2 ^ i3.val % 2 := by
+      have h1 : i5.val = i4.val &&& 1 := by simp [i5_post1, UScalar.val_and]
+      rw [h1, Nat.and_one_is_mod, i4_post1, Nat.shiftRight_eq_div_pow]
+    rw [hidx, den_testBit_lt self.limbs.val limb.val i3.val hlt hi3lt, ← i2_post,
+      Nat.testBit_eq_decide_div_mod_eq, ← hi5v]
+    congr 1
+    apply propext
+    exact ⟨fun h => by simp [h], fun h => UScalar.eq_of_val_eq (by simp [h])⟩
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -1101,5 +1150,6 @@ theorem shl1_eq (x : RefNat) (hcap : x.limbs.val.length + 1 ≤ Std.Usize.max) :
 #print axioms sub_eq
 #print axioms mul_eq
 #print axioms shl1_eq
+#print axioms testbit_eq
 
 end CertifyCheck.RefBackend

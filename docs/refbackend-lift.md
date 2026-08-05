@@ -46,8 +46,20 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 (`normalize` den-preservation, `add` = the u128 carry loop, `sub` = the i128-borrow dual over ℤ) ·
 `.3` `mul` **— done** (nested schoolbook multiply; in-place `out[i+j]` writes via `den_set`; three
 loops — inner row-accumulate, carry-propagate, outer row-sum — with a magnitude bound keeping the
-carry loop in range) · `.4` `divrem` · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the
+carry loop in range) · `.4` `divrem` **— in progress** (bit-serial MSB-first restoring division;
+groundwork `shl1_eq` (`den = 2·den`) + `testbit_eq` (bit `i` of the denotation) landed; `bit_len`,
+the division loop, and `divrem_eq` remain) · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the
 `Backend`-instance corollary.
+
+**R.4b.4 groundwork.** `divrem` is the effort peak. Primitives, bottom-up: **`shl1_eq`** — the doubling,
+`den(shl1 x) = 2·den x`, a per-limb `(v[i]<<1)|carry` loop; needs `u64_or_add` (OR = + when the low bit
+is free, via `Nat.two_pow_add_eq_or_of_lt`). **`testbit_eq`** — `testbit self i = Nat.testBit (den self) i`;
+the key is `den_testBit_lt` (bit `64q+r` of the limb list = bit `r` of limb `q`, via
+`Nat.testBit_two_pow_mul_add`), plus `Nat.testBit_eq_decide_div_mod_eq` and `UScalar.val_and`/`eq_of_val_eq`
+for the `(x>>off)&1` read. Ahead: `bit_len` (`den < 2^bit_len`; `BitVec.leadingZeros` — a real def, but the
+`U32→Usize` cast of it drags in `System.Platform.numBits`, needing care; draft parked), the MSB-first
+division loop (invariant `den self = den q·den d + den r·2^i + den self%2^i`, `2^i ∣ den q`, `den r < den d`;
+the in-place q/r bit-sets), and `divrem_eq`.
 
 **R.4b.3 recipe (validated).** `mul` differs from `add`/`sub`: it writes `out` in place, so the
 workhorse is **`den_set`** (`den (l.set p x) = den l + (x − l[p])·2^(64p)`, over ℤ). Three
