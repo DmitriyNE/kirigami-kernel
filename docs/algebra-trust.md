@@ -31,9 +31,13 @@ now, and (b) shrinks what we trust over time — without blocking on the hard pa
    exact arithmetic. That is one crisp, honest TCB entry. To reduce it: **(1)** write a slow,
    safe, Aeneas-liftable reference bignum — **done**: `lattice::RefBackend` (`refbackend.rs`), an
    independent `Vec<u64>`-limb sign-magnitude `Backend`; **(2)** prove it `= ℤ`/`ℚ` in Lean (no
-   trusted hand-model) — the tracked deep follow-up; **(3)** differential-stress dashu against the
-   reference — **done**: `rat::differential::{int,rat}_dashu_matches_ref` runs dashu ≡ `RefBackend`
-   over the full i128 range. The `Backend` trait makes the reference a drop-in alternate backend.
+   trusted hand-model) — **done**: the whole `Backend` trait is Aeneas-lifted and proven exact over a
+   limb→ℕ denotation (`CertifyCheck/RefBackend.lean`, axiom-clean; public target `refBackend_eq_ZQ`);
+   **(3)** differential-stress dashu against the reference — **done**:
+   `rat::differential::{int,rat}_dashu_matches_ref` runs dashu ≡ `RefBackend` over the full i128 range.
+   With (2) done the cross-check is now a **proof-backed oracle**: `RefBackend` is not a trusted model
+   but a *proven* one, so a dashu disagreement is a genuine dashu bug, not an oracle ambiguity. The
+   `Backend` trait makes the reference a drop-in alternate backend.
 
 ## The linchpin invariant — the representation must never leak
 
@@ -63,9 +67,12 @@ faithfully — it observes an implementation detail the `ℚ` model has erased.
   - **R.1–R.3 (merged):** opaque `Int`/`Rat`; the ℤ/ℚ-mapping spike (GO, no pin bump); and
     `certify1d::clip_sigma` lifted over ℚ with *both* cores derived from the extracted Rust
     (`ClipSigma.lean`, axiom-clean) — the hand-mirror spec-drift class killed for the ★ CLIP-σ row.
-  - **R.4 (reference bignum) — steps (1)+(3) done, (2) underway:** `RefBackend` is differentially
-    cross-checked against dashu over the full i128 range; the Lean proof `RefBackend = ℤ/ℚ` (step 2)
-    is in progress — `RefBackend` is Aeneas-lifted and its `RefNat` `is_zero`/`cmp` are proven correct
-    over a limb→ℕ denotation (`CertifyCheck/RefBackend.lean`, axiom-clean; R.4b.1). Each further op
-    (`add`/`sub`/`mul`/`divrem`/`gcd`, then `RefInt`/`RefRat` → ℤ/ℚ) is its own loop-invariant proof
-    (`docs/refbackend-lift.md`); completing them turns the cross-check into a proof-backed oracle.
+  - **R.4 (reference bignum) — DONE (all three steps):** `RefBackend` is differentially cross-checked
+    against dashu over the full i128 range, **and** proven `= ℤ/ℚ` in Lean, so the cross-check is now a
+    proof-backed oracle. The whole `Backend` trait is Aeneas-lifted and proven exact over a limb→ℕ (`den`)
+    / →ℤ (`iden`) / →ℚ (`qden`) denotation in `CertifyCheck/RefBackend.lean` (axiom-clean —
+    `[propext, Classical.choice, Quot.sound]`, no `sorryAx`): **RefNat = ℕ** (is_zero/cmp/add/sub/mul/
+    divrem/gcd/shl1/testbit/bit_len/from_u128), **RefInt = ℤ** (ordered ring + gcd/lcm/divrem + i128 both
+    directions), **RefRat = ℚ** (reduce + all arithmetic mul/div/add/sub + neg/numer/denom/is_zero/sign/
+    cmp/from_ints/from_i128). Each op is its own loop-invariant/WP refinement (`docs/refbackend-lift.md`);
+    the public umbrella `refBackend_eq_ZQ` is the CI axiom-audit target (`ci.yml`).
