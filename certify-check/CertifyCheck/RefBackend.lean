@@ -1748,9 +1748,10 @@ private theorem int_mul_eq (a b : RefInt)
   | fail e => rw [hmc] at hmul; exact hmul.elim
   | div => rw [hmc] at hmul; exact hmul.elim
 
-/-- **`RefInt.neg`** denotes `-iden a`. -/
+/-- **`RefInt.neg`** denotes `-iden a` (and preserves the magnitude — it only flips the sign). -/
 private theorem int_neg_eq (a : RefInt) (ha : IntNorm a) :
-    RefInt.impl.neg a ⦃ r => iden r = -(iden a) ∧ IntNorm r ⦄ := by
+    RefInt.impl.neg a
+      ⦃ r => iden r = -(iden a) ∧ IntNorm r ∧ r.mag.limbs.val = a.mag.limbs.val ⦄ := by
   unfold RefInt.impl.neg RefNat.Insts.CoreCloneClone.clone
   have hcl : alloc.vec.CloneVec.clone core.clone.CloneU64 a.mag.limbs ⦃ v => a.mag.limbs = v ⦄ :=
     alloc.slice.Slice.to_vec_spec core.clone.CloneU64 a.mag.limbs (by intro x _; rfl)
@@ -1764,9 +1765,9 @@ private theorem int_neg_eq (a : RefInt) (ha : IntNorm a) :
     cases hmkc : RefInt.make (¬a.neg) ⟨v⟩ with
     | ok r =>
       rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
-      obtain ⟨hrden, hrnorm, _⟩ := hmk
+      obtain ⟨hrden, hrnorm, hrmag⟩ := hmk
       simp only [WP.spec_ok]
-      refine ⟨?_, hrnorm⟩
+      refine ⟨?_, hrnorm, by rw [hrmag, ← hcl]⟩
       rw [hrden, hvden]
       simp only [iden]
       cases a.neg <;> simp
@@ -1876,6 +1877,29 @@ private theorem int_add_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
         | div => rw [hmkc] at hmk; exact hmk.elim
       | fail e => rw [hsc] at hsub; exact hsub.elim
       | div => rw [hsc] at hsub; exact hsub.elim
+
+/-- **`RefInt.sub`** denotes `iden a − iden b` (it is `add a (neg b)`). -/
+private theorem int_sub_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hcap : max a.mag.limbs.val.length b.mag.limbs.val.length + 1 ≤ Std.Usize.max) :
+    RefInt.sub a b ⦃ r => iden r = iden a - iden b ∧ IntNorm r ⦄ := by
+  unfold RefInt.sub
+  have hneg := int_neg_eq b hb
+  cases hnc : RefInt.impl.neg b with
+  | ok nb =>
+    rw [hnc] at hneg; simp only [WP.spec_ok] at hneg
+    obtain ⟨hnbden, hnbnorm, hnbmag⟩ := hneg
+    simp only [bind_tc_ok]
+    have hadd := int_add_eq a nb ha hnbnorm (by rw [hnbmag]; exact hcap)
+    cases hac : RefInt.add a nb with
+    | ok r =>
+      rw [hac] at hadd; simp only [WP.spec_ok] at hadd
+      obtain ⟨hrden, hrnorm⟩ := hadd
+      simp only [WP.spec_ok]
+      exact ⟨by rw [hrden, hnbden]; ring, hrnorm⟩
+    | fail e => rw [hac] at hadd; exact hadd.elim
+    | div => rw [hac] at hadd; exact hadd.elim
+  | fail e => rw [hnc] at hneg; exact hneg.elim
+  | div => rw [hnc] at hneg; exact hneg.elim
 
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
