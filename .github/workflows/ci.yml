@@ -33,6 +33,16 @@ jobs:
       - name: doctests (nextest does not run these)
         run: nix develop --command cargo test --workspace --doc
 
+      # Differential-fuzz regression replay (stable, NO libFuzzer/nightly): re-runs the
+      # checked-in `int_chain` crash corpus through the `dashu ≡ proven RefBackend` op-chain
+      # differential, under the same lowered dashu `tuning` thresholds the fuzzer uses (so a
+      # pinned crash reproduces faithfully). The deterministic per-PR half; the coverage-guided
+      # *search* is the nightly `fuzz-nightly.yml` cron. The threshold-straddling seed programs
+      # are already replayed by the `replay_seed_corpus` unit test in the `nextest` step above.
+      # `--features fuzzing` builds `ratfuzz` + dashu `tuning`; it is never in the shipped crate.
+      - name: fuzz regression replay (committed crash corpus)
+        run: nix develop --command cargo test -p lattice --features fuzzing --test fuzz_replay
+
       # M3a Phase 5: the CGAL Arrangement_2 differential oracle (the first CI run of
       # `--features cgal` — builds the C++ FFI shim) together with the degenerate-heavy
       # stratum pass (ARRANGE_STRATUM_WEIGHT over-samples the tangent/coincident/

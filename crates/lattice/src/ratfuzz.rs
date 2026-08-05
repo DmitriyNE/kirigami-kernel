@@ -83,8 +83,7 @@ impl<'a> Cursor<'a> {
 /// We straddle each crossover with ±1 so off-by-one limb-splitting bugs get hit. The always-on
 /// (production-dashu) proptest reaches Toom-3; the cargo-fuzz build lowers the thresholds via the
 /// `tuning` env vars so *these same small sizes* route through NTT too.
-const LIMB_BUCKETS: [usize; 16] =
-    [0, 1, 2, 4, 8, 16, 23, 24, 25, 48, 64, 95, 96, 97, 160, 256];
+const LIMB_BUCKETS: [usize; 16] = [0, 1, 2, 4, 8, 16, 23, 24, 25, 48, 64, 95, 96, 97, 160, 256];
 
 /// Byte → seed length (bytes) = a limb-bucket plus a few bytes of jitter (so the top limb is
 /// sometimes partially filled). Actual size is also clamped by how much input remains.
@@ -118,7 +117,11 @@ fn run_int_program_capped(data: &[u8], max_limbs: usize) {
         let bytes = cur.take(n);
         let a = RefBackend::int_from_le_bytes(neg, bytes);
         let b = dashu_from_le_bytes(neg, bytes);
-        assert_eq!(RefBackend::int_le_bytes(&a), dashu_le_bytes(&b), "seed constructor divergence");
+        assert_eq!(
+            RefBackend::int_le_bytes(&a),
+            dashu_le_bytes(&b),
+            "seed constructor divergence"
+        );
         rr.push(a);
         rd.push(b);
     }
@@ -183,7 +186,11 @@ fn run_int_program_capped(data: &[u8], max_limbs: usize) {
             &Bignum::int_mul(&rd[0], &rd[2]),
             &Bignum::int_mul(&rd[1], &rd[2]),
         );
-        assert_eq!(dashu_le_bytes(&lhs), dashu_le_bytes(&rhs), "mul not distributive");
+        assert_eq!(
+            dashu_le_bytes(&lhs),
+            dashu_le_bytes(&rhs),
+            "mul not distributive"
+        );
     }
 }
 
@@ -202,7 +209,11 @@ pub fn corpus_seeds() -> Vec<Vec<u8>> {
             p.push(sel); // size bucket → `limbs`
             p.push(7); // jitter 7 ⇒ exactly limbs*8 magnitude bytes
             for i in 0..(limbs * 8) {
-                p.push(fill.wrapping_add(i as u8).wrapping_mul(3).wrapping_add(r + 1));
+                p.push(
+                    fill.wrapping_add(i as u8)
+                        .wrapping_mul(3)
+                        .wrapping_add(r + 1),
+                );
             }
         }
         for k in 0..8u8 {
@@ -241,10 +252,23 @@ mod tests {
     }
 
     #[test]
+    fn replay_seed_corpus() {
+        // Deterministic per-PR regression gate: the curated threshold-straddling seed programs
+        // must never diverge. Runs under *production* dashu thresholds (no `tuning`), so it
+        // exercises schoolbook / Karatsuba / Toom-3; the NTT path is the nightly cargo-fuzz cron's
+        // job (`.github/workflows/fuzz-nightly.yml`). No libFuzzer, no nightly — plain `cargo test`.
+        for prog in corpus_seeds() {
+            run_int_program(&prog);
+        }
+    }
+
+    #[test]
     fn seed_ctor_roundtrips_against_dashu() {
         // A directed smoke test of the seed constructor at a few sizes across the buckets.
         for &len in &[0usize, 1, 7, 8, 9, 64, 520] {
-            let bytes: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(37).wrapping_add(1)).collect();
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| (i as u8).wrapping_mul(37).wrapping_add(1))
+                .collect();
             for neg in [false, true] {
                 let a = RefBackend::int_from_le_bytes(neg, &bytes);
                 let b = dashu_from_le_bytes(neg, &bytes);

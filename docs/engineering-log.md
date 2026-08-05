@@ -32,11 +32,16 @@ fine — this is a log, not a schema.
   Karatsuba/Toom-3/**NTT** at oracle-cheap sizes (no need for 4000-limb operands). **Finding (first run
   earned its keep):** thresholds MUST respect each algorithm's own `MIN_LEN` (Karatsuba 3, Toom-3 16) — my
   first values (KARATSUBA=6) routed 7–15-limb operands into Toom-3 and tripped *dashu's own*
-  `assert!(b.len() >= MIN_LEN)`; not a dashu bug, a mis-config. Remaining follow-up: **wire a time-boxed
-  `cargo fuzz run int_chain -- -max_total_time=…` as a nightly cron** (not per-PR — needs the nightly +
-  libFuzzer toolchain, like dylint) with a persisted corpus. (A rational op-chain variant stays deferred —
-  RefBackend's bit-serial `divrem`/`gcd` are too slow as a big-operand oracle; use metamorphic there.)
-  *2026-08-06 · open*
+  `assert!(b.len() >= MIN_LEN)`; not a dashu bug, a mis-config. **CI split (DONE):** per-PR = the
+  *deterministic replay* (stable, no libFuzzer) — `replay_seed_corpus` unit test (in `nextest`) + the
+  `fuzz regression replay` step (`cargo test -p lattice --features fuzzing --test fuzz_replay`, replays the
+  committed crash corpus under the fuzzer's tuning); nightly = the *coverage-guided search*
+  (`.github/workflows/fuzz-nightly.yml`, cron + `workflow_dispatch`, cargo-fuzz on the runner's rustup with
+  a cached/persisted corpus, uploads crash artifacts). **STATUS:** the nightly cron is unvalidated on a
+  real runner (nightly + `rust-src` + cargo-fuzz provisioning, same rustup-outside-nix pattern as dylint) —
+  **watch the first scheduled run**; and provision the nightly fenix-natively if we want it inside nix.
+  (A rational op-chain variant stays deferred — RefBackend's bit-serial `divrem`/`gcd` are too slow as a
+  big-operand oracle; use metamorphic there.) *2026-08-06 · watching*
 
 - **`RefBackend::int_from_le_bytes` must be proven if it ever leaves the test/fuzz harness.** It's a
   TEST/FUZZ-ONLY seed constructor (`#[cfg(any(test, feature = "fuzzing"))]`, banner on the fn), NOT a
