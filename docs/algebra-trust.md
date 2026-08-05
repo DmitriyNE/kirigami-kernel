@@ -34,10 +34,13 @@ now, and (b) shrinks what we trust over time — without blocking on the hard pa
    trusted hand-model) — **done**: the whole `Backend` trait is Aeneas-lifted and proven exact over a
    limb→ℕ denotation (`CertifyCheck/RefBackend.lean`, axiom-clean; public target `refBackend_eq_ZQ`);
    **(3)** differential-stress dashu against the reference — **done**:
-   `rat::differential::{int,rat}_dashu_matches_ref` runs dashu ≡ `RefBackend` over the full i128 range.
-   With (2) done the cross-check is now a **proof-backed oracle**: `RefBackend` is not a trusted model
-   but a *proven* one, so a dashu disagreement is a genuine dashu bug, not an oracle ambiguity. The
-   `Backend` trait makes the reference a drop-in alternate backend.
+   `rat::differential::{int,rat}_dashu_matches_ref` (single ops over the full i128 range) **plus** the
+   **op-chain differential fuzzer** `lattice::ratfuzz` ([`differential-fuzz.md`](differential-fuzz.md)) —
+   chained arithmetic over size-bucketed operands that actually exercise dashu's Karatsuba/Toom-3/NTT
+   multiply ladder (the i128-seeded differential never left schoolbook). With (2) done these are a
+   **proof-backed oracle**: `RefBackend` is not a trusted model but a *proven* one, so a dashu
+   disagreement is a genuine dashu bug, not oracle ambiguity. The `Backend` trait makes the reference a
+   drop-in alternate backend. Cadence: deterministic replay per-PR, coverage-guided search nightly.
 
 ## The linchpin invariant — the representation must never leak
 
