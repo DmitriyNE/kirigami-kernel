@@ -19,33 +19,6 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Finish `divrem_eq` (the `divrem` op wrapper) — the loop `divrem_loop_spec` is done + committed
-  (`704196e`).** Target: `divrem self d ⦃(q,r) => den q.1 = den self / den d ∧ den r.2 = den self %
-  den d ∧ Normalized both⦄` (hyps: `hself`/`hd` Normalized, `hdpos : 0 < den d`, `hdcap : len d + 1
-  ≤ Usize.max`, `hcap : len self * 64 ≤ Usize.max`). Recipe (all pieces validated interactively):
-  prefix — `unfold RefNat.divrem; rw [is_zero_eq d hd]; have hb0 : decide (den d = 0) = false := by
-  simp only [decide_eq_false_iff_not]; omega; simp only [hb0, bind_tc_ok, massert]; rw [cmp_eq self d
-  hself hd]; simp only [core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq, compare_lt_iff_lt,
-  bind_tc_ok, decide_eq_true_eq]; rw [if_pos (by decide : ¬(false = true))]; simp only [bind_tc_ok];
-  by_cases hlt : den self < den d`. **self<d branch** (`rw [if_pos hlt]`): `unfold RefNat.zero
-  RefNat.Insts.CoreCloneClone.clone; simp only [bind_tc_ok]`; clone via `have hcl :
-  alloc.vec.CloneVec.clone core.clone.CloneU64 self.limbs ⦃v => self.limbs = v⦄ :=
-  alloc.slice.Slice.to_vec_spec core.clone.CloneU64 self.limbs (by intro x _; rfl)` (typed as
-  `CloneVec.clone` so the defeq to `to_vec` resolves at the `have`); `apply WP.spec_bind' hcl; rintro
-  v hv; refine ⟨?_,?_,?_,?_⟩` → quotient `den (Vec.new).val = 0` via `Nat.div_eq_of_lt hlt` then rfl
-  (`Vec.new.val = []` defeq), remainder via `Nat.mod_eq_of_lt hlt`, `Normalized []` via `intro h;
-  exact absurd rfl h`, `Normalized v = hself` via `rw [← hv]`. **self≥d branch** (`rw [if_neg hlt]`,
-  `hge := by omega`): bind `bit_len_spec self hcap` (`hn : den self < 2^n`); `simp only
-  [core.num.Usize.div_ceil, bind_tc_ok]` (`i.val = (n+63)/64`); `from_elem` is `@[step]` (side goal
-  `CloneU64.clone 0 = ok 0` by rfl, gives `q.val = replicate 0 i.val ∧ length = i.val`, `den q = 0`
-  via `den_replicate_zero`); `r = zero` (`[]`); then `divrem_loop_spec self d q {limbs:=Vec.new} n`
-  with hrlt = `hdpos` (den []=0), hidvd = `2^n ∣ 0`, hqcap = `n ≤ i*64` (omega from div_ceil),
-  hinv = `den self = 0 + 0 + den self % 2^n` (`Nat.mod_eq_of_lt hn`); then `normalize_den` +
-  `normalize_normalized` on `q1` (den preserved, Normalized); Euclidean uniqueness via
-  `Nat.div_mod_unique hdpos` from `den self = den q1·den d + den r1 ∧ den r1 < den d`. Then add
-  `#print axioms divrem_eq` to the local audit block **and** `ci.yml`. Blocked on nothing — just
-  volume. *2026-08-05 · open*
-
 - **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
   trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
   `structure` whose parent-clause witnesses for *both* associated types (`type Int: Clone + Eq`
@@ -152,6 +125,13 @@ fine — this is a log, not a schema.
   *2026-08-04 · watching · `docs/proofs/ledger.md`*
 
 ## Resolved
+
+- **`divrem` op refinement (algebra-rehaul R.4b.4).** *Done 2026-08-05:* `divrem_loop_spec` (the
+  bit-serial restoring-division loop = Euclidean identity, `704196e`) + `divrem_eq` (the wrapper =
+  `den self / den d`, `den self % den d`, `d26ba39`), both axiom-clean + CI-audited, full `lake
+  build` green. New reusable lemmas: `nat_or_pow2_add`/`u64_or_pow2_add` (set-a-clear-bit = add),
+  `den_head`. Strengthened `divrem_loop_spec`'s post with `Normalized result.2` (needed by the
+  wrapper). Next: R.4b.5 `gcd`, R.4b.6 `RefInt`/`RefRat`→ℤ/ℚ.
 
 - **Launder the bench build-artifact blobs out of git history.** *Done 2026-08-04:* rewrote
   `main` + `milestone-b` with `git filter-branch --index-filter` (filter-repo unavailable),
