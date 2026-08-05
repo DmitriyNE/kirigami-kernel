@@ -2728,6 +2728,165 @@ private theorem int_gcd_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
   | fail e => rw [hgc] at hg; exact hg.elim
   | div => rw [hgc] at hg; exact hg.elim
 
+/-- **`int_divrem`** is truncated (toward-zero) division: quotient `Int.tdiv` (sign `a.neg XOR
+    b.neg`), remainder `Int.tmod` (sign `a.neg`). `b ≠ 0`. -/
+private theorem int_divrem_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hb0 : den b.mag.limbs.val ≠ 0)
+    (hbcap : b.mag.limbs.val.length + 1 ≤ Std.Usize.max)
+    (hacap : a.mag.limbs.val.length * 64 ≤ Std.Usize.max) :
+    int_divrem a b
+      ⦃ r => iden r.1 = Int.tdiv (iden a) (iden b) ∧ iden r.2 = Int.tmod (iden a) (iden b)
+          ∧ IntNorm r.1 ∧ IntNorm r.2 ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_divrem
+  have hidenz : ¬ (iden b = 0) := by simp only [iden]; cases b.neg <;> simp [hb0]
+  have hbz : decide (iden b = 0) = false := by simp only [decide_eq_false_iff_not]; exact hidenz
+  rw [int_is_zero_eq b hb, hbz]
+  show (do
+      let (q, rr) ← RefNat.divrem a.mag b.mag
+      let ri ← RefInt.make (a.neg != b.neg) q
+      let ri1 ← RefInt.make a.neg rr
+      ok (ri, ri1))
+    ⦃ r => iden r.1 = Int.tdiv (iden a) (iden b) ∧ iden r.2 = Int.tmod (iden a) (iden b)
+        ∧ IntNorm r.1 ∧ IntNorm r.2 ⦄
+  have hdpos : 0 < den b.mag.limbs.val := Nat.pos_of_ne_zero hb0
+  have hia : iden a = if a.neg then -(den a.mag.limbs.val : ℤ) else (den a.mag.limbs.val : ℤ) := by
+    simp only [iden]
+  have hib : iden b = if b.neg then -(den b.mag.limbs.val : ℤ) else (den b.mag.limbs.val : ℤ) := by
+    simp only [iden]
+  have hdr := divrem_eq a.mag b.mag ha.1 hb.1 hdpos hbcap hacap
+  cases hdc : RefNat.divrem a.mag b.mag with
+  | ok qr =>
+    obtain ⟨q, rr⟩ := qr
+    rw [hdc] at hdr; simp only [WP.spec_ok] at hdr
+    obtain ⟨hqden, hrrden, hqnorm, hrrnorm⟩ := hdr
+    -- the pure pair-let `let (q,rr) := (q,rr)` reduces definitionally; restate
+    show (do
+        let ri ← RefInt.make (a.neg != b.neg) q
+        let ri1 ← RefInt.make a.neg rr
+        ok (ri, ri1))
+      ⦃ r => iden r.1 = Int.tdiv (iden a) (iden b) ∧ iden r.2 = Int.tmod (iden a) (iden b)
+          ∧ IntNorm r.1 ∧ IntNorm r.2 ⦄
+    have hmkq := make_spec (a.neg != b.neg) q hqnorm
+    cases hmkqc : RefInt.make (a.neg != b.neg) q with
+    | ok ri =>
+      rw [hmkqc] at hmkq; simp only [WP.spec_ok] at hmkq
+      obtain ⟨hqiden, hqinorm, _⟩ := hmkq
+      simp only [bind_tc_ok]
+      have hmkr := make_spec a.neg rr hrrnorm
+      cases hmkrc : RefInt.make a.neg rr with
+      | ok ri1 =>
+        rw [hmkrc] at hmkr; simp only [WP.spec_ok] at hmkr
+        obtain ⟨hriden, hrinorm, _⟩ := hmkr
+        simp only [bind_tc_ok, WP.spec_ok]
+        refine ⟨?_, ?_, hqinorm, hrinorm⟩
+        · show iden ri = Int.tdiv (iden a) (iden b)
+          rw [hqiden, hqden, hia, hib]
+          cases a.neg <;> cases b.neg <;> simp [Int.neg_tdiv, Int.tdiv_neg]
+        · show iden ri1 = Int.tmod (iden a) (iden b)
+          have key : ∀ m n : ℕ, ((m : ℤ)).tmod (n : ℤ) = ((m % n : ℕ) : ℤ) := by
+            intro m n; rw [Int.tmod_eq_emod_of_nonneg (by positivity)]; norm_cast
+          rw [hriden, hrrden, hia, hib]
+          cases a.neg <;> cases b.neg <;> simp [Int.neg_tmod, Int.tmod_neg, key]
+      | fail e => rw [hmkrc] at hmkr; exact hmkr.elim
+      | div => rw [hmkrc] at hmkr; exact hmkr.elim
+    | fail e => rw [hmkqc] at hmkq; exact hmkq.elim
+    | div => rw [hmkqc] at hmkq; exact hmkq.elim
+  | fail e => rw [hdc] at hdr; exact hdr.elim
+  | div => rw [hdc] at hdr; exact hdr.elim
+
+set_option maxHeartbeats 400000 in
+/-- **`int_lcm`** is `lcm(|a|, |b|) = |a|·|b| / gcd` as a nonnegative `RefInt` (`0` if either is `0`). -/
+private theorem int_lcm_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hacap : a.mag.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hbcap : b.mag.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hcap : (a.mag.limbs.val.length + b.mag.limbs.val.length) * 64 ≤ Std.Usize.max) :
+    int_lcm a b
+      ⦃ r => iden r = (Nat.lcm (den a.mag.limbs.val) (den b.mag.limbs.val) : ℤ) ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_lcm
+  rw [int_is_zero_eq a ha]
+  simp only [bind_tc_ok]
+  by_cases haz : iden a = 0
+  · rw [if_pos (by simp [haz])]
+    have haz' : den a.mag.limbs.val = 0 := by
+      have h := iden_natAbs a; rw [haz, Int.natAbs_zero] at h; exact h.symm
+    have hz := int_zero_eq
+    cases hzc : RefInt.zero with
+    | ok r =>
+      rw [hzc] at hz; simp only [WP.spec_ok] at hz
+      obtain ⟨hziden, hznorm⟩ := hz
+      simp only [WP.spec_ok]
+      exact ⟨by rw [hziden, haz']; simp, hznorm⟩
+    | fail e => rw [hzc] at hz; exact hz.elim
+    | div => rw [hzc] at hz; exact hz.elim
+  · rw [if_neg (by simp [haz])]
+    rw [int_is_zero_eq b hb]
+    simp only [bind_tc_ok]
+    by_cases hbz : iden b = 0
+    · rw [if_pos (by simp [hbz])]
+      have hbz' : den b.mag.limbs.val = 0 := by
+        have h := iden_natAbs b; rw [hbz, Int.natAbs_zero] at h; exact h.symm
+      have hz := int_zero_eq
+      cases hzc : RefInt.zero with
+      | ok r =>
+        rw [hzc] at hz; simp only [WP.spec_ok] at hz
+        obtain ⟨hziden, hznorm⟩ := hz
+        simp only [WP.spec_ok]
+        exact ⟨by rw [hziden, hbz']; simp, hznorm⟩
+      | fail e => rw [hzc] at hz; exact hz.elim
+      | div => rw [hzc] at hz; exact hz.elim
+    · rw [if_neg (by simp [hbz])]
+      have haz' : den a.mag.limbs.val ≠ 0 := by
+        rw [← iden_natAbs a]; exact Int.natAbs_ne_zero.mpr haz
+      have hbz' : den b.mag.limbs.val ≠ 0 := by
+        rw [← iden_natAbs b]; exact Int.natAbs_ne_zero.mpr hbz
+      have hg := gcd_eq a.mag b.mag ha.1 hb.1 hacap hbcap
+      cases hgc : RefNat.gcd a.mag b.mag with
+      | ok g =>
+        rw [hgc] at hg; simp only [WP.spec_ok] at hg
+        obtain ⟨hgden, hgnorm⟩ := hg
+        simp only [bind_tc_ok]
+        have hgpos : 0 < den g.limbs.val := by
+          rw [hgden]; exact Nat.gcd_pos_of_pos_left _ (Nat.pos_of_ne_zero haz')
+        have hgle : den g.limbs.val ≤ den a.mag.limbs.val := by
+          rw [hgden]; exact Nat.gcd_le_left _ (Nat.pos_of_ne_zero haz')
+        have hglen : g.limbs.val.length ≤ a.mag.limbs.val.length := by
+          by_contra hc; rw [not_le] at hc
+          exact absurd (den_lt_of_len_lt a.mag.limbs.val g.limbs.val hgnorm hc) (by omega)
+        have halen1 : 0 < a.mag.limbs.val.length :=
+          List.length_pos_of_ne_nil (fun h => haz' ((den_eq_zero_iff _ ha.1).mpr h))
+        have hmul := mul_eq a.mag b.mag (by omega)
+        cases hmc : RefNat.mul a.mag b.mag with
+        | ok rn =>
+          rw [hmc] at hmul; simp only [WP.spec_ok] at hmul
+          obtain ⟨hrnden, hrnnorm⟩ := hmul
+          simp only [bind_tc_ok]
+          have hrnlen := den_mul_len_le _ _ _ hrnnorm hrnden
+          have hdr := divrem_eq rn g hrnnorm hgnorm hgpos (by omega) (by omega)
+          cases hdc : RefNat.divrem rn g with
+          | ok qr =>
+            obtain ⟨q, rr⟩ := qr
+            rw [hdc] at hdr; simp only [WP.spec_ok] at hdr
+            obtain ⟨hqden, _, hqnorm, _⟩ := hdr
+            show RefInt.make false q
+              ⦃ r => iden r = (Nat.lcm (den a.mag.limbs.val) (den b.mag.limbs.val) : ℤ) ∧ IntNorm r ⦄
+            have hmk := make_spec false q hqnorm
+            cases hmkc : RefInt.make false q with
+            | ok r =>
+              rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+              obtain ⟨hriden, hrinorm, _⟩ := hmk
+              simp only [WP.spec_ok]
+              refine ⟨?_, hrinorm⟩
+              rw [hriden, hqden, hrnden, hgden]
+              simp [Nat.lcm]
+            | fail e => rw [hmkc] at hmk; exact hmk.elim
+            | div => rw [hmkc] at hmk; exact hmk.elim
+          | fail e => rw [hdc] at hdr; exact hdr.elim
+          | div => rw [hdc] at hdr; exact hdr.elim
+        | fail e => rw [hmc] at hmul; exact hmul.elim
+        | div => rw [hmc] at hmul; exact hmul.elim
+      | fail e => rw [hgc] at hg; exact hg.elim
+      | div => rw [hgc] at hg; exact hg.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -2761,5 +2920,7 @@ private theorem int_gcd_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
 #print axioms int_sign_backend_eq
 #print axioms int_is_zero_backend_eq
 #print axioms int_gcd_eq
+#print axioms int_divrem_eq
+#print axioms int_lcm_eq
 
 end CertifyCheck.RefBackend
