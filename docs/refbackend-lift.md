@@ -47,9 +47,9 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 `.3` `mul` **— done** (nested schoolbook multiply; in-place `out[i+j]` writes via `den_set`; three
 loops — inner row-accumulate, carry-propagate, outer row-sum — with a magnitude bound keeping the
 carry loop in range) · `.4` `divrem` **— in progress** (bit-serial MSB-first restoring division;
-groundwork `shl1_eq` (`den = 2·den`) + `testbit_eq` (bit `i` of the denotation) landed; `bit_len`,
-the division loop, and `divrem_eq` remain) · `.5` `gcd` · `.6` `RefInt`/`RefRat` → ℤ/ℚ + the
-`Backend`-instance corollary.
+groundwork `shl1_eq` (`den = 2·den`) + `testbit_eq` (bit `i` of the denotation) + `bit_len_spec`
+(`den < 2^bit_len`) landed; the division loop and `divrem_eq` remain) · `.5` `gcd` · `.6`
+`RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
 
 **R.4b.4 groundwork.** `divrem` is the effort peak. Primitives, bottom-up: **`shl1_eq`** — the doubling,
 `den(shl1 x) = 2·den x`, a per-limb `(v[i]<<1)|carry` loop; needs `u64_or_add` (OR = + when the low bit

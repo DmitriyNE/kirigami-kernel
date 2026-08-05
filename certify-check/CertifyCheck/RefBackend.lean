@@ -1142,6 +1142,75 @@ theorem testbit_eq (self : RefNat) (i : Std.Usize) :
     apply propext
     exact ⟨fun h => by simp [h], fun h => UScalar.eq_of_val_eq (by simp [h])⟩
 
+/-! ### `bit_len` — the bit length bounds the denotation -/
+
+/-- **`bit_len` bound.** `den self < 2^(bit_len self)` — the value fits in `bit_len` bits. -/
+theorem bit_len_spec (self : RefNat) (hcap : self.limbs.val.length * 64 ≤ Std.Usize.max) :
+    RefNat.bit_len self ⦃ n => den self.limbs.val < 2 ^ n.val ⦄ := by
+  unfold RefNat.bit_len
+  have hz : RefNat.is_zero self = ok self.limbs.val.isEmpty := by
+    unfold RefNat.is_zero alloc.vec.Vec.is_empty; rfl
+  rw [hz]
+  simp only [bind_tc_ok]
+  by_cases he : self.limbs.val = []
+  · simp only [he, List.isEmpty_nil, if_true, WP.spec_ok]
+    simp [den]
+  · have hne : self.limbs.val.isEmpty = false := by simp [he]
+    simp only [hne, Bool.false_eq_true, if_false]
+    have hlen : (self.limbs.len).val = self.limbs.val.length := alloc.vec.Vec.len_val self.limbs
+    have hpos : 0 < self.limbs.val.length := List.length_pos_iff.mpr he
+    step
+    have htop64 : top.val * 64 ≤ Std.Usize.max := by rw [top_post1, hlen]; omega
+    step; step; step; step
+    have hlzle : BitVec.leadingZeros i2.bv ≤ 64 := by unfold BitVec.leadingZeros; split <;> omega
+    have hcoe : ((BitVec.leadingZeros i2.bv : BitVec 32)).toNat = BitVec.leadingZeros i2.bv := by
+      rw [show ((BitVec.leadingZeros i2.bv : BitVec 32)) = BitVec.ofNat 32 (BitVec.leadingZeros i2.bv)
+          from rfl, BitVec.toNat_ofNat]
+      exact Nat.mod_eq_of_lt (by omega)
+    have hi4v : i4.val = BitVec.leadingZeros i2.bv := by
+      rw [i4_post, i3_post]
+      simp only [core.num.U64.leading_zeros, UScalar.cast, UScalar.val, BitVec.toNat_setWidth,
+        UScalarTy.numBits, hcoe]
+      cases System.Platform.numBits_eq with
+      | inl h => rw [h]; omega
+      | inr h => rw [h]; omega
+    have hi2lt : i2.val < 2 ^ 64 := by scalar_tac
+    have hi2b : i2.val < 2 ^ (64 - i4.val) := by
+      rw [hi4v]; unfold BitVec.leadingZeros
+      by_cases h0 : i2.bv = 0
+      · rw [if_pos h0, Nat.sub_self, pow_zero]
+        have : i2.val = 0 := by rw [show i2.val = i2.bv.toNat from rfl, h0]; rfl
+        omega
+      · rw [if_neg h0]
+        have hi2ne : i2.val ≠ 0 := by
+          rw [show i2.val = i2.bv.toNat from rfl]
+          exact fun hc => h0 (BitVec.eq_of_toNat_eq (by rw [hc]; rfl))
+        have hlog : Nat.log 2 i2.val < 64 := Nat.log_lt_of_lt_pow hi2ne hi2lt
+        rw [show i2.bv.toNat = i2.val from rfl,
+          show 64 - (64 - Nat.log 2 i2.val - 1) = Nat.log 2 i2.val + 1 from by omega]
+        exact Nat.lt_pow_succ_log_self (by norm_num) i2.val
+    step
+    · have hi2last : i2 = self.limbs.val.getLast he := by
+        rw [i2_post, List.getLast_eq_getElem]; congr 1
+      have hkey : den self.limbs.val = den self.limbs.val.dropLast
+          + 2 ^ (64 * (self.limbs.val.length - 1)) * i2.val := by
+        conv_lhs => rw [← List.dropLast_append_getLast he]
+        rw [den_append, List.length_dropLast, den_singleton, ← hi2last]
+      have hdrop : den self.limbs.val.dropLast < 2 ^ (64 * (self.limbs.val.length - 1)) := by
+        have := den_lt self.limbs.val.dropLast; rwa [List.length_dropLast] at this
+      have hadd : i1.val + i5.val ≤ Std.Usize.max := by
+        rw [i1_post, top_post1, hlen, i5_post1]; omega
+      step
+      rw [n_post, i1_post, top_post1, hlen, i5_post1, hkey]
+      have hpow : (2 : ℕ) ^ ((self.limbs.val.length - 1) * 64 + (64 - i4.val))
+          = 2 ^ (64 * (self.limbs.val.length - 1)) * 2 ^ (64 - i4.val) := by
+        rw [← pow_add]; congr 1; omega
+      rw [hpow]
+      calc den self.limbs.val.dropLast + 2 ^ (64 * (self.limbs.val.length - 1)) * i2.val
+          < 2 ^ (64 * (self.limbs.val.length - 1)) * (1 + i2.val) := by rw [Nat.mul_add]; omega
+        _ ≤ 2 ^ (64 * (self.limbs.val.length - 1)) * 2 ^ (64 - i4.val) :=
+            Nat.mul_le_mul_left _ (by omega)
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -1151,5 +1220,6 @@ theorem testbit_eq (self : RefNat) (i : Std.Usize) :
 #print axioms mul_eq
 #print axioms shl1_eq
 #print axioms testbit_eq
+#print axioms bit_len_spec
 
 end CertifyCheck.RefBackend
