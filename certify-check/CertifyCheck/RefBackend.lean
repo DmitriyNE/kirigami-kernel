@@ -282,6 +282,39 @@ private theorem normalize_den (l : alloc.vec.Vec Std.U64) :
       · rw [if_neg hz]; simp only [WP.spec_ok]; exact hinv
   · rfl
 
+/-- `normalize` yields a normalized list — it strips trailing zero limbs, stopping at a nonzero top. -/
+private theorem normalize_normalized (l : alloc.vec.Vec Std.U64) :
+    lattice.refbackend.normalize l ⦃ r => Normalized r.val ⦄ := by
+  unfold lattice.refbackend.normalize normalize_loop
+  apply loop.spec_decr_nat
+    (measure := fun s => s.val.length)
+    (inv := fun _ => True)
+  · rintro s _
+    show normalize_loop.body s ⦃ _ ⦄
+    unfold normalize_loop.body alloc.vec.Vec.is_empty
+    simp only [bind_tc_ok]
+    by_cases hb : (s.val).isEmpty = true
+    · rw [if_pos hb]; simp only [WP.spec_ok]
+      have hemp : s.val = [] := by simpa using hb
+      intro h; exact absurd hemp h
+    · rw [if_neg hb]
+      have hne : s.val ≠ [] := by simpa using hb
+      have hlen1 : 0 < s.len.val := by rw [alloc.vec.Vec.len_val]; exact List.length_pos_of_ne_nil hne
+      step; step
+      have hlen0 : 0 < s.val.length := List.length_pos_of_ne_nil hne
+      have hidx : i1.val = s.val.length - 1 := by rw [i1_post1, alloc.vec.Vec.len_val]
+      have hidx_lt : i1.val < s.val.length := by omega
+      by_cases hz : i2 = 0#u64
+      · rw [if_pos hz]; unfold alloc.vec.Vec.pop; simp only [bind_tc_ok]
+        show s.val.dropLast.length < s.val.length
+        rw [List.length_dropLast]; omega
+      · rw [if_neg hz]; simp only [WP.spec_ok]
+        intro h
+        have hgl : i2 = s.val.getLast h := by rw [i2_post, List.getLast_eq_getElem]; congr 1
+        rw [← hgl]
+        exact fun hc => hz (Std.UScalar.eq_of_val_eq (by rw [hc]; rfl))
+  · trivial
+
 /-! ### `add` — the schoolbook carry loop computes `den a + den b`
 
 The one non-bookkeeping ingredient is the **`u128` split**: writing `s = a + b + carry`, the emitted
@@ -642,7 +675,8 @@ private theorem sub_loop_spec (self o : RefNat) (out : alloc.vec.Vec Std.U64)
     computes `den self − den o` on the limb denotations. -/
 theorem sub_eq (self o : RefNat) (hlo : o.limbs.val.length ≤ self.limbs.val.length)
     (hle : den o.limbs.val ≤ den self.limbs.val) :
-    RefNat.sub self o ⦃ r => den r.limbs.val = den self.limbs.val - den o.limbs.val ⦄ := by
+    RefNat.sub self o
+      ⦃ r => den r.limbs.val = den self.limbs.val - den o.limbs.val ∧ Normalized r.limbs.val ⦄ := by
   unfold RefNat.sub
   simp only [alloc.vec.Vec.with_capacity]
   have hloop := sub_loop_spec self o (alloc.vec.Vec.new Std.U64) 0#i128 0#usize hlo
@@ -662,11 +696,12 @@ theorem sub_eq (self o : RefNat) (hlo : o.limbs.val.length ≤ self.limbs.val.le
     have heqN : den self.limbs.val = den out1.val + den o.limbs.val := by exact_mod_cast heq
     simp only [bind_tc_ok]
     have hnorm := normalize_den out1
+    have hnn := normalize_normalized out1
     cases hnc : lattice.refbackend.normalize out1 with
     | ok o2 =>
-      rw [hnc] at hnorm; simp only [WP.spec_ok] at hnorm
+      rw [hnc] at hnorm hnn; simp only [WP.spec_ok] at hnorm hnn
       simp only [bind_tc_ok, WP.spec_ok]
-      show den o2.val = _; rw [hnorm]; omega
+      exact ⟨by show den o2.val = den self.limbs.val - den o.limbs.val; rw [hnorm]; omega, hnn⟩
     | fail e => rw [hnc] at hnorm; exact hnorm.elim
     | div => rw [hnc] at hnorm; exact hnorm.elim
   | fail e => rw [hcase] at hloop; exact hloop.elim
@@ -1052,7 +1087,7 @@ private theorem shl1_loop_spec (v out : alloc.vec.Vec Std.U64) (carry : Std.U64)
 
 /-- **`shl1` doubling.** `den (shl1 x) = 2 · den x` on the limb denotation. -/
 theorem shl1_eq (x : RefNat) (hcap : x.limbs.val.length + 1 ≤ Std.Usize.max) :
-    RefNat.shl1 x ⦃ r => den r.limbs.val = 2 * den x.limbs.val ⦄ := by
+    RefNat.shl1 x ⦃ r => den r.limbs.val = 2 * den x.limbs.val ∧ Normalized r.limbs.val ⦄ := by
   unfold RefNat.shl1
   simp only [alloc.vec.Vec.with_capacity]
   step
@@ -1065,21 +1100,23 @@ theorem shl1_eq (x : RefNat) (hcap : x.limbs.val.length + 1 ≤ Std.Usize.max) :
     obtain ⟨hden, hlen1, hcar1⟩ := hloop
     have hout2 : ∀ out2 : alloc.vec.Vec Std.U64, den out2.val = 2 * den x.limbs.val →
         (do let out3 ← lattice.refbackend.normalize out2; ok ({ limbs := out3 } : RefNat))
-          ⦃ r => den r.limbs.val = 2 * den x.limbs.val ⦄ := by
+          ⦃ r => den r.limbs.val = 2 * den x.limbs.val ∧ Normalized r.limbs.val ⦄ := by
       intro out2 hout2den
       have hnorm := normalize_den out2
+      have hnn := normalize_normalized out2
       cases hnc : lattice.refbackend.normalize out2 with
       | ok o =>
-        rw [hnc] at hnorm; simp only [WP.spec_ok] at hnorm
+        rw [hnc] at hnorm hnn; simp only [WP.spec_ok] at hnorm hnn
         simp only [bind_tc_ok, WP.spec_ok]
-        show den o.val = _; rw [hnorm, hout2den]
+        exact ⟨by show den o.val = _; rw [hnorm, hout2den], hnn⟩
       | fail e => rw [hnc] at hnorm; exact hnorm.elim
       | div => rw [hnc] at hnorm; exact hnorm.elim
     simp only [bind_tc_ok]
     show (do
         let out2 ← if (carry != 0#u64) = true then out1.push carry else ok out1
         let out3 ← lattice.refbackend.normalize out2
-        ok ({ limbs := out3 } : RefNat)) ⦃ r => den r.limbs.val = 2 * den x.limbs.val ⦄
+        ok ({ limbs := out3 } : RefNat))
+      ⦃ r => den r.limbs.val = 2 * den x.limbs.val ∧ Normalized r.limbs.val ⦄
     by_cases hcz : carry = 0#u64
     · subst hcz
       simp only [bne_self_eq_false, Bool.false_eq_true, if_false, bind_tc_ok]
@@ -1233,39 +1270,6 @@ private theorem den_lt_of_len_lt (x y : List Std.U64) (hy : Normalized y) (hlt :
 private theorem nat_mod_two_pow_succ (n k : ℕ) :
     n % 2 ^ (k + 1) = n % 2 ^ k + 2 ^ k * (n / 2 ^ k % 2) := by
   rw [pow_succ, Nat.mod_mul]
-
-/-- `normalize` yields a normalized list — it strips trailing zero limbs, stopping at a nonzero top. -/
-private theorem normalize_normalized (l : alloc.vec.Vec Std.U64) :
-    lattice.refbackend.normalize l ⦃ r => Normalized r.val ⦄ := by
-  unfold lattice.refbackend.normalize normalize_loop
-  apply loop.spec_decr_nat
-    (measure := fun s => s.val.length)
-    (inv := fun _ => True)
-  · rintro s _
-    show normalize_loop.body s ⦃ _ ⦄
-    unfold normalize_loop.body alloc.vec.Vec.is_empty
-    simp only [bind_tc_ok]
-    by_cases hb : (s.val).isEmpty = true
-    · rw [if_pos hb]; simp only [WP.spec_ok]
-      have hemp : s.val = [] := by simpa using hb
-      intro h; exact absurd hemp h
-    · rw [if_neg hb]
-      have hne : s.val ≠ [] := by simpa using hb
-      have hlen1 : 0 < s.len.val := by rw [alloc.vec.Vec.len_val]; exact List.length_pos_of_ne_nil hne
-      step; step
-      have hlen0 : 0 < s.val.length := List.length_pos_of_ne_nil hne
-      have hidx : i1.val = s.val.length - 1 := by rw [i1_post1, alloc.vec.Vec.len_val]
-      have hidx_lt : i1.val < s.val.length := by omega
-      by_cases hz : i2 = 0#u64
-      · rw [if_pos hz]; unfold alloc.vec.Vec.pop; simp only [bind_tc_ok]
-        show s.val.dropLast.length < s.val.length
-        rw [List.length_dropLast]; omega
-      · rw [if_neg hz]; simp only [WP.spec_ok]
-        intro h
-        have hgl : i2 = s.val.getLast h := by rw [i2_post, List.getLast_eq_getElem]; congr 1
-        rw [← hgl]
-        exact fun hc => hz (Std.UScalar.eq_of_val_eq (by rw [hc]; rfl))
-  · trivial
 
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
