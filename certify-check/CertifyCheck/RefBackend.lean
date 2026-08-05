@@ -2303,6 +2303,77 @@ private theorem rat_from_ints_eq (num dn : RefInt) (hnum : IntNorm num) (hdn : I
   | fail e => rw [hrc] at hred; exact hred.elim
   | div => rw [hrc] at hred; exact hred.elim
 
+/-! ### The `int_*` `Backend` methods — thin wrappers over the proven `RefInt` ops. -/
+
+/-- **`int_zero`** denotes `0`. -/
+private theorem int_zero_backend_eq :
+    (int_zero : Result RefInt) ⦃ r => iden r = 0 ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_zero; exact int_zero_eq
+
+/-- **`int_add`** denotes `iden a + iden b`. -/
+private theorem int_add_backend_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hcap : max a.mag.limbs.val.length b.mag.limbs.val.length + 1 ≤ Std.Usize.max) :
+    int_add a b ⦃ r => iden r = iden a + iden b ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_add; exact int_add_eq a b ha hb hcap
+
+/-- **`int_sub`** denotes `iden a − iden b`. -/
+private theorem int_sub_backend_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hcap : max a.mag.limbs.val.length b.mag.limbs.val.length + 1 ≤ Std.Usize.max) :
+    int_sub a b ⦃ r => iden r = iden a - iden b ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_sub; exact int_sub_eq a b ha hb hcap
+
+/-- **`int_mul`** denotes `iden a · iden b`. -/
+private theorem int_mul_backend_eq (a b : RefInt)
+    (hcap : a.mag.limbs.val.length + b.mag.limbs.val.length ≤ Std.Usize.max) :
+    int_mul a b ⦃ r => iden r = iden a * iden b ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_mul; exact int_mul_eq a b hcap
+
+/-- **`int_neg`** denotes `-iden a`. -/
+private theorem int_neg_backend_eq (a : RefInt) (ha : IntNorm a) :
+    int_neg a ⦃ r => iden r = -(iden a) ∧ IntNorm r ∧ r.mag.limbs.val = a.mag.limbs.val ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_neg; exact int_neg_eq a ha
+
+/-- **`int_cmp`** is `compare` on the ℤ denotations. -/
+private theorem int_cmp_backend_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b) :
+    int_cmp a b = ok (compare (iden a) (iden b)) := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_cmp; exact int_cmp_eq a b ha hb
+
+/-- **`int_sign`** returns the sign of the ℤ denotation. -/
+private theorem int_sign_backend_eq (a : RefInt) (ha : IntNorm a) :
+    int_sign a ⦃ s => (s.val : ℤ) = Int.sign (iden a) ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_sign; exact int_sign_eq a ha
+
+/-- **`int_is_zero`** decides `iden a = 0`. -/
+private theorem int_is_zero_backend_eq (a : RefInt) (ha : IntNorm a) :
+    int_is_zero a = ok (decide (iden a = 0)) := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_is_zero; exact int_is_zero_eq a ha
+
+/-- **`int_gcd`** is `gcd(|a|, |b|)` as a nonnegative `RefInt`. -/
+private theorem int_gcd_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hacap : a.mag.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hbcap : b.mag.limbs.val.length * 64 ≤ Std.Usize.max) :
+    int_gcd a b
+      ⦃ r => iden r = (Nat.gcd (den a.mag.limbs.val) (den b.mag.limbs.val) : ℤ) ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_gcd
+  have hg := gcd_eq a.mag b.mag ha.1 hb.1 hacap hbcap
+  cases hgc : RefNat.gcd a.mag b.mag with
+  | ok g =>
+    rw [hgc] at hg; simp only [WP.spec_ok] at hg
+    obtain ⟨hgden, hgnorm⟩ := hg
+    simp only [bind_tc_ok]
+    have hmk := make_spec false g hgnorm
+    cases hmkc : RefInt.make false g with
+    | ok r =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hrden, hrnorm, _⟩ := hmk
+      simp only [WP.spec_ok]
+      refine ⟨?_, hrnorm⟩
+      rw [hrden, hgden]; simp
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hgc] at hg; exact hg.elim
+  | div => rw [hgc] at hg; exact hg.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -2323,5 +2394,14 @@ private theorem rat_from_ints_eq (num dn : RefInt) (hnum : IntNorm num) (hdn : I
 #print axioms rat_sign_eq
 #print axioms rat_cmp_eq
 #print axioms rat_from_ints_eq
+#print axioms int_zero_backend_eq
+#print axioms int_add_backend_eq
+#print axioms int_sub_backend_eq
+#print axioms int_mul_backend_eq
+#print axioms int_neg_backend_eq
+#print axioms int_cmp_backend_eq
+#print axioms int_sign_backend_eq
+#print axioms int_is_zero_backend_eq
+#print axioms int_gcd_eq
 
 end CertifyCheck.RefBackend
