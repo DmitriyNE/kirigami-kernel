@@ -19,18 +19,17 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Finish R.4b.6: the i128 boundary — the last unproven `Backend` methods.** `RefNat` (= ℕ), `RefInt`
-  (= ℤ ordered ring + gcd/lcm/divrem), and `RefRat` (= ℚ: reduce + neg/numer/denom/is_zero/sign/cmp/
-  from_ints + **all arithmetic** mul/div/add/sub) are proven + pushed on `algebra-rehaul-r4`. The whole
-  `Backend` surface is now covered **except** the i128 conversions. Remaining, one coherent piece: the
-  **i128 boundary** — `RefNat.from_u128` (split a `u128` into ≤ 2 little-endian `u64` limbs; `den = v.val`,
-  Normalized), `RefInt.from_i128` (= `from_u128 ∘ I128.unsigned_abs` + the `v < 0` sign), and
-  `int_try_to_i128` (limbs → `i128`: the ≤ 2-limb reassembly + `i128::MAX` overflow checks). These unblock
-  the three remaining wrappers `rat_from_i128` / `int_from_i128` / `int_one`. Reusable helpers +
-  templates: `den_mul_len_le`/`den_add_len_le`/`iden_natAbs`/`compare_div_div`/`refnat_clone_eq`. Findings
-  in memory `algebra-rehaul.md`. Then R.5 V&V finalize (vv-matrix rows, `docs/algebra-trust.md` TCB update,
-  extraction-drift), and promote the audit surface to a public `Backend`-instance corollary (local
-  `#print axioms` block + `ci.yml`). *2026-08-05 · open*
+- **R.5 — finalize the algebra-trust rehaul (the `RefBackend = ℤ/ℚ` surface is DONE).** The whole reference
+  `Backend` trait is now proven axiom-clean on `algebra-rehaul-r4` (`certify-check/CertifyCheck/RefBackend.lean`):
+  RefNat = ℕ, RefInt = ℤ (ordered ring + gcd/lcm/divrem + i128 both directions), RefRat = ℚ (reduce + all
+  arithmetic mul/div/add/sub + neg/numer/denom/is_zero/sign/cmp/from_ints/from_i128). Remaining is the V&V
+  finalization: **(1)** promote the audit surface to a public `Backend`-instance corollary (the current
+  `#print axioms` block lists the *private* op refinements; add a public theorem so `ci.yml`'s axiom-audit
+  guards `RefBackend = ℤ/ℚ` at the trait level) + wire it into `.github/workflows/ci.yml`; **(2)** the dashu
+  differential — make it a *proof-backed* oracle now that the reference is proven `= ℤ/ℚ` (`rat::differential`);
+  **(3)** `vv-matrix.md` rows + `docs/algebra-trust.md` TCB update (dashu trust shrunk to the differential) +
+  extraction-drift for the generated files; **(4)** merge-to-main review of `algebra-rehaul-r4`. Findings +
+  the full method-by-method recipe in memory `algebra-rehaul.md`. *2026-08-05 · open*
 
 - **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
   trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
