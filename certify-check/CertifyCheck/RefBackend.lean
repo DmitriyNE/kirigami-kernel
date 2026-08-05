@@ -1327,7 +1327,7 @@ private theorem divrem_loop_spec (self d : RefNat) (q : alloc.vec.Vec Std.U64) (
       = den q.val * den d.limbs.val + den r.limbs.val * 2 ^ i.val + den self.limbs.val % 2 ^ i.val) :
     RefNat.divrem_loop self d q r i
       ⦃ result => den self.limbs.val = den result.1.val * den d.limbs.val + den result.2.limbs.val
-          ∧ den result.2.limbs.val < den d.limbs.val ⦄ := by
+          ∧ den result.2.limbs.val < den d.limbs.val ∧ Normalized result.2.limbs.val ⦄ := by
   unfold RefNat.divrem_loop
   apply loop.spec_decr_nat
     (measure := fun st => st.2.2.val)
@@ -1512,8 +1512,97 @@ private theorem divrem_loop_spec (self d : RefNat) (q : alloc.vec.Vec Std.U64) (
       simp only [WP.spec_ok]
       have hi0 : i'.val = 0 := by clear hinv' hidvd' hqcap' hrlt' hr'; scalar_tac
       rw [hi0, pow_zero, mul_one, Nat.mod_one, add_zero] at hinv'
-      exact ⟨hinv', hrlt'⟩
+      exact ⟨hinv', hrlt', hr'⟩
   · exact ⟨hr, hrlt, hidvd, hqcap, hinv⟩
+
+set_option maxHeartbeats 800000 in
+/-- **`divrem` refinement.** For a nonzero normalized divisor, the bit-serial long division computes
+    the Euclidean quotient and remainder on the limb denotations. -/
+theorem divrem_eq (self d : RefNat) (hself : Normalized self.limbs.val)
+    (hd : Normalized d.limbs.val) (hdpos : 0 < den d.limbs.val)
+    (hdcap : d.limbs.val.length + 1 ≤ Std.Usize.max)
+    (hcap : self.limbs.val.length * 64 ≤ Std.Usize.max) :
+    RefNat.divrem self d
+      ⦃ r => den r.1.limbs.val = den self.limbs.val / den d.limbs.val
+          ∧ den r.2.limbs.val = den self.limbs.val % den d.limbs.val
+          ∧ Normalized r.1.limbs.val ∧ Normalized r.2.limbs.val ⦄ := by
+  unfold RefNat.divrem
+  rw [is_zero_eq d hd]
+  have hb0 : decide (den d.limbs.val = 0) = false := by
+    simp only [decide_eq_false_iff_not]; omega
+  simp only [hb0, bind_tc_ok, massert]
+  rw [cmp_eq self d hself hd]
+  simp only [core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq, compare_lt_iff_lt,
+    bind_tc_ok, decide_eq_true_eq]
+  rw [if_pos (by decide : ¬ (false = true))]
+  simp only [bind_tc_ok]
+  by_cases hlt : den self.limbs.val < den d.limbs.val
+  · -- `self < d`: quotient `0`, remainder `self`.
+    rw [if_pos hlt]
+    unfold RefNat.zero RefNat.Insts.CoreCloneClone.clone
+    have hcl : alloc.vec.CloneVec.clone core.clone.CloneU64 self.limbs ⦃ v => self.limbs = v ⦄ :=
+      alloc.slice.Slice.to_vec_spec core.clone.CloneU64 self.limbs (by intro x _; rfl)
+    cases hcc : alloc.vec.CloneVec.clone core.clone.CloneU64 self.limbs with
+    | ok v =>
+      rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+      simp only [bind_tc_ok, WP.spec_ok]
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · show den (alloc.vec.Vec.new Std.U64).val = den self.limbs.val / den d.limbs.val
+        rw [Nat.div_eq_of_lt hlt]; rfl
+      · show den v.val = den self.limbs.val % den d.limbs.val
+        rw [← hcl, Nat.mod_eq_of_lt hlt]
+      · show Normalized (alloc.vec.Vec.new Std.U64).val
+        intro h; exact absurd rfl h
+      · show Normalized v.val
+        rw [← hcl]; exact hself
+    | fail e => rw [hcc] at hcl; exact hcl.elim
+    | div => rw [hcc] at hcl; exact hcl.elim
+  · -- `self ≥ d`: the bit-serial loop, over `⌈bit_len self / 64⌉` limbs.
+    rw [if_neg hlt]
+    have hbl := bit_len_spec self hcap
+    cases hbn : RefNat.bit_len self with
+    | ok n =>
+      rw [hbn] at hbl; simp only [WP.spec_ok] at hbl
+      simp only [bind_tc_ok, core.num.Usize.div_ceil]
+      step
+      unfold RefNat.zero
+      simp only [bind_tc_ok]
+      have hq0 : den q.val = 0 := by rw [q_post1]; exact den_replicate_zero _
+      have hqlen : q.val.length = (n.val + 64 - 1) / 64 := by simpa using q_post2
+      have hloop := divrem_loop_spec self d q { limbs := alloc.vec.Vec.new Std.U64 } n hd hdcap
+        (by intro h; exact absurd rfl h)
+        (by show den (alloc.vec.Vec.new Std.U64).val < den d.limbs.val; rw [show den (alloc.vec.Vec.new Std.U64).val = 0 from rfl]; exact hdpos)
+        (by rw [hq0]; exact dvd_zero _)
+        (by rw [hqlen]; omega)
+        (by rw [hq0, show den ({ limbs := alloc.vec.Vec.new Std.U64 } : RefNat).limbs.val = 0 from rfl,
+              Nat.mod_eq_of_lt hbl]; ring)
+      cases hlc : RefNat.divrem_loop self d q { limbs := alloc.vec.Vec.new Std.U64 } n with
+      | ok qr =>
+        obtain ⟨q1, r1⟩ := qr
+        rw [hlc] at hloop; simp only [WP.spec_ok] at hloop
+        obtain ⟨hrecon, hrlt2, hrnorm⟩ := hloop
+        show (do let q2 ← lattice.refbackend.normalize q1
+                 ok ((⟨q2⟩ : RefNat), r1))
+          ⦃ r => den r.1.limbs.val = den self.limbs.val / den d.limbs.val
+              ∧ den r.2.limbs.val = den self.limbs.val % den d.limbs.val
+              ∧ Normalized r.1.limbs.val ∧ Normalized r.2.limbs.val ⦄
+        have hnd := normalize_den q1
+        have hnn := normalize_normalized q1
+        cases hnc : lattice.refbackend.normalize q1 with
+        | ok q2 =>
+          rw [hnc] at hnd hnn; simp only [WP.spec_ok] at hnd hnn
+          simp only [bind_tc_ok, WP.spec_ok]
+          have hunique : den self.limbs.val / den d.limbs.val = den q1.val
+              ∧ den self.limbs.val % den d.limbs.val = den r1.limbs.val := by
+            apply (Nat.div_mod_unique hdpos).mpr
+            exact ⟨by rw [Nat.mul_comm]; omega, hrlt2⟩
+          exact ⟨by rw [hnd]; exact hunique.1.symm, hunique.2.symm, hnn, hrnorm⟩
+        | fail e => rw [hnc] at hnd; exact hnd.elim
+        | div => rw [hnc] at hnd; exact hnd.elim
+      | fail e => rw [hlc] at hloop; exact hloop.elim
+      | div => rw [hlc] at hloop; exact hloop.elim
+    | fail e => rw [hbn] at hbl; exact hbl.elim
+    | div => rw [hbn] at hbl; exact hbl.elim
 
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
@@ -1525,5 +1614,6 @@ private theorem divrem_loop_spec (self d : RefNat) (q : alloc.vec.Vec Std.U64) (
 #print axioms shl1_eq
 #print axioms testbit_eq
 #print axioms bit_len_spec
+#print axioms divrem_eq
 
 end CertifyCheck.RefBackend
