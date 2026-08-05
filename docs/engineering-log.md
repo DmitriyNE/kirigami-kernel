@@ -19,6 +19,17 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Finish R.4b.6: `RefRat` → ℚ + the `Backend`-instance corollary.** The `RefNat` (= ℕ) and `RefInt`
+  (= ℤ, ordered ring: zero/neg/add/sub/mul/cmp/sign) layers are proven + pushed on `algebra-rehaul-r4`.
+  Remaining, both sizable: **(1)** `qden : RefRat → ℚ` denotation + `RefRat.reduce` (gcd-reduce
+  `neg·num/den` to lowest terms, `den > 0`, `gcd(|num|,den)=1`) — composes `gcd_eq` + `divrem_eq`, its
+  own meaty proof — plus `RefRat.from_i128`. **(2)** the `Backend`-instance corollary: wrap each trait
+  method (`int_add/sub/mul/neg/cmp/sign/gcd/lcm/divrem/try_to_i128/from_i128`, `rat_from_i128/from_ints/
+  add/sub/mul/…`) as thin lemmas over the proven ops — this is the literal `RefBackend = ℤ/ℚ` statement,
+  ~20 lemmas. The proven `RefInt` op refinements (`make_spec`→`int_*_eq`) are the exact template; findings
+  in memory `algebra-rehaul.md`. Then R.5 V&V finalize (vv-matrix rows, `docs/algebra-trust.md` TCB
+  update, extraction-drift). *2026-08-05 · open*
+
 - **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
   trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
   `structure` whose parent-clause witnesses for *both* associated types (`type Int: Clone + Eq`
