@@ -2887,6 +2887,102 @@ private theorem int_lcm_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
       | fail e => rw [hgc] at hg; exact hg.elim
       | div => rw [hgc] at hg; exact hg.elim
 
+/-! ### The `i128` boundary — `from_u128` / `from_i128` / `try_to_i128`. -/
+
+/-- **`RefNat.from_u128`** splits a `u128` into (up to) two little-endian `u64` limbs: `den = v`. -/
+private theorem from_u128_spec (v : Std.U128) :
+    RefNat.from_u128 v ⦃ r => den r.limbs.val = v.val ∧ Normalized r.limbs.val ⦄ := by
+  unfold RefNat.from_u128
+  step; step; step; step
+  have hvbound : v.val < 2 ^ 128 := v.bv.isLt
+  have hhi : hi.val = v.val >>> (64 : ℕ) := by
+    rw [hi_post, cast_u64_val, i_post1, Nat.shiftRight_eq_div_pow]
+    apply Nat.mod_eq_of_lt
+    apply Nat.div_lt_of_lt_mul
+    have h2 : (2 : ℕ) ^ 64 * 2 ^ 64 = 2 ^ 128 := by norm_num
+    rw [h2]; exact hvbound
+  have hret : (alloc.slice.Slice.into_vec y).val = [lo, hi] := by rw [y_post]; rfl
+  have hnd := normalize_den (alloc.slice.Slice.into_vec y)
+  have hnn := normalize_normalized (alloc.slice.Slice.into_vec y)
+  cases hnc : lattice.refbackend.normalize (alloc.slice.Slice.into_vec y) with
+  | ok ret1 =>
+    rw [hnc] at hnd hnn; simp only [WP.spec_ok] at hnd hnn
+    simp only [bind_tc_ok, WP.spec_ok]
+    refine ⟨?_, hnn⟩
+    rw [hnd, hret, den_cons, den_singleton, lo_post, cast_u64_val, hhi]
+    exact u128_split v
+  | fail e => rw [hnc] at hnd; exact hnd.elim
+  | div => rw [hnc] at hnd; exact hnd.elim
+
+/-- **`RefInt.from_i128`** = `|v|` in limbs with the sign of `v`: `iden = v`. -/
+private theorem from_i128_spec (v : Std.I128) :
+    RefInt.from_i128 v ⦃ r => iden r = (v.val : ℤ) ∧ IntNorm r ⦄ := by
+  unfold RefInt.from_i128
+  have huabs : ∃ i : Std.U128, core.num.I128.unsigned_abs v = ok i ∧ i.val = v.val.natAbs :=
+    ⟨_, rfl, UScalar.ofNatCore_val_eq _⟩
+  obtain ⟨i, hi_eq, hi_val⟩ := huabs
+  rw [hi_eq]; simp only [bind_tc_ok]
+  have hfrom := from_u128_spec i
+  cases hfc : RefNat.from_u128 i with
+  | ok rn =>
+    rw [hfc] at hfrom; simp only [WP.spec_ok] at hfrom
+    obtain ⟨hrnden, hrnnorm⟩ := hfrom
+    simp only [bind_tc_ok]
+    have hmk := make_spec (decide (v < 0#i128)) rn hrnnorm
+    cases hmkc : RefInt.make (decide (v < 0#i128)) rn with
+    | ok r =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hriden, hrinorm, _⟩ := hmk
+      simp only [WP.spec_ok]
+      refine ⟨?_, hrinorm⟩
+      rw [hriden, hrnden, hi_val]
+      by_cases hlt : v < 0#i128
+      · rw [if_pos (by simp [hlt])]
+        have hvneg : v.val < 0 := by scalar_tac
+        omega
+      · rw [if_neg (by simp [hlt])]
+        have hvnn : 0 ≤ v.val := by scalar_tac
+        omega
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hfc] at hfrom; exact hfrom.elim
+  | div => rw [hfc] at hfrom; exact hfrom.elim
+
+/-- **`int_from_i128`** builds `v` as a `RefInt`. -/
+private theorem int_from_i128_eq (v : Std.I128) :
+    int_from_i128 v ⦃ r => iden r = (v.val : ℤ) ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_from_i128; exact from_i128_spec v
+
+/-- **`int_one`** is `1`. -/
+private theorem int_one_eq :
+    (int_one : Result RefInt) ⦃ r => iden r = 1 ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_one
+  have h := from_i128_spec 1#i128
+  have hv : ((1#i128 : Std.I128).val : ℤ) = 1 := by decide
+  rw [hv] at h; exact h
+
+/-- **`rat_from_i128`** builds `v/1` as a `RefRat`. -/
+private theorem rat_from_i128_eq (v : Std.I128) :
+    rat_from_i128 v ⦃ r => qden r = (v.val : ℚ) ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_from_i128 RefRat.from_i128
+  have hfi := from_i128_spec v
+  cases hfc : RefInt.from_i128 v with
+  | ok ri =>
+    rw [hfc] at hfi; simp only [WP.spec_ok] at hfi
+    obtain ⟨hriden, hrinorm⟩ := hfi
+    simp only [bind_tc_ok]
+    step
+    have hy : (alloc.slice.Slice.into_vec y).val = [1#u64] := by rw [y_post]; rfl
+    refine ⟨?_, hrinorm, ?_, ?_⟩
+    · show (iden ri : ℚ) / (den (alloc.slice.Slice.into_vec y).val : ℚ) = (v.val : ℚ)
+      rw [hy, hriden]; simp
+    · show Normalized (alloc.slice.Slice.into_vec y).val
+      rw [hy]; intro h; simp
+    · show 0 < den (alloc.slice.Slice.into_vec y).val
+      rw [hy]; simp [den]
+  | fail e => rw [hfc] at hfi; exact hfi.elim
+  | div => rw [hfc] at hfi; exact hfi.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -2922,5 +3018,10 @@ private theorem int_lcm_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
 #print axioms int_gcd_eq
 #print axioms int_divrem_eq
 #print axioms int_lcm_eq
+#print axioms from_u128_spec
+#print axioms from_i128_spec
+#print axioms int_from_i128_eq
+#print axioms int_one_eq
+#print axioms rat_from_i128_eq
 
 end CertifyCheck.RefBackend
