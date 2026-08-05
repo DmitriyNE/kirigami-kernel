@@ -1901,6 +1901,72 @@ private theorem int_sub_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
   | fail e => rw [hnc] at hneg; exact hneg.elim
   | div => rw [hnc] at hneg; exact hneg.elim
 
+/-- Casting ℕ→ℤ preserves `compare`. -/
+private theorem natCast_compare (m n : ℕ) : compare (m : ℤ) (n : ℤ) = compare m n := by
+  rcases lt_trichotomy m n with h | h | h
+  · rw [compare_lt_iff_lt.mpr (by exact_mod_cast h), compare_lt_iff_lt.mpr h]
+  · subst h; rw [Std.ReflOrd.compare_self, Std.ReflOrd.compare_self]
+  · rw [compare_gt_iff_gt.mpr (by exact_mod_cast h), compare_gt_iff_gt.mpr h]
+
+/-- Negating both arguments reverses `compare`. -/
+private theorem compare_neg_neg (x y : ℤ) : compare (-x) (-y) = compare y x := by
+  rcases lt_trichotomy x y with h | h | h
+  · rw [compare_gt_iff_gt.mpr (show -y < -x by omega), compare_gt_iff_gt.mpr h]
+  · subst h; rw [Std.ReflOrd.compare_self, Std.ReflOrd.compare_self]
+  · rw [compare_lt_iff_lt.mpr (show -x < -y by omega), compare_lt_iff_lt.mpr h]
+
+/-- **`RefInt.cmp`** is `compare` on the ℤ denotations (negatives < 0 ≤ nonnegatives; among like
+    signs, magnitude order, reversed for negatives). -/
+private theorem int_cmp_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b) :
+    RefInt.cmp a b = ok (compare (iden a) (iden b)) := by
+  unfold RefInt.cmp
+  by_cases han : a.neg = true
+  · have hia : iden a = -(den a.mag.limbs.val : ℤ) := by simp [iden, han]
+    by_cases hbn : b.neg = true
+    · have hib : iden b = -(den b.mag.limbs.val : ℤ) := by simp [iden, hbn]
+      rw [if_pos han, if_pos hbn, cmp_eq b.mag a.mag hb.1 ha.1, hia, hib, compare_neg_neg,
+        natCast_compare]
+    · have hbn' : b.neg = false := by simpa using hbn
+      have hib : iden b = (den b.mag.limbs.val : ℤ) := by simp [iden, hbn']
+      have hane : den a.mag.limbs.val ≠ 0 := fun h => by simp [ha.2 h] at han
+      rw [if_pos han, if_neg hbn]
+      congr 1; symm; rw [compare_lt_iff_lt, hia, hib]; omega
+  · have han' : a.neg = false := by simpa using han
+    have hia : iden a = (den a.mag.limbs.val : ℤ) := by simp [iden, han']
+    by_cases hbn : b.neg = true
+    · have hib : iden b = -(den b.mag.limbs.val : ℤ) := by simp [iden, hbn]
+      have hbne : den b.mag.limbs.val ≠ 0 := fun h => by simp [hb.2 h] at hbn
+      rw [if_neg han, if_pos hbn]
+      congr 1; symm; rw [compare_gt_iff_gt, hia, hib]; omega
+    · have hbn' : b.neg = false := by simpa using hbn
+      have hib : iden b = (den b.mag.limbs.val : ℤ) := by simp [iden, hbn']
+      rw [if_neg han, if_neg hbn, cmp_eq a.mag b.mag ha.1 hb.1, hia, hib, natCast_compare]
+
+/-- **`RefInt.sign`** returns the sign of the ℤ denotation (`Int.sign ∈ {-1,0,1}`). -/
+private theorem int_sign_eq (a : RefInt) (ha : IntNorm a) :
+    RefInt.sign a ⦃ s => (s.val : ℤ) = Int.sign (iden a) ⦄ := by
+  unfold RefInt.sign
+  rw [is_zero_eq a.mag ha.1]
+  simp only [bind_tc_ok]
+  by_cases hz : den a.mag.limbs.val = 0
+  · rw [if_pos (by simp [hz])]
+    simp only [WP.spec_ok]
+    have h0 : iden a = 0 := by simp [iden, hz]
+    rw [h0]; decide
+  · rw [if_neg (by simp [hz])]
+    have hpos : (0 : ℤ) < (den a.mag.limbs.val : ℤ) := by
+      have := hz; positivity
+    by_cases hn : a.neg = true
+    · rw [if_pos hn]
+      simp only [WP.spec_ok]
+      have hia : iden a = -(den a.mag.limbs.val : ℤ) := by simp [iden, hn]
+      rw [hia, Int.sign_eq_neg_one_of_neg (by omega)]; decide
+    · rw [if_neg hn]
+      simp only [WP.spec_ok]
+      have han' : a.neg = false := by simpa using hn
+      have hia : iden a = (den a.mag.limbs.val : ℤ) := by simp [iden, han']
+      rw [hia, Int.sign_eq_one_of_pos hpos]; decide
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
