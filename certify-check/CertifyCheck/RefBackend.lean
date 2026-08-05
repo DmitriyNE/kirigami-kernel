@@ -2303,6 +2303,360 @@ private theorem rat_from_ints_eq (num dn : RefInt) (hnum : IntNorm num) (hdn : I
   | fail e => rw [hrc] at hred; exact hred.elim
   | div => rw [hrc] at hred; exact hred.elim
 
+/-! ### The rat *arithmetic* methods — each funnels a product through `reduce`.
+
+`reduce` needs `len·64 ≤ usize::MAX` on its numerator/denominator; the length of a product is bounded
+by the sum of the factor lengths (`den_mul_len_le`), which turns that into a cap on the inputs. -/
+
+/-- A normalized product `den r = den x · den y` has length `≤ x.length + y.length`: its value is
+    `< 2^(64(|x|+|y|))`, and a normalized length-`n` list denotes `≥ 2^(64(n−1))`. -/
+private theorem den_mul_len_le (r x y : List Std.U64) (hr : Normalized r)
+    (hD : den r = den x * den y) : r.length ≤ x.length + y.length := by
+  rcases eq_or_ne r [] with h | h
+  · simp [h]
+  · have hrpos : 1 ≤ r.length := List.length_pos_of_ne_nil h
+    have hlow := den_lower r h hr
+    have hub : den r < 2 ^ (64 * (x.length + y.length)) := by
+      rw [hD]
+      calc den x * den y ≤ den x * 2 ^ (64 * y.length) :=
+              Nat.mul_le_mul (le_refl _) (le_of_lt (den_lt y))
+        _ < 2 ^ (64 * x.length) * 2 ^ (64 * y.length) :=
+            mul_lt_mul_of_pos_right (den_lt x) (pow_pos (by norm_num) _)
+        _ = 2 ^ (64 * (x.length + y.length)) := by rw [← pow_add]; congr 1; ring
+    have hlt : 64 * (r.length - 1) < 64 * (x.length + y.length) :=
+      (Nat.pow_lt_pow_iff_right (by norm_num)).mp (lt_of_le_of_lt hlow hub)
+    omega
+
+/-- `|iden a| = den(a.mag)` — the magnitude is the natural-number absolute value. -/
+private theorem iden_natAbs (a : RefInt) : (iden a).natAbs = den a.mag.limbs.val := by
+  simp only [iden]; cases a.neg <;> simp
+
+/-- **`rat_mul`** multiplies the two rationals. -/
+private theorem rat_mul_eq (a b : RefRat) (ha : RatNorm a) (hb : RatNorm b)
+    (hncap : (a.num.mag.limbs.val.length + b.num.mag.limbs.val.length) * 64 ≤ Std.Usize.max)
+    (hdcap : (a.den.limbs.val.length + b.den.limbs.val.length) * 64 ≤ Std.Usize.max) :
+    rat_mul a b ⦃ r => qden r = qden a * qden b ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_mul
+  have hmul := int_mul_eq a.num b.num (by omega)
+  cases hmc : RefInt.mul a.num b.num with
+  | ok n =>
+    rw [hmc] at hmul; simp only [WP.spec_ok] at hmul
+    obtain ⟨hniden, hnnorm⟩ := hmul
+    simp only [bind_tc_ok]
+    have hmuld := mul_eq a.den b.den (by omega)
+    cases hmdc : RefNat.mul a.den b.den with
+    | ok rn =>
+      rw [hmdc] at hmuld; simp only [WP.spec_ok] at hmuld
+      obtain ⟨hrnden, hrnnorm⟩ := hmuld
+      simp only [bind_tc_ok]
+      have hnmag : den n.mag.limbs.val
+          = den a.num.mag.limbs.val * den b.num.mag.limbs.val := by
+        rw [← iden_natAbs n, hniden, Int.natAbs_mul, iden_natAbs, iden_natAbs]
+      have hnlen := den_mul_len_le _ _ _ hnnorm.1 hnmag
+      have hnmagcap : n.mag.limbs.val.length * 64 ≤ Std.Usize.max := by omega
+      have hrnlen := den_mul_len_le _ _ _ hrnnorm hrnden
+      have hrncap : rn.limbs.val.length * 64 ≤ Std.Usize.max := by omega
+      have hrnpos : 0 < den rn.limbs.val := by rw [hrnden]; exact Nat.mul_pos ha.2.2 hb.2.2
+      have hred := reduce_spec n.neg n.mag rn hnnorm.1 hrnnorm hrnpos hnmagcap hrncap
+      cases hrc : RefRat.reduce n.neg n.mag rn with
+      | ok r =>
+        rw [hrc] at hred; simp only [WP.spec_ok] at hred
+        obtain ⟨hrval, hrnorm⟩ := hred
+        simp only [WP.spec_ok]
+        refine ⟨?_, hrnorm⟩
+        rw [hrval]
+        have hncast : (if n.neg then -(den n.mag.limbs.val : ℚ) else (den n.mag.limbs.val : ℚ))
+            = (iden n : ℚ) := by simp only [iden]; cases n.neg <;> simp
+        rw [hncast, hniden, hrnden]
+        simp only [qden, Int.cast_mul, Nat.cast_mul, div_mul_div_comm]
+      | fail e => rw [hrc] at hred; exact hred.elim
+      | div => rw [hrc] at hred; exact hred.elim
+    | fail e => rw [hmdc] at hmuld; exact hmuld.elim
+    | div => rw [hmdc] at hmuld; exact hmuld.elim
+  | fail e => rw [hmc] at hmul; exact hmul.elim
+  | div => rw [hmc] at hmul; exact hmul.elim
+
+/-- **`rat_div`** divides the two rationals (`b ≠ 0`). -/
+private theorem rat_div_eq (a b : RefRat) (ha : RatNorm a) (hb : RatNorm b)
+    (hb0 : den b.num.mag.limbs.val ≠ 0)
+    (hncap : (a.num.mag.limbs.val.length + b.den.limbs.val.length) * 64 ≤ Std.Usize.max)
+    (hdcap : (a.den.limbs.val.length + b.num.mag.limbs.val.length) * 64 ≤ Std.Usize.max) :
+    rat_div a b ⦃ r => qden r = qden a / qden b ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_div
+  have hidenz : ¬ (iden b.num = 0) := by simp only [iden]; cases b.num.neg <;> simp [hb0]
+  have hbz : decide (iden b.num = 0) = false := by simp only [decide_eq_false_iff_not]; exact hidenz
+  rw [int_is_zero_eq b.num hb.1, hbz]
+  show (do
+      let rn ← RefNat.Insts.CoreCloneClone.clone b.den
+      let ri ← RefInt.make false rn
+      let n ← RefInt.mul a.num ri
+      let rn1 ← RefNat.mul a.den b.num.mag
+      RefRat.reduce (n.neg != b.num.neg) n.mag rn1)
+    ⦃ r => qden r = qden a / qden b ∧ RatNorm r ⦄
+  have hcl := refnat_clone_eq b.den
+  cases hcc : RefNat.Insts.CoreCloneClone.clone b.den with
+  | ok rn =>
+    rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+    simp only [bind_tc_ok]
+    have hmk := make_spec false rn (hcl ▸ hb.2.1)
+    cases hmkc : RefInt.make false rn with
+    | ok ri =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hriden, hrinorm, hrimag⟩ := hmk
+      have hri : iden ri = (den b.den.limbs.val : ℤ) := by rw [hriden, hcl]; simp
+      have hrilen : ri.mag.limbs.val.length = b.den.limbs.val.length := by rw [hrimag, hcl]
+      simp only [bind_tc_ok]
+      have hmul := int_mul_eq a.num ri (by rw [hrilen]; omega)
+      cases hmc : RefInt.mul a.num ri with
+      | ok n =>
+        rw [hmc] at hmul; simp only [WP.spec_ok] at hmul
+        obtain ⟨hniden, hnnorm⟩ := hmul
+        simp only [bind_tc_ok]
+        have hmuld := mul_eq a.den b.num.mag (by omega)
+        cases hmdc : RefNat.mul a.den b.num.mag with
+        | ok rn1 =>
+          rw [hmdc] at hmuld; simp only [WP.spec_ok] at hmuld
+          obtain ⟨hrn1den, hrn1norm⟩ := hmuld
+          simp only [bind_tc_ok]
+          have hnmag : den n.mag.limbs.val = den a.num.mag.limbs.val * den b.den.limbs.val := by
+            rw [← iden_natAbs n, hniden, Int.natAbs_mul, iden_natAbs]
+            rw [show (iden ri).natAbs = den b.den.limbs.val by rw [hri]; simp]
+          have hnlen := den_mul_len_le _ _ _ hnnorm.1 hnmag
+          have hnmagcap : n.mag.limbs.val.length * 64 ≤ Std.Usize.max := by omega
+          have hrn1len := den_mul_len_le _ _ _ hrn1norm hrn1den
+          have hrn1cap : rn1.limbs.val.length * 64 ≤ Std.Usize.max := by omega
+          have hrn1pos : 0 < den rn1.limbs.val := by
+            rw [hrn1den]; exact Nat.mul_pos ha.2.2 (Nat.pos_of_ne_zero hb0)
+          have hred := reduce_spec (n.neg != b.num.neg) n.mag rn1 hnnorm.1 hrn1norm hrn1pos
+            hnmagcap hrn1cap
+          cases hrc : RefRat.reduce (n.neg != b.num.neg) n.mag rn1 with
+          | ok r =>
+            rw [hrc] at hred; simp only [WP.spec_ok] at hred
+            obtain ⟨hrval, hrnorm⟩ := hred
+            simp only [WP.spec_ok]
+            refine ⟨?_, hrnorm⟩
+            rw [hrval]
+            have hncast : (if n.neg then -(den n.mag.limbs.val : ℚ) else (den n.mag.limbs.val : ℚ))
+                = (iden n : ℚ) := by simp only [iden]; cases n.neg <;> simp
+            have hsplit : (if (n.neg != b.num.neg) then -(den n.mag.limbs.val : ℚ)
+                  else (den n.mag.limbs.val : ℚ))
+                = (iden n : ℚ) * (if b.num.neg then (-1 : ℚ) else 1) := by
+              rw [← hncast]; cases n.neg <;> cases b.num.neg <;> simp
+            have hnq : (iden n : ℚ) = (iden a.num : ℚ) * (den b.den.limbs.val : ℚ) := by
+              rw [hniden, hri]; push_cast; ring
+            have hbnum : (iden b.num : ℚ)
+                = (if b.num.neg then (-1 : ℚ) else 1) * (den b.num.mag.limbs.val : ℚ) := by
+              simp only [iden]; cases b.num.neg <;> simp
+            have hsgn : (if b.num.neg then (-1 : ℚ) else 1) ≠ 0 := by cases b.num.neg <;> simp
+            have hdb : (den b.num.mag.limbs.val : ℚ) ≠ 0 := by exact_mod_cast hb0
+            have hda : (den a.den.limbs.val : ℚ) ≠ 0 := by exact_mod_cast ha.2.2.ne'
+            have hdbd : (den b.den.limbs.val : ℚ) ≠ 0 := by exact_mod_cast hb.2.2.ne'
+            rw [hsplit, hrn1den, hnq]
+            simp only [qden, hbnum, Nat.cast_mul]
+            field_simp
+            cases b.num.neg <;> simp
+          | fail e => rw [hrc] at hred; exact hred.elim
+          | div => rw [hrc] at hred; exact hred.elim
+        | fail e => rw [hmdc] at hmuld; exact hmuld.elim
+        | div => rw [hmdc] at hmuld; exact hmuld.elim
+      | fail e => rw [hmc] at hmul; exact hmul.elim
+      | div => rw [hmc] at hmul; exact hmul.elim
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hcc] at hcl; exact hcl.elim
+  | div => rw [hcc] at hcl; exact hcl.elim
+
+/-- A normalized `den r ≤ den x + den y` has length `≤ max x.length y.length + 1` (a sum of two
+    values each `< 2^(64 M)` is `< 2^(64(M+1))`, `M = max`). -/
+private theorem den_add_len_le (r x y : List Std.U64) (hr : Normalized r)
+    (hD : den r ≤ den x + den y) : r.length ≤ max x.length y.length + 1 := by
+  rcases eq_or_ne r [] with h | h
+  · simp [h]
+  · have hrpos : 1 ≤ r.length := List.length_pos_of_ne_nil h
+    have hlow := den_lower r h hr
+    have hxM : den x < 2 ^ (64 * max x.length y.length) :=
+      lt_of_lt_of_le (den_lt x) (Nat.pow_le_pow_right (by norm_num) (by omega))
+    have hyM : den y < 2 ^ (64 * max x.length y.length) :=
+      lt_of_lt_of_le (den_lt y) (Nat.pow_le_pow_right (by norm_num) (by omega))
+    have hub : den r < 2 ^ (64 * (max x.length y.length + 1)) := by
+      have h2 : 2 ^ (64 * max x.length y.length) + 2 ^ (64 * max x.length y.length)
+          ≤ 2 ^ (64 * (max x.length y.length + 1)) := by rw [Nat.mul_succ, pow_add]; ring_nf; omega
+      omega
+    have hlt : 64 * (r.length - 1) < 64 * (max x.length y.length + 1) :=
+      (Nat.pow_lt_pow_iff_right (by norm_num)).mp (lt_of_le_of_lt hlow hub)
+    omega
+
+/-- **`rat_add`** adds the two rationals. -/
+private theorem rat_add_eq (a b : RefRat) (ha : RatNorm a) (hb : RatNorm b)
+    (hcap : (a.num.mag.limbs.val.length + b.den.limbs.val.length
+        + b.num.mag.limbs.val.length + a.den.limbs.val.length + 1) * 64 ≤ Std.Usize.max)
+    (hdcap : (a.den.limbs.val.length + b.den.limbs.val.length) * 64 ≤ Std.Usize.max) :
+    rat_add a b ⦃ r => qden r = qden a + qden b ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_add
+  have hcl := refnat_clone_eq b.den
+  cases hcc : RefNat.Insts.CoreCloneClone.clone b.den with
+  | ok rn =>
+    rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+    simp only [bind_tc_ok]
+    have hmk := make_spec false rn (hcl ▸ hb.2.1)
+    cases hmkc : RefInt.make false rn with
+    | ok ri =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hriden, hrinorm, hrimag⟩ := hmk
+      have hri : iden ri = (den b.den.limbs.val : ℤ) := by rw [hriden, hcl]; simp
+      have hrilen : ri.mag.limbs.val.length = b.den.limbs.val.length := by rw [hrimag, hcl]
+      simp only [bind_tc_ok]
+      have hmul1 := int_mul_eq a.num ri (by rw [hrilen]; omega)
+      cases hmc1 : RefInt.mul a.num ri with
+      | ok n1 =>
+        rw [hmc1] at hmul1; simp only [WP.spec_ok] at hmul1
+        obtain ⟨hn1iden, hn1norm⟩ := hmul1
+        have hn1mag : den n1.mag.limbs.val = den a.num.mag.limbs.val * den b.den.limbs.val := by
+          rw [← iden_natAbs n1, hn1iden, Int.natAbs_mul, iden_natAbs]
+          rw [show (iden ri).natAbs = den b.den.limbs.val by rw [hri]; simp]
+        have hn1len := den_mul_len_le _ _ _ hn1norm.1 hn1mag
+        simp only [bind_tc_ok]
+        have hcl2 := refnat_clone_eq a.den
+        cases hcc2 : RefNat.Insts.CoreCloneClone.clone a.den with
+        | ok rn1 =>
+          rw [hcc2] at hcl2; simp only [WP.spec_ok] at hcl2
+          simp only [bind_tc_ok]
+          have hmk2 := make_spec false rn1 (hcl2 ▸ ha.2.1)
+          cases hmkc2 : RefInt.make false rn1 with
+          | ok ri1 =>
+            rw [hmkc2] at hmk2; simp only [WP.spec_ok] at hmk2
+            obtain ⟨hri1den, hri1norm, hri1mag⟩ := hmk2
+            have hri1 : iden ri1 = (den a.den.limbs.val : ℤ) := by rw [hri1den, hcl2]; simp
+            have hri1len : ri1.mag.limbs.val.length = a.den.limbs.val.length := by rw [hri1mag, hcl2]
+            simp only [bind_tc_ok]
+            have hmul2 := int_mul_eq b.num ri1 (by rw [hri1len]; omega)
+            cases hmc2 : RefInt.mul b.num ri1 with
+            | ok n2 =>
+              rw [hmc2] at hmul2; simp only [WP.spec_ok] at hmul2
+              obtain ⟨hn2iden, hn2norm⟩ := hmul2
+              have hn2mag : den n2.mag.limbs.val = den b.num.mag.limbs.val * den a.den.limbs.val := by
+                rw [← iden_natAbs n2, hn2iden, Int.natAbs_mul, iden_natAbs]
+                rw [show (iden ri1).natAbs = den a.den.limbs.val by rw [hri1]; simp]
+              have hn2len := den_mul_len_le _ _ _ hn2norm.1 hn2mag
+              simp only [bind_tc_ok]
+              have hadd := int_add_eq n1 n2 hn1norm hn2norm (by omega)
+              cases hac : RefInt.add n1 n2 with
+              | ok n =>
+                rw [hac] at hadd; simp only [WP.spec_ok] at hadd
+                obtain ⟨hniden, hnnorm⟩ := hadd
+                have hnmag : den n.mag.limbs.val ≤ den n1.mag.limbs.val + den n2.mag.limbs.val := by
+                  rw [← iden_natAbs n, hniden]
+                  calc (iden n1 + iden n2).natAbs
+                      ≤ (iden n1).natAbs + (iden n2).natAbs := Int.natAbs_add_le _ _
+                    _ = den n1.mag.limbs.val + den n2.mag.limbs.val := by rw [iden_natAbs, iden_natAbs]
+                have hnlen := den_add_len_le _ _ _ hnnorm.1 hnmag
+                have hnmagcap : n.mag.limbs.val.length * 64 ≤ Std.Usize.max := by omega
+                simp only [bind_tc_ok]
+                have hmuld := mul_eq a.den b.den (by omega)
+                cases hmdc : RefNat.mul a.den b.den with
+                | ok rn2 =>
+                  rw [hmdc] at hmuld; simp only [WP.spec_ok] at hmuld
+                  obtain ⟨hrn2den, hrn2norm⟩ := hmuld
+                  have hrn2len := den_mul_len_le _ _ _ hrn2norm hrn2den
+                  have hrn2cap : rn2.limbs.val.length * 64 ≤ Std.Usize.max := by omega
+                  have hrn2pos : 0 < den rn2.limbs.val := by
+                    rw [hrn2den]; exact Nat.mul_pos ha.2.2 hb.2.2
+                  simp only [bind_tc_ok]
+                  have hred := reduce_spec n.neg n.mag rn2 hnnorm.1 hrn2norm hrn2pos hnmagcap hrn2cap
+                  cases hrc : RefRat.reduce n.neg n.mag rn2 with
+                  | ok r =>
+                    rw [hrc] at hred; simp only [WP.spec_ok] at hred
+                    obtain ⟨hrval, hrnorm⟩ := hred
+                    simp only [WP.spec_ok]
+                    refine ⟨?_, hrnorm⟩
+                    rw [hrval]
+                    have hncast : (if n.neg then -(den n.mag.limbs.val : ℚ)
+                        else (den n.mag.limbs.val : ℚ)) = (iden n : ℚ) := by
+                      simp only [iden]; cases n.neg <;> simp
+                    have hn1v : (iden n1 : ℚ) = (iden a.num : ℚ) * (den b.den.limbs.val : ℚ) := by
+                      rw [hn1iden, hri]; push_cast; ring
+                    have hn2v : (iden n2 : ℚ) = (iden b.num : ℚ) * (den a.den.limbs.val : ℚ) := by
+                      rw [hn2iden, hri1]; push_cast; ring
+                    have hnval : (iden n : ℚ)
+                        = (iden a.num : ℚ) * (den b.den.limbs.val : ℚ)
+                          + (iden b.num : ℚ) * (den a.den.limbs.val : ℚ) := by
+                      rw [hniden, Int.cast_add, hn1v, hn2v]
+                    have hrn2v : (den rn2.limbs.val : ℚ)
+                        = (den a.den.limbs.val : ℚ) * (den b.den.limbs.val : ℚ) := by
+                      rw [hrn2den]; push_cast; ring
+                    have hda : (den a.den.limbs.val : ℚ) ≠ 0 := by exact_mod_cast ha.2.2.ne'
+                    have hdbd : (den b.den.limbs.val : ℚ) ≠ 0 := by exact_mod_cast hb.2.2.ne'
+                    rw [hncast, hnval, hrn2v]
+                    simp only [qden]
+                    field_simp
+                  | fail e => rw [hrc] at hred; exact hred.elim
+                  | div => rw [hrc] at hred; exact hred.elim
+                | fail e => rw [hmdc] at hmuld; exact hmuld.elim
+                | div => rw [hmdc] at hmuld; exact hmuld.elim
+              | fail e => rw [hac] at hadd; exact hadd.elim
+              | div => rw [hac] at hadd; exact hadd.elim
+            | fail e => rw [hmc2] at hmul2; exact hmul2.elim
+            | div => rw [hmc2] at hmul2; exact hmul2.elim
+          | fail e => rw [hmkc2] at hmk2; exact hmk2.elim
+          | div => rw [hmkc2] at hmk2; exact hmk2.elim
+        | fail e => rw [hcc2] at hcl2; exact hcl2.elim
+        | div => rw [hcc2] at hcl2; exact hcl2.elim
+      | fail e => rw [hmc1] at hmul1; exact hmul1.elim
+      | div => rw [hmc1] at hmul1; exact hmul1.elim
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hcc] at hcl; exact hcl.elim
+  | div => rw [hcc] at hcl; exact hcl.elim
+
+set_option maxHeartbeats 400000 in
+/-- **`rat_sub`** subtracts the two rationals — it is `rat_add a (−b)`. -/
+private theorem rat_sub_eq (a b : RefRat) (ha : RatNorm a) (hb : RatNorm b)
+    (hcap : (a.num.mag.limbs.val.length + b.den.limbs.val.length
+        + b.num.mag.limbs.val.length + a.den.limbs.val.length + 1) * 64 ≤ Std.Usize.max)
+    (hdcap : (a.den.limbs.val.length + b.den.limbs.val.length) * 64 ≤ Std.Usize.max) :
+    rat_sub a b ⦃ r => qden r = qden a - qden b ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_sub
+  have hneg := int_neg_eq b.num hb.1
+  cases hnc : RefInt.impl.neg b.num with
+  | ok ri =>
+    rw [hnc] at hneg; simp only [WP.spec_ok] at hneg
+    obtain ⟨hriden, hrinorm, hrimag⟩ := hneg
+    simp only [bind_tc_ok]
+    have hcl := refnat_clone_eq b.den
+    cases hcc : RefNat.Insts.CoreCloneClone.clone b.den with
+    | ok rn =>
+      rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+      simp only [bind_tc_ok]
+      -- keep the negated rational opaque (`c`) so nothing reduces the giant `rat_add` body
+      set c : RefRat := ⟨ri, rn⟩ with hc
+      have hnorm2 : RatNorm c := by
+        rw [hc]; exact ⟨hrinorm, hcl ▸ hb.2.1, by rw [hcl]; exact hb.2.2⟩
+      have hd2len : c.den.limbs.val.length = b.den.limbs.val.length := by
+        rw [hc]; exact congrArg List.length hcl
+      have hn2len : c.num.mag.limbs.val.length = b.num.mag.limbs.val.length := by
+        rw [hc]; exact congrArg List.length hrimag
+      have hqb : qden c = -(qden b) := by
+        rw [hc]; show (iden ri : ℚ) / (den rn.limbs.val : ℚ) = -(qden b)
+        simp only [qden, hriden, hcl, Int.cast_neg, neg_div]
+      have hcap2 : (a.num.mag.limbs.val.length + c.den.limbs.val.length
+          + c.num.mag.limbs.val.length + a.den.limbs.val.length + 1) * 64 ≤ Std.Usize.max := by
+        rw [hd2len, hn2len]; exact hcap
+      have hdcap2 : (a.den.limbs.val.length + c.den.limbs.val.length) * 64 ≤ Std.Usize.max := by
+        rw [hd2len]; exact hdcap
+      have hadd := rat_add_eq a c ha hnorm2 hcap2 hdcap2
+      cases hac : rat_add a c with
+      | ok r =>
+        rw [hac] at hadd; simp only [WP.spec_ok] at hadd
+        obtain ⟨hrval, hrnorm⟩ := hadd
+        simp only [WP.spec_ok]
+        exact ⟨by rw [hrval, hqb]; ring, hrnorm⟩
+      | fail e => rw [hac] at hadd; exact hadd.elim
+      | div => rw [hac] at hadd; exact hadd.elim
+    | fail e => rw [hcc] at hcl; exact hcl.elim
+    | div => rw [hcc] at hcl; exact hcl.elim
+  | fail e => rw [hnc] at hneg; exact hneg.elim
+  | div => rw [hnc] at hneg; exact hneg.elim
+
 /-! ### The `int_*` `Backend` methods — thin wrappers over the proven `RefInt` ops. -/
 
 /-- **`int_zero`** denotes `0`. -/
@@ -2394,6 +2748,10 @@ private theorem int_gcd_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
 #print axioms rat_sign_eq
 #print axioms rat_cmp_eq
 #print axioms rat_from_ints_eq
+#print axioms rat_mul_eq
+#print axioms rat_div_eq
+#print axioms rat_add_eq
+#print axioms rat_sub_eq
 #print axioms int_zero_backend_eq
 #print axioms int_add_backend_eq
 #print axioms int_sub_backend_eq
