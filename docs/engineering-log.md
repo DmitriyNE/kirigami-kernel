@@ -19,23 +19,18 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Finish R.4b.6: the rest of the `RefBackend = ℤ/ℚ` `Backend`-method corollary.** `RefNat` (= ℕ),
-  `RefInt` (= ℤ, ordered ring), and `RefRat.reduce` (= ℚ gcd-reduce keystone) are proven + pushed on
-  `algebra-rehaul-r4`. **Landed since:** the `int_*` arithmetic Backend methods (add/sub/mul/neg/cmp/
-  sign/is_zero/zero — thin `unfold; exact` wrappers — + `int_gcd`) and the rat non-product methods
-  (neg/numer/denom/is_zero/sign/cmp/from_ints), with reusable helpers `refnat_clone_eq`/
-  `refint_clone_eq`/`int_is_zero_eq`/`compare_div_div`. **Remaining, two heavier pieces:** **(1)** the
-  rat *arithmetic* methods (`rat_mul`/`add`/`sub`/`div`) — each funnels a *product* through `reduce`, so
-  they need a **mul-length bound** lemma (`Normalized r ∧ den r = den x · den y → r.length ≤ x.length +
-  y.length`, derivable from `den_lower`/`den_lt` + `pow_lt_pow_iff_right`) to discharge reduce's
-  `len·64 ≤ usize::MAX` caps (and `add` also needs a sum-length bound); note `n.mag` of `RefInt.mul` is
-  literally the `RefNat.mul` result (make only flips the sign), so unfold rather than reuse `int_mul_eq`.
-  **(2)** the **i128 boundary**: `RefInt.from_i128` (→ `from_u128` + `unsigned_abs`) and
-  `int_try_to_i128` (limbs → i128) — unblocks `rat_from_i128`/`int_from_i128`/`int_one`/`int_try_to_i128`.
-  Plus `int_lcm`/`int_divrem` (sign handling over the nat ops). The proven refinements are the template;
-  findings in memory `algebra-rehaul.md`. Then R.5 V&V finalize (vv-matrix rows, `docs/algebra-trust.md`
-  TCB update, extraction-drift), and promote the audit surface to a public `Backend`-instance corollary
-  (local `#print axioms` block + `ci.yml`). *2026-08-05 · open*
+- **Finish R.4b.6: the i128 boundary — the last unproven `Backend` methods.** `RefNat` (= ℕ), `RefInt`
+  (= ℤ ordered ring + gcd/lcm/divrem), and `RefRat` (= ℚ: reduce + neg/numer/denom/is_zero/sign/cmp/
+  from_ints + **all arithmetic** mul/div/add/sub) are proven + pushed on `algebra-rehaul-r4`. The whole
+  `Backend` surface is now covered **except** the i128 conversions. Remaining, one coherent piece: the
+  **i128 boundary** — `RefNat.from_u128` (split a `u128` into ≤ 2 little-endian `u64` limbs; `den = v.val`,
+  Normalized), `RefInt.from_i128` (= `from_u128 ∘ I128.unsigned_abs` + the `v < 0` sign), and
+  `int_try_to_i128` (limbs → `i128`: the ≤ 2-limb reassembly + `i128::MAX` overflow checks). These unblock
+  the three remaining wrappers `rat_from_i128` / `int_from_i128` / `int_one`. Reusable helpers +
+  templates: `den_mul_len_le`/`den_add_len_le`/`iden_natAbs`/`compare_div_div`/`refnat_clone_eq`. Findings
+  in memory `algebra-rehaul.md`. Then R.5 V&V finalize (vv-matrix rows, `docs/algebra-trust.md` TCB update,
+  extraction-drift), and promote the audit surface to a public `Backend`-instance corollary (local
+  `#print axioms` block + `ci.yml`). *2026-08-05 · open*
 
 - **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
   trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
