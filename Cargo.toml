@@ -10,7 +10,7 @@ members = ["crates/*", "xtask"]
 # benchmarks/ (its own Cargo.lock). Excluded so criterion + all four candidate
 # bignum crates never enter this lockfile or the `--workspace --all-targets`
 # CI gate. See docs/lattice-backend-benchmark.md.
-exclude = ["benchmarks/*", "lints/*"]
+exclude = ["benchmarks/*", "lints/*", "fuzz"]
 
 # Custom dylint lints (nightly / rustc_private; run via `cargo dylint --all`). Each is its
 # own workspace-excluded crate with a pinned nightly — see lints/ and docs/engineering-log.md.

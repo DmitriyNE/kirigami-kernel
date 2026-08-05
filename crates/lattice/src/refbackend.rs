@@ -523,6 +523,65 @@ impl Backend for RefBackend {
     }
 }
 
+// ===========================================================================
+// TEST/FUZZ-ONLY seed helpers — NOT part of the `Backend` trait, NOT proven.
+// ===========================================================================
+
+#[cfg(any(test, feature = "fuzzing"))]
+impl RefBackend {
+    /// **TEST/FUZZ-ONLY seed constructor — NOT a `Backend` trait method, NOT proven.**
+    ///
+    /// Builds a `RefInt` straight from little-endian bytes (`bytes` = the magnitude,
+    /// `neg` = the sign) so the differential/fuzz harness can seed operands of *any*
+    /// size and reach the large-operand multiply regimes (Karatsuba / Toom-Cook / FFT)
+    /// that [`RefBackend::int_from_i128`] (≤ 2 limbs) can never trigger. Its correctness
+    /// is runtime-checked in the harness — every seed is decimal-compared against the
+    /// dashu backend before use — never relied on for soundness.
+    ///
+    /// ⚠️  DO NOT expose beyond the test/fuzz harness. If this ever enters the `Backend`
+    /// trait or any Aeneas-lifted / production path, it MUST first be proven
+    /// `den(result) = value` in `certify-check/CertifyCheck/RefBackend.lean`, exactly as
+    /// `from_i128` is (`int_from_i128_eq`). The `#[cfg(any(test, feature = "fuzzing"))]`
+    /// gate keeps it physically out of the trait and the Aeneas lift until then.
+    pub fn int_from_le_bytes(neg: bool, bytes: &[u8]) -> RefInt {
+        let mut limbs: Vec<u64> = Vec::with_capacity(bytes.len() / 8 + 1);
+        let mut chunks = bytes.chunks_exact(8);
+        for c in chunks.by_ref() {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(c);
+            limbs.push(u64::from_le_bytes(w));
+        }
+        let rem = chunks.remainder();
+        if !rem.is_empty() {
+            let mut w = [0u8; 8];
+            w[..rem.len()].copy_from_slice(rem);
+            limbs.push(u64::from_le_bytes(w));
+        }
+        normalize(&mut limbs);
+        RefInt::make(neg, RefNat { limbs })
+    }
+
+    /// TEST/FUZZ-ONLY: limb count of the magnitude — a cheap O(1) size proxy for the
+    /// harness's operand-growth guard. Not a `Backend` method.
+    pub fn int_limbs(a: &RefInt) -> usize {
+        a.mag.limbs.len()
+    }
+
+    /// TEST/FUZZ-ONLY: sign + minimal little-endian magnitude bytes — an **O(n)** canonical
+    /// form for fast cross-backend equality (decimal is O(n²), which throttles the fuzzer at
+    /// large operands). Zero ⇒ `(false, [])`. Not a `Backend` method.
+    pub fn int_le_bytes(a: &RefInt) -> (bool, Vec<u8>) {
+        let mut bytes: Vec<u8> = Vec::with_capacity(a.mag.limbs.len() * 8);
+        for &limb in &a.mag.limbs {
+            bytes.extend_from_slice(&limb.to_le_bytes());
+        }
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        (a.neg && !bytes.is_empty(), bytes)
+    }
+}
+
 // Decimal rendering (test-only) — the cross-backend canonical form used by the
 // `rat` differential to compare `RefBackend` against dashu.
 #[cfg(test)]

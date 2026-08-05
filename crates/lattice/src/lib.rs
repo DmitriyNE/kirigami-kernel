@@ -38,6 +38,10 @@ mod bignum;
 mod poly;
 mod rat;
 mod ratfunc;
+// Differential-fuzz core (op-chain dashu ≡ proven RefBackend over large operands).
+// Test/fuzz-only: reached via `test` cfg (proptest) or the `fuzzing` feature (cargo-fuzz).
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod ratfuzz;
 mod refbackend;
 mod resultant;
 mod small;

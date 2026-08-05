@@ -19,6 +19,27 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Differential-fuzz follow-ups (harness landed on `differential-fuzz`).** The op-chain differential
+  (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over size-bucketed large operands,
+  + metamorphic mul identities) closes two gaps the old single-op `rat::differential` had — no op-chains
+  (two-tier canonicalization bugs live in *sequences*) and i128-only seeds (≤ 2 limbs ⇒ dashu never leaves
+  schoolbook; Karatsuba/Toom/FFT went unexercised). Always-on proptest (cap 384 limbs, debug-fast) +
+  out-of-tree `cargo-fuzz` target (`fuzz/`, coverage-guided, release → FFT scale). Remaining: **(1)** pin
+  the seed size-buckets to dashu's *actual* mul-algorithm thresholds (read dashu's multiply dispatch —
+  currently exponential buckets 0..2048 limbs, which straddle them but aren't threshold-exact); **(2)** wire
+  a time-boxed `cargo fuzz run int_chain -- -max_total_time=…` as a **nightly cron** (not per-PR — needs the
+  nightly + libFuzzer toolchain, like dylint) + a checked-in seed corpus; **(3)** a rational op-chain
+  variant (exercises `reduce`/`gcd` on big ints) — deferred because RefBackend's bit-serial `divrem`/`gcd`
+  are too slow as a large-operand oracle (use metamorphic identities there instead). *2026-08-06 · open*
+
+- **`RefBackend::int_from_le_bytes` must be proven if it ever leaves the test/fuzz harness.** It's a
+  TEST/FUZZ-ONLY seed constructor (`#[cfg(any(test, feature = "fuzzing"))]`, banner on the fn), NOT a
+  `Backend` trait method and NOT proven — its correctness is runtime-checked in the harness (seed
+  byte-compared against dashu), never relied on for soundness. If it ever enters the `Backend` trait or
+  any Aeneas-lifted / production path, it MUST first be proven `den(result) = value` in
+  `certify-check/CertifyCheck/RefBackend.lean`, exactly like `from_i128` (`int_from_i128_eq`). The cfg
+  gate keeps it physically out of the trait + the lift until then. *2026-08-06 · watching · `refbackend.rs`*
+
 - **R.5 — finalize the algebra-trust rehaul (the `RefBackend = ℤ/ℚ` surface is DONE).** The whole reference
   `Backend` trait is now proven axiom-clean on `algebra-rehaul-r4` (`certify-check/CertifyCheck/RefBackend.lean`):
   RefNat = ℕ, RefInt = ℤ (ordered ring + gcd/lcm/divrem + i128 both directions), RefRat = ℚ (reduce + all
