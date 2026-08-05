@@ -28,11 +28,19 @@ now, and (b) shrinks what we trust over time — without blocking on the hard pa
    assume `Int` behaves as `ℤ`, and Kani certifies the representation actually does.
 
 3. **Reference — shrinking the dashu trust.** Modeling `Int=ℤ` *trusts dashu* to implement
-   exact arithmetic. That is one crisp, honest TCB entry. To reduce it: **(1)** write a
-   slow, safe, Aeneas-liftable reference bignum; **(2)** prove it `= ℤ`/`ℚ` in Lean (no
-   trusted hand-model); **(3)** differential-stress dashu against the proven reference. The
-   `Backend` trait already makes the reference a drop-in alternate backend, and the existing
-   `num-rational` differential is the seed of (3).
+   exact arithmetic. That is one crisp, honest TCB entry. To reduce it: **(1)** write a slow,
+   safe, Aeneas-liftable reference bignum — **done**: `lattice::RefBackend` (`refbackend.rs`), an
+   independent `Vec<u64>`-limb sign-magnitude `Backend`; **(2)** prove it `= ℤ`/`ℚ` in Lean (no
+   trusted hand-model) — **done**: the whole `Backend` trait is Aeneas-lifted and proven exact over a
+   limb→ℕ denotation (`CertifyCheck/RefBackend.lean`, axiom-clean; public target `refBackend_eq_ZQ`);
+   **(3)** differential-stress dashu against the reference — **done**:
+   `rat::differential::{int,rat}_dashu_matches_ref` (single ops over the full i128 range) **plus** the
+   **op-chain differential fuzzer** `lattice::ratfuzz` ([`differential-fuzz.md`](differential-fuzz.md)) —
+   chained arithmetic over size-bucketed operands that actually exercise dashu's Karatsuba/Toom-3/NTT
+   multiply ladder (the i128-seeded differential never left schoolbook). With (2) done these are a
+   **proof-backed oracle**: `RefBackend` is not a trusted model but a *proven* one, so a dashu
+   disagreement is a genuine dashu bug, not oracle ambiguity. The `Backend` trait makes the reference a
+   drop-in alternate backend. Cadence: deterministic replay per-PR, coverage-guided search nightly.
 
 ## The linchpin invariant — the representation must never leak
 
@@ -57,6 +65,17 @@ faithfully — it observes an implementation detail the `ℚ` model has erased.
 ## Status
 
 - The two-tier is **benchmark-justified** (keep it) — see [two-tier-benchmark.md](two-tier-benchmark.md).
-- The `Int→ℤ`/`Rat→ℚ` lift + opaque encapsulation + reference bignum + proof + differential
-  is the **post-B "algebra-trust rehaul"** (tracked; see the milestone-B plan). It is
-  orthogonal to the two-tier (which it abstracts away), so both proceed independently.
+- The **algebra-trust rehaul** (post-B) lands in pillars, orthogonal to the two-tier (which it
+  abstracts away):
+  - **R.1–R.3 (merged):** opaque `Int`/`Rat`; the ℤ/ℚ-mapping spike (GO, no pin bump); and
+    `certify1d::clip_sigma` lifted over ℚ with *both* cores derived from the extracted Rust
+    (`ClipSigma.lean`, axiom-clean) — the hand-mirror spec-drift class killed for the ★ CLIP-σ row.
+  - **R.4 (reference bignum) — DONE (all three steps):** `RefBackend` is differentially cross-checked
+    against dashu over the full i128 range, **and** proven `= ℤ/ℚ` in Lean, so the cross-check is now a
+    proof-backed oracle. The whole `Backend` trait is Aeneas-lifted and proven exact over a limb→ℕ (`den`)
+    / →ℤ (`iden`) / →ℚ (`qden`) denotation in `CertifyCheck/RefBackend.lean` (axiom-clean —
+    `[propext, Classical.choice, Quot.sound]`, no `sorryAx`): **RefNat = ℕ** (is_zero/cmp/add/sub/mul/
+    divrem/gcd/shl1/testbit/bit_len/from_u128), **RefInt = ℤ** (ordered ring + gcd/lcm/divrem + i128 both
+    directions), **RefRat = ℚ** (reduce + all arithmetic mul/div/add/sub + neg/numer/denom/is_zero/sign/
+    cmp/from_ints/from_i128). Each op is its own loop-invariant/WP refinement (`docs/refbackend-lift.md`);
+    the public umbrella `refBackend_eq_ZQ` is the CI axiom-audit target (`ci.yml`).

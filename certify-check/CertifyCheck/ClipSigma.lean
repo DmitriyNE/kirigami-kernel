@@ -161,7 +161,7 @@ theorem clipSigma_rejects_straddle {cs : List ℚ} {lo hi m : ℚ}
 
 /-- **Branch refinement.** The Aeneas-lifted `clip_sigma_branch`, at `T = ℚ` with the lifted `Ord`
     instance (`compare`), computes `clipSigmaBranchSpec`. -/
-theorem clip_sigma_branch_eq {B I R : Type} (inst : lattice.backend.Backend B I R)
+theorem clip_sigma_branch_eq {B I R : Type} (inst : certify_core.lattice.backend.Backend B I R)
     (lo hi m neg_m : ℚ) (mp : Bool) :
     certify1d.clip_sigma_branch (lattice.rat.Rat.Insts.CoreCmpOrd inst) lo hi m neg_m mp
       = ok (clipSigmaBranchSpec lo hi m neg_m mp) := by
@@ -177,7 +177,7 @@ theorem clip_sigma_branch_eq {B I R : Type} (inst : lattice.backend.Backend B I 
 /-- The loop folds `min`/`max` over the remaining slice onto the running `(lo, hi)`. Proved the
     Aeneas way — `loop.spec_decr_nat` + the reusable `@[step] sliceIter_next_spec` (`Refine.lean`)
     — with the "answer-preserving" invariant `(drop i).foldl min lo = (drop i₀).foldl min lo₀`. -/
-private theorem corner_range_loop_spec {B I R : Type} (inst : lattice.backend.Backend B I R)
+private theorem corner_range_loop_spec {B I R : Type} (inst : certify_core.lattice.backend.Backend B I R)
     (corners : Slice ℚ) (it0 : core.slice.iter.Iter ℚ) (lo0 hi0 : ℚ)
     (hsl0 : it0.slice = corners) (hle0 : it0.i ≤ corners.val.length) :
     certify1d.corner_range_loop (lattice.rat.Rat.Insts.CoreCmpOrd inst)
@@ -240,7 +240,7 @@ private theorem corner_range_loop_spec {B I R : Type} (inst : lattice.backend.Ba
 
 /-- **Range refinement.** The Aeneas-lifted `corner_range`, at `T = ℚ`, computes `cornerRangeSpec`
     on the underlying list of corners — so `cornerRangeSpec` is now derived, not a hand mirror. -/
-theorem corner_range_eq {B I R : Type} (inst : lattice.backend.Backend B I R) (corners : Slice ℚ) :
+theorem corner_range_eq {B I R : Type} (inst : certify_core.lattice.backend.Backend B I R) (corners : Slice ℚ) :
     certify1d.corner_range (lattice.rat.Rat.Insts.CoreCmpOrd inst)
         (lattice.rat.Rat.Insts.CoreCloneClone inst) corners
       ⦃ r => r = cornerRangeSpec corners.val ⦄ := by

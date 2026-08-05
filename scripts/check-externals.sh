@@ -58,5 +58,6 @@ check_pair() {
 
 E="$ROOT/certify-check/extract"
 check_pair "$E/lattice.FunsExternal_Template.lean"       "$ROOT/certify-check/Lattice/FunsExternal.lean"      "lattice funs"
+check_pair "$E/lattice.TypesExternal_Template.lean"      "$ROOT/certify-check/Lattice/TypesExternal.lean"     "lattice types"
 check_pair "$E/certify_core.FunsExternal_Template.lean"  "$ROOT/certify-check/CertifyCore/FunsExternal.lean"  "certify-core funs"
 check_pair "$E/certify_core.TypesExternal_Template.lean" "$ROOT/certify-check/CertifyCore/TypesExternal.lean" "certify-core types"

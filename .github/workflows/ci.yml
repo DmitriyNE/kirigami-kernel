@@ -33,6 +33,16 @@ jobs:
       - name: doctests (nextest does not run these)
         run: nix develop --command cargo test --workspace --doc
 
+      # Differential-fuzz regression replay (stable, NO libFuzzer/nightly): re-runs the
+      # checked-in `int_chain` crash corpus through the `dashu ≡ proven RefBackend` op-chain
+      # differential, under the same lowered dashu `tuning` thresholds the fuzzer uses (so a
+      # pinned crash reproduces faithfully). The deterministic per-PR half; the coverage-guided
+      # *search* is the nightly `fuzz-nightly.yml` cron. The threshold-straddling seed programs
+      # are already replayed by the `replay_seed_corpus` unit test in the `nextest` step above.
+      # `--features fuzzing` builds `ratfuzz` + dashu `tuning`; it is never in the shipped crate.
+      - name: fuzz regression replay (committed crash corpus)
+        run: nix develop --command cargo test -p lattice --features fuzzing --test fuzz_replay
+
       # M3a Phase 5: the CGAL Arrangement_2 differential oracle (the first CI run of
       # `--features cgal` — builds the C++ FFI shim) together with the degenerate-heavy
       # stratum pass (ARRANGE_STRATUM_WEIGHT over-samples the tangent/coincident/
@@ -88,7 +98,7 @@ jobs:
             unset DEVELOPER_DIR SDKROOT
             lake exe cache get
             lake build
-            printf "import CertifyCheck\nopen CertifyCheck\n#print axioms signVariationsImp_eq_signVariations\n#print axioms verify_chain_sound\n#print axioms lifted_sign_variations_eq_loop\n#print axioms sign_variations_spec\n#print axioms sliceIter_next_spec\n#print axioms gcd_u128_spec\n#print axioms reduce_spec\n#print axioms verify_common_factor_sound\n#print axioms link_ok_rejects_pinch\n#print axioms v_boundary_iff_boundary\n#print axioms v_boundary_imp_link_ok\n#print axioms cyclic_true_runs_loop_spec\n#print axioms cyclic_true_runs_spec\n#print axioms link_ok_spec\n#print axioms ClipSigma.clip_sigma_branch_eq\n#print axioms ClipSigma.corner_range_eq\n#print axioms ClipSigma.clipSigma_sound_positive\n#print axioms ClipSigma.clipSigma_sound_negative\n#print axioms ClipSigma.clipSigma_rejects_straddle\n" > axiom_audit.lean
+            printf "import CertifyCheck\nopen CertifyCheck\n#print axioms signVariationsImp_eq_signVariations\n#print axioms verify_chain_sound\n#print axioms lifted_sign_variations_eq_loop\n#print axioms sign_variations_spec\n#print axioms sliceIter_next_spec\n#print axioms gcd_u128_spec\n#print axioms reduce_spec\n#print axioms verify_common_factor_sound\n#print axioms link_ok_rejects_pinch\n#print axioms v_boundary_iff_boundary\n#print axioms v_boundary_imp_link_ok\n#print axioms cyclic_true_runs_loop_spec\n#print axioms cyclic_true_runs_spec\n#print axioms link_ok_spec\n#print axioms ClipSigma.clip_sigma_branch_eq\n#print axioms ClipSigma.corner_range_eq\n#print axioms ClipSigma.clipSigma_sound_positive\n#print axioms ClipSigma.clipSigma_sound_negative\n#print axioms ClipSigma.clipSigma_rejects_straddle\n#print axioms RefBackend.is_zero_eq\n#print axioms RefBackend.cmp_eq\n#print axioms RefBackend.add_eq\n#print axioms RefBackend.sub_eq\n#print axioms RefBackend.mul_eq\n#print axioms RefBackend.shl1_eq\n#print axioms RefBackend.testbit_eq\n#print axioms RefBackend.bit_len_spec\n#print axioms RefBackend.divrem_eq\n#print axioms RefBackend.gcd_eq\n#print axioms RefBackend.refBackend_eq_ZQ\n" > axiom_audit.lean
             if lake env lean axiom_audit.lean 2>&1 | grep -q "sorryAx"; then
               echo "AXIOM AUDIT FAILED: a certify-check theorem depends on sorryAx" >&2
               rm -f axiom_audit.lean; exit 1

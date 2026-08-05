@@ -38,6 +38,11 @@ mod bignum;
 mod poly;
 mod rat;
 mod ratfunc;
+// Differential-fuzz core (op-chain dashu ≡ proven RefBackend over large operands).
+// Test/fuzz-only: reached via `test` cfg (proptest) or the `fuzzing` feature (cargo-fuzz).
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod ratfuzz;
+mod refbackend;
 mod resultant;
 mod small;
 mod sturm;
@@ -53,6 +58,7 @@ pub use bignum::{BigInt, BigRat, Bignum};
 pub use poly::Poly;
 pub use rat::{Int, Rat};
 pub use ratfunc::{RatFunc, Vec3Rat};
+pub use refbackend::{RefBackend, RefInt, RefRat};
 pub use resultant::{resultant, resultant_bivariate, verify_common_factor};
 pub use small::SmallRat;
 pub use sturm::{Interval, SturmChain, sign_on_interval, sign_variations};

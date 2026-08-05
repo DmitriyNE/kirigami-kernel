@@ -1,0 +1,37 @@
+# Out-of-tree `cargo-fuzz` (libFuzzer) workspace — coverage-guided differential fuzzing of
+# the two-tier `dashu` arithmetic against the *proven* `RefBackend`, over op-chains and
+# large operands (Karatsuba/Toom-Cook/FFT). Deliberately its own workspace (`[workspace]`
+# below) + excluded from the root workspace, so libFuzzer, a nightly, and the `fuzzing`
+# feature never enter the main lockfile or the `--workspace` CI gate.
+#
+# Run (needs `cargo install cargo-fuzz` + a nightly with the libFuzzer runtime):
+#     cargo +nightly fuzz run int_chain -- -max_total_time=300
+# Reproduce a saved crash:  cargo +nightly fuzz run int_chain fuzz/artifacts/int_chain/<id>
+[package]
+name = "lattice-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.lattice]
+path = "../crates/lattice"
+features = ["fuzzing"]
+
+# Prevent this crate from being picked up by the root workspace.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "int_chain"
+path = "fuzz_targets/int_chain.rs"
+test = false
+doc = false
+bench = false

@@ -5,12 +5,18 @@
 -- per-crate models, by `scripts/check-externals.sh`.
 --
 -- Currently: the `?`-operator glue on `Option` (`Try::branch`, `FromResidual::from_residual`),
--- shared by `lattice::small::reduce` and `certify1d::corner_range`.
+-- shared by `lattice::small::reduce` and `certify1d::corner_range`; and `<Ordering as PartialEq>::eq`,
+-- shared by `certify1d::clip_sigma` and `lattice::refbackend`'s `cmp`-dispatching ops.
 import Aeneas
 open Aeneas Aeneas.Std Result ControlFlow Error
 set_option linter.dupNamespace false
 set_option linter.hashCommand false
 set_option linter.unusedVariables false
+
+/-- `<Ordering as PartialEq>::eq` — structural equality on the three-valued ordering. -/
+@[rust_fun "core::cmp::{core::cmp::PartialEq<core::cmp::Ordering, core::cmp::Ordering>}::eq"]
+def core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq (a b : Ordering) : Result Bool :=
+  ok (decide (a = b))
 
 /-- `<Option<T> as Try>::branch` — the `?`-operator split on an `Option`. -/
 @[rust_fun "core::option::{core::ops::try_trait::Try<core::option::Option<@T>>}::branch"]

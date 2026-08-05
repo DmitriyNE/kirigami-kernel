@@ -558,12 +558,29 @@ mod tests {
 #[cfg(test)]
 mod differential {
     use super::*;
+    use crate::refbackend::{self, RefBackend, RefRat};
     use alloc::string::{String, ToString};
     use num_bigint::BigInt as NInt;
     use num_rational::BigRational as NRat;
     use proptest::prelude::*;
 
     type Q = Rat<Bignum>;
+
+    /// A `RefBackend` rational built from `num/den` (algebra-rehaul R.4).
+    fn ref_of(n: i128, d: i128) -> RefRat {
+        RefBackend::rat_from_ints(RefBackend::int_from_i128(n), RefBackend::int_from_i128(d))
+    }
+    /// `RefBackend` rational as reduced (numerator, denominator) decimal strings.
+    fn ref_canon(r: &RefRat) -> (String, String) {
+        (
+            refbackend::to_dec_string(&RefBackend::rat_numer(r)),
+            refbackend::to_dec_string(&RefBackend::rat_denom(r)),
+        )
+    }
+    /// A dashu `BigInt` as a decimal string (cross-backend canonical integer form).
+    fn dashu_int(a: &crate::bignum::BigInt) -> String {
+        a.0.to_string()
+    }
 
     /// A lattice rational as its reduced (numerator, denominator) decimal strings
     /// (via the dashu backend) — the cross-backend canonical form.
@@ -653,6 +670,54 @@ mod differential {
             }
             if n1 != 0 {
                 prop_assert_eq!(dashu_canon(&q1.recip()), num_canon(&m1.recip()));
+            }
+        }
+
+        /// dashu ≡ RefBackend on the INTEGER surface (add/sub/mul/neg/gcd/lcm/cmp/sign/
+        /// narrow/divrem), decimal-compared — directly cross-checks the reference's
+        /// trickiest ops (gcd, bit-serial long-division divrem) against dashu (R.4).
+        #[test]
+        fn int_dashu_matches_ref(a in coord(), b in coord()) {
+            let (ba, bb) = (Bignum::int_from_i128(a), Bignum::int_from_i128(b));
+            let (ra, rb) = (RefBackend::int_from_i128(a), RefBackend::int_from_i128(b));
+            prop_assert_eq!(dashu_int(&Bignum::int_add(&ba, &bb)), refbackend::to_dec_string(&RefBackend::int_add(&ra, &rb)));
+            prop_assert_eq!(dashu_int(&Bignum::int_sub(&ba, &bb)), refbackend::to_dec_string(&RefBackend::int_sub(&ra, &rb)));
+            prop_assert_eq!(dashu_int(&Bignum::int_mul(&ba, &bb)), refbackend::to_dec_string(&RefBackend::int_mul(&ra, &rb)));
+            prop_assert_eq!(dashu_int(&Bignum::int_neg(&ba)), refbackend::to_dec_string(&RefBackend::int_neg(&ra)));
+            prop_assert_eq!(dashu_int(&Bignum::int_gcd(&ba, &bb)), refbackend::to_dec_string(&RefBackend::int_gcd(&ra, &rb)));
+            prop_assert_eq!(dashu_int(&Bignum::int_lcm(&ba, &bb)), refbackend::to_dec_string(&RefBackend::int_lcm(&ra, &rb)));
+            prop_assert_eq!(Bignum::int_cmp(&ba, &bb), RefBackend::int_cmp(&ra, &rb));
+            prop_assert_eq!(Bignum::int_sign(&ba), RefBackend::int_sign(&ra));
+            prop_assert_eq!(Bignum::int_try_to_i128(&ba), RefBackend::int_try_to_i128(&ra));
+            if b != 0 {
+                let (bq, br) = Bignum::int_divrem(&ba, &bb);
+                let (rq, rr) = RefBackend::int_divrem(&ra, &rb);
+                prop_assert_eq!(dashu_int(&bq), refbackend::to_dec_string(&rq));
+                prop_assert_eq!(dashu_int(&br), refbackend::to_dec_string(&rr));
+            }
+        }
+
+        /// dashu ≡ RefBackend on the RATIONAL surface — the independent limb backend
+        /// cross-checks the default (dashu) backend over the full i128 range, shrinking
+        /// the dashu trust (algebra-rehaul R.4).
+        #[test]
+        fn rat_dashu_matches_ref(n1 in coord(), d1 in nz(), n2 in coord(), d2 in nz()) {
+            let q1 = Q::new(n1, d1);
+            let q2 = Q::new(n2, d2);
+            let r1 = ref_of(n1, d1);
+            let r2 = ref_of(n2, d2);
+            prop_assert_eq!(dashu_canon(&q1.add(&q2)), ref_canon(&RefBackend::rat_add(&r1, &r2)));
+            prop_assert_eq!(dashu_canon(&q1.sub(&q2)), ref_canon(&RefBackend::rat_sub(&r1, &r2)));
+            prop_assert_eq!(dashu_canon(&q1.mul(&q2)), ref_canon(&RefBackend::rat_mul(&r1, &r2)));
+            prop_assert_eq!(dashu_canon(&q1.neg()), ref_canon(&RefBackend::rat_neg(&r1)));
+            prop_assert_eq!(q1.cmp(&q2), RefBackend::rat_cmp(&r1, &r2));
+            prop_assert_eq!(q1.sign(), RefBackend::rat_sign(&r1));
+            if n2 != 0 {
+                prop_assert_eq!(dashu_canon(&q1.div(&q2)), ref_canon(&RefBackend::rat_div(&r1, &r2)));
+            }
+            if n1 != 0 {
+                let one = RefBackend::rat_from_i128(1);
+                prop_assert_eq!(dashu_canon(&q1.recip()), ref_canon(&RefBackend::rat_div(&one, &r1)));
             }
         }
     }

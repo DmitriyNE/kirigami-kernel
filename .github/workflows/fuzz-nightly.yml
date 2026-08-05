@@ -1,0 +1,70 @@
+name: fuzz-nightly
+
+# Coverage-guided differential fuzzing of the two-tier `dashu` arithmetic against the *proven*
+# `RefBackend` — op-chains over size-bucketed operands, with dashu's multiply-algorithm
+# thresholds pulled down (`tuning`) so Karatsuba/Toom-3/NTT run at oracle-cheap sizes.
+#
+# This is a time-boxed SOAK, not a gate: a nondeterministic search whose value compounds with a
+# persisted, growing corpus. So it runs NIGHTLY, not per-PR — the deterministic per-PR safety is
+# the `fuzz regression replay` step in ci.yml. See docs/engineering-log.md.
+#
+# Needs a nightly toolchain + libFuzzer, provisioned on the runner's own rustup OUTSIDE the nix
+# devShell (the same pattern as the dylint CI step — the sanitizer/`rust-src` plumbing is
+# rustup-centric). STATUS: unvalidated on a real runner — watch the first scheduled run.
+
+on:
+  schedule:
+    - cron: "17 4 * * *" # nightly ~04:17 UTC
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "libFuzzer budget in seconds"
+        required: false
+        default: "1800"
+
+# Don't pile up overlapping soaks.
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: nightly + cargo-fuzz (runner rustup, outside nix)
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src
+          cargo install cargo-fuzz --locked
+
+      # Regenerate the threshold-straddling seed corpus from the authoritative encoder
+      # (`lattice::ratfuzz::corpus_seeds`), then layer the persisted (accumulated) corpus on top.
+      - name: seed corpus
+        working-directory: fuzz
+        run: cargo run --bin gen_corpus
+
+      - name: restore / persist the accumulated corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/int_chain
+          key: fuzz-corpus-int_chain-${{ github.run_id }}
+          restore-keys: fuzz-corpus-int_chain-
+
+      - name: fuzz (time-boxed)
+        run: >
+          cargo +nightly fuzz run int_chain --
+          -max_total_time=${{ github.event.inputs.max_total_time || '1800' }}
+          -rss_limit_mb=4096
+
+      # On a divergence cargo-fuzz exits non-zero and writes the crashing input under
+      # fuzz/artifacts/. Upload it so the crash can be minimized (`cargo fuzz tmin`) and pinned
+      # into crates/lattice/tests/fuzz-corpus/int_chain/ as a per-PR regression.
+      - name: upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

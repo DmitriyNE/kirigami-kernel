@@ -19,6 +19,50 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Differential-fuzz — harness + real fuzz run DONE (`differential-fuzz` branch); one wiring follow-up.**
+  Op-chain differential (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over
+  size-bucketed operands + metamorphic mul identities) closes the two gaps the old single-op
+  `rat::differential` had (no op-chains; i128-only ≤2-limb seeds ⇒ dashu never left schoolbook). **Done:**
+  **(1)** seed buckets pinned to dashu-int 0.4.3's real mul thresholds — schoolbook ≤24 / Karatsuba 25–96 /
+  Toom-3 97–4000 / NTT >4000 limbs (dispatch keys on the *smaller* operand, `mul/mod.rs`), straddled ±1.
+  **(2)** seed corpus via `fuzz`'s `gen_corpus` bin (authoritative encoder `ratfuzz::corpus_seeds()`; 7 seeds
+  across the thresholds) + a **real `cargo fuzz run`** — 2652–3118 coverage-guided runs, clean. **Key
+  mechanism:** the fuzz build enables dashu's `tuning` feature (`fuzzing = ["dashu/tuning"]`) and the target
+  lowers the thresholds via env vars (SIMPLE=2/KARATSUBA=16/NTT=160) so tiny operands route through
+  Karatsuba/Toom-3/**NTT** at oracle-cheap sizes (no need for 4000-limb operands). **Finding (first run
+  earned its keep):** thresholds MUST respect each algorithm's own `MIN_LEN` (Karatsuba 3, Toom-3 16) — my
+  first values (KARATSUBA=6) routed 7–15-limb operands into Toom-3 and tripped *dashu's own*
+  `assert!(b.len() >= MIN_LEN)`; not a dashu bug, a mis-config. **CI split (DONE):** per-PR = the
+  *deterministic replay* (stable, no libFuzzer) — `replay_seed_corpus` unit test (in `nextest`) + the
+  `fuzz regression replay` step (`cargo test -p lattice --features fuzzing --test fuzz_replay`, replays the
+  committed crash corpus under the fuzzer's tuning); nightly = the *coverage-guided search*
+  (`.github/workflows/fuzz-nightly.yml`, cron + `workflow_dispatch`, cargo-fuzz on the runner's rustup with
+  a cached/persisted corpus, uploads crash artifacts). **STATUS:** the nightly cron is unvalidated on a
+  real runner (nightly + `rust-src` + cargo-fuzz provisioning, same rustup-outside-nix pattern as dylint) —
+  **watch the first scheduled run**; and provision the nightly fenix-natively if we want it inside nix.
+  (A rational op-chain variant stays deferred — RefBackend's bit-serial `divrem`/`gcd` are too slow as a
+  big-operand oracle; use metamorphic there.) *2026-08-06 · watching*
+
+- **`RefBackend::int_from_le_bytes` must be proven if it ever leaves the test/fuzz harness.** It's a
+  TEST/FUZZ-ONLY seed constructor (`#[cfg(any(test, feature = "fuzzing"))]`, banner on the fn), NOT a
+  `Backend` trait method and NOT proven — its correctness is runtime-checked in the harness (seed
+  byte-compared against dashu), never relied on for soundness. If it ever enters the `Backend` trait or
+  any Aeneas-lifted / production path, it MUST first be proven `den(result) = value` in
+  `certify-check/CertifyCheck/RefBackend.lean`, exactly like `from_i128` (`int_from_i128_eq`). The cfg
+  gate keeps it physically out of the trait + the lift until then. *2026-08-06 · watching · `refbackend.rs`*
+
+- **R.5 — finalize the algebra-trust rehaul (the `RefBackend = ℤ/ℚ` surface is DONE).** The whole reference
+  `Backend` trait is now proven axiom-clean on `algebra-rehaul-r4` (`certify-check/CertifyCheck/RefBackend.lean`):
+  RefNat = ℕ, RefInt = ℤ (ordered ring + gcd/lcm/divrem + i128 both directions), RefRat = ℚ (reduce + all
+  arithmetic mul/div/add/sub + neg/numer/denom/is_zero/sign/cmp/from_ints/from_i128). Remaining is the V&V
+  finalization: **(1)** promote the audit surface to a public `Backend`-instance corollary (the current
+  `#print axioms` block lists the *private* op refinements; add a public theorem so `ci.yml`'s axiom-audit
+  guards `RefBackend = ℤ/ℚ` at the trait level) + wire it into `.github/workflows/ci.yml`; **(2)** the dashu
+  differential — make it a *proof-backed* oracle now that the reference is proven `= ℤ/ℚ` (`rat::differential`);
+  **(3)** `vv-matrix.md` rows + `docs/algebra-trust.md` TCB update (dashu trust shrunk to the differential) +
+  extraction-drift for the generated files; **(4)** merge-to-main review of `algebra-rehaul-r4`. Findings +
+  the full method-by-method recipe in memory `algebra-rehaul.md`. *2026-08-05 · open*
+
 - **Restore the `Backend` associated-type `Clone + Eq` bounds when Charon disambiguates
   trait parent-clauses.** The pinned Charon (`0.1.225`) lifts the `Backend` trait to a Lean
   `structure` whose parent-clause witnesses for *both* associated types (`type Int: Clone + Eq`
@@ -70,6 +114,23 @@ fine — this is a log, not a schema.
   inline allow markers. Deferred until that allow-list is designed.
   *2026-08-04 · open · `xtask/src/main.rs`*
 
+- **`certify_core.lattice.backend.Backend` qualification in the certify-core externals.** The
+  `refbackend` lift (algebra-rehaul R.4b) adds a *concrete* `lattice.backend.Backend` (the trait,
+  pulled in by `impl Backend for RefBackend`) to the **Lattice** model. The certify-core model
+  independently carries an *opaque* `Backend` (bound to ℚ), which — because Aeneas wraps a crate's
+  model in `namespace <crate>` — is named `certify_core.lattice.backend.Backend`. The two coexist
+  fine (different namespaces), but the hand-written `open certify_core` files (`CertifyCore/
+  FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`) referenced `Backend` *bare*, and bare now
+  resolves to the Lattice model's concrete one (exact global match beats an `open`) instead of the
+  intended opaque one. Worked around by fully-qualifying those references to
+  `certify_core.lattice.backend.Backend`. This is explicit-and-correct but couples the hand-written
+  externals to Aeneas's namespace-wrapping convention (stable at the pins; drift-checked). Cleaner
+  long-term options if it ever bites: (a) extract `refbackend` into its own Lean lib so `Backend`
+  never enters the shared `Lattice` model, or (b) move `impl Backend for RefBackend` to a sibling
+  Rust module excluded from the `crate::refbackend` start-from (needs `pub(crate)` on the `RefInt`/
+  `RefRat`/`RefNat` internals it touches).
+  *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
+
 ## Findings
 
 - **Developable ≠ constant curvature.** A cone's nonzero principal radius is `R₁ = ρ·tan β`
@@ -108,6 +169,13 @@ fine — this is a log, not a schema.
   *2026-08-04 · watching · `docs/proofs/ledger.md`*
 
 ## Resolved
+
+- **`divrem` op refinement (algebra-rehaul R.4b.4).** *Done 2026-08-05:* `divrem_loop_spec` (the
+  bit-serial restoring-division loop = Euclidean identity, `704196e`) + `divrem_eq` (the wrapper =
+  `den self / den d`, `den self % den d`, `d26ba39`), both axiom-clean + CI-audited, full `lake
+  build` green. New reusable lemmas: `nat_or_pow2_add`/`u64_or_pow2_add` (set-a-clear-bit = add),
+  `den_head`. Strengthened `divrem_loop_spec`'s post with `Normalized result.2` (needed by the
+  wrapper). Next: R.4b.5 `gcd`, R.4b.6 `RefInt`/`RefRat`→ℤ/ℚ.
 
 - **Launder the bench build-artifact blobs out of git history.** *Done 2026-08-04:* rewrote
   `main` + `milestone-b` with `git filter-branch --index-filter` (filter-repo unavailable),
