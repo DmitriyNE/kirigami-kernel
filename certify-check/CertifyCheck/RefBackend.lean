@@ -1967,6 +1967,110 @@ private theorem int_sign_eq (a : RefInt) (ha : IntNorm a) :
       have hia : iden a = (den a.mag.limbs.val : ℤ) := by simp [iden, han']
       rw [hia, Int.sign_eq_one_of_pos hpos]; decide
 
+/-! ## `RefRat` → ℚ — reduced rationals on top of the `RefInt`/`RefNat` layers
+
+`qden r = iden(r.num) / den(r.den)`. `reduce` divides `±num/den` through by `gcd(num, den)` to lowest
+terms with a positive denominator — the constructor every rational op funnels through. -/
+
+/-- Rational denotation of a `RefRat`: signed numerator over the (positive) denominator. -/
+def qden (r : RefRat) : ℚ := (iden r.num : ℚ) / (den r.den.limbs.val : ℚ)
+
+/-- Canonical `RefRat`: canonical numerator, normalized denominator, `den > 0`. -/
+def RatNorm (r : RefRat) : Prop :=
+  IntNorm r.num ∧ Normalized r.den.limbs.val ∧ 0 < den r.den.limbs.val
+
+set_option maxHeartbeats 1000000 in
+/-- **`RefRat.reduce`** builds `±num_mag / den_mag` in lowest terms (`den > 0`). -/
+private theorem reduce_spec (neg : Bool) (num_mag den_mag : RefNat)
+    (hnum : Normalized num_mag.limbs.val) (hden : Normalized den_mag.limbs.val)
+    (hdpos : 0 < den den_mag.limbs.val)
+    (hnumcap : num_mag.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hdencap : den_mag.limbs.val.length * 64 ≤ Std.Usize.max) :
+    RefRat.reduce neg num_mag den_mag
+      ⦃ r => qden r = (if neg then -(den num_mag.limbs.val : ℚ) else (den num_mag.limbs.val : ℚ))
+              / (den den_mag.limbs.val : ℚ) ∧ RatNorm r ⦄ := by
+  unfold RefRat.reduce
+  rw [is_zero_eq num_mag hnum]
+  simp only [bind_tc_ok]
+  by_cases hnz : den num_mag.limbs.val = 0
+  · rw [if_pos (by simp [hnz])]
+    unfold RefInt.zero RefNat.zero
+    simp only [bind_tc_ok]
+    step
+    have hy : (alloc.slice.Slice.into_vec y).val = [1#u64] := by rw [y_post]; rfl
+    refine ⟨?_, ⟨fun h => absurd rfl h, fun _ => rfl⟩, ?_, ?_⟩
+    · simp [qden, iden, hnz]
+    · rw [hy]; intro h; simp
+    · rw [hy]; simp [den]
+  · rw [if_neg (by simp [hnz])]
+    have hnumne : num_mag.limbs.val ≠ [] :=
+      fun h => hnz ((den_eq_zero_iff num_mag.limbs.val hnum).mpr h)
+    have hnumpos : 0 < den num_mag.limbs.val := Nat.pos_of_ne_zero hnz
+    have hnumlen1 : 1 ≤ num_mag.limbs.val.length := List.length_pos_of_ne_nil hnumne
+    have hgcd := gcd_eq num_mag den_mag hnum hden hnumcap hdencap
+    cases hgc : RefNat.gcd num_mag den_mag with
+    | ok g =>
+      rw [hgc] at hgcd; simp only [WP.spec_ok] at hgcd
+      obtain ⟨hgden, hgnorm⟩ := hgcd
+      simp only [bind_tc_ok]
+      have hgpos : 0 < den g.limbs.val := by rw [hgden]; exact Nat.gcd_pos_of_pos_left _ hnumpos
+      have hgm : den g.limbs.val ∣ den num_mag.limbs.val := by rw [hgden]; exact Nat.gcd_dvd_left _ _
+      have hgn : den g.limbs.val ∣ den den_mag.limbs.val := by rw [hgden]; exact Nat.gcd_dvd_right _ _
+      have hgle : den g.limbs.val ≤ den num_mag.limbs.val := Nat.le_of_dvd hnumpos hgm
+      have hglen : g.limbs.val.length ≤ num_mag.limbs.val.length := by
+        by_contra hc; rw [not_le] at hc
+        exact absurd (den_lt_of_len_lt num_mag.limbs.val g.limbs.val hgnorm hc) (by omega)
+      have hdcap_g : g.limbs.val.length + 1 ≤ Std.Usize.max := by omega
+      have hdr1 := divrem_eq num_mag g hnum hgnorm hgpos hdcap_g hnumcap
+      cases hdc1 : RefNat.divrem num_mag g with
+      | ok qr1 =>
+        obtain ⟨nq, rr1⟩ := qr1
+        rw [hdc1] at hdr1; simp only [WP.spec_ok] at hdr1
+        obtain ⟨hnqden, _, hnqnorm, _⟩ := hdr1
+        simp only [bind_tc_ok]
+        have hdr2 := divrem_eq den_mag g hden hgnorm hgpos hdcap_g hdencap
+        cases hdc2 : RefNat.divrem den_mag g with
+        | ok qr2 =>
+          obtain ⟨dq, rr2⟩ := qr2
+          rw [hdc2] at hdr2; simp only [WP.spec_ok] at hdr2
+          obtain ⟨hdqden, _, hdqnorm, _⟩ := hdr2
+          simp only [bind_tc_ok]
+          show (do let ri ← RefInt.make neg nq; ok (⟨ri, dq⟩ : RefRat))
+            ⦃ r => qden r = (if neg then -(den num_mag.limbs.val : ℚ)
+                else (den num_mag.limbs.val : ℚ)) / (den den_mag.limbs.val : ℚ) ∧ RatNorm r ⦄
+          have hmk := make_spec neg nq hnqnorm
+          cases hmkc : RefInt.make neg nq with
+          | ok ri =>
+            rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+            obtain ⟨hriden, hrinorm, _⟩ := hmk
+            simp only [bind_tc_ok, WP.spec_ok]
+            refine ⟨?_, hrinorm, hdqnorm, ?_⟩
+            · have hgQ : (den g.limbs.val : ℚ) ≠ 0 := by exact_mod_cast hgpos.ne'
+              have hdenQ : (den den_mag.limbs.val : ℚ) ≠ 0 := by exact_mod_cast hdpos.ne'
+              have hc1 : ((den num_mag.limbs.val / den g.limbs.val : ℕ) : ℚ)
+                  = (den num_mag.limbs.val : ℚ) / den g.limbs.val := Nat.cast_div hgm hgQ
+              have hc2 : ((den den_mag.limbs.val / den g.limbs.val : ℕ) : ℚ)
+                  = (den den_mag.limbs.val : ℚ) / den g.limbs.val := Nat.cast_div hgn hgQ
+              have hnumQ : ((iden ri : ℤ) : ℚ)
+                  = (if neg then -(den num_mag.limbs.val : ℚ) else (den num_mag.limbs.val : ℚ))
+                    / (den g.limbs.val : ℚ) := by
+                rw [hriden, apply_ite (fun x : ℤ => (x : ℚ))]
+                simp only [Int.cast_neg, Int.cast_natCast, hnqden, hc1]
+                cases neg <;> simp [neg_div]
+              have hdenQ2 : ((den dq.limbs.val : ℕ) : ℚ)
+                  = (den den_mag.limbs.val : ℚ) / (den g.limbs.val : ℚ) := by rw [hdqden]; exact hc2
+              simp only [qden, hnumQ, hdenQ2]
+              cases neg <;> field_simp
+            · rw [hdqden]; exact Nat.div_pos (Nat.le_of_dvd hdpos hgn) hgpos
+          | fail e => rw [hmkc] at hmk; exact hmk.elim
+          | div => rw [hmkc] at hmk; exact hmk.elim
+        | fail e => rw [hdc2] at hdr2; exact hdr2.elim
+        | div => rw [hdc2] at hdr2; exact hdr2.elim
+      | fail e => rw [hdc1] at hdr1; exact hdr1.elim
+      | div => rw [hdc1] at hdr1; exact hdr1.elim
+    | fail e => rw [hgc] at hgcd; exact hgcd.elim
+    | div => rw [hgc] at hgcd; exact hgcd.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
