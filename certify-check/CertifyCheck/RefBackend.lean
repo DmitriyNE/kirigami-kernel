@@ -1604,6 +1604,88 @@ theorem divrem_eq (self d : RefNat) (hself : Normalized self.limbs.val)
     | fail e => rw [hbn] at hbl; exact hbl.elim
     | div => rw [hbn] at hbl; exact hbl.elim
 
+/-! ### `gcd` — Euclid's algorithm on the limb denotations -/
+
+set_option maxHeartbeats 800000 in
+/-- `gcd`'s Euclid loop: `while y ≠ 0 do (x, y) := (y, x % y)`, returning `x`. Maintains
+    `gcd (den x) (den y)` invariant, terminating (measure `den y`) at `y = 0` with `gcd (den x) 0`. -/
+private theorem gcd_loop_spec (x y : RefNat) (hx : Normalized x.limbs.val) (hy : Normalized y.limbs.val)
+    (hxcap : x.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hycap : y.limbs.val.length * 64 ≤ Std.Usize.max) :
+    RefNat.gcd_loop x y
+      ⦃ r => den r.limbs.val = Nat.gcd (den x.limbs.val) (den y.limbs.val)
+          ∧ Normalized r.limbs.val ⦄ := by
+  unfold RefNat.gcd_loop
+  apply loop.spec_decr_nat
+    (measure := fun st => den st.2.limbs.val)
+    (inv := fun st => Normalized st.1.limbs.val ∧ Normalized st.2.limbs.val ∧
+      st.1.limbs.val.length * 64 ≤ Std.Usize.max ∧ st.2.limbs.val.length * 64 ≤ Std.Usize.max ∧
+      Nat.gcd (den st.1.limbs.val) (den st.2.limbs.val) = Nat.gcd (den x.limbs.val) (den y.limbs.val))
+  · rintro ⟨x', y'⟩ ⟨hx', hy', hxcap', hycap', hgcd⟩
+    show RefNat.gcd_loop.body x' y' ⦃ _ ⦄
+    unfold RefNat.gcd_loop.body
+    simp only [] at hx' hy' hxcap' hycap' hgcd
+    rw [is_zero_eq y' hy']
+    simp only [bind_tc_ok]
+    by_cases hyz : den y'.limbs.val = 0
+    · rw [if_pos (by simp [hyz])]
+      simp only [WP.spec_ok]
+      refine ⟨?_, hx'⟩
+      rw [← hgcd, hyz, Nat.gcd_zero_right]
+    · rw [if_neg (by simp [hyz])]
+      have hypos : 0 < den y'.limbs.val := by omega
+      have hyne : y'.limbs.val ≠ [] := fun h => hyz ((den_eq_zero_iff y'.limbs.val hy').mpr h)
+      have hylen1 : 1 ≤ y'.limbs.val.length := List.length_pos_of_ne_nil hyne
+      have hdcap : y'.limbs.val.length + 1 ≤ Std.Usize.max := by nlinarith [hycap', hylen1]
+      have hdr := divrem_eq x' y' hx' hy' hypos hdcap hxcap'
+      cases hdc : RefNat.divrem x' y' with
+      | ok qr =>
+        obtain ⟨q1, r1⟩ := qr
+        rw [hdc] at hdr; simp only [WP.spec_ok] at hdr
+        obtain ⟨hq, hrmod, hqnorm, hrnorm⟩ := hdr
+        simp only [bind_tc_ok]
+        have hrlt : den r1.limbs.val < den y'.limbs.val := by rw [hrmod]; exact Nat.mod_lt _ hypos
+        have hrlen : r1.limbs.val.length ≤ y'.limbs.val.length := by
+          by_contra hc; rw [not_le] at hc
+          exact absurd (den_lt_of_len_lt y'.limbs.val r1.limbs.val hrnorm hc) (by omega)
+        refine ⟨⟨hy', hrnorm, hycap', by nlinarith [hrlen, hycap'], ?_⟩, hrlt⟩
+        rw [hrmod, Nat.gcd_comm (den y'.limbs.val), ← Nat.gcd_rec, Nat.gcd_comm]
+        exact hgcd
+      | fail e => rw [hdc] at hdr; exact hdr.elim
+      | div => rw [hdc] at hdr; exact hdr.elim
+  · exact ⟨hx, hy, hxcap, hycap, rfl⟩
+
+/-- **`gcd` refinement.** For normalized inputs, `RefNat::gcd` computes `Nat.gcd` on the denotations. -/
+theorem gcd_eq (self o : RefNat) (hself : Normalized self.limbs.val) (ho : Normalized o.limbs.val)
+    (hscap : self.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hocap : o.limbs.val.length * 64 ≤ Std.Usize.max) :
+    RefNat.gcd self o
+      ⦃ r => den r.limbs.val = Nat.gcd (den self.limbs.val) (den o.limbs.val)
+          ∧ Normalized r.limbs.val ⦄ := by
+  unfold RefNat.gcd RefNat.Insts.CoreCloneClone.clone
+  have hcx : alloc.vec.CloneVec.clone core.clone.CloneU64 self.limbs ⦃ v => self.limbs = v ⦄ :=
+    alloc.slice.Slice.to_vec_spec core.clone.CloneU64 self.limbs (by intro x _; rfl)
+  cases hccx : alloc.vec.CloneVec.clone core.clone.CloneU64 self.limbs with
+  | ok vx =>
+    rw [hccx] at hcx; simp only [WP.spec_ok] at hcx
+    simp only [bind_tc_ok]
+    have hcy : alloc.vec.CloneVec.clone core.clone.CloneU64 o.limbs ⦃ v => o.limbs = v ⦄ :=
+      alloc.slice.Slice.to_vec_spec core.clone.CloneU64 o.limbs (by intro x _; rfl)
+    cases hccy : alloc.vec.CloneVec.clone core.clone.CloneU64 o.limbs with
+    | ok vy =>
+      rw [hccy] at hcy; simp only [WP.spec_ok] at hcy
+      simp only [bind_tc_ok]
+      have hvx : (⟨vx⟩ : RefNat).limbs.val = self.limbs.val := by rw [← hcx]
+      have hvy : (⟨vy⟩ : RefNat).limbs.val = o.limbs.val := by rw [← hcy]
+      have hloop := gcd_loop_spec ⟨vx⟩ ⟨vy⟩ (by rw [hvx]; exact hself) (by rw [hvy]; exact ho)
+        (by rw [hvx]; exact hscap) (by rw [hvy]; exact hocap)
+      rw [hvx, hvy] at hloop
+      exact hloop
+    | fail e => rw [hccy] at hcy; exact hcy.elim
+    | div => rw [hccy] at hcy; exact hcy.elim
+  | fail e => rw [hccx] at hcx; exact hcx.elim
+  | div => rw [hccx] at hcx; exact hcx.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -1615,5 +1697,6 @@ theorem divrem_eq (self d : RefNat) (hself : Normalized self.limbs.val)
 #print axioms testbit_eq
 #print axioms bit_len_spec
 #print axioms divrem_eq
+#print axioms gcd_eq
 
 end CertifyCheck.RefBackend
