@@ -11,8 +11,8 @@
   `add`/`sub`/`mul`/`divrem`/`gcd` and lift `RefInt`/`RefRat` to `ℤ`/`ℚ`.
 
   All `RefNat` values in play are **normalized** (no trailing zero limbs) — the representation
-  invariant every constructor/op re-establishes via `normalize`. It is carried here as an explicit
-  `Normalized` hypothesis; a later phase proves `normalize` produces it.
+  invariant every constructor/op re-establishes via `normalize` (proved: `normalize_normalized`). It
+  is carried on the op refinements as an explicit `Normalized` hypothesis on the inputs.
 -/
 import Mathlib
 import Lattice.Funs
@@ -1210,6 +1210,62 @@ theorem bit_len_spec (self : RefNat) (hcap : self.limbs.val.length * 64 ≤ Std.
           < 2 ^ (64 * (self.limbs.val.length - 1)) * (1 + i2.val) := by rw [Nat.mul_add]; omega
         _ ≤ 2 ^ (64 * (self.limbs.val.length - 1)) * 2 ^ (64 - i4.val) :=
             Nat.mul_le_mul_left _ (by omega)
+
+/-! ### `divrem` — bit-serial MSB-first restoring long division
+
+The loop scans `self` bit-by-bit from the top, maintaining `r` (the running remainder) and `q` (the
+quotient bits set so far). Invariant (over ℕ), at step `i`:
+`den self = den q · den d + den r · 2^i + (den self mod 2^i)`, with `2^i ∣ den q`, `den r < den d`.
+Each step brings in bit `i-1`, doubles-and-adds into `r`, and conditionally subtracts `d` (setting the
+quotient bit). At `i = 0` this gives `den self = den q · den d + den r`, `den r < den d`. -/
+
+/-- For normalized `y`, a strictly shorter list denotes a strictly smaller value. -/
+private theorem den_lt_of_len_lt (x y : List Std.U64) (hy : Normalized y) (hlt : x.length < y.length) :
+    den x < den y := by
+  have hxne : y ≠ [] := by rintro rfl; simp at hlt
+  have h1 : den x < 2 ^ (64 * x.length) := den_lt x
+  have h2 : (2 : ℕ) ^ (64 * x.length) ≤ 2 ^ (64 * (y.length - 1)) :=
+    Nat.pow_le_pow_right (by norm_num) (by omega)
+  have h3 : 2 ^ (64 * (y.length - 1)) ≤ den y := den_lower y hxne hy
+  omega
+
+/-- The top bit of a `2^(k+1)` window: `n % 2^(k+1) = n % 2^k + 2^k · (bit k of n)`. -/
+private theorem nat_mod_two_pow_succ (n k : ℕ) :
+    n % 2 ^ (k + 1) = n % 2 ^ k + 2 ^ k * (n / 2 ^ k % 2) := by
+  rw [pow_succ, Nat.mod_mul]
+
+/-- `normalize` yields a normalized list — it strips trailing zero limbs, stopping at a nonzero top. -/
+private theorem normalize_normalized (l : alloc.vec.Vec Std.U64) :
+    lattice.refbackend.normalize l ⦃ r => Normalized r.val ⦄ := by
+  unfold lattice.refbackend.normalize normalize_loop
+  apply loop.spec_decr_nat
+    (measure := fun s => s.val.length)
+    (inv := fun _ => True)
+  · rintro s _
+    show normalize_loop.body s ⦃ _ ⦄
+    unfold normalize_loop.body alloc.vec.Vec.is_empty
+    simp only [bind_tc_ok]
+    by_cases hb : (s.val).isEmpty = true
+    · rw [if_pos hb]; simp only [WP.spec_ok]
+      have hemp : s.val = [] := by simpa using hb
+      intro h; exact absurd hemp h
+    · rw [if_neg hb]
+      have hne : s.val ≠ [] := by simpa using hb
+      have hlen1 : 0 < s.len.val := by rw [alloc.vec.Vec.len_val]; exact List.length_pos_of_ne_nil hne
+      step; step
+      have hlen0 : 0 < s.val.length := List.length_pos_of_ne_nil hne
+      have hidx : i1.val = s.val.length - 1 := by rw [i1_post1, alloc.vec.Vec.len_val]
+      have hidx_lt : i1.val < s.val.length := by omega
+      by_cases hz : i2 = 0#u64
+      · rw [if_pos hz]; unfold alloc.vec.Vec.pop; simp only [bind_tc_ok]
+        show s.val.dropLast.length < s.val.length
+        rw [List.length_dropLast]; omega
+      · rw [if_neg hz]; simp only [WP.spec_ok]
+        intro h
+        have hgl : i2 = s.val.getLast h := by rw [i2_post, List.getLast_eq_getElem]; congr 1
+        rw [← hgl]
+        exact fun hc => hz (Std.UScalar.eq_of_val_eq (by rw [hc]; rfl))
+  · trivial
 
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).

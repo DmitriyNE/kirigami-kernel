@@ -48,7 +48,10 @@ monotone in value ⇒ `den` injective on normalized lists (RefNat value ≅ ℕ)
 loops — inner row-accumulate, carry-propagate, outer row-sum — with a magnitude bound keeping the
 carry loop in range) · `.4` `divrem` **— in progress** (bit-serial MSB-first restoring division;
 groundwork `shl1_eq` (`den = 2·den`) + `testbit_eq` (bit `i` of the denotation) + `bit_len_spec`
-(`den < 2^bit_len`) landed; the division loop and `divrem_eq` remain) · `.5` `gcd` · `.6`
+(`den < 2^bit_len`) + prep lemmas (`normalize_normalized` closing the deferred "normalize produces a
+normalized list" gap; `den_lt_of_len_lt`; the mod-bit decomposition) landed; the division loop
+(`divrem_loop_spec`, invariant `den self = den q·den d + den r·2^i + den self%2^i`) and `divrem_eq`
+remain — the loop scaffold is parked in `scratchpad/divrem-loop-scaffold.lean`) · `.5` `gcd` · `.6`
 `RefInt`/`RefRat` → ℤ/ℚ + the `Backend`-instance corollary.
 
 **R.4b.4 groundwork.** `divrem` is the effort peak. Primitives, bottom-up: **`shl1_eq`** — the doubling,
