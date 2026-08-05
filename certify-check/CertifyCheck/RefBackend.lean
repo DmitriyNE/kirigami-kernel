@@ -1023,6 +1023,41 @@ private theorem u64_or_add (a b : Std.U64) (ha : a.val % 2 = 0) (hb : b.val ≤ 
   have h := Nat.two_pow_add_eq_or_of_lt (i := 1) (show b.val < 2 ^ 1 by omega) (a.val / 2)
   rw [ha2] at h; exact h.symm
 
+/-- Setting a currently-clear bit `k` of `a` is addition: `a ||| 2^k = a + 2^k`. -/
+private theorem nat_or_pow2_add (a k : ℕ) (hbit : Nat.testBit a k = false) :
+    a ||| 2 ^ k = a + 2 ^ k := by
+  have hlo : a % 2 ^ k < 2 ^ k := Nat.mod_lt _ (by positivity)
+  have hmid : a / 2 ^ k % 2 = 0 := by
+    have h := hbit; rw [Nat.testBit_eq_decide_div_mod_eq] at h
+    simp only [decide_eq_false_iff_not] at h; omega
+  have e2 : a / 2 ^ k = 2 * (a / 2 ^ (k + 1)) := by
+    rw [pow_succ, ← Nat.div_div_eq_div_mul]; omega
+  have hadecomp : a = 2 ^ (k + 1) * (a / 2 ^ (k + 1)) + a % 2 ^ k := by
+    conv_lhs => rw [← Nat.div_add_mod a (2 ^ k), e2]
+    rw [pow_succ]; ring
+  have hor_lo : a % 2 ^ k ||| 2 ^ k = a % 2 ^ k + 2 ^ k := by
+    have h := Nat.two_pow_add_eq_or_of_lt (i := k) hlo 1
+    rw [mul_one] at h
+    rw [Nat.lor_comm, ← h, Nat.add_comm]
+  calc a ||| 2 ^ k
+      = (2 ^ (k + 1) * (a / 2 ^ (k + 1)) + a % 2 ^ k) ||| 2 ^ k := by rw [← hadecomp]
+    _ = (2 ^ (k + 1) * (a / 2 ^ (k + 1)) ||| a % 2 ^ k) ||| 2 ^ k := by
+          rw [Nat.two_pow_add_eq_or_of_lt (by omega : a % 2 ^ k < 2 ^ (k + 1))]
+    _ = 2 ^ (k + 1) * (a / 2 ^ (k + 1)) ||| (a % 2 ^ k ||| 2 ^ k) := by rw [Nat.lor_assoc]
+    _ = 2 ^ (k + 1) * (a / 2 ^ (k + 1)) ||| (a % 2 ^ k + 2 ^ k) := by rw [hor_lo]
+    _ = 2 ^ (k + 1) * (a / 2 ^ (k + 1)) + (a % 2 ^ k + 2 ^ k) :=
+          (Nat.two_pow_add_eq_or_of_lt (by omega) _).symm
+    _ = a + 2 ^ k := by rw [← Nat.add_assoc, ← hadecomp]
+
+/-- OR-ing in a power-of-two bit `c = 2^k` (currently clear in `a`) is addition. -/
+private theorem u64_or_pow2_add (a c : Std.U64) (k : ℕ) (hc : c.val = 2 ^ k)
+    (hbit : Nat.testBit a.val k = false) :
+    (a ||| c).val = a.val + 2 ^ k := by
+  have hor : (a ||| c).val = a.val ||| c.val := by
+    simp only [UScalar.val]
+    rw [show (a ||| c).bv = a.bv ||| c.bv from rfl, BitVec.toNat_or]
+  rw [hor, hc, nat_or_pow2_add a.val k hbit]
+
 set_option maxHeartbeats 800000 in
 /-- `shl1`'s per-limb left-shift loop: `out[i] = (v[i] << 1) | carry`, `carry' = v[i] >> 63`, so
     `den out + carry·2^(64i) = 2·den(take i v)`. -/
@@ -1270,6 +1305,215 @@ private theorem den_lt_of_len_lt (x y : List Std.U64) (hy : Normalized y) (hlt :
 private theorem nat_mod_two_pow_succ (n k : ℕ) :
     n % 2 ^ (k + 1) = n % 2 ^ k + 2 ^ k * (n / 2 ^ k % 2) := by
   rw [pow_succ, Nat.mod_mul]
+
+/-- Split off the low limb: `den l = l[0] + 2^64·den(l.drop 1)`. -/
+private theorem den_head (l : List Std.U64) (h : 0 < l.length) :
+    den l = (l[0]'h).val + 2 ^ 64 * den (l.drop 1) := by
+  cases l with
+  | nil => simp at h
+  | cons x xs => simp [den_cons]
+
+set_option maxHeartbeats 1600000 in
+set_option maxRecDepth 4000 in
+/-- `divrem`'s bit-serial loop, at step `i`: reconstructs `self` from the running quotient `q` and
+    remainder `r`, `den self = den q·den d + den r·2^i + den self % 2^i`, with `den r < den d` and
+    `2^i ∣ den q`. Terminates at `i = 0` with `den self = den q·den d + den r`. -/
+private theorem divrem_loop_spec (self d : RefNat) (q : alloc.vec.Vec Std.U64) (r : RefNat)
+    (i : Std.Usize) (hd : Normalized d.limbs.val)
+    (hdcap : d.limbs.val.length + 1 ≤ Std.Usize.max)
+    (hr : Normalized r.limbs.val) (hrlt : den r.limbs.val < den d.limbs.val)
+    (hidvd : 2 ^ i.val ∣ den q.val) (hqcap : i.val ≤ q.val.length * 64)
+    (hinv : den self.limbs.val
+      = den q.val * den d.limbs.val + den r.limbs.val * 2 ^ i.val + den self.limbs.val % 2 ^ i.val) :
+    RefNat.divrem_loop self d q r i
+      ⦃ result => den self.limbs.val = den result.1.val * den d.limbs.val + den result.2.limbs.val
+          ∧ den result.2.limbs.val < den d.limbs.val ⦄ := by
+  unfold RefNat.divrem_loop
+  apply loop.spec_decr_nat
+    (measure := fun st => st.2.2.val)
+    (inv := fun st => Normalized st.2.1.limbs.val ∧ den st.2.1.limbs.val < den d.limbs.val ∧
+      2 ^ st.2.2.val ∣ den st.1.val ∧ st.2.2.val ≤ st.1.val.length * 64 ∧
+      den self.limbs.val = den st.1.val * den d.limbs.val + den st.2.1.limbs.val * 2 ^ st.2.2.val
+        + den self.limbs.val % 2 ^ st.2.2.val)
+  · rintro ⟨q', r', i'⟩ ⟨hr', hrlt', hidvd', hqcap', hinv'⟩
+    show RefNat.divrem_loop.body self d q' r' i' ⦃ _ ⦄
+    unfold RefNat.divrem_loop.body
+    simp only [] at hr' hrlt' hidvd' hqcap' hinv'
+    by_cases hi : i' > 0#usize
+    · rw [if_pos hi]
+      have hrlen : r'.limbs.val.length ≤ d.limbs.val.length := by
+        by_contra hc; have := den_lt_of_len_lt d.limbs.val r'.limbs.val hr' (by omega); omega
+      step
+      have hshl := shl1_eq r' (by omega)
+      cases hsc : RefNat.shl1 r' with
+      | ok r1 =>
+        rw [hsc] at hshl; simp only [WP.spec_ok] at hshl
+        obtain ⟨hr1den, hr1norm⟩ := hshl
+        simp only [bind_tc_ok]
+        have htb := testbit_eq self i1
+        cases htc : RefNat.testbit self i1 with
+        | ok b =>
+          rw [htc] at htb; simp only [WP.spec_ok] at htb
+          simp only [bind_tc_ok]
+          have hr2spec : (if b = true then do
+                let b1 ← alloc.vec.Vec.is_empty Global r1.limbs
+                let v ← if b1 = true then r1.limbs.push 1#u64
+                  else do
+                    let (i2, index_mut_back) ←
+                      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U64) r1.limbs 0#usize
+                    let i3 ← lift (i2 ||| 1#u64)
+                    ok (index_mut_back i3)
+                ok ({ limbs := v } : RefNat)
+              else ok r1)
+              ⦃ r2 => den r2.limbs.val = 2 * den r'.limbs.val + b.toNat
+                  ∧ Normalized r2.limbs.val ⦄ := by
+            by_cases hb : b = true
+            · rw [if_pos hb, hb]
+              unfold alloc.vec.Vec.is_empty
+              simp only [bind_tc_ok]
+              have hr1even : den r1.limbs.val % 2 = 0 := by rw [hr1den]; omega
+              by_cases he1 : r1.limbs.val.isEmpty = true
+              · rw [if_pos he1]
+                have hemp : r1.limbs.val = [] := by simpa using he1
+                have hr'0 : den r'.limbs.val = 0 := by
+                  rw [hemp] at hr1den; simpa [den] using hr1den.symm
+                step
+                constructor <;> simp [v_post, hemp, Normalized, hr'0]
+              · rw [if_neg he1]
+                have hne1 : r1.limbs.val ≠ [] := by simpa using he1
+                have hlen1pos : 0 < r1.limbs.val.length := List.length_pos_of_ne_nil hne1
+                have hr10 : (r1.limbs.val[0]'hlen1pos).val % 2 = 0 := by
+                  have hdh := den_head r1.limbs.val hlen1pos; omega
+                have h0 : ((0#usize : Std.Usize).val) = 0 := by rfl
+                step
+                obtain ⟨i2, imb⟩ := v
+                have himb : imb = r1.limbs.set 0#usize := v_post2
+                have hi2eq : i2 = (r1.limbs.val[0]'hlen1pos) := v_post1
+                step
+                have hvval : v.val = (r1.limbs.val[0]'hlen1pos).val + 1 := by
+                  have h1 : v.val = (i2 ||| 1#u64).val := v_post1
+                  rw [h1, u64_or_add i2 1#u64 (by rw [hi2eq]; exact hr10) (by decide), hi2eq]; rfl
+                have hlen_set : (r1.limbs.val.set 0 v).length = r1.limbs.val.length :=
+                  List.length_set ..
+                rw [himb]
+                simp only [alloc.vec.Vec.set_val_eq, h0, Bool.toNat_true]
+                refine ⟨?_, ?_⟩
+                · have key : (den (r1.limbs.val.set 0 v) : ℤ) = 2 * den r'.limbs.val + 1 := by
+                    rw [den_set r1.limbs.val 0 v hlen1pos]
+                    push_cast [hvval, hr1den]; ring
+                  exact_mod_cast key
+                · intro hh
+                  rw [List.getLast_eq_getElem, List.getElem_set]
+                  split
+                  · rw [hvval]; omega
+                  · rename_i hne
+                    have hn := hr1norm hne1
+                    rw [List.getLast_eq_getElem] at hn
+                    simpa only [hlen_set] using hn
+            · rw [if_neg hb]
+              simp only [WP.spec_ok]
+              have hb0 : b = false := by simpa using hb
+              rw [hb0]; simp only [Bool.toNat_false, add_zero]
+              exact ⟨hr1den, hr1norm⟩
+          apply WP.spec_bind' hr2spec
+          rintro r2 ⟨hr2den, hr2norm⟩
+          beta_reduce
+          rw [cmp_eq r2 d hr2norm hd]
+          simp only [core.cmp.PartialEq.ne.trait_default, core.cmp.PartialEq.ne.default,
+            core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering.eq, compare_lt_iff_lt,
+            bind_tc_ok, decide_eq_true_eq]
+          have hi'1 : i'.val = i1.val + 1 := by omega
+          have hble : b.toNat ≤ 1 := by cases b <;> simp
+          have hbtoNat : b.toNat = den self.limbs.val / 2 ^ i1.val % 2 := by
+            rw [htb, Nat.testBit_eq_decide_div_mod_eq]
+            by_cases hc : den self.limbs.val / 2 ^ i1.val % 2 = 1
+            · rw [hc]; simp
+            · have h0' : den self.limbs.val / 2 ^ i1.val % 2 = 0 := by omega
+              rw [h0']; simp
+          have hmod : den self.limbs.val % 2 ^ i'.val
+              = den self.limbs.val % 2 ^ i1.val + 2 ^ i1.val * b.toNat := by
+            rw [hi'1, nat_mod_two_pow_succ, ← hbtoNat]
+          have hrecon2 : den self.limbs.val
+              = den q'.val * den d.limbs.val + den r2.limbs.val * 2 ^ i1.val
+                + den self.limbs.val % 2 ^ i1.val := by
+            have hp : (2 : ℕ) ^ i'.val = 2 * 2 ^ i1.val := by rw [hi'1, pow_succ]; ring
+            have h := hinv'
+            rw [hmod, hp] at h
+            rw [hr2den]; conv_lhs => rw [h]
+            ring
+          have hidvd1 : 2 ^ i1.val ∣ den q'.val :=
+            dvd_trans (pow_dvd_pow 2 (by omega)) hidvd'
+          by_cases hlt2 : den r2.limbs.val < den d.limbs.val
+          · rw [if_neg (not_not_intro hlt2)]
+            simp only [WP.spec_ok]
+            exact ⟨hr2norm, hlt2, hidvd1, by omega, hrecon2, by omega⟩
+          · rw [if_pos hlt2]
+            have hge : den d.limbs.val ≤ den r2.limbs.val := by omega
+            have hlolen : d.limbs.val.length ≤ r2.limbs.val.length := by
+              by_contra hc; rw [not_le] at hc
+              exact absurd (den_lt_of_len_lt r2.limbs.val d.limbs.val hd hc) (by omega)
+            have hsub := sub_eq r2 d hlolen hge
+            cases hsc2 : RefNat.sub r2 d with
+            | ok r3 =>
+              rw [hsc2] at hsub; simp only [WP.spec_ok] at hsub
+              obtain ⟨hr3den, hr3norm⟩ := hsub
+              simp only [bind_tc_ok]
+              step; step; step
+              have hi4lt : i4.val < q'.val.length := by rw [i4_post]; omega
+              have hi3v : i3.val = 2 ^ (i1.val % 64) := by
+                have hU : U64.size = 2 ^ 64 := by simp [U64.size, U64.numBits]
+                rw [i3_post1, i2_post, Nat.shiftLeft_eq, one_mul, hU,
+                  Nat.mod_eq_of_lt (Nat.pow_lt_pow_right (by norm_num) (by omega : i1.val % 64 < 64))]
+              have hqbit : Nat.testBit (den q'.val) i1.val = false := by
+                have hdvd : 2 ^ (i1.val + 1) ∣ den q'.val := by rw [← hi'1]; exact hidvd'
+                obtain ⟨m, hm⟩ := hdvd
+                rw [Nat.testBit_eq_decide_div_mod_eq, decide_eq_false_iff_not, hm, pow_succ,
+                  mul_assoc, Nat.mul_div_cancel_left _ (by positivity : (0:ℕ) < 2 ^ i1.val)]
+                omega
+              have hqbit4 : Nat.testBit (q'.val[i4.val]'hi4lt).val (i1.val % 64) = false := by
+                have hde := den_testBit_lt q'.val i4.val (i1.val % 64) hi4lt (by omega)
+                have hidx : 64 * i4.val + i1.val % 64 = i1.val := by rw [i4_post]; omega
+                rw [hidx, hqbit] at hde; exact hde.symm
+              step
+              step
+              have hi6v : i6.val = (q'.val[i4.val]'hi4lt).val + 2 ^ (i1.val % 64) := by
+                rw [i6_post1, u64_or_pow2_add i5 i3 (i1.val % 64) hi3v
+                  (by rw [i5_post1]; exact hqbit4), i5_post1]
+              have hpow : (2 : ℤ) ^ (i1.val % 64) * 2 ^ (64 * i4.val) = 2 ^ i1.val := by
+                rw [← pow_add, i4_post]; congr 1; omega
+              have hq1den : (den (↑(index_mut_back i6) : List Std.U64) : ℤ)
+                  = den q'.val + 2 ^ i1.val := by
+                rw [i5_post2, alloc.vec.Vec.set_val_eq, den_set q'.val i4.val i6 hi4lt, hi6v]
+                push_cast; rw [← hpow]; ring
+              have hq1dennat : den (↑(index_mut_back i6) : List Std.U64) = den q'.val + 2 ^ i1.val := by
+                exact_mod_cast hq1den
+              have hq1len : (↑(index_mut_back i6) : List Std.U64).length = q'.val.length := by
+                rw [i5_post2, alloc.vec.Vec.set_val_eq, List.length_set]
+              refine ⟨hr3norm, ?_, ?_, ?_, ?_, by omega⟩
+              · rw [hr3den]; omega
+              · rw [hq1dennat]; exact Dvd.dvd.add hidvd1 (dvd_refl _)
+              · rw [hq1len]; omega
+              · rw [hq1dennat, hr3den]
+                have e2 : (den r2.limbs.val - den d.limbs.val) * 2 ^ i1.val
+                    = den r2.limbs.val * 2 ^ i1.val - den d.limbs.val * 2 ^ i1.val := Nat.sub_mul _ _ _
+                have e3 : (den q'.val + 2 ^ i1.val) * den d.limbs.val
+                    = den q'.val * den d.limbs.val + 2 ^ i1.val * den d.limbs.val := Nat.add_mul _ _ _
+                have e1 : den d.limbs.val * 2 ^ i1.val = 2 ^ i1.val * den d.limbs.val := Nat.mul_comm _ _
+                have hle2 : den d.limbs.val * 2 ^ i1.val ≤ den r2.limbs.val * 2 ^ i1.val :=
+                  Nat.mul_le_mul_right _ hge
+                rw [e3, e2]; omega
+            | fail e => rw [hsc2] at hsub; exact hsub.elim
+            | div => rw [hsc2] at hsub; exact hsub.elim
+        | fail e => rw [htc] at htb; exact htb.elim
+        | div => rw [htc] at htb; exact htb.elim
+      | fail e => rw [hsc] at hshl; exact hshl.elim
+      | div => rw [hsc] at hshl; exact hshl.elim
+    · rw [if_neg hi]
+      simp only [WP.spec_ok]
+      have hi0 : i'.val = 0 := by clear hinv' hidvd' hqcap' hrlt' hr'; scalar_tac
+      rw [hi0, pow_zero, mul_one, Nat.mod_one, add_zero] at hinv'
+      exact ⟨hinv', hrlt'⟩
+  · exact ⟨hr, hrlt, hidvd, hqcap, hinv⟩
 
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
