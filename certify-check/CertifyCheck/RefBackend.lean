@@ -2983,6 +2983,167 @@ private theorem rat_from_i128_eq (v : Std.I128) :
   | fail e => rw [hfc] at hfi; exact hfi.elim
   | div => rw [hfc] at hfi; exact hfi.elim
 
+/-- A normalized limb list of length `> 2` denotes `≥ 2^128`. -/
+private theorem den_ge_of_len_gt_two (l : List Std.U64) (hn : Normalized l) (hlen : 2 < l.length) :
+    2 ^ 128 ≤ den l := by
+  have h := den_lower l (by rintro rfl; simp at hlen) hn
+  have : (2 : ℕ) ^ 128 ≤ 2 ^ (64 * (l.length - 1)) := Nat.pow_le_pow_right (by norm_num) (by omega)
+  omega
+
+set_option maxHeartbeats 1000000 in
+/-- **`int_try_to_i128`** extracts to `i128` when the value fits (`some x`, `x = iden a`), else `none`. -/
+private theorem try_to_i128_spec (a : RefInt) (ha : IntNorm a) :
+    int_try_to_i128 a ⦃ r =>
+      match r with
+      | some x => (x.val : ℤ) = iden a
+      | none => iden a < -(2 ^ 127) ∨ (2 ^ 127 : ℤ) - 1 < iden a ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.int_try_to_i128
+  have hlenval : a.mag.limbs.len.val = a.mag.limbs.val.length := alloc.vec.Vec.len_val a.mag.limbs
+  by_cases hlen : a.mag.limbs.val.length ≤ 2
+  · rw [if_neg (by scalar_tac)]
+    -- factor out the sign/bound/cast tail: correct for any `m` denoting the magnitude
+    suffices hsign : ∀ (m : Std.U128), m.val = den a.mag.limbs.val →
+        (if a.neg = true then do
+            let i3 ← 1#u128 <<< 127#i32
+            if m ≤ i3 then do
+                let i4 ← lift (UScalar.hcast IScalarTy.I128 m)
+                let i5 ← core.num.I128.wrapping_neg i4
+                ok (some i5)
+              else ok none
+          else do
+            let i3 ← lift (IScalar.hcast UScalarTy.U128 core.num.I128.MAX)
+            if m ≤ i3 then do
+                let i4 ← lift (UScalar.hcast IScalarTy.I128 m)
+                ok (some i4)
+              else ok none)
+          ⦃ r => match r with
+                 | some x => (x.val : ℤ) = iden a
+                 | none => iden a < -(2 ^ 127) ∨ (2 ^ 127 : ℤ) - 1 < iden a ⦄ by
+      rw [show alloc.vec.Vec.is_empty Global a.mag.limbs = ok a.mag.limbs.val.isEmpty from rfl]
+      simp only [bind_tc_ok]
+      by_cases hemp : a.mag.limbs.val.isEmpty = true
+      · have hemp' : a.mag.limbs.val = [] := by simpa using hemp
+        rw [if_pos hemp]; simp only [bind_tc_ok]
+        rw [if_neg (by scalar_tac)]; simp only [bind_tc_ok]
+        step; step
+        refine hsign m ?_
+        rw [hemp', m_post1]; simp [UScalar.val_or, i2_post1]
+      · -- nonempty: `lo = limbs[0]`, and (if length ≥ 2) `hi = limbs[1]`
+        rw [if_neg hemp, alloc.vec.Vec.index_slice_index]
+        have hsz : U128.size = 2 ^ 128 := by
+          rw [U128.size, U128.numBits, show UScalarTy.U128.numBits = 128 from rfl]
+        have hlpos : 0 < a.mag.limbs.val.length := List.length_pos_of_ne_nil (by simpa using hemp)
+        have hpos0 : (0#usize).val < a.mag.limbs.val.length := by simpa using hlpos
+        have hidx0 := alloc.vec.Vec.index_usize_spec a.mag.limbs 0#usize hpos0
+        cases hic0 : a.mag.limbs.index_usize 0#usize with
+        | ok x0 =>
+          rw [hic0] at hidx0; simp only [WP.spec_ok] at hidx0
+          simp only [bind_tc_ok]
+          have hx0lt : x0.val < 2 ^ 64 := x0.bv.isLt
+          by_cases hlen2 : 2 ≤ a.mag.limbs.val.length
+          · -- length = 2
+            rw [if_pos (by scalar_tac), alloc.vec.Vec.index_slice_index]
+            have hpos1 : (1#usize).val < a.mag.limbs.val.length := by simp; omega
+            have hidx1 := alloc.vec.Vec.index_usize_spec a.mag.limbs 1#usize hpos1
+            cases hic1 : a.mag.limbs.index_usize 1#usize with
+            | ok x1 =>
+              rw [hic1] at hidx1; simp only [WP.spec_ok] at hidx1
+              simp only [bind_tc_ok]
+              have hx1lt : x1.val < 2 ^ 64 := x1.bv.isLt
+              step; step
+              refine hsign m ?_
+              obtain ⟨p, q, hpq⟩ := (List.length_eq_two (l := a.mag.limbs.val)).mp (by omega)
+              simp [hpq] at hidx0 hidx1
+              rw [hpq, m_post1, den_cons, den_singleton]
+              simp only [UScalar.val_or, i2_post1, cast_u128_val, hsz, Nat.shiftLeft_eq]
+              rw [Nat.mod_eq_of_lt (by nlinarith), Nat.mul_comm,
+                ← Nat.two_pow_add_eq_or_of_lt hx0lt x1.val, hidx0, hidx1]; ring
+            | fail e => rw [hic1] at hidx1; exact hidx1.elim
+            | div => rw [hic1] at hidx1; exact hidx1.elim
+          · -- length = 1
+            rw [if_neg (by scalar_tac)]; simp only [bind_tc_ok]
+            step; step
+            refine hsign m ?_
+            obtain ⟨p, hp⟩ := (List.length_eq_one_iff (l := a.mag.limbs.val)).mp (by omega)
+            simp [hp] at hidx0
+            rw [hp, m_post1, den_singleton]
+            simp [UScalar.val_or, i2_post1, cast_u128_val, hsz, hidx0]
+        | fail e => rw [hic0] at hidx0; exact hidx0.elim
+        | div => rw [hic0] at hidx0; exact hidx0.elim
+    -- the sign/bound/cast logic
+    intro m hm
+    have hida : iden a = if a.neg then -(m.val : ℤ) else (m.val : ℤ) := by simp only [iden, hm]
+    have hm128 : (m.val : ℤ) < 2 ^ 128 := by exact_mod_cast m.bv.isLt
+    have hpow : (2 : ℤ) ^ 128 = 2 * 2 ^ 127 := by norm_num
+    have hbmod : Int.bmod (m.val) (2 ^ 128)
+        = if (m.val : ℤ) < 2 ^ 127 then (m.val : ℤ) else (m.val : ℤ) - 2 ^ 128 := by
+      rw [Int.bmod_def]
+      have he : (m.val : ℤ) % ((2 ^ 128 : ℕ) : ℤ) = m.val := by
+        rw [Int.emod_eq_of_lt (by positivity) (by push_cast; omega)]
+      rw [he, show (((2 ^ 128 : ℕ) : ℤ) + 1) / 2 = 2 ^ 127 from by norm_num,
+        show ((2 ^ 128 : ℕ) : ℤ) = 2 ^ 128 from by norm_num]
+    by_cases hneg : a.neg = true
+    · rw [if_pos hneg]
+      step
+      have hi3 : i3.val = 2 ^ 127 := by
+        rw [i3_post1, U128.size, U128.numBits, Nat.shiftLeft_eq]; norm_num
+      by_cases hle : m ≤ i3
+      · rw [if_pos hle]
+        have hmle : (m.val : ℤ) ≤ 2 ^ 127 := by have := hle; scalar_tac
+        step
+        have hi4 : (i4.val : ℤ) = Int.bmod (m.val) (2 ^ 128) := by
+          rw [i4_post]; exact UScalar.hcast_val_eq _ _
+        unfold core.num.I128.wrapping_neg
+        by_cases hwn : (-i4.val) < i128FitBound
+        · rw [dif_pos hwn]; simp only [bind_tc_ok, WP.spec_ok]
+          rw [I128.ofInt_val_eq, hida, if_pos hneg, hi4, hbmod]
+          rw [i128FitBound_def, hi4, hbmod] at hwn
+          by_cases hc : (m.val : ℤ) < 2 ^ 127
+          · rw [if_pos hc]
+          · rw [if_neg hc] at hwn ⊢; omega
+        · rw [dif_neg hwn]; simp only [bind_tc_ok, WP.spec_ok]
+          rw [hida, if_pos hneg, hi4, hbmod]
+          rw [i128FitBound_def, hi4, hbmod] at hwn
+          by_cases hc : (m.val : ℤ) < 2 ^ 127
+          · rw [if_pos hc] at hwn ⊢; omega
+          · rw [if_neg hc]; omega
+      · rw [if_neg hle]; simp only [WP.spec_ok]
+        show iden a < -(2 ^ 127) ∨ (2 ^ 127 : ℤ) - 1 < iden a
+        have hmgt : 2 ^ 127 < (m.val : ℤ) := by have := hle; scalar_tac
+        rw [hida, if_pos hneg]; left; omega
+    · rw [if_neg hneg]
+      have hmaxval : (core.num.I128.MAX).val = 2 ^ 127 - 1 := by decide
+      step
+      have hi3 : i3.val = 2 ^ 127 - 1 := by
+        rw [i3_post, IScalar.hcast_val_eq, hmaxval, show UScalarTy.U128.numBits = 128 from rfl,
+          Int.emod_eq_of_lt (by norm_num) (by norm_num)]
+        omega
+      by_cases hle : m ≤ i3
+      · rw [if_pos hle]
+        have hmle : (m.val : ℤ) ≤ 2 ^ 127 - 1 := by
+          have h := hle; rw [UScalar.le_equiv, hi3] at h; omega
+        step
+        show (i4.val : ℤ) = iden a
+        have hi4 : (i4.val : ℤ) = Int.bmod (m.val) (2 ^ 128) := by
+          rw [i4_post]; exact UScalar.hcast_val_eq _ _
+        rw [hida, if_neg hneg, hi4, hbmod, if_pos (by omega)]
+      · rw [if_neg hle]; simp only [WP.spec_ok]
+        show iden a < -(2 ^ 127) ∨ (2 ^ 127 : ℤ) - 1 < iden a
+        have hmgt : 2 ^ 127 - 1 < (m.val : ℤ) := by
+          have h := hle; rw [UScalar.le_equiv, hi3] at h; omega
+        rw [hida, if_neg hneg]; right; omega
+  · -- length > 2: the magnitude is ≥ 2^128, so the value can't fit in i128
+    rw [not_le] at hlen
+    have hge := den_ge_of_len_gt_two a.mag.limbs.val ha.1 hlen
+    rw [if_pos (by scalar_tac)]
+    simp only [WP.spec_ok]
+    show iden a < -(2 ^ 127) ∨ (2 ^ 127 : ℤ) - 1 < iden a
+    have habs : (2 : ℤ) ^ 128 ≤ ((iden a).natAbs : ℤ) := by rw [iden_natAbs]; exact_mod_cast hge
+    have hlt2 : (2 : ℤ) ^ 127 < 2 ^ 128 := by norm_num
+    by_cases h : 0 ≤ iden a
+    · right; omega
+    · left; omega
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -3023,5 +3184,6 @@ private theorem rat_from_i128_eq (v : Std.I128) :
 #print axioms int_from_i128_eq
 #print axioms int_one_eq
 #print axioms rat_from_i128_eq
+#print axioms try_to_i128_spec
 
 end CertifyCheck.RefBackend
