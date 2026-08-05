@@ -470,7 +470,7 @@ private theorem add_tail (a b : RefNat) (n : Std.Usize)
           let i3 ← lift (UScalar.cast .U64 r.2); alloc.vec.Vec.push r.1 i3) else ok r.1
       let out3 ← lattice.refbackend.normalize out2
       ok ({ limbs := out3 } : RefNat))
-    ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ⦄ := by
+    ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ∧ Normalized r.limbs.val ⦄ := by
   have hna : a.limbs.val.length ≤ n.val := by rw [hnmax]; omega
   have hnb : b.limbs.val.length ≤ n.val := by rw [hnmax]; omega
   step
@@ -485,14 +485,15 @@ private theorem add_tail (a b : RefNat) (n : Std.Usize)
     rw [List.take_of_length_le hna, List.take_of_length_le hnb] at hden
     have hout2 : ∀ out2 : alloc.vec.Vec Std.U64, den out2.val = den a.limbs.val + den b.limbs.val →
         (do let out3 ← lattice.refbackend.normalize out2; ok ({ limbs := out3 } : RefNat))
-          ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ⦄ := by
+          ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ∧ Normalized r.limbs.val ⦄ := by
       intro out2 hout2den
       have hnorm := normalize_den out2
+      have hnn := normalize_normalized out2
       cases hnc : lattice.refbackend.normalize out2 with
       | ok o =>
-        rw [hnc] at hnorm; simp only [WP.spec_ok] at hnorm
+        rw [hnc] at hnorm hnn; simp only [WP.spec_ok] at hnorm hnn
         simp only [bind_tc_ok, WP.spec_ok]
-        show den o.val = _; rw [hnorm, hout2den]
+        exact ⟨by show den o.val = _; rw [hnorm, hout2den], hnn⟩
       | fail e => rw [hnc] at hnorm; exact hnorm.elim
       | div => rw [hnc] at hnorm; exact hnorm.elim
     simp only [bind_tc_ok]
@@ -516,7 +517,8 @@ private theorem add_tail (a b : RefNat) (n : Std.Usize)
     (for inputs whose limb count leaves room for the carry — always the case in practice). -/
 theorem add_eq (a b : RefNat)
     (hcap : max a.limbs.val.length b.limbs.val.length + 1 ≤ Std.Usize.max) :
-    RefNat.add a b ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ⦄ := by
+    RefNat.add a b
+      ⦃ r => den r.limbs.val = den a.limbs.val + den b.limbs.val ∧ Normalized r.limbs.val ⦄ := by
   unfold RefNat.add
   dsimp only []
   have hlA : (a.limbs.len).val = a.limbs.val.length := alloc.vec.Vec.len_val a.limbs
@@ -961,7 +963,8 @@ private theorem mul_loop0_spec (v v1 out : alloc.vec.Vec Std.U64) (i : Std.Usize
     (for inputs whose combined limb count fits `usize`). Zero operands short-circuit to `0`. -/
 theorem mul_eq (self o : RefNat)
     (hcap : self.limbs.val.length + o.limbs.val.length ≤ Std.Usize.max) :
-    RefNat.mul self o ⦃ r => den r.limbs.val = den self.limbs.val * den o.limbs.val ⦄ := by
+    RefNat.mul self o
+      ⦃ r => den r.limbs.val = den self.limbs.val * den o.limbs.val ∧ Normalized r.limbs.val ⦄ := by
   unfold RefNat.mul
   have hz : ∀ x : RefNat, RefNat.is_zero x = ok x.limbs.val.isEmpty := by
     intro x; unfold RefNat.is_zero alloc.vec.Vec.is_empty; rfl
@@ -969,15 +972,13 @@ theorem mul_eq (self o : RefNat)
   by_cases hs : self.limbs.val = []
   · simp only [hs, List.isEmpty_nil, if_true]
     unfold RefNat.zero; simp only [WP.spec_ok]
-    show den (alloc.vec.Vec.new Std.U64).val = _
-    simp
+    exact ⟨by show den (alloc.vec.Vec.new Std.U64).val = _; simp, fun h => absurd rfl h⟩
   · have hse : self.limbs.val.isEmpty = false := by simp [hs]
     simp only [hse, Bool.false_eq_true, if_false]
     by_cases ho : o.limbs.val = []
     · simp only [ho, List.isEmpty_nil, if_true]
       unfold RefNat.zero; simp only [WP.spec_ok]
-      show den (alloc.vec.Vec.new Std.U64).val = _
-      simp
+      exact ⟨by show den (alloc.vec.Vec.new Std.U64).val = _; simp, fun h => absurd rfl h⟩
     · have hoe : o.limbs.val.isEmpty = false := by simp [ho]
       simp only [hoe, Bool.false_eq_true, if_false]
       step
@@ -997,12 +998,12 @@ theorem mul_eq (self o : RefNat)
           obtain ⟨hden1, hlen1⟩ := hloop
           simp only [bind_tc_ok]
           have hnorm := normalize_den out1
+          have hnn := normalize_normalized out1
           cases hnc : lattice.refbackend.normalize out1 with
           | ok out2 =>
-            rw [hnc] at hnorm; simp only [WP.spec_ok] at hnorm
+            rw [hnc] at hnorm hnn; simp only [WP.spec_ok] at hnorm hnn
             simp only [bind_tc_ok, WP.spec_ok]
-            show den out2.val = _
-            rw [hnorm]; exact_mod_cast hden1
+            exact ⟨by show den out2.val = _; rw [hnorm]; exact_mod_cast hden1, hnn⟩
           | fail e => rw [hnc] at hnorm; exact hnorm.elim
           | div => rw [hnc] at hnorm; exact hnorm.elim
         | fail e => rw [hlc] at hloop; exact hloop.elim
@@ -1685,6 +1686,196 @@ theorem gcd_eq (self o : RefNat) (hself : Normalized self.limbs.val) (ho : Norma
     | div => rw [hccy] at hcy; exact hcy.elim
   | fail e => rw [hccx] at hcx; exact hcx.elim
   | div => rw [hccx] at hcx; exact hcx.elim
+
+/-! ## `RefInt` → ℤ — sign-magnitude integers on top of the `RefNat` layer
+
+`iden a = ±den(a.mag)`. Canonical form `IntNorm`: normalized magnitude, sign-of-zero pinned to
+`false` (so equal integers have equal representations). Every constructor goes through `make`. -/
+
+/-- Signed denotation of a `RefInt`: `+den(mag)` or `−den(mag)` per the sign bit. -/
+def iden (a : RefInt) : ℤ := if a.neg then -(den a.mag.limbs.val : ℤ) else (den a.mag.limbs.val : ℤ)
+
+/-- Canonical `RefInt`: normalized magnitude, and the sign of zero pinned to `false`. -/
+def IntNorm (a : RefInt) : Prop :=
+  Normalized a.mag.limbs.val ∧ (den a.mag.limbs.val = 0 → a.neg = false)
+
+/-- **`make` refinement.** `make neg mag = ±den(mag)` (canonicalizing the sign of `0`). -/
+private theorem make_spec (neg : Bool) (mag : RefNat) (hmag : Normalized mag.limbs.val) :
+    RefInt.make neg mag
+      ⦃ r => iden r = (if neg then -(den mag.limbs.val : ℤ) else (den mag.limbs.val : ℤ))
+          ∧ IntNorm r ∧ r.mag = mag ⦄ := by
+  unfold RefInt.make
+  rw [is_zero_eq mag hmag]
+  simp only [bind_tc_ok]
+  by_cases hz : den mag.limbs.val = 0
+  · rw [if_pos (by simp [hz])]
+    simp only [WP.spec_ok]
+    refine ⟨?_, ⟨hmag, fun _ => rfl⟩, trivial⟩
+    cases neg <;> simp [iden, hz]
+  · rw [if_neg (by simp [hz])]
+    simp only [WP.spec_ok]
+    exact ⟨rfl, ⟨hmag, fun h => absurd h hz⟩, trivial⟩
+
+/-- **`RefInt.zero`** denotes `0`. -/
+private theorem int_zero_eq : RefInt.zero ⦃ r => iden r = 0 ∧ IntNorm r ⦄ := by
+  unfold RefInt.zero RefNat.zero
+  simp only [bind_tc_ok, WP.spec_ok]
+  exact ⟨by simp [iden], fun h => absurd rfl h, fun _ => rfl⟩
+
+/-- **`RefInt.mul`** denotes `iden a · iden b`. -/
+private theorem int_mul_eq (a b : RefInt)
+    (hcap : a.mag.limbs.val.length + b.mag.limbs.val.length ≤ Std.Usize.max) :
+    RefInt.mul a b ⦃ r => iden r = iden a * iden b ∧ IntNorm r ⦄ := by
+  unfold RefInt.mul
+  have hmul := mul_eq a.mag b.mag hcap
+  cases hmc : RefNat.mul a.mag b.mag with
+  | ok m =>
+    rw [hmc] at hmul; simp only [WP.spec_ok] at hmul
+    obtain ⟨hmden, hmnorm⟩ := hmul
+    simp only [bind_tc_ok]
+    have hmk := make_spec (a.neg != b.neg) m hmnorm
+    cases hmkc : RefInt.make (a.neg != b.neg) m with
+    | ok r =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hrden, hrnorm, _⟩ := hmk
+      simp only [WP.spec_ok]
+      refine ⟨?_, hrnorm⟩
+      rw [hrden, hmden]
+      simp only [iden]
+      cases a.neg <;> cases b.neg <;> simp
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hmc] at hmul; exact hmul.elim
+  | div => rw [hmc] at hmul; exact hmul.elim
+
+/-- **`RefInt.neg`** denotes `-iden a`. -/
+private theorem int_neg_eq (a : RefInt) (ha : IntNorm a) :
+    RefInt.impl.neg a ⦃ r => iden r = -(iden a) ∧ IntNorm r ⦄ := by
+  unfold RefInt.impl.neg RefNat.Insts.CoreCloneClone.clone
+  have hcl : alloc.vec.CloneVec.clone core.clone.CloneU64 a.mag.limbs ⦃ v => a.mag.limbs = v ⦄ :=
+    alloc.slice.Slice.to_vec_spec core.clone.CloneU64 a.mag.limbs (by intro x _; rfl)
+  cases hcc : alloc.vec.CloneVec.clone core.clone.CloneU64 a.mag.limbs with
+  | ok v =>
+    rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+    simp only [bind_tc_ok]
+    have hvden : den (⟨v⟩ : RefNat).limbs.val = den a.mag.limbs.val := by rw [← hcl]
+    have hvnorm : Normalized (⟨v⟩ : RefNat).limbs.val := hcl ▸ ha.1
+    have hmk := make_spec (¬a.neg) ⟨v⟩ hvnorm
+    cases hmkc : RefInt.make (¬a.neg) ⟨v⟩ with
+    | ok r =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hrden, hrnorm, _⟩ := hmk
+      simp only [WP.spec_ok]
+      refine ⟨?_, hrnorm⟩
+      rw [hrden, hvden]
+      simp only [iden]
+      cases a.neg <;> simp
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hcc] at hcl; exact hcl.elim
+  | div => rw [hcc] at hcl; exact hcl.elim
+
+set_option maxHeartbeats 800000 in
+/-- **`RefInt.add`** denotes `iden a + iden b` (sign-magnitude: same sign adds, opposite subtracts
+    the smaller magnitude from the larger). -/
+private theorem int_add_eq (a b : RefInt) (ha : IntNorm a) (hb : IntNorm b)
+    (hcap : max a.mag.limbs.val.length b.mag.limbs.val.length + 1 ≤ Std.Usize.max) :
+    RefInt.add a b ⦃ r => iden r = iden a + iden b ∧ IntNorm r ⦄ := by
+  unfold RefInt.add
+  by_cases hsign : a.neg = b.neg
+  · -- same sign: magnitudes add
+    rw [if_pos hsign]
+    have hadd := add_eq a.mag b.mag hcap
+    cases hac : RefNat.add a.mag b.mag with
+    | ok s =>
+      rw [hac] at hadd; simp only [WP.spec_ok] at hadd
+      obtain ⟨hsden, hsnorm⟩ := hadd
+      simp only [bind_tc_ok]
+      have hmk := make_spec a.neg s hsnorm
+      cases hmkc : RefInt.make a.neg s with
+      | ok r =>
+        rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+        obtain ⟨hrden, hrnorm, _⟩ := hmk
+        simp only [WP.spec_ok]
+        refine ⟨?_, hrnorm⟩
+        rw [hrden, hsden]
+        simp only [iden, ← hsign]
+        cases a.neg <;> (simp; try omega)
+      | fail e => rw [hmkc] at hmk; exact hmk.elim
+      | div => rw [hmkc] at hmk; exact hmk.elim
+    | fail e => rw [hac] at hadd; exact hadd.elim
+    | div => rw [hac] at hadd; exact hadd.elim
+  · -- opposite sign: subtract the smaller magnitude from the larger
+    rw [if_neg hsign, cmp_eq a.mag b.mag ha.1 hb.1]
+    simp only [bind_tc_ok]
+    rcases lt_trichotomy (den a.mag.limbs.val) (den b.mag.limbs.val) with hlt | heq | hgt
+    · -- |a| < |b|: result = ±(|b| − |a|) with b's sign
+      rw [Nat.compare_eq_lt.mpr hlt]
+      have hlolen : a.mag.limbs.val.length ≤ b.mag.limbs.val.length := by
+        by_contra hc; rw [not_le] at hc
+        exact absurd (den_lt_of_len_lt b.mag.limbs.val a.mag.limbs.val ha.1 hc) (by omega)
+      have hsub := sub_eq b.mag a.mag hlolen (le_of_lt hlt)
+      cases hsc : RefNat.sub b.mag a.mag with
+      | ok s =>
+        rw [hsc] at hsub; simp only [WP.spec_ok] at hsub
+        obtain ⟨hsden, hsnorm⟩ := hsub
+        simp only [bind_tc_ok]
+        have hmk := make_spec b.neg s hsnorm
+        cases hmkc : RefInt.make b.neg s with
+        | ok r =>
+          rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+          obtain ⟨hrden, hrnorm, _⟩ := hmk
+          simp only [WP.spec_ok]
+          refine ⟨?_, hrnorm⟩
+          rw [hrden, hsden]
+          simp only [iden]
+          cases han : a.neg <;> cases hbn : b.neg <;>
+            first | exact absurd (han.trans hbn.symm) hsign | (simp; try omega)
+        | fail e => rw [hmkc] at hmk; exact hmk.elim
+        | div => rw [hmkc] at hmk; exact hmk.elim
+      | fail e => rw [hsc] at hsub; exact hsub.elim
+      | div => rw [hsc] at hsub; exact hsub.elim
+    · -- |a| = |b|: opposite signs cancel to 0
+      rw [Nat.compare_eq_eq.mpr heq]
+      have hz := int_zero_eq
+      cases hzc : RefInt.zero with
+      | ok r =>
+        rw [hzc] at hz; simp only [WP.spec_ok] at hz
+        obtain ⟨hzden, hznorm⟩ := hz
+        simp only [WP.spec_ok]
+        refine ⟨?_, hznorm⟩
+        rw [hzden]
+        simp only [iden, heq]
+        cases han : a.neg <;> cases hbn : b.neg <;>
+          first | exact absurd (han.trans hbn.symm) hsign | (simp; try omega)
+      | fail e => rw [hzc] at hz; exact hz.elim
+      | div => rw [hzc] at hz; exact hz.elim
+    · -- |a| > |b|: result = ±(|a| − |b|) with a's sign
+      rw [Nat.compare_eq_gt.mpr hgt]
+      have hlolen : b.mag.limbs.val.length ≤ a.mag.limbs.val.length := by
+        by_contra hc; rw [not_le] at hc
+        exact absurd (den_lt_of_len_lt a.mag.limbs.val b.mag.limbs.val hb.1 hc) (by omega)
+      have hsub := sub_eq a.mag b.mag hlolen (le_of_lt hgt)
+      cases hsc : RefNat.sub a.mag b.mag with
+      | ok s =>
+        rw [hsc] at hsub; simp only [WP.spec_ok] at hsub
+        obtain ⟨hsden, hsnorm⟩ := hsub
+        simp only [bind_tc_ok]
+        have hmk := make_spec a.neg s hsnorm
+        cases hmkc : RefInt.make a.neg s with
+        | ok r =>
+          rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+          obtain ⟨hrden, hrnorm, _⟩ := hmk
+          simp only [WP.spec_ok]
+          refine ⟨?_, hrnorm⟩
+          rw [hrden, hsden]
+          simp only [iden]
+          cases han : a.neg <;> cases hbn : b.neg <;>
+            first | exact absurd (han.trans hbn.symm) hsign | (simp; try omega)
+        | fail e => rw [hmkc] at hmk; exact hmk.elim
+        | div => rw [hmkc] at hmk; exact hmk.elim
+      | fail e => rw [hsc] at hsub; exact hsub.elim
+      | div => rw [hsc] at hsub; exact hsub.elim
 
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
