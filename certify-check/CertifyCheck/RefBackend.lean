@@ -2071,6 +2071,238 @@ private theorem reduce_spec (neg : Bool) (num_mag den_mag : RefNat)
     | fail e => rw [hgc] at hgcd; exact hgcd.elim
     | div => rw [hgc] at hgcd; exact hgcd.elim
 
+/-! ## `RefBackend`'s `Backend` trait methods — the `RefBackend = ℤ/ℚ` corollary
+
+Each `Backend` method funnels through a proven op refinement above; together they state that the
+reference backend computes exact `ℤ`/`ℚ` arithmetic. The `len·64 ≤ usize::MAX` caps are the same
+loop-bound side-conditions `bit_len`/`gcd`/`divrem` already carry — always met in practice, made
+explicit here. -/
+
+open RefBackend.Insts.LatticeBackendBackendRefIntRefRat
+
+/-- `RefNat::clone` preserves the limb list. -/
+private theorem refnat_clone_eq (a : RefNat) :
+    RefNat.Insts.CoreCloneClone.clone a ⦃ r => r.limbs.val = a.limbs.val ⦄ := by
+  unfold RefNat.Insts.CoreCloneClone.clone
+  have hcl : alloc.vec.CloneVec.clone core.clone.CloneU64 a.limbs ⦃ v => a.limbs = v ⦄ :=
+    alloc.slice.Slice.to_vec_spec core.clone.CloneU64 a.limbs (by intro x _; rfl)
+  cases hcc : alloc.vec.CloneVec.clone core.clone.CloneU64 a.limbs with
+  | ok v =>
+    rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+    simp only [bind_tc_ok, WP.spec_ok]; rw [← hcl]
+  | fail e => rw [hcc] at hcl; exact hcl.elim
+  | div => rw [hcc] at hcl; exact hcl.elim
+
+/-- `RefInt::clone` preserves the ℤ denotation and canonical form. -/
+private theorem refint_clone_eq (a : RefInt) (ha : IntNorm a) :
+    RefInt.Insts.CoreCloneClone.clone a ⦃ r => iden r = iden a ∧ IntNorm r ⦄ := by
+  unfold RefInt.Insts.CoreCloneClone.clone
+  simp only [core.clone.impls.CloneBool.clone, lift, bind_tc_ok]
+  have hcl := refnat_clone_eq a.mag
+  cases hcc : RefNat.Insts.CoreCloneClone.clone a.mag with
+  | ok rn =>
+    rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+    simp only [bind_tc_ok, WP.spec_ok]
+    refine ⟨?_, hcl ▸ ha.1, ?_⟩
+    · simp only [iden, hcl]
+    · rw [hcl]; exact ha.2
+  | fail e => rw [hcc] at hcl; exact hcl.elim
+  | div => rw [hcc] at hcl; exact hcl.elim
+
+/-- **`RefInt.is_zero`** decides `iden a = 0`. -/
+private theorem int_is_zero_eq (a : RefInt) (ha : IntNorm a) :
+    RefInt.is_zero a = ok (decide (iden a = 0)) := by
+  unfold RefInt.is_zero
+  rw [is_zero_eq a.mag ha.1]
+  congr 1
+  rw [decide_eq_decide]
+  simp only [iden]
+  cases a.neg <;> simp
+
+/-- **`rat_neg`** negates the rational. -/
+private theorem rat_neg_eq (a : RefRat) (ha : RatNorm a) :
+    rat_neg a ⦃ r => qden r = -(qden a) ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_neg
+  have hneg := int_neg_eq a.num ha.1
+  cases hnc : RefInt.impl.neg a.num with
+  | ok ri =>
+    rw [hnc] at hneg; simp only [WP.spec_ok] at hneg
+    obtain ⟨hriden, hrinorm, _⟩ := hneg
+    simp only [bind_tc_ok]
+    have hcl := refnat_clone_eq a.den
+    cases hcc : RefNat.Insts.CoreCloneClone.clone a.den with
+    | ok rn =>
+      rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+      simp only [bind_tc_ok, WP.spec_ok]
+      refine ⟨?_, hrinorm, hcl ▸ ha.2.1, ?_⟩
+      · simp only [qden, hriden, hcl, Int.cast_neg, neg_div]
+      · rw [hcl]; exact ha.2.2
+    | fail e => rw [hcc] at hcl; exact hcl.elim
+    | div => rw [hcc] at hcl; exact hcl.elim
+  | fail e => rw [hnc] at hneg; exact hneg.elim
+  | div => rw [hnc] at hneg; exact hneg.elim
+
+/-- **`rat_numer`** returns the numerator as a `RefInt`. -/
+private theorem rat_numer_eq (a : RefRat) (ha : RatNorm a) :
+    rat_numer a ⦃ r => iden r = iden a.num ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_numer
+  exact refint_clone_eq a.num ha.1
+
+/-- **`rat_denom`** returns the (positive) denominator as a nonnegative `RefInt`. -/
+private theorem rat_denom_eq (a : RefRat) (ha : RatNorm a) :
+    rat_denom a ⦃ r => iden r = (den a.den.limbs.val : ℤ) ∧ IntNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_denom
+  have hcl := refnat_clone_eq a.den
+  cases hcc : RefNat.Insts.CoreCloneClone.clone a.den with
+  | ok rn =>
+    rw [hcc] at hcl; simp only [WP.spec_ok] at hcl
+    simp only [bind_tc_ok]
+    have hmk := make_spec false rn (hcl ▸ ha.2.1)
+    cases hmkc : RefInt.make false rn with
+    | ok ri =>
+      rw [hmkc] at hmk; simp only [WP.spec_ok] at hmk
+      obtain ⟨hriden, hrinorm, _⟩ := hmk
+      simp only [WP.spec_ok]
+      refine ⟨?_, hrinorm⟩
+      rw [hriden, hcl]; simp
+    | fail e => rw [hmkc] at hmk; exact hmk.elim
+    | div => rw [hmkc] at hmk; exact hmk.elim
+  | fail e => rw [hcc] at hcl; exact hcl.elim
+  | div => rw [hcc] at hcl; exact hcl.elim
+
+/-- **`rat_is_zero`** decides `qden a = 0`. -/
+private theorem rat_is_zero_eq (a : RefRat) (ha : RatNorm a) :
+    rat_is_zero a = ok (decide (qden a = 0)) := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_is_zero
+  rw [int_is_zero_eq a.num ha.1]
+  congr 1
+  rw [decide_eq_decide]
+  have hd : (den a.den.limbs.val : ℚ) ≠ 0 := by exact_mod_cast ha.2.2.ne'
+  rw [qden, div_eq_zero_iff]
+  constructor
+  · intro h; left; exact_mod_cast h
+  · rintro (h | h)
+    · exact_mod_cast h
+    · exact absurd h hd
+
+/-- **`rat_sign`** returns the sign of the rational (the numerator's sign, since the denominator is
+    positive) as an `i8 ∈ {-1, 0, 1}`. -/
+private theorem rat_sign_eq (a : RefRat) (ha : RatNorm a) :
+    rat_sign a ⦃ s => (s.val : ℤ) = Int.sign (iden a.num) ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_sign
+  exact int_sign_eq a.num ha.1
+
+/-- Comparing `na/da` and `nb/db` (positive denominators) is comparing the cross-products. -/
+private theorem compare_div_div (na nb : ℤ) (da db : ℕ) (hda : 0 < da) (hdb : 0 < db) :
+    compare ((na : ℚ) / (da : ℚ)) ((nb : ℚ) / (db : ℚ))
+      = compare (na * (db : ℤ)) (nb * (da : ℤ)) := by
+  have hdaQ : (0 : ℚ) < (da : ℚ) := by exact_mod_cast hda
+  have hdbQ : (0 : ℚ) < (db : ℚ) := by exact_mod_cast hdb
+  rcases lt_trichotomy (na * (db : ℤ)) (nb * (da : ℤ)) with h | h | h
+  · rw [compare_lt_iff_lt.mpr h, compare_lt_iff_lt.mpr
+      (show (na : ℚ) / da < (nb : ℚ) / db by rw [div_lt_div_iff₀ hdaQ hdbQ]; exact_mod_cast h)]
+  · have hq : (na : ℚ) / da = (nb : ℚ) / db := by
+      rw [div_eq_div_iff hdaQ.ne' hdbQ.ne']; exact_mod_cast h
+    rw [hq, h, Std.ReflOrd.compare_self, Std.ReflOrd.compare_self]
+  · rw [compare_gt_iff_gt.mpr h, compare_gt_iff_gt.mpr
+      (show (nb : ℚ) / db < (na : ℚ) / da by rw [div_lt_div_iff₀ hdbQ hdaQ]; exact_mod_cast h)]
+
+/-- **`rat_cmp`** compares the two rationals (cross-multiplying by the positive denominators). -/
+private theorem rat_cmp_eq (a b : RefRat) (ha : RatNorm a) (hb : RatNorm b)
+    (hcapl : a.num.mag.limbs.val.length + b.den.limbs.val.length ≤ Std.Usize.max)
+    (hcapr : b.num.mag.limbs.val.length + a.den.limbs.val.length ≤ Std.Usize.max) :
+    rat_cmp a b = ok (compare (qden a) (qden b)) := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_cmp
+  -- `ri = +den(b)`, so `l = a.num · den(b)`
+  have hcl1 := refnat_clone_eq b.den
+  cases hcc1 : RefNat.Insts.CoreCloneClone.clone b.den with
+  | ok rn =>
+    rw [hcc1] at hcl1; simp only [WP.spec_ok] at hcl1
+    simp only [bind_tc_ok]
+    have hmk1 := make_spec false rn (hcl1 ▸ hb.2.1)
+    cases hmkc1 : RefInt.make false rn with
+    | ok ri =>
+      rw [hmkc1] at hmk1; simp only [WP.spec_ok] at hmk1
+      obtain ⟨hri1den, hri1norm, hri1mag⟩ := hmk1
+      have hri1 : iden ri = (den b.den.limbs.val : ℤ) := by rw [hri1den, hcl1]; simp
+      have hri1len : ri.mag.limbs.val.length = b.den.limbs.val.length := by rw [hri1mag, hcl1]
+      simp only [bind_tc_ok]
+      have hmul1 := int_mul_eq a.num ri (by rw [hri1len]; exact hcapl)
+      cases hmc1 : RefInt.mul a.num ri with
+      | ok l =>
+        rw [hmc1] at hmul1; simp only [WP.spec_ok] at hmul1
+        obtain ⟨hlden, hlnorm⟩ := hmul1
+        simp only [bind_tc_ok]
+        -- `ri1 = +den(a)`, so `r = b.num · den(a)`
+        have hcl2 := refnat_clone_eq a.den
+        cases hcc2 : RefNat.Insts.CoreCloneClone.clone a.den with
+        | ok rn1 =>
+          rw [hcc2] at hcl2; simp only [WP.spec_ok] at hcl2
+          simp only [bind_tc_ok]
+          have hmk2 := make_spec false rn1 (hcl2 ▸ ha.2.1)
+          cases hmkc2 : RefInt.make false rn1 with
+          | ok ri1 =>
+            rw [hmkc2] at hmk2; simp only [WP.spec_ok] at hmk2
+            obtain ⟨hri2den, hri2norm, hri2mag⟩ := hmk2
+            have hri2 : iden ri1 = (den a.den.limbs.val : ℤ) := by rw [hri2den, hcl2]; simp
+            have hri2len : ri1.mag.limbs.val.length = a.den.limbs.val.length := by rw [hri2mag, hcl2]
+            simp only [bind_tc_ok]
+            have hmul2 := int_mul_eq b.num ri1 (by rw [hri2len]; exact hcapr)
+            cases hmc2 : RefInt.mul b.num ri1 with
+            | ok r =>
+              rw [hmc2] at hmul2; simp only [WP.spec_ok] at hmul2
+              obtain ⟨hrden, hrnorm⟩ := hmul2
+              simp only [bind_tc_ok]
+              rw [int_cmp_eq l r hlnorm hrnorm, hlden, hrden, hri1, hri2]
+              simp only [qden]
+              rw [compare_div_div _ _ _ _ ha.2.2 hb.2.2]
+            | fail e => rw [hmc2] at hmul2; exact hmul2.elim
+            | div => rw [hmc2] at hmul2; exact hmul2.elim
+          | fail e => rw [hmkc2] at hmk2; exact hmk2.elim
+          | div => rw [hmkc2] at hmk2; exact hmk2.elim
+        | fail e => rw [hcc2] at hcl2; exact hcl2.elim
+        | div => rw [hcc2] at hcl2; exact hcl2.elim
+      | fail e => rw [hmc1] at hmul1; exact hmul1.elim
+      | div => rw [hmc1] at hmul1; exact hmul1.elim
+    | fail e => rw [hmkc1] at hmk1; exact hmk1.elim
+    | div => rw [hmkc1] at hmk1; exact hmk1.elim
+  | fail e => rw [hcc1] at hcl1; exact hcl1.elim
+  | div => rw [hcc1] at hcl1; exact hcl1.elim
+
+/-- **`rat_from_ints`** builds `num / dn` in lowest terms (`dn ≠ 0`). -/
+private theorem rat_from_ints_eq (num dn : RefInt) (hnum : IntNorm num) (hdn : IntNorm dn)
+    (hdn0 : den dn.mag.limbs.val ≠ 0)
+    (hnumcap : num.mag.limbs.val.length * 64 ≤ Std.Usize.max)
+    (hdncap : dn.mag.limbs.val.length * 64 ≤ Std.Usize.max) :
+    rat_from_ints num dn
+      ⦃ r => qden r = (iden num : ℚ) / (iden dn : ℚ) ∧ RatNorm r ⦄ := by
+  unfold RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_from_ints
+  have hidenz : ¬ (iden dn = 0) := by simp only [iden]; cases dn.neg <;> simp [hdn0]
+  have hb : decide (iden dn = 0) = false := by simp only [decide_eq_false_iff_not]; exact hidenz
+  rw [int_is_zero_eq dn hdn, hb]
+  -- `dn ≠ 0`, so the assertion passes definitionally and the prefix reduces to `reduce`
+  show RefRat.reduce (num.neg != dn.neg) num.mag dn.mag
+    ⦃ r => qden r = (iden num : ℚ) / (iden dn : ℚ) ∧ RatNorm r ⦄
+  have hdpos : 0 < den dn.mag.limbs.val := Nat.pos_of_ne_zero hdn0
+  have hred := reduce_spec (num.neg != dn.neg) num.mag dn.mag hnum.1 hdn.1 hdpos hnumcap hdncap
+  cases hrc : RefRat.reduce (num.neg != dn.neg) num.mag dn.mag with
+  | ok r =>
+    rw [hrc] at hred; simp only [WP.spec_ok] at hred
+    obtain ⟨hrval, hrnorm⟩ := hred
+    simp only [WP.spec_ok]
+    refine ⟨?_, hrnorm⟩
+    rw [hrval]
+    have hidenum : (iden num : ℚ)
+        = if num.neg then -(den num.mag.limbs.val : ℚ) else (den num.mag.limbs.val : ℚ) := by
+      simp only [iden]; cases num.neg <;> simp
+    have hideden : (iden dn : ℚ)
+        = if dn.neg then -(den dn.mag.limbs.val : ℚ) else (den dn.mag.limbs.val : ℚ) := by
+      simp only [iden]; cases dn.neg <;> simp
+    rw [hidenum, hideden]
+    cases num.neg <;> cases dn.neg <;> simp [neg_div, div_neg]
+  | fail e => rw [hrc] at hred; exact hred.elim
+  | div => rw [hrc] at hred; exact hred.elim
+
 -- Axiom audit: the op refinements are axiom-clean (no cited axiom, no `sorryAx` — the Aeneas
 -- Std `get_unchecked`/`Slice` sorries are off these paths).
 #print axioms is_zero_eq
@@ -2083,5 +2315,13 @@ private theorem reduce_spec (neg : Bool) (num_mag den_mag : RefNat)
 #print axioms bit_len_spec
 #print axioms divrem_eq
 #print axioms gcd_eq
+#print axioms int_is_zero_eq
+#print axioms rat_neg_eq
+#print axioms rat_numer_eq
+#print axioms rat_denom_eq
+#print axioms rat_is_zero_eq
+#print axioms rat_sign_eq
+#print axioms rat_cmp_eq
+#print axioms rat_from_ints_eq
 
 end CertifyCheck.RefBackend
