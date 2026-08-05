@@ -20,7 +20,12 @@ dashu = { version = "0.4", default-features = false }
 # (`fuzz/`). NEVER enabled in the shipped build — the gate keeps those unproven helpers
 # physically out of the `Backend` trait and the Aeneas lift. Under `cargo test` the same
 # code is reached via the `test` cfg, so `#[cfg(any(test, feature = "fuzzing"))]`.
-fuzzing = []
+#
+# It also turns on dashu's `tuning` feature so the fuzz target can pull the multiply-algorithm
+# thresholds DOWN (env vars) and exercise Karatsuba/Toom-3/NTT at small, oracle-cheap sizes.
+# `tuning` pulls `std` into dashu — fine, the fuzz build is a std binary; the no_std gate build
+# uses default features (fuzzing off), so it is unaffected.
+fuzzing = ["dashu/tuning"]
 
 [lints.rust]
 # Kani injects `--cfg kani`; register it so `#[cfg(kani)]` proof modules do not

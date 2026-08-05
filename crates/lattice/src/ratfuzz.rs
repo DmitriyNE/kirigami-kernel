@@ -30,9 +30,10 @@ use dashu::integer::{IBig, UBig};
 const NREG: usize = 4;
 /// Cap on chain length (bounds worst-case runtime per input).
 const MAX_STEPS: usize = 64;
-/// Operand-growth ceiling (limbs) so `RefBackend`'s O(n²) `mul` stays a *live* oracle;
-/// ~4096 limbs ≈ 262 144 bits, well past dashu's FFT cutover.
-const MAX_LIMBS: usize = 4096;
+/// Operand-growth ceiling (limbs) so `RefBackend`'s O(n²) `mul` stays a *live* oracle. The
+/// cargo-fuzz build lowers dashu's NTT threshold to ~160 limbs (`int_chain.rs`), so 512 limbs
+/// (~32 Kbit) comfortably exercises every algorithm — including NTT — at oracle-cheap sizes.
+const MAX_LIMBS: usize = 512;
 
 /// A dashu `BigInt` as (sign, minimal little-endian magnitude bytes) — the O(n) canonical
 /// form we compare on (decimal is O(n²) and would throttle the fuzzer at large operands).
@@ -76,13 +77,20 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Byte → seed length (bytes), bucketed exponentially so operands straddle every
-/// multiply-algorithm threshold, with a few bytes of jitter around each so off-by-one
-/// limb-splitting bugs get hit. (Actual size is also clamped by how much input remains.)
+/// Seed sizes (in 64-bit **limbs**), pinned to dashu-int 0.4.3's multiply-algorithm thresholds
+/// (dispatch keys on the *smaller* operand's limb length, `mul/mod.rs`):
+///   schoolbook ≤ 24 · Karatsuba 25..96 · Toom-3 97..4000 · NTT > 4000.
+/// We straddle each crossover with ±1 so off-by-one limb-splitting bugs get hit. The always-on
+/// (production-dashu) proptest reaches Toom-3; the cargo-fuzz build lowers the thresholds via the
+/// `tuning` env vars so *these same small sizes* route through NTT too.
+const LIMB_BUCKETS: [usize; 16] =
+    [0, 1, 2, 4, 8, 16, 23, 24, 25, 48, 64, 95, 96, 97, 160, 256];
+
+/// Byte → seed length (bytes) = a limb-bucket plus a few bytes of jitter (so the top limb is
+/// sometimes partially filled). Actual size is also clamped by how much input remains.
 fn seed_bytes_len(sel: u8, jit: u8) -> usize {
-    const LIMB_BUCKETS: [usize; 13] = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
     let limbs = LIMB_BUCKETS[(sel as usize) % LIMB_BUCKETS.len()];
-    (limbs * 8) // one 8-byte limb per bucket step
+    (limbs * 8)
         .saturating_add((jit % 15) as usize)
         .saturating_sub(7) // ⇒ ±7 bytes of jitter around the 8-byte limb boundary
 }
@@ -177,6 +185,41 @@ fn run_int_program_capped(data: &[u8], max_limbs: usize) {
         );
         assert_eq!(dashu_le_bytes(&lhs), dashu_le_bytes(&rhs), "mul not distributive");
     }
+}
+
+/// A small **seed corpus** of encoded programs — one per interesting operand size, each seeding
+/// all registers at that size and then running a multiply chain — so libFuzzer starts already
+/// hitting every algorithm (schoolbook / Karatsuba / Toom-3, and NTT under the fuzz build's
+/// lowered thresholds) instead of rediscovering them from scratch. Written to
+/// `fuzz/corpus/int_chain/` by the `gen_corpus` bin; the fuzzer mutates onward from these.
+pub fn corpus_seeds() -> Vec<Vec<u8>> {
+    // A program: `NREG` seeds of `limbs` words each, then a chain of muls (opcode % 4 == 2).
+    fn program(limbs: usize, fill: u8) -> Vec<u8> {
+        let sel = LIMB_BUCKETS.iter().position(|&b| b == limbs).unwrap_or(0) as u8;
+        let mut p = Vec::new();
+        for r in 0..NREG as u8 {
+            p.push(r & 1); // neg
+            p.push(sel); // size bucket → `limbs`
+            p.push(7); // jitter 7 ⇒ exactly limbs*8 magnitude bytes
+            for i in 0..(limbs * 8) {
+                p.push(fill.wrapping_add(i as u8).wrapping_mul(3).wrapping_add(r + 1));
+            }
+        }
+        for k in 0..8u8 {
+            p.push(2); // opcode ⇒ mul
+            p.push(k % NREG as u8); // x
+            p.push((k + 1) % NREG as u8); // y
+            p.push((k + 2) % NREG as u8); // d
+        }
+        p
+    }
+    let mut out = Vec::new();
+    // straddle the schoolbook/Karatsuba (24) and Karatsuba/Toom-3 (96) crossovers, plus a
+    // couple larger sizes (→ NTT once the fuzz build lowers the thresholds).
+    for &limbs in &[2usize, 8, 24, 25, 96, 97, 256] {
+        out.push(program(limbs, 0x5a));
+    }
+    out
 }
 
 #[cfg(test)]

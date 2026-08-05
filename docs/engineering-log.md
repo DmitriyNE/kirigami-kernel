@@ -19,18 +19,24 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **Differential-fuzz follow-ups (harness landed on `differential-fuzz`).** The op-chain differential
-  (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over size-bucketed large operands,
-  + metamorphic mul identities) closes two gaps the old single-op `rat::differential` had — no op-chains
-  (two-tier canonicalization bugs live in *sequences*) and i128-only seeds (≤ 2 limbs ⇒ dashu never leaves
-  schoolbook; Karatsuba/Toom/FFT went unexercised). Always-on proptest (cap 384 limbs, debug-fast) +
-  out-of-tree `cargo-fuzz` target (`fuzz/`, coverage-guided, release → FFT scale). Remaining: **(1)** pin
-  the seed size-buckets to dashu's *actual* mul-algorithm thresholds (read dashu's multiply dispatch —
-  currently exponential buckets 0..2048 limbs, which straddle them but aren't threshold-exact); **(2)** wire
-  a time-boxed `cargo fuzz run int_chain -- -max_total_time=…` as a **nightly cron** (not per-PR — needs the
-  nightly + libFuzzer toolchain, like dylint) + a checked-in seed corpus; **(3)** a rational op-chain
-  variant (exercises `reduce`/`gcd` on big ints) — deferred because RefBackend's bit-serial `divrem`/`gcd`
-  are too slow as a large-operand oracle (use metamorphic identities there instead). *2026-08-06 · open*
+- **Differential-fuzz — harness + real fuzz run DONE (`differential-fuzz` branch); one wiring follow-up.**
+  Op-chain differential (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over
+  size-bucketed operands + metamorphic mul identities) closes the two gaps the old single-op
+  `rat::differential` had (no op-chains; i128-only ≤2-limb seeds ⇒ dashu never left schoolbook). **Done:**
+  **(1)** seed buckets pinned to dashu-int 0.4.3's real mul thresholds — schoolbook ≤24 / Karatsuba 25–96 /
+  Toom-3 97–4000 / NTT >4000 limbs (dispatch keys on the *smaller* operand, `mul/mod.rs`), straddled ±1.
+  **(2)** seed corpus via `fuzz`'s `gen_corpus` bin (authoritative encoder `ratfuzz::corpus_seeds()`; 7 seeds
+  across the thresholds) + a **real `cargo fuzz run`** — 2652–3118 coverage-guided runs, clean. **Key
+  mechanism:** the fuzz build enables dashu's `tuning` feature (`fuzzing = ["dashu/tuning"]`) and the target
+  lowers the thresholds via env vars (SIMPLE=2/KARATSUBA=16/NTT=160) so tiny operands route through
+  Karatsuba/Toom-3/**NTT** at oracle-cheap sizes (no need for 4000-limb operands). **Finding (first run
+  earned its keep):** thresholds MUST respect each algorithm's own `MIN_LEN` (Karatsuba 3, Toom-3 16) — my
+  first values (KARATSUBA=6) routed 7–15-limb operands into Toom-3 and tripped *dashu's own*
+  `assert!(b.len() >= MIN_LEN)`; not a dashu bug, a mis-config. Remaining follow-up: **wire a time-boxed
+  `cargo fuzz run int_chain -- -max_total_time=…` as a nightly cron** (not per-PR — needs the nightly +
+  libFuzzer toolchain, like dylint) with a persisted corpus. (A rational op-chain variant stays deferred —
+  RefBackend's bit-serial `divrem`/`gcd` are too slow as a big-operand oracle; use metamorphic there.)
+  *2026-08-06 · open*
 
 - **`RefBackend::int_from_le_bytes` must be proven if it ever leaves the test/fuzz harness.** It's a
   TEST/FUZZ-ONLY seed constructor (`#[cfg(any(test, feature = "fuzzing"))]`, banner on the fn), NOT a
