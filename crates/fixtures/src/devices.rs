@@ -8,12 +8,9 @@
 //! The petal conical flank (the general-case adversary) is not yet pinned by spec §13
 //! and lands with milestone C.
 
-use certify_core::MarginSq;
 use certify_core::Verdict;
-use certify_core::certify1d::{RegCert, SlabS0Cert};
 use geom::chart::Chart;
-use geom::record::CertifiedChart;
-use geom::tags::classify;
+use geom::record::{CertifiedChart, ChartDomain, ChartEvidence, RegEvidence, regularity_targets};
 use lattice::{Bignum, Interval, Poly, Rat, RatFunc, SturmChain};
 
 /// The device cone (spec §13): a rational right circular cone, apex at the origin, axis
@@ -27,22 +24,16 @@ pub fn cone() -> Chart<Bignum> {
     Chart::new(q, RatFunc::zero())
 }
 
-/// A REG-Q positivity certificate on `num/den ≥ m` over `span`, with searcher-honest Sturm
-/// chains of `den` and of the residual `R = num − m·den`.
-fn reg_cert(
-    num: Poly<Bignum>,
-    den: Poly<Bignum>,
-    m: Rat<Bignum>,
-    span: Interval<Bignum>,
-) -> RegCert<Bignum> {
+/// The searcher's [`RegEvidence`] for a derived target `(num, den)`: the claimed margin plus
+/// honest Sturm chains of `den` and of the residual `R = num − m·den`. The checker re-derives
+/// `(num, den)` from the chart and re-verifies these chains against them.
+fn reg_evidence(target: &(Poly<Bignum>, Poly<Bignum>), m: Rat<Bignum>) -> RegEvidence<Bignum> {
+    let (num, den) = target;
     let r = num.sub(&den.scale(&m));
-    RegCert {
-        den_chain: SturmChain::new(&den),
+    RegEvidence {
+        margin: m,
+        den_chain: SturmChain::new(den),
         res_chain: SturmChain::new(&r),
-        num,
-        den,
-        m: MarginSq(m),
-        span,
     }
 }
 
@@ -59,54 +50,40 @@ fn reg_cert(
 ///   at the corner `σ = 1, μ⁺`; `R₁` is non-uniform in σ though the half-angle is constant).
 pub fn certified_cone() -> CertifiedChart<Bignum> {
     let chart = cone();
-    let tag = classify(&chart).expect("the device cone classifies as CONE");
-    let span = Interval {
-        lo: Rat::from_i128(0),
-        hi: Rat::from_i128(1),
+    // The certified domain: σ ∈ [0,1], μ ∈ [−1, −1/2], w ∈ [−1/4, 1/4].
+    let domain = ChartDomain {
+        sigma: Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        },
+        mu: (Rat::from_i128(-1), Rat::new(-1, 2)),
+        w: (Rat::new(-1, 4), Rat::new(1, 4)),
     };
 
-    // REG-Q on |q|² = 97 + 97σ² ≥ 90 (den = 1): the quaternion spline never degenerates.
-    let q_cert = reg_cert(
-        chart.normal().den().clone(),
-        Poly::constant(Rat::from_i128(1)),
-        Rat::from_i128(90),
-        span.clone(),
-    );
+    // The searcher's evidence, built for the SAME targets the checker re-derives from
+    // (chart, domain) — so the checker's re-derivation and these Sturm chains cannot diverge:
+    //   |q|² = 97(1+σ²) ≥ 90, |n′|² ≥ 1/2, and det J > 0 at each (μ,w) box corner (≥ 1/100 —
+    //   the inf corner (μ⁺, w⁻) bounds the other three pointwise, so one margin covers all).
+    let t = regularity_targets(&chart, &domain);
+    let evidence = ChartEvidence {
+        q: reg_evidence(&t[0], Rat::from_i128(90)),
+        ruling: reg_evidence(&t[1], Rat::new(1, 2)),
+        slab: [
+            reg_evidence(&t[2], Rat::new(1, 100)),
+            reg_evidence(&t[3], Rat::new(1, 100)),
+            reg_evidence(&t[4], Rat::new(1, 100)),
+            reg_evidence(&t[5], Rat::new(1, 100)),
+        ],
+    };
 
-    // REG-Q on |n′|² = 20736 / (9409(1+σ²)²) ≥ 1/2 on [0,1]: the ruling never stalls.
-    let n1_sq = chart.normal_deriv_sq().reduce();
-    let ruling_cert = reg_cert(
-        n1_sq.num().clone(),
-        n1_sq.den().clone(),
-        Rat::new(1, 2),
-        span.clone(),
-    );
-
-    // SLAB-S0: det J > 0 at the box's inf corner (μ⁺ = −1/2, w⁻ = −1/4). det J is affine in
-    // (μ, w); with the pedal at the apex (h ≡ 0), det J = μ·(r′·n′) + w·|n′|².
+    // Mesh κ-cap = min(s_max, 1/κ₁). R₁ = μ·(r′·n′)/|n′|² is affine in μ and non-σ-constant
+    // (g(σ) = (r′·n′)/|n′|² = −130/(97(1+σ²))), so its box minimum — the tightest principal
+    // radius — is attained at a corner. Searcher-derived; not part of the certified guarantee.
     let dj = chart.det_j();
-    let (mu_hi, w_lo) = (Rat::new(-1, 2), Rat::new(-1, 4));
-    let det_j_inf = dj
-        .constant
-        .add(&dj.mu.scale(&mu_hi))
-        .add(&dj.w.scale(&w_lo))
-        .reduce();
-    let slab_cert = SlabS0Cert {
-        core: reg_cert(
-            det_j_inf.num().clone(),
-            det_j_inf.den().clone(),
-            Rat::new(1, 100),
-            span.clone(),
-        ),
-        stall_end: None,
-    };
-
-    // Mesh κ-cap = min(s_max, 1/κ₁). The principal radius R₁ = μ·(r′·n′)/|n′|² is affine in
-    // μ and monotone in σ on the support — `g(σ) = (r′·n′)/|n′|² = −130/(97(1+σ²))`, so R₁ is
-    // *not* σ-constant (the σ-parametrization is non-uniform though the half-angle is fixed).
-    // Its box minimum — the support's tightest radius — is therefore attained at a corner.
+    let n1_sq = chart.normal_deriv_sq().reduce();
     let g = |s: &Rat<Bignum>| dj.mu.eval(s).unwrap().div(&n1_sq.eval(s).unwrap());
-    let (mu_lo, sig_lo, sig_hi) = (Rat::new(-1, 1), Rat::from_i128(0), Rat::from_i128(1));
+    let (mu_lo, mu_hi) = (Rat::from_i128(-1), Rat::new(-1, 2));
+    let (sig_lo, sig_hi) = (Rat::from_i128(0), Rat::from_i128(1));
     let corners = [
         (&sig_lo, &mu_lo),
         (&sig_lo, &mu_hi),
@@ -127,10 +104,11 @@ pub fn certified_cone() -> CertifiedChart<Bignum> {
         s_max
     };
 
-    // Mint the certified record: `certify` re-runs REG-Q / SLAB-S0 over the certificates
-    // and hands back a `CertifiedChart` only if all verify. The device cone is a golden
-    // artifact, so a refutation here is a fixture/kernel bug, not an admissible outcome.
-    match CertifiedChart::certify(chart, tag, q_cert, ruling_cert, slab_cert, kappa_cap) {
+    // Mint the certified record: `certify` re-derives |q|²/|n′|²/det J from (chart, domain),
+    // recomputes the tag, and verifies this evidence against them — a `CertifiedChart` only if
+    // all pass. The device cone is a golden artifact, so a refutation here is a bug, not an
+    // admissible outcome.
+    match CertifiedChart::certify(chart, domain, evidence, kappa_cap) {
         Verdict::Verified(c) => c,
         _ => panic!("the device cone must certify"),
     }
@@ -141,7 +119,7 @@ mod tests {
     use super::*;
     use certify_core::Verdict;
     use geom::record::ChartFault;
-    use geom::tags::Tag;
+    use geom::tags::{Tag, classify};
 
     #[test]
     fn cone_is_a_cone_through_the_origin() {
@@ -149,48 +127,73 @@ mod tests {
         assert_eq!(classify(&cone()), Some(Tag::Cone { apex }));
     }
 
+    fn cone_domain() -> ChartDomain<Bignum> {
+        ChartDomain {
+            sigma: Interval {
+                lo: Rat::from_i128(0),
+                hi: Rat::from_i128(1),
+            },
+            mu: (Rat::from_i128(-1), Rat::new(-1, 2)),
+            w: (Rat::new(-1, 4), Rat::new(1, 4)),
+        }
+    }
+    fn cone_evidence(t: &[(Poly<Bignum>, Poly<Bignum>); 6]) -> ChartEvidence<Bignum> {
+        ChartEvidence {
+            q: reg_evidence(&t[0], Rat::from_i128(90)),
+            ruling: reg_evidence(&t[1], Rat::new(1, 2)),
+            slab: [
+                reg_evidence(&t[2], Rat::new(1, 100)),
+                reg_evidence(&t[3], Rat::new(1, 100)),
+                reg_evidence(&t[4], Rat::new(1, 100)),
+                reg_evidence(&t[5], Rat::new(1, 100)),
+            ],
+        }
+    }
+    fn poly(cs: &[i128]) -> Poly<Bignum> {
+        Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+    }
+
     #[test]
     fn certified_cone_record_is_fully_verified() {
-        // `certified_cone()` returns a `CertifiedChart` only by passing every M2 checker in
+        // `certified_cone()` returns a `CertifiedChart` only by passing every M2 check in
         // `CertifiedChart::certify` — its existence *is* the certification (else it panics).
         let rec = certified_cone();
         assert!(matches!(rec.tag(), Tag::Cone { .. }));
         // Mesh κ-cap = min(s_max, 1/κ₁) = min(1, 65/194) = 65/194 — the tightest radius.
         assert_eq!(*rec.kappa_cap(), Rat::new(65, 194));
+        // The certified domain is retained — a margin is meaningless without its domain.
+        assert_eq!(rec.domain().sigma.hi, Rat::from_i128(1));
     }
 
     #[test]
-    fn certify_refutes_a_bad_certificate() {
+    fn certify_refutes_a_bad_margin() {
         // The gate is real: a |q|² ≥ 10⁹ margin is false on the support, so REG-Q refutes and
-        // no `CertifiedChart` is minted — the forgeable "put Verified in a field" path is gone
-        // (only `certify` builds one, and only when the checkers pass).
+        // no `CertifiedChart` is minted.
         let chart = cone();
-        let tag = classify(&chart).unwrap();
-        let span = Interval {
-            lo: Rat::from_i128(0),
-            hi: Rat::from_i128(1),
-        };
-        let bad_q = reg_cert(
-            chart.normal().den().clone(),
-            Poly::constant(Rat::from_i128(1)),
-            Rat::from_i128(1_000_000_000),
-            span.clone(),
-        );
-        // Trivially-valid ruling/slab certs (never reached — q refutes first).
-        let ok = || {
-            reg_cert(
-                Poly::constant(Rat::from_i128(1)),
-                Poly::constant(Rat::from_i128(1)),
-                Rat::new(1, 2),
-                span.clone(),
-            )
-        };
-        let slab = SlabS0Cert {
-            core: ok(),
-            stall_end: None,
-        };
+        let domain = cone_domain();
+        let t = regularity_targets(&chart, &domain);
+        let mut ev = cone_evidence(&t);
+        ev.q = reg_evidence(&t[0], Rat::from_i128(1_000_000_000));
         assert!(matches!(
-            CertifiedChart::certify(chart, tag, bad_q, ok(), slab, Rat::from_i128(0)),
+            CertifiedChart::certify(chart, domain, ev, Rat::from_i128(0)),
+            Verdict::Refuted(ChartFault::QReg(_))
+        ));
+    }
+
+    #[test]
+    fn certify_rejects_transplanted_evidence() {
+        // Certificate transplantation — which private fields alone did NOT prevent: the
+        // q-evidence's Sturm chains are for a DIFFERENT chart's |q|² ((x²+1)/1, not the cone's
+        // 97+97σ²). `certify` re-derives the cone's |q|² and the transplanted chain fails to
+        // verify against it ⇒ Refuted.
+        let chart = cone();
+        let domain = cone_domain();
+        let t = regularity_targets(&chart, &domain);
+        let mut ev = cone_evidence(&t);
+        let wrong = (poly(&[1, 0, 1]), poly(&[1]));
+        ev.q = reg_evidence(&wrong, Rat::new(1, 2));
+        assert!(matches!(
+            CertifiedChart::certify(chart, domain, ev, Rat::from_i128(0)),
             Verdict::Refuted(ChartFault::QReg(_))
         ));
     }

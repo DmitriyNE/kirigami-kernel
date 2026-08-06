@@ -64,13 +64,28 @@ fine — this is a log, not a schema.
   membership decisions) for line/line, line/circle, circle/circle — cheap exact D24 algebra — and check
   them. README/AGENT reconciled to state this scope (batch 2). *2026-08-06 · deferred · vv-guide §6*
 
-- **`CertifiedChart`/`CapOut` digest-binding (the deferred half of the opaque-record fix).** Batch 2
-  made both types unforgeable *by construction* (private fields, checker-only constructors —
-  `CertifiedChart::certify`, `ledge_dom_certified`). The remaining half — binding a stored verdict to a
-  canonical **digest** of its claim/input so a certificate can't be transplanted across a
-  serialize/deserialize boundary, and retaining the certificate needed to *re-check* — is deferred until
-  a persistence path exists (there is none today; building it now = inventing a serialization format
-  speculatively, same YAGNI as `ShellReady`). *2026-08-06 · deferred · `geom::record`, `arrange2d::boolean`*
+- **`CertifiedChart` digest-binding — the *remaining* (persistence-only) half.** The in-memory
+  claim/evidence binding is **done** (batch 2b): `CertifiedChart::certify` now re-derives the checked
+  quantities (`|q|²`, `|n′|²`, det J at the `(μ,w)` box corners) from `chart + domain` via
+  `regularity_targets`, recomputes the tag, verifies the evidence (Sturm chains + margins) against those
+  derived targets, and stores the domain — so a certificate built for one chart cannot be attached to
+  another (the chains fail to verify), and a margin is qualified by its domain. `CapOut` never had the
+  transplant problem (it wraps the region `ledge_dom_certified` just checked, not independent args). What
+  *remains* deferred is only cross-boundary integrity: binding a verdict to a canonical **digest** of its
+  claim so it can't be transplanted across a serialize/deserialize boundary, and retaining the certificate
+  for offline re-checking — meaningful only once a persistence path exists (there is none today; building
+  it now = inventing a serialization format speculatively, the `ShellReady` YAGNI). `kappa_cap` also rides
+  on `CertifiedChart` as searcher-derived, uncertified data (documented). *2026-08-06 · deferred ·
+  `geom::record`*
+
+- **`reg_q` refutation witnesses conflate bad paperwork with real counterexamples.** For a non-positive
+  margin or a forged Sturm chain, `reg_q` returns `Refuted(lo)` — but `lo` is not a point where the
+  inequality fails; the certificate is malformed and the inequality may even hold. `CertifiedChart::certify`
+  then reports `ChartFault::QReg(lo)` etc., implying a geometric degeneracy at that σ. Recovery logic will
+  eventually need to tell "saw a counterexample" from "bad paperwork". Fix: a structured fault, e.g.
+  `RegFault::{NonPositiveMargin, InvalidDenChain, InvalidResidualChain, NonPositiveDen{sigma},
+  MarginFailure{sigma}}`, threaded through `slab_s0`/`trim_local`/`ChartFault`. Mostly semantic hygiene
+  today. *2026-08-06 · deferred · `certify_core::certify1d`*
 
 - **CLIP ladder verifies rungs but not coverage.** `clip()` (certify1d.rs) returns `Certified` when the
   supplied μ-subspans each verify, but never checks they **cover** the CLIP-W-failing set; and the

@@ -186,7 +186,11 @@ pub fn link_ok(sectors: &[bool]) -> bool {
 /// isomorphism** — i.e. `a` is a cyclic rotation of `b` (same elements, same cyclic
 /// order and orientation)? This is the *audit* the spec insists on over a mere count:
 /// `a → c → b → d` has the right multiset yet crosses, and is rejected here. Pure,
-/// `no_std`, panic-free; Kani-proven (`link_iso_matches_cyclic_adjacency`).
+/// `no_std`, panic-free; Kani-**validated for N=4 permutations**
+/// (`link_iso_matches_cyclic_adjacency`) — the harness also assumes its inputs are genuine
+/// permutations, which this function does not itself check (in-pipeline inputs, a vertex's
+/// incident-edge set, always are). The unbounded proof + a permutation guard are tracked
+/// follow-ups (`docs/engineering-log.md`).
 pub fn link_iso_ok(a: &[usize], b: &[usize]) -> bool {
     let n = a.len();
     if b.len() != n {
