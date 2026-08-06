@@ -112,8 +112,13 @@ pub enum CapOutFault {
     /// (rejected by the verified `certify_core::arrange::link_iso_ok`).
     Link { vertex: usize },
     /// The number of emitted boundary edges does not equal the number of edges separating
-    /// a kept cell from a dropped one — emission dropped or duplicated a boundary edge.
-    Bijection,
+    /// a kept cell from a dropped one — emission dropped or added a boundary edge. This is
+    /// a **coverage count**, not a full bijection: it certifies every separating edge is
+    /// emitted exactly once (given the tracer emits each boundary half-edge at most once),
+    /// but does not check per-edge source identity, loop closure, or orientation. The
+    /// stronger source-ID permutation certificate is a tracked follow-up (see
+    /// `docs/engineering-log.md`).
+    BoundaryEdgeCount,
 }
 
 /// A certified boolean result: the emitted [`Region`] plus a classification of the
@@ -610,7 +615,7 @@ pub fn ledge_dom<B: Backend>(
 /// - the DCEL's twin-pairing integrity ([`CapOutFault::SubstrateLink`]);
 /// - the ℤ₂² `cocycle_ok` consistency of the cell labeling ([`CapOutFault::Cocycle`]);
 /// - `Link_emitted ≅ Link_geometric` at every vertex ([`CapOutFault::Link`]);
-/// - the `{separating edges} ↔ {boundary edges}` bijection ([`CapOutFault::Bijection`]).
+/// - the separating-edge / boundary-edge coverage count ([`CapOutFault::BoundaryEdgeCount`]).
 ///
 /// The middle two are Kani-proven. On success it returns the [`CapOut`], which carries the
 /// region together with the CAP-OUT-LINK classification of the arrangement vertices (the
@@ -701,9 +706,11 @@ fn certify_from_labels<B: Backend>(
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
     let region = emit_region(d, &sel, &reps);
 
-    // (4) {separating edges} ↔ {emitted boundary edges} completeness (spec §8.5).
+    // (4) separating-edge / boundary-edge coverage count (spec §8.5): every separating
+    // edge is emitted exactly once. A count, not a full source-ID bijection (see the
+    // `BoundaryEdgeCount` doc + `docs/engineering-log.md`).
     if separating_count(d, &sel) != region_boundary_count(&region) {
-        return Verdict::Refuted(CapOutFault::Bijection);
+        return Verdict::Refuted(CapOutFault::BoundaryEdgeCount);
     }
 
     // CAP-OUT-LINK classification (informational): V_∂ = manifold shell vertices,
@@ -830,8 +837,8 @@ pub fn separating_count<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> usize {
         .count()
 }
 
-/// Total boundary edges a region emits (outer loops + holes) — the `{separating edges} ↔
-/// {emitted boundary edges}` side of the CAP-OUT completeness bijection (spec §8.5).
+/// Total boundary edges a region emits (outer loops + holes) — the emitted side of the
+/// CAP-OUT separating-edge / boundary-edge coverage count (spec §8.5).
 pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
     r.faces
         .iter()
@@ -1240,11 +1247,11 @@ mod tests {
         }
     }
 
-    /// {separating edges} ↔ {emitted boundary edges} (CAP-OUT completeness): for every op
-    /// on every corpus config, the number of separating (selected|unselected) edges equals
-    /// the total edges the region emits across its outer loops and holes.
+    /// Separating-edge / boundary-edge coverage count (CAP-OUT): for every op on every
+    /// corpus config, the number of separating (selected|unselected) edges equals the
+    /// total edges the region emits across its outer loops and holes.
     #[test]
-    fn separating_boundary_bijection() {
+    fn separating_boundary_edge_count() {
         for e in corpus() {
             let d = Dcel::build(&e);
             let (labels, _) = slab_locate(&d, &ab);
@@ -1254,7 +1261,7 @@ mod tests {
                 assert_eq!(
                     separating_count(&d, &sel),
                     region_boundary_count(&r),
-                    "separating ↔ boundary edge bijection ({op:?})"
+                    "separating / boundary edge coverage count ({op:?})"
                 );
             }
         }
@@ -1262,7 +1269,7 @@ mod tests {
 
     /// The certified entry accepts the whole corpus (transverse, disjoint, annulus,
     /// tangency) for every op — all four CAP-OUT gates (substrate-link, cocycle, Link≅geom,
-    /// bijection) pass over the emitted region.
+    /// boundary-edge count) pass over the emitted region.
     #[test]
     fn certified_verified_on_corpus() {
         for e in corpus() {

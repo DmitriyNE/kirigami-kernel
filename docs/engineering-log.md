@@ -19,6 +19,40 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **CAP-OUT boundary bijection — upgrade the coverage count to a source-ID permutation certificate.**
+  `ledge_dom_certified`'s fourth gate is `separating_count == region_boundary_count`
+  (`arrange2d::boolean`, `CapOutFault::BoundaryEdgeCount`) — a scalar **coverage** count. It is honest
+  but weaker than the spec's completeness *bijections*: it certifies every separating edge is emitted
+  exactly once (given the tracer emits each boundary half-edge at most once), but checks neither per-edge
+  source identity, loop closure, orientation, nor the other two spec bijections ({selected components} ↔
+  {emitted faces}, V_∂ ↔ {emitted shell vertices}). Fix: stamp a stable source-edge id on every emitted
+  boundary edge and check an explicit permutation certificate (plus the component-id and shell-vertex-id
+  bijections) in the pure `certify_core` tier. Surfaced in review batch 1 (the docs/vv-matrix previously
+  over-claimed "bijection"; now labeled a coverage count). *2026-08-06 · deferred · `vv-matrix.md`
+  completeness-bijections row*
+
+- **CAP-IN-D24 input license — `ledge_dom_certified` is not total over malformed input.** The certified
+  entry takes raw `&[Edge]` (all-pub fields) and calls `Dcel::build`, which *panics* on ill-formed input
+  (`unreachable!` in `build` when the event spine is not `Verified`; `try_surd().unwrap()` in
+  `on_carrier`). No CAP-IN-D24 check gates it, so a hand-crafted edge (r² ≤ 0 circle, endpoints off
+  carrier, degenerate line, non-canonical piece) is a malformed-certificate route that panics rather than
+  rejects — counter to the "checker total over arbitrary serialized input" doctrine. Full fix =
+  `CanonicalEdge`/`ValidatedD24` newtypes minted only by a CAP-IN-D24 checker (the spec §8.5 input
+  license; lands with `closure`/M4, where the census already lives, `closure/src/lib.rs`). **Parked
+  decision:** land a *minimal* totality guard now (a D24 well-formedness pre-pass that returns
+  `Refuted`/`Unresolved` instead of panicking) vs. defer wholesale to M4 — revisit after the remaining
+  review batches. *2026-08-06 · deferred(→M4) · spec §8.5 CAP-IN-D24*
+
+- **CAP-OUT strict-manifold entry (`ShellReady`) — decide when SEW lands.** `ledge_dom_certified` is
+  deliberately *relaxed*: a pinch (non-manifold vertex, e.g. a transverse `△`) is a valid, reported
+  result (`CapOut.pinches`), not a refusal — the manifold requirement is owned by the downstream SEW-LINK
+  gate, and there is no pre-SEW consumer today (confirmed in review batch 1). When SEW (M4/M5) is built,
+  reconsider a typed strict entry `ledge_dom_manifold → ShellReady<B>` that additionally gates
+  `pinches.is_empty()` and returns a type only a no-pinch region inhabits — so "forgot to check
+  manifoldness" is a compile error and the proven `link_ok` is used in production. Deferred (not now)
+  because the newtype's contract is SEW's to specify; building it blind risks guessing wrong.
+  *2026-08-06 · deferred(→M4) · `certify_core::arrange::link_ok`*
+
 - **Differential-fuzz — harness + real fuzz run DONE (`differential-fuzz` branch); one wiring follow-up.**
   Op-chain differential (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over
   size-bucketed operands + metamorphic mul identities) closes the two gaps the old single-op
