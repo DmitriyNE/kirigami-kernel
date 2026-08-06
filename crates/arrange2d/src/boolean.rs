@@ -49,6 +49,9 @@ use crate::locate::{
 type Label = (bool, bool);
 /// A rational point `(x, y)` known to lie in the interior of a cell.
 type Pt<B> = (Rat<B>, Rat<B>);
+/// A classified boundary loop mid-emission: its edge geometry, the source ids of those edges,
+/// and the interior rep point deciding its containment.
+type LoopParts<B> = (Vec<Edge<B>>, Vec<usize>, Pt<B>);
 
 /// Which of the two operands a source curve belongs to. Every input curve is assigned
 /// `A` or `B`; the boolean combines the region bounded by the `A` curves with the region
@@ -184,14 +187,13 @@ pub enum CapOutFault {
     /// At vertex `v`, the stored edge rotation disagrees with the geometric azimuth order
     /// (rejected by the verified `certify_core::arrange::link_iso_ok`).
     Link { vertex: usize },
-    /// The number of emitted boundary edges does not equal the number of edges separating
-    /// a kept cell from a dropped one — emission dropped or added a boundary edge. This is
-    /// a **coverage count**, not a full bijection: it certifies every separating edge is
-    /// emitted exactly once (given the tracer emits each boundary half-edge at most once),
-    /// but does not check per-edge source identity, loop closure, or orientation. The
-    /// stronger source-ID permutation certificate is a tracked follow-up (see
-    /// `docs/engineering-log.md`).
-    BoundaryEdgeCount,
+    /// The emitted boundary edges are not a permutation of the edges separating a kept cell
+    /// from a dropped one — emission dropped, duplicated, or invented a boundary edge. A real
+    /// **source-ID bijection** (`certify_core::arrange::boundary_bijection_ok`), not a count:
+    /// each emitted edge carries its source `SubEdge` id, and the set of emitted ids must equal
+    /// the set of separating-edge ids — so a drop-one-and-duplicate-another pair (which a count
+    /// misses) is caught.
+    BoundaryBijection,
     /// The slab point-location did not cover every arrangement cell — some cycle got no
     /// label, or a band height grazed a vertex `y` / circle centre (`critical_ys` incomplete).
     /// A correctly-built arrangement covers every cell, so this is a decomposition defect; the
@@ -603,6 +605,9 @@ fn boundary_succ<B: Backend>(d: &Dcel<B>, sel: &[bool], h: usize) -> usize {
 /// selected cell on its **left**, and one of the unselected cell on its **right**.
 struct BoundaryLoop<B: Backend> {
     edges: Vec<Edge<B>>,
+    /// The stable source-edge id (`SubEdge` arena index) of each edge, in loop order — for
+    /// the CAP-OUT `{separating edges} ↔ {emitted boundary edges}` bijection.
+    ids: Vec<usize>,
     left_rep: Pt<B>,
     right_rep: Pt<B>,
 }
@@ -612,7 +617,11 @@ struct BoundaryLoop<B: Backend> {
 /// cell to its left is *inside* it) or a hole (it is *outside*), and nest each hole
 /// into its immediate containing outer loop — one [`Face`] (outer + holes) per π₀
 /// component. `reps[c]` is a rational interior point of cell `c` (from [`slab_locate`]).
-fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)]) -> Region<B> {
+fn emit_region<B: Backend>(
+    d: &Dcel<B>,
+    sel: &[bool],
+    reps: &[(Rat<B>, Rat<B>)],
+) -> (Region<B>, Vec<usize>) {
     // The selected-side half-edge of each separating edge is a boundary half-edge.
     let mut is_boundary = vec![false; d.halfedges.len()];
     for k in 0..d.edges.len() {
@@ -622,7 +631,8 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
         }
     }
 
-    // Trace the boundary half-edges into closed loops.
+    // Trace the boundary half-edges into closed loops, recording each edge's source id
+    // (`SubEdge` arena index) alongside its geometry for the completeness bijection.
     let mut visited = vec![false; d.halfedges.len()];
     let mut loops: Vec<BoundaryLoop<B>> = Vec::new();
     for start in 0..d.halfedges.len() {
@@ -630,10 +640,12 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
             continue;
         }
         let mut edges = Vec::new();
+        let mut ids = Vec::new();
         let mut h = start;
         loop {
             visited[h] = true;
             edges.push(d.edges[d.halfedges[h].edge].edge.clone());
+            ids.push(d.halfedges[h].edge);
             h = boundary_succ(d, sel, h);
             if h == start {
                 break;
@@ -643,6 +655,7 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
         let right = d.halfedges[d.halfedges[start].twin].cycle;
         loops.push(BoundaryLoop {
             edges,
+            ids,
             left_rep: reps[left].clone(),
             right_rep: reps[right].clone(),
         });
@@ -650,13 +663,13 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
 
     // Classify: a loop is an outer boundary iff its (selected) left cell is inside it;
     // otherwise it is a hole, whose interior is the (unselected) right cell.
-    let mut outers: Vec<(Vec<Edge<B>>, Pt<B>)> = Vec::new();
-    let mut holes: Vec<(Vec<Edge<B>>, Pt<B>)> = Vec::new();
+    let mut outers: Vec<LoopParts<B>> = Vec::new();
+    let mut holes: Vec<LoopParts<B>> = Vec::new();
     for lp in loops {
         if winding_parity(&lp.left_rep.0, &lp.left_rep.1, &lp.edges) {
-            outers.push((lp.edges, lp.left_rep));
+            outers.push((lp.edges, lp.ids, lp.left_rep));
         } else {
-            holes.push((lp.edges, lp.right_rep));
+            holes.push((lp.edges, lp.ids, lp.right_rep));
         }
     }
 
@@ -665,26 +678,30 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
     // candidate). Containers are totally ordered by nesting, so this is well-defined.
     let mut faces: Vec<Face<B>> = outers
         .iter()
-        .map(|(e, _)| Face {
+        .map(|(e, _, _)| Face {
             outer: e.clone(),
             holes: Vec::new(),
         })
         .collect();
-    for (hedges, hpt) in holes {
+    // The emitted source ids = every outer's ids + every *nested* hole's ids. A hole with no
+    // container is dropped, and so are its ids — the bijection then catches the lost edges.
+    let mut emitted_ids: Vec<usize> = outers.iter().flat_map(|(_, ids, _)| ids.clone()).collect();
+    for (hedges, hids, hpt) in holes {
         let cands: Vec<usize> = (0..outers.len())
             .filter(|&oi| winding_parity(&hpt.0, &hpt.1, &outers[oi].0))
             .collect();
         let container = cands.iter().copied().find(|&oi| {
             cands.iter().all(|&oj| {
-                oj == oi || winding_parity(&outers[oi].1.0, &outers[oi].1.1, &outers[oj].0)
+                oj == oi || winding_parity(&outers[oi].2.0, &outers[oi].2.1, &outers[oj].0)
             })
         });
         if let Some(oi) = container {
             faces[oi].holes.push(hedges);
+            emitted_ids.extend(hids);
         }
     }
 
-    Region { faces }
+    (Region { faces }, emitted_ids)
 }
 
 /// Compute the boolean `op` of the two operands and return the result region.
@@ -725,7 +742,7 @@ pub fn ledge_dom<B: Backend>(
     let d = Dcel::build(edges);
     let (labels, reps, _) = slab_locate(&d, operand_of);
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
-    emit_region(&d, &sel, &reps)
+    emit_region(&d, &sel, &reps).0
 }
 
 /// Compute the boolean `op` and certify the result (spec §8.5 CAP-OUT).
@@ -739,7 +756,8 @@ pub fn ledge_dom<B: Backend>(
 /// - the DCEL's twin-pairing integrity ([`CapOutFault::SubstrateLink`]);
 /// - the ℤ₂² `cocycle_ok` consistency of the cell labeling ([`CapOutFault::Cocycle`]);
 /// - `Link_emitted ≅ Link_geometric` at every vertex ([`CapOutFault::Link`]);
-/// - the separating-edge / boundary-edge coverage count ([`CapOutFault::BoundaryEdgeCount`]).
+/// - the `{separating edges} ↔ {emitted boundary edges}` source-ID bijection
+///   ([`CapOutFault::BoundaryBijection`]).
 ///
 /// The middle two are Kani-proven. On success it returns the [`CapOut`], which carries the
 /// region together with the CAP-OUT-LINK classification of the arrangement vertices (the
@@ -836,15 +854,17 @@ fn certify_from_labels<B: Backend>(
         }
     }
 
-    // (3) select + emit from THIS labeling (spec §6 steps 6–8).
+    // (3) select + emit from THIS labeling (spec §6 steps 6–8), recording each emitted
+    // boundary edge's source id.
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
-    let region = emit_region(d, &sel, &reps);
+    let (region, emitted_ids) = emit_region(d, &sel, &reps);
 
-    // (4) separating-edge / boundary-edge coverage count (spec §8.5): every separating
-    // edge is emitted exactly once. A count, not a full source-ID bijection (see the
-    // `BoundaryEdgeCount` doc + `docs/engineering-log.md`).
-    if separating_count(d, &sel) != region_boundary_count(&region) {
-        return Verdict::Refuted(CapOutFault::BoundaryEdgeCount);
+    // (4) {separating edges} ↔ {emitted boundary edges} bijection (spec §8.5): the emitted
+    // source ids are a permutation of the separating-edge ids — every separating edge emitted
+    // exactly once, none dropped or duplicated (a real bijection, not just a count).
+    let separating = separating_ids(d, &sel);
+    if !certify_core::arrange::boundary_bijection_ok(&separating, &emitted_ids) {
+        return Verdict::Refuted(CapOutFault::BoundaryBijection);
     }
 
     // CAP-OUT-LINK classification (informational): V_∂ = manifold shell vertices,
@@ -969,6 +989,15 @@ pub fn separating_count<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> usize {
     (0..d.edges.len())
         .filter(|&k| sel[d.halfedges[2 * k].cycle] != sel[d.halfedges[2 * k + 1].cycle])
         .count()
+}
+
+/// The stable source-edge ids (`SubEdge` arena indices) of the **separating** edges — the
+/// set the emitted boundary edges must be a permutation of (the CAP-OUT completeness
+/// bijection). Duplicate-free by construction: one id per undirected edge.
+pub fn separating_ids<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> Vec<usize> {
+    (0..d.edges.len())
+        .filter(|&k| sel[d.halfedges[2 * k].cycle] != sel[d.halfedges[2 * k + 1].cycle])
+        .collect()
 }
 
 /// Total boundary edges a region emits (outer loops + holes) — the emitted side of the
@@ -1381,29 +1410,31 @@ mod tests {
         }
     }
 
-    /// Separating-edge / boundary-edge coverage count (CAP-OUT): for every op on every
-    /// corpus config, the number of separating (selected|unselected) edges equals the
-    /// total edges the region emits across its outer loops and holes.
+    /// {separating edges} ↔ {emitted boundary edges} **bijection** (CAP-OUT): for every op on
+    /// every corpus config, the emitted source-edge ids are a permutation of the
+    /// separating-edge ids — a real bijection (the count equality is a corollary).
     #[test]
-    fn separating_boundary_edge_count() {
+    fn separating_boundary_bijection() {
         for e in corpus() {
             let d = Dcel::build(&e);
-            let (labels, _, _) = slab_locate(&d, &ab);
+            let (labels, reps, _) = slab_locate(&d, &ab);
             for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
                 let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
-                let r = ledge_dom(&e, &ab, op);
-                assert_eq!(
-                    separating_count(&d, &sel),
-                    region_boundary_count(&r),
-                    "separating / boundary edge coverage count ({op:?})"
+                let (region, emitted) = emit_region(&d, &sel, &reps);
+                let separating = separating_ids(&d, &sel);
+                assert!(
+                    certify_core::arrange::boundary_bijection_ok(&separating, &emitted),
+                    "separating ↔ emitted boundary edge bijection ({op:?})"
                 );
+                // The count equality still holds as a corollary.
+                assert_eq!(separating_count(&d, &sel), region_boundary_count(&region));
             }
         }
     }
 
     /// The certified entry accepts the whole corpus (transverse, disjoint, annulus,
     /// tangency) for every op — all four CAP-OUT gates (substrate-link, cocycle, Link≅geom,
-    /// boundary-edge count) pass over the emitted region.
+    /// boundary bijection) pass over the emitted region.
     #[test]
     fn certified_verified_on_corpus() {
         for e in corpus() {

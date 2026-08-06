@@ -244,6 +244,42 @@ pub fn link_iso_ok(a: &[usize], b: &[usize]) -> bool {
     false
 }
 
+/// Whether `xs` contains `v` (a linear scan, extraction-friendly).
+fn slice_contains(xs: &[usize], v: usize) -> bool {
+    let mut i = 0;
+    while i < xs.len() {
+        if xs[i] == v {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The CAP-OUT completeness bijection `{separating edges} ↔ {emitted boundary edges}` (spec
+/// §8.5): is `emitted` a **permutation** of `separating`? Both are stable source-edge ids;
+/// `separating` is duplicate-free by construction (one id per undirected edge). Stronger than
+/// a mere count — a drop-one-and-duplicate-another pair leaves the count unchanged but fails
+/// this: `emitted` must have no duplicate and every id must be a separating edge, so with
+/// equal length it is exactly the separating set. Pure, `no_std`, panic-free.
+pub fn boundary_bijection_ok(separating: &[usize], emitted: &[usize]) -> bool {
+    if emitted.len() != separating.len() {
+        return false;
+    }
+    if has_duplicate(emitted) {
+        return false;
+    }
+    // Every emitted id is a separating edge (⊆); equal size + no duplicates ⇒ a permutation.
+    let mut i = 0;
+    while i < emitted.len() {
+        if !slice_contains(separating, emitted[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +442,18 @@ mod tests {
         assert!(!link_iso_ok(&[0, 1, 2], &[1, 1, 2]));
         // Genuine permutations still round-trip.
         assert!(link_iso_ok(&[0, 1, 2, 3], &[2, 3, 0, 1]));
+    }
+
+    #[test]
+    fn boundary_bijection_catches_drop_and_duplicate() {
+        // A permutation of the separating set is accepted (order irrelevant).
+        assert!(boundary_bijection_ok(&[0, 1, 2, 3], &[2, 0, 3, 1]));
+        // Drop `1`, duplicate `2`: the COUNT is unchanged (4 vs 4) but the bijection fails —
+        // exactly the defect a coverage count misses.
+        assert!(!boundary_bijection_ok(&[0, 1, 2, 3], &[0, 2, 2, 3]));
+        // An emitted id that is not a separating edge.
+        assert!(!boundary_bijection_ok(&[0, 1, 2], &[0, 1, 9]));
+        // Length mismatch (a dropped edge with no duplicate).
+        assert!(!boundary_bijection_ok(&[0, 1, 2], &[0, 1]));
     }
 }
