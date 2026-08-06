@@ -122,13 +122,35 @@ pub enum CapOutFault {
 }
 
 /// A certified boolean result: the emitted [`Region`] plus a classification of the
-/// arrangement vertices. `v_boundary` lists the manifold shell vertices (`V_∂`);
-/// `pinches` lists the points where the region touches itself (see the module-level
-/// "Pinch points" note) — valid, but not manifold boundary vertices.
+/// arrangement vertices. Opaque — its fields are private and it is minted only by
+/// [`ledge_dom_certified`] after every CAP-OUT checker passes, so a `CapOut` cannot be
+/// forged by assembling one from arbitrary parts. Read it through the accessors:
+/// [`region`](CapOut::region), the manifold shell vertices [`v_boundary`](CapOut::v_boundary)
+/// (`V_∂`), and the [`pinches`](CapOut::pinches) — points where the region touches itself
+/// (see the module-level "Pinch points" note), valid but not manifold boundary vertices.
 pub struct CapOut<B: Backend> {
-    pub region: Region<B>,
-    pub v_boundary: Vec<usize>,
-    pub pinches: Vec<usize>,
+    region: Region<B>,
+    v_boundary: Vec<usize>,
+    pinches: Vec<usize>,
+}
+
+impl<B: Backend> CapOut<B> {
+    /// The emitted region (one [`Face`] per connected component: outer loop + holes).
+    pub fn region(&self) -> &Region<B> {
+        &self.region
+    }
+    /// The manifold shell vertices `V_∂`.
+    pub fn v_boundary(&self) -> &[usize] {
+        &self.v_boundary
+    }
+    /// The pinch points — non-manifold self-touch vertices (valid, but not in `V_∂`).
+    pub fn pinches(&self) -> &[usize] {
+        &self.pinches
+    }
+    /// Consume the certificate into its parts `(region, v_boundary, pinches)`.
+    pub fn into_parts(self) -> (Region<B>, Vec<usize>, Vec<usize>) {
+        (self.region, self.v_boundary, self.pinches)
+    }
 }
 
 /// The cell membership labeling in the flat, index-array form the
@@ -643,9 +665,9 @@ pub fn ledge_dom<B: Backend>(
 /// let operand_of = |c: CurveId| if c.0 == 0 { OperandId::A } else { OperandId::B };
 ///
 /// match ledge_dom_certified(&edges, &operand_of, BoolOp::Or) {
-///     // The region passed every verified checker; `v_boundary` / `pinches` classify
+///     // The region passed every verified checker; `v_boundary()` / `pinches()` classify
 ///     // the arrangement vertices.
-///     Verdict::Verified(CapOut { region, .. }) => assert_eq!(region.faces.len(), 1),
+///     Verdict::Verified(cap) => assert_eq!(cap.region().faces.len(), 1),
 ///     // A fault means a constructor bug, not unsupported input.
 ///     Verdict::Refuted(fault) => panic!("CAP-OUT refuted: {fault:?}"),
 ///     Verdict::Unresolved(()) => unreachable!(),

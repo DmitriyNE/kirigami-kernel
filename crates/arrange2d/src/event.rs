@@ -111,7 +111,12 @@ pub enum Operand {
 
 /// A 1-D coincidence output edge on a shared carrier: the merged edge (`Both`) where
 /// two coincident curves overlap, or a residual sub-edge (`First`/`Second`) where
-/// only one covers. Fed to the DCEL.
+/// only one covers — the `arrange_events` coincidence set.
+///
+/// NOTE: `Dcel::build` currently re-derives coincidence directly (split at vertices +
+/// carrier-merge) and does **not** consume this set — the two coincidence paths are not
+/// yet unified. Reconciling them (consume `CoincSet` canonically, or drop it) is a
+/// tracked follow-up (`docs/engineering-log.md`).
 #[derive(Debug)]
 pub struct CoincEdge<B: Backend = Bignum> {
     pub edge: Edge<B>,

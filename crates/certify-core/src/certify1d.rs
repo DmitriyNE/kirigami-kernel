@@ -56,10 +56,20 @@ pub struct RegCert<B: Backend = Bignum> {
     pub res_chain: SturmChain<B>,
 }
 
-/// REG-Q (spec §8.5): certify `num/den > m` on the span, with `den > 0`. Total —
-/// `Verified(m)` or `Refuted(σ)` at a span point where the margin fails.
+/// REG-Q (spec §8.5): certify `num/den > m` on the span, with `den > 0` and `m > 0`.
+/// Total — `Verified(m)` or `Refuted(σ)` at a span point where the margin fails.
+///
+/// The margin must be **strictly positive**: a regularity certificate exists to bound a
+/// √-cleared quantity *away* from zero. With `m ≤ 0` the residual `R = num − m·den` can be
+/// positive without `num > 0` (a negative `m` makes `Verified` on a degenerate `num ≡ 0` —
+/// the checker would certify nothing), so a non-positive margin is rejected outright rather
+/// than trusted from the searcher.
 pub fn reg_q<B: Backend>(cert: &RegCert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
     let (lo, hi) = (&cert.span.lo, &cert.span.hi);
+    // A non-positive separation margin is not a regularity certificate — reject it.
+    if cert.m.0.sign() <= 0 {
+        return Verdict::Refuted(lo.clone());
+    }
     let r = cert.num.sub(&cert.den.scale(&cert.m.0)); // R = num − m·den
 
     // Re-verify the supplied chains — a chain we did not check is not evidence.
@@ -247,16 +257,22 @@ pub struct ClipACert<B: Backend = Bignum> {
     pub m_a: MarginSq<Rat<B>>,
 }
 
-/// CLIP-a (spec §8.5): the fiber misses Π by a separated constant — `a² ≥ m_a` — and so
-/// takes the uniform side `sgn a`. `Verified(sign)` / `Unresolved(a²)`; never `Refuted`.
+/// CLIP-a (spec §8.5): the fiber misses Π by a separated constant — `a² ≥ m_a`, `m_a > 0` —
+/// and so takes the uniform side `sgn a`. `Verified(sign)` / `Unresolved(a²)`; never
+/// `Refuted`. A non-positive `m_a` establishes no separation (the sign may be real, but the
+/// fiber is not certified to clear Π), so it yields `Unresolved` — never a certified side.
 pub fn clip_a<B: Backend>(cert: &ClipACert<B>) -> Verdict<ClipBranch, (), Rat<B>> {
     let a_sq = cert.a.mul(&cert.a);
+    // No separation without a strictly-positive margin.
+    if cert.m_a.0.sign() <= 0 {
+        return Verdict::Unresolved(a_sq);
+    }
     // `a² ≥ m_a` with `m_a > 0` forces `a ≠ 0`, so the sign is a genuine side.
     if a_sq.cmp(&cert.m_a.0) != core::cmp::Ordering::Less {
         match cert.a.sign() {
             1 => return Verdict::Verified(ClipBranch::Positive),
             -1 => return Verdict::Verified(ClipBranch::Negative),
-            _ => {} // a = 0 (only reachable at m_a = 0): not separated ⇒ Unresolved.
+            _ => {} // unreachable: m_a > 0 ⇒ a² ≥ m_a > 0 ⇒ a ≠ 0.
         }
     }
     Verdict::Unresolved(a_sq)
@@ -548,6 +564,18 @@ mod tests {
     }
 
     #[test]
+    fn reg_q_refutes_a_non_positive_margin() {
+        // num ≡ 0, den = 1, m = −1: R = num − m·den = 1 > 0, so the residual test alone
+        // would *pass* — yet num/den ≡ 0 is degenerate. A negative margin certifies
+        // nothing; the explicit m > 0 gate rejects it.
+        let neg = reg_cert(&[0], &[1], Q::from_i128(-1), span(0, 1));
+        assert!(matches!(reg_q(&neg), Verdict::Refuted(_)));
+        // m = 0 is a zero-slack non-certificate — also rejected.
+        let zero = reg_cert(&[1, 0, 1], &[1], Q::from_i128(0), span(-2, 2));
+        assert!(matches!(reg_q(&zero), Verdict::Refuted(_)));
+    }
+
+    #[test]
     fn slab_s0_core_plus_stall_limit() {
         let core = reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2));
         // both endpoint ring values positive ⇒ Verified.
@@ -658,6 +686,12 @@ mod tests {
             m_a: MarginSq(Q::from_i128(4)),
         }; // 1 < 4 ⇒ Unresolved.
         assert!(matches!(clip_a(&under), Verdict::Unresolved(_)));
+        // A non-positive margin certifies no side, even with a genuine sign (9 ≥ 0).
+        let toothless = ClipACert::<Bignum> {
+            a: Q::from_i128(3),
+            m_a: MarginSq(Q::from_i128(0)),
+        };
+        assert!(matches!(clip_a(&toothless), Verdict::Unresolved(_)));
     }
 
     #[test]

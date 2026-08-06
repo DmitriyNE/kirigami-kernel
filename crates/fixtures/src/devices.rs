@@ -9,9 +9,10 @@
 //! and lands with milestone C.
 
 use certify_core::MarginSq;
-use certify_core::certify1d::{RegCert, SlabS0Cert, reg_q, slab_s0};
+use certify_core::Verdict;
+use certify_core::certify1d::{RegCert, SlabS0Cert};
 use geom::chart::Chart;
-use geom::record::ChartRecord;
+use geom::record::CertifiedChart;
 use geom::tags::classify;
 use lattice::{Bignum, Interval, Poly, Rat, RatFunc, SturmChain};
 
@@ -46,8 +47,9 @@ fn reg_cert(
 }
 
 /// The certified single-chart record for the device cone (spec §8) — the Milestone-B exit
-/// artifact. Assembles [`cone`] with its M2 verdicts and the mesh curvature cap over the
-/// representative support arc `σ ∈ [0, 1]`, `μ ∈ [−1, −1/2]`, `w ∈ [−1/4, 1/4]`:
+/// artifact. Builds [`cone`]'s M2 certificates and the mesh curvature cap over the
+/// representative support arc `σ ∈ [0, 1]`, `μ ∈ [−1, −1/2]`, `w ∈ [−1/4, 1/4]`, then mints
+/// a [`CertifiedChart`] through [`CertifiedChart::certify`] (which re-runs every checker):
 ///
 /// - CONE tag (rulings through the origin, `h ≡ n·0`);
 /// - REG-Q on `|q|² = 97(1 + σ²)` (the quaternion spline never degenerates);
@@ -55,7 +57,7 @@ fn reg_cert(
 /// - SLAB-S0 on `det J` at the box's inf corner (the offset slab stays regular);
 /// - mesh κ-cap `min(s_max, 1/κ₁) = min(1, 65/194) = 65/194` (the tightest principal radius,
 ///   at the corner `σ = 1, μ⁺`; `R₁` is non-uniform in σ though the half-angle is constant).
-pub fn certified_cone() -> ChartRecord<Bignum> {
+pub fn certified_cone() -> CertifiedChart<Bignum> {
     let chart = cone();
     let tag = classify(&chart).expect("the device cone classifies as CONE");
     let span = Interval {
@@ -64,21 +66,21 @@ pub fn certified_cone() -> ChartRecord<Bignum> {
     };
 
     // REG-Q on |q|² = 97 + 97σ² ≥ 90 (den = 1): the quaternion spline never degenerates.
-    let q_reg = reg_q(&reg_cert(
+    let q_cert = reg_cert(
         chart.normal().den().clone(),
         Poly::constant(Rat::from_i128(1)),
         Rat::from_i128(90),
         span.clone(),
-    ));
+    );
 
     // REG-Q on |n′|² = 20736 / (9409(1+σ²)²) ≥ 1/2 on [0,1]: the ruling never stalls.
     let n1_sq = chart.normal_deriv_sq().reduce();
-    let ruling_reg = reg_q(&reg_cert(
+    let ruling_cert = reg_cert(
         n1_sq.num().clone(),
         n1_sq.den().clone(),
         Rat::new(1, 2),
         span.clone(),
-    ));
+    );
 
     // SLAB-S0: det J > 0 at the box's inf corner (μ⁺ = −1/2, w⁻ = −1/4). det J is affine in
     // (μ, w); with the pedal at the apex (h ≡ 0), det J = μ·(r′·n′) + w·|n′|².
@@ -89,7 +91,7 @@ pub fn certified_cone() -> ChartRecord<Bignum> {
         .add(&dj.mu.scale(&mu_hi))
         .add(&dj.w.scale(&w_lo))
         .reduce();
-    let slab = slab_s0(&SlabS0Cert {
+    let slab_cert = SlabS0Cert {
         core: reg_cert(
             det_j_inf.num().clone(),
             det_j_inf.den().clone(),
@@ -97,7 +99,7 @@ pub fn certified_cone() -> ChartRecord<Bignum> {
             span.clone(),
         ),
         stall_end: None,
-    });
+    };
 
     // Mesh κ-cap = min(s_max, 1/κ₁). The principal radius R₁ = μ·(r′·n′)/|n′|² is affine in
     // μ and monotone in σ on the support — `g(σ) = (r′·n′)/|n′|² = −130/(97(1+σ²))`, so R₁ is
@@ -125,13 +127,12 @@ pub fn certified_cone() -> ChartRecord<Bignum> {
         s_max
     };
 
-    ChartRecord {
-        chart,
-        tag,
-        q_reg,
-        ruling_reg,
-        slab,
-        kappa_cap,
+    // Mint the certified record: `certify` re-runs REG-Q / SLAB-S0 over the certificates
+    // and hands back a `CertifiedChart` only if all verify. The device cone is a golden
+    // artifact, so a refutation here is a fixture/kernel bug, not an admissible outcome.
+    match CertifiedChart::certify(chart, tag, q_cert, ruling_cert, slab_cert, kappa_cap) {
+        Verdict::Verified(c) => c,
+        _ => panic!("the device cone must certify"),
     }
 }
 
@@ -139,6 +140,7 @@ pub fn certified_cone() -> ChartRecord<Bignum> {
 mod tests {
     use super::*;
     use certify_core::Verdict;
+    use geom::record::ChartFault;
     use geom::tags::Tag;
 
     #[test]
@@ -149,18 +151,48 @@ mod tests {
 
     #[test]
     fn certified_cone_record_is_fully_verified() {
+        // `certified_cone()` returns a `CertifiedChart` only by passing every M2 checker in
+        // `CertifiedChart::certify` — its existence *is* the certification (else it panics).
         let rec = certified_cone();
-        // The Milestone-B exit artifact: every M2 certificate verifies.
-        assert!(matches!(rec.tag, Tag::Cone { .. }));
-        assert!(matches!(rec.q_reg, Verdict::Verified(_)), "|q|² REG-Q");
-        assert!(
-            matches!(rec.ruling_reg, Verdict::Verified(_)),
-            "|n′|² REG-Q"
-        );
-        assert!(matches!(rec.slab, Verdict::Verified(_)), "SLAB-S0");
-        assert!(rec.is_certified());
+        assert!(matches!(rec.tag(), Tag::Cone { .. }));
         // Mesh κ-cap = min(s_max, 1/κ₁) = min(1, 65/194) = 65/194 — the tightest radius.
-        assert_eq!(rec.kappa_cap, Rat::new(65, 194));
+        assert_eq!(*rec.kappa_cap(), Rat::new(65, 194));
+    }
+
+    #[test]
+    fn certify_refutes_a_bad_certificate() {
+        // The gate is real: a |q|² ≥ 10⁹ margin is false on the support, so REG-Q refutes and
+        // no `CertifiedChart` is minted — the forgeable "put Verified in a field" path is gone
+        // (only `certify` builds one, and only when the checkers pass).
+        let chart = cone();
+        let tag = classify(&chart).unwrap();
+        let span = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        };
+        let bad_q = reg_cert(
+            chart.normal().den().clone(),
+            Poly::constant(Rat::from_i128(1)),
+            Rat::from_i128(1_000_000_000),
+            span.clone(),
+        );
+        // Trivially-valid ruling/slab certs (never reached — q refutes first).
+        let ok = || {
+            reg_cert(
+                Poly::constant(Rat::from_i128(1)),
+                Poly::constant(Rat::from_i128(1)),
+                Rat::new(1, 2),
+                span.clone(),
+            )
+        };
+        let slab = SlabS0Cert {
+            core: ok(),
+            stall_end: None,
+        };
+        assert!(matches!(
+            CertifiedChart::certify(chart, tag, bad_q, ok(), slab, Rat::from_i128(0)),
+            Verdict::Refuted(ChartFault::QReg(_))
+        ));
     }
 
     #[test]
