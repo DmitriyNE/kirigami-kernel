@@ -37,7 +37,7 @@
 use certify_core::Verdict;
 use certify_core::arrange::{LinkClass, classify_link, link_iso_ok};
 use core::cmp::Ordering;
-use geom::content::{Circle, CurveId, Edge, Half};
+use geom::content::{Circle, CurveId, Edge, Half, Point2};
 use lattice::{Backend, Rat, Surd};
 
 use crate::dcel::{Dcel, SubEdge};
@@ -95,12 +95,85 @@ pub struct Region<B: Backend> {
     pub faces: Vec<Face<B>>,
 }
 
+/// Why CAP-IN-D24 rejected an input edge — a malformed D24 curve. Distinct from
+/// [`CapOutFault`]: a [`CapInFault`] is *unsupported input*, not a constructor bug. The
+/// certified entry validates every edge before building the arrangement so it stays **total**
+/// (it refuses malformed input rather than panicking inside `Dcel::build`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CapInFault {
+    /// A circle with `r² ≤ 0` — not a real circle (would trip `Surd::new`'s `d ≥ 0` bound).
+    NonPositiveRadius,
+    /// A line with `a = b = 0` — no direction.
+    DegenerateLine,
+    /// An endpoint does not lie on its own carrier, or has cross-radical coordinates (which
+    /// no valid D24 point has — the `try_surd` escape that would otherwise panic).
+    EndpointOffCarrier,
+    /// A non-canonical arc piece — `x_lo ≥ x_hi` (empty or reversed x-extent).
+    NonCanonicalArc,
+}
+
+/// Is `p` on the carrier of `e`, computed **panic-free**: `None` when the coordinates escape
+/// a single radical field (a malformed cross-radical point — no valid D24 point does this),
+/// `Some(on)` otherwise. The panic-free analogue of `Dcel::build`'s internal `on_carrier`.
+fn on_carrier_checked<B: Backend>(p: &Point2<B>, e: &Edge<B>) -> Option<bool> {
+    match e {
+        Edge::Seg(s) => {
+            let lin = p.x.scale(&s.line.a).add(&p.y.scale(&s.line.b)).try_surd()?;
+            Some(lin.add(&Surd::from_rat(s.line.c.clone())).sign() == 0)
+        }
+        Edge::Arc(a) => {
+            let nx = p.x.sub(&Surd::from_rat(a.circle.cx.clone())).try_surd()?;
+            let ny = p.y.sub(&Surd::from_rat(a.circle.cy.clone())).try_surd()?;
+            let sq = nx.square().add(&ny.square()).try_surd()?;
+            Some(sq.sub(&Surd::from_rat(a.circle.r2.clone())).sign() == 0)
+        }
+    }
+}
+
+/// CAP-IN-D24 (spec §8.5, minimal): validate that every input edge is a well-formed D24 piece
+/// before building the arrangement, so [`ledge_dom_certified`] is **total** — it refuses
+/// malformed input rather than panicking. Valid D24 guarantees every carrier-solved coordinate
+/// stays in one radical field, so the arrangement's `try_surd` conversions never escape. The
+/// full `CanonicalEdge`/`ValidatedD24` census (source-boundary components, flank correspondence)
+/// is M4/closure; this is the minimal totality guard.
+fn validate_d24<B: Backend>(edges: &[Edge<B>]) -> Result<(), CapInFault> {
+    for e in edges {
+        match e {
+            Edge::Seg(s) => {
+                if s.line.a.sign() == 0 && s.line.b.sign() == 0 {
+                    return Err(CapInFault::DegenerateLine);
+                }
+            }
+            Edge::Arc(a) => {
+                if a.circle.r2.sign() <= 0 {
+                    return Err(CapInFault::NonPositiveRadius);
+                }
+                if a.x_lo.cmp(&a.x_hi) != Ordering::Less {
+                    return Err(CapInFault::NonCanonicalArc);
+                }
+            }
+        }
+        let (start, end) = match e {
+            Edge::Seg(s) => (&s.start, &s.end),
+            Edge::Arc(a) => (&a.start, &a.end),
+        };
+        if on_carrier_checked(start, e) != Some(true) || on_carrier_checked(end, e) != Some(true) {
+            return Err(CapInFault::EndpointOffCarrier);
+        }
+    }
+    Ok(())
+}
+
 /// Why [`ledge_dom_certified`] refused a region: an internal-consistency check that a
 /// correctly-built region always passes. A fault therefore indicates a bug in the
 /// constructor, not an unsupported input — each variant names the failed check and the
-/// class of defect it catches.
+/// class of defect it catches. The one exception is [`CapOutFault::InvalidInput`], which
+/// reports *unsupported input* caught by the CAP-IN-D24 pre-pass.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CapOutFault {
+    /// The input is not well-formed D24 (a malformed edge) — caught by [`validate_d24`]
+    /// before the arrangement is built, keeping the certified entry total.
+    InvalidInput(CapInFault),
     /// The half-edge structure is malformed — a broken twin pairing or a dangling
     /// half-edge ([`Dcel::substrate_link_ok`]).
     SubstrateLink,
@@ -707,6 +780,10 @@ pub fn ledge_dom_certified<B: Backend>(
     operand_of: &impl Fn(CurveId) -> OperandId,
     op: BoolOp,
 ) -> Verdict<CapOut<B>, CapOutFault, ()> {
+    // CAP-IN-D24: reject malformed input up front so the entry is total (no panic in build).
+    if let Err(f) = validate_d24(edges) {
+        return Verdict::Refuted(CapOutFault::InvalidInput(f));
+    }
     let d = Dcel::build(edges);
     if !d.substrate_link_ok() {
         return Verdict::Refuted(CapOutFault::SubstrateLink);
@@ -906,8 +983,8 @@ pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geom::content::{Circle, Curve, Line, Orient, Point2, SegPiece};
-    use lattice::{Bignum, Rat};
+    use geom::content::{ArcPiece, Circle, Curve, Line, Orient, Point2, SegPiece, Winding};
+    use lattice::{Bignum, Rat, Surd};
 
     type Q = Rat<Bignum>;
 
@@ -1448,6 +1525,73 @@ mod tests {
             2,
             "△ = two 2×2 squares"
         );
+    }
+
+    /// **CAP-IN-D24 totality**: the certified entry refuses malformed input with a typed
+    /// `InvalidInput` fault rather than panicking inside `Dcel::build`. Three classes: a
+    /// degenerate line (`a = b = 0`), an endpoint off its own carrier, and a circle with
+    /// `r² ≤ 0` (which would otherwise trip `Surd::new`'s `d ≥ 0` bound).
+    #[test]
+    fn cap_in_rejects_malformed_input() {
+        let seg = |line: Line<Bignum>, s: (i128, i128), e: (i128, i128)| {
+            Edge::Seg(Box::new(SegPiece {
+                line,
+                start: Point2::from_rat(Q::from_i128(s.0), Q::from_i128(s.1)),
+                end: Point2::from_rat(Q::from_i128(e.0), Q::from_i128(e.1)),
+                orient: Orient::Ccw,
+                source: CurveId(0),
+            }))
+        };
+        // Degenerate line a = b = 0.
+        let degenerate = seg(
+            Line {
+                a: Q::from_i128(0),
+                b: Q::from_i128(0),
+                c: Q::from_i128(1),
+            },
+            (0, 0),
+            (1, 0),
+        );
+        assert!(matches!(
+            ledge_dom_certified(&[degenerate], &ab, BoolOp::Or),
+            Verdict::Refuted(CapOutFault::InvalidInput(CapInFault::DegenerateLine))
+        ));
+        // Endpoint (0,5) not on the carrier y = 0.
+        let off_carrier = seg(
+            Line {
+                a: Q::from_i128(0),
+                b: Q::from_i128(1),
+                c: Q::from_i128(0),
+            },
+            (0, 5),
+            (1, 0),
+        );
+        assert!(matches!(
+            ledge_dom_certified(&[off_carrier], &ab, BoolOp::Or),
+            Verdict::Refuted(CapOutFault::InvalidInput(CapInFault::EndpointOffCarrier))
+        ));
+        // Circle with r² = −1 — not a real circle.
+        let bad_circle = Edge::Arc(Box::new(ArcPiece {
+            circle: Circle {
+                cx: Q::from_i128(0),
+                cy: Q::from_i128(0),
+                r2: Q::from_i128(-1),
+            },
+            half: Half::Upper,
+            x_lo: Surd::from_rat(Q::from_i128(-1)),
+            x_hi: Surd::from_rat(Q::from_i128(1)),
+            start: Point2::from_rat(Q::from_i128(-1), Q::from_i128(0)),
+            end: Point2::from_rat(Q::from_i128(1), Q::from_i128(0)),
+            winding: Winding {
+                orient: Orient::Ccw,
+                source_span: None,
+            },
+            source: CurveId(0),
+        }));
+        assert!(matches!(
+            ledge_dom_certified(&[bad_circle], &ab, BoolOp::Or),
+            Verdict::Refuted(CapOutFault::InvalidInput(CapInFault::NonPositiveRadius))
+        ));
     }
 
     /// **Mixed line+circle operands** (#3): a 6×6 square A with a radius-2 disk B fully
