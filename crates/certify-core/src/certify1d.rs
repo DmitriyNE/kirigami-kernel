@@ -56,33 +56,76 @@ pub struct RegCert<B: Backend = Bignum> {
     pub res_chain: SturmChain<B>,
 }
 
+/// Why the REG-Q family ([`reg_q`] / [`slab_s0`] / [`trim_local`]) refused a certificate.
+///
+/// Separates a **malformed certificate** (bad paperwork — a non-positive margin or a forged
+/// Sturm chain; there is no real counterexample and the inequality may even hold) from a
+/// genuine **positivity failure** (a real degeneracy at a σ witness). Recovery logic — e.g. a
+/// REPARAM trigger, or a searcher deciding whether to subdivide — needs to tell the two apart.
+///
+/// For the positivity variants the `sigma` is the checker's witness (the span's lower bound);
+/// it marks the failing check, not necessarily the exact root (isolating the precise root is a
+/// future refinement).
+pub enum RegFault<B: Backend = Bignum> {
+    /// The separation margin is not strictly positive — not a regularity certificate at all.
+    NonPositiveMargin,
+    /// The supplied Sturm chain of `den` is not `den`'s chain (a forged or stale chain).
+    InvalidDenChain,
+    /// The supplied Sturm chain of the residual `R = num − m·den` is not `R`'s chain.
+    InvalidResidualChain,
+    /// The denominator is not strictly positive on the span (a real degeneracy).
+    NonPositiveDen {
+        /// The checker's σ witness (the span lower bound).
+        sigma: Rat<B>,
+    },
+    /// `num/den > m` does not hold on the span (a real margin failure).
+    MarginFailure {
+        /// The checker's σ witness (the span lower bound).
+        sigma: Rat<B>,
+    },
+    /// A stall-end ring datum ([`slab_s0`]) is not strictly positive.
+    StallLimit {
+        /// The non-positive ring value.
+        value: Rat<B>,
+    },
+    /// An outer-support-fiber corner ([`trim_local`]) is not strictly retained (`G_i ≤ 0`).
+    OuterFiber {
+        /// The non-positive corner value.
+        value: Rat<B>,
+    },
+}
+
 /// REG-Q (spec §8.5): certify `num/den > m` on the span, with `den > 0` and `m > 0`.
-/// Total — `Verified(m)` or `Refuted(σ)` at a span point where the margin fails.
+/// Total — `Verified(m)` or `Refuted(`[`RegFault`]`)`.
 ///
 /// The margin must be **strictly positive**: a regularity certificate exists to bound a
 /// √-cleared quantity *away* from zero. With `m ≤ 0` the residual `R = num − m·den` can be
 /// positive without `num > 0` (a negative `m` makes `Verified` on a degenerate `num ≡ 0` —
 /// the checker would certify nothing), so a non-positive margin is rejected outright rather
-/// than trusted from the searcher.
-pub fn reg_q<B: Backend>(cert: &RegCert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+/// than trusted from the searcher. The [`RegFault`] distinguishes that (and a forged chain)
+/// from a genuine positivity failure.
+pub fn reg_q<B: Backend>(cert: &RegCert<B>) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     let (lo, hi) = (&cert.span.lo, &cert.span.hi);
     // A non-positive separation margin is not a regularity certificate — reject it.
     if cert.m.0.sign() <= 0 {
-        return Verdict::Refuted(lo.clone());
+        return Verdict::Refuted(RegFault::NonPositiveMargin);
     }
     let r = cert.num.sub(&cert.den.scale(&cert.m.0)); // R = num − m·den
 
     // Re-verify the supplied chains — a chain we did not check is not evidence.
-    if !cert.den_chain.verify_chain(&cert.den) || !cert.res_chain.verify_chain(&r) {
-        return Verdict::Refuted(lo.clone());
+    if !cert.den_chain.verify_chain(&cert.den) {
+        return Verdict::Refuted(RegFault::InvalidDenChain);
+    }
+    if !cert.res_chain.verify_chain(&r) {
+        return Verdict::Refuted(RegFault::InvalidResidualChain);
     }
     // den > 0 on [lo, hi]: positive at the closed lower end and no root in (lo, hi].
     if cert.den.eval(lo).sign() <= 0 || cert.den_chain.count_in(lo, hi) != 0 {
-        return Verdict::Refuted(lo.clone());
+        return Verdict::Refuted(RegFault::NonPositiveDen { sigma: lo.clone() });
     }
     // R > 0 on [lo, hi] ⇒ num > m·den ⇒ num/den > m (den > 0).
     if r.eval(lo).sign() <= 0 || cert.res_chain.count_in(lo, hi) != 0 {
-        return Verdict::Refuted(lo.clone());
+        return Verdict::Refuted(RegFault::MarginFailure { sigma: lo.clone() });
     }
     Verdict::Verified(cert.m.clone())
 }
@@ -108,17 +151,21 @@ pub struct SlabS0Cert<B: Backend = Bignum> {
 /// SLAB-S0 (spec §8.5): the one-sided `inf(R₁ + w) > 0`, reduced by corner collapse at
 /// `w⁻` (the `+w` coefficient is structurally `+1`) to the [`reg_q`] positivity core,
 /// plus — on stall-end spans — that both `μ̂`-endpoint ring values are strictly positive.
-pub fn slab_s0<B: Backend>(cert: &SlabS0Cert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+pub fn slab_s0<B: Backend>(cert: &SlabS0Cert<B>) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     let core = reg_q(&cert.core);
     if !matches!(core, Verdict::Verified(_)) {
         return core;
     }
     if let Some(sl) = &cert.stall_end {
         if sl.value_lo.sign() <= 0 {
-            return Verdict::Refuted(sl.value_lo.clone());
+            return Verdict::Refuted(RegFault::StallLimit {
+                value: sl.value_lo.clone(),
+            });
         }
         if sl.value_hi.sign() <= 0 {
-            return Verdict::Refuted(sl.value_hi.clone());
+            return Verdict::Refuted(RegFault::StallLimit {
+                value: sl.value_hi.clone(),
+            });
         }
     }
     core
@@ -352,12 +399,14 @@ pub struct TrimLocalCert<B: Backend = Bignum> {
 /// TRIM-LOCAL (spec §8.5): the clip stays local — every outer-fiber corner is strictly
 /// retained (`G_i > 0`) **and** the interior is confined. Catches the re-entry a w-only
 /// quantification misses: a 1.49-wrap flank re-crosses the trim plane at distant σ.
-/// `Verified(m)` (the confinement margin) or `Refuted(G_i)` at the first failure.
-pub fn trim_local<B: Backend>(cert: &TrimLocalCert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+/// `Verified(m)` (the confinement margin) or `Refuted(`[`RegFault`]`)` at the first failure.
+pub fn trim_local<B: Backend>(
+    cert: &TrimLocalCert<B>,
+) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     for fiber in &cert.outer_fibers {
         for g in fiber {
             if g.sign() <= 0 {
-                return Verdict::Refuted(g.clone());
+                return Verdict::Refuted(RegFault::OuterFiber { value: g.clone() });
             }
         }
     }
@@ -561,6 +610,33 @@ mod tests {
         let mut cert = reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2));
         cert.res_chain = SturmChain::new(&poly(&[7])); // wrong chain (not R's)
         assert!(matches!(reg_q(&cert), Verdict::Refuted(_)));
+    }
+
+    #[test]
+    fn reg_q_fault_distinguishes_paperwork_from_degeneracy() {
+        // Bad paperwork — no real counterexample, no σ witness:
+        let m0 = reg_cert(&[1, 0, 1], &[1], Q::from_i128(0), span(-2, 2));
+        assert!(matches!(
+            reg_q(&m0),
+            Verdict::Refuted(RegFault::NonPositiveMargin)
+        ));
+        let mut forged = reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2));
+        forged.res_chain = SturmChain::new(&poly(&[7]));
+        assert!(matches!(
+            reg_q(&forged),
+            Verdict::Refuted(RegFault::InvalidResidualChain)
+        ));
+        // A genuine positivity failure — a real degeneracy carrying a σ witness:
+        let too_large = reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2));
+        assert!(matches!(
+            reg_q(&too_large),
+            Verdict::Refuted(RegFault::MarginFailure { .. })
+        ));
+        let bad_den = reg_cert(&[1, 0, 1], &[0, 1], Q::new(1, 4), span(-2, 2));
+        assert!(matches!(
+            reg_q(&bad_den),
+            Verdict::Refuted(RegFault::NonPositiveDen { .. })
+        ));
     }
 
     #[test]
