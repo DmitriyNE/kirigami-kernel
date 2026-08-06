@@ -180,6 +180,25 @@ pub fn link_ok(sectors: &[bool]) -> bool {
     !matches!(classify_link(sectors), LinkClass::Pinch)
 }
 
+/// Whether `xs` has a repeated element (a nested index scan accumulating a flag — no early
+/// return from the inner loop, which the Aeneas lift does not support).
+fn has_duplicate(xs: &[usize]) -> bool {
+    let n = xs.len();
+    let mut found = false;
+    let mut i = 0;
+    while i < n {
+        let mut j = i + 1;
+        while j < n {
+            if xs[i] == xs[j] {
+                found = true;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    found
+}
+
 /// `Link_emitted(v) ≅ Link_geometric(v)` (spec §8.5): do the two cyclic
 /// orderings `a` (the stored face-cycle walk) and `b` (the geometric azimuth sort) of
 /// the incident edges around `v` agree as an **identity-fixing oriented cyclic
@@ -187,10 +206,10 @@ pub fn link_ok(sectors: &[bool]) -> bool {
 /// order and orientation)? This is the *audit* the spec insists on over a mere count:
 /// `a → c → b → d` has the right multiset yet crosses, and is rejected here. Pure,
 /// `no_std`, panic-free; Kani-**validated for N=4 permutations**
-/// (`link_iso_matches_cyclic_adjacency`) — the harness also assumes its inputs are genuine
-/// permutations, which this function does not itself check (in-pipeline inputs, a vertex's
-/// incident-edge set, always are). The unbounded proof + a permutation guard are tracked
-/// follow-ups (`docs/engineering-log.md`).
+/// (`link_iso_matches_cyclic_adjacency`). Both inputs are validated to be genuine
+/// permutations (no repeated element) — the harness's precondition, now enforced by the
+/// deployed checker so a malformed link cannot slip through the rotation search. The
+/// unbounded (all-N) proof remains a tracked follow-up (`docs/engineering-log.md`).
 pub fn link_iso_ok(a: &[usize], b: &[usize]) -> bool {
     let n = a.len();
     if b.len() != n {
@@ -198,6 +217,12 @@ pub fn link_iso_ok(a: &[usize], b: &[usize]) -> bool {
     }
     if n == 0 {
         return true;
+    }
+    // Both must be genuine permutations (no repeated incident edge) — the isomorphism is
+    // between two orderings of the same set, so a duplicate is malformed. Enforcing the
+    // harness's precondition keeps the deployed checker in sync with its proof.
+    if has_duplicate(a) || has_duplicate(b) {
+        return false;
     }
     // Some rotation `off` of `b` matches `a` position-for-position.
     let mut off = 0;
@@ -371,5 +396,15 @@ mod tests {
         // Different length / different elements.
         assert!(!link_iso_ok(&[0, 1, 2], &[0, 1, 2, 3]));
         assert!(!link_iso_ok(&[0, 1, 2], &[0, 1, 4]));
+    }
+
+    #[test]
+    fn link_iso_rejects_non_permutations() {
+        // A repeated element is malformed input — rejected even where a rotation would
+        // otherwise "match" (the rotation search assumes genuine permutations).
+        assert!(!link_iso_ok(&[0, 1, 1], &[0, 1, 1]));
+        assert!(!link_iso_ok(&[0, 1, 2], &[1, 1, 2]));
+        // Genuine permutations still round-trip.
+        assert!(link_iso_ok(&[0, 1, 2, 3], &[2, 3, 0, 1]));
     }
 }
