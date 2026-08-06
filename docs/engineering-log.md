@@ -62,7 +62,14 @@ fine — this is a log, not a schema.
   Honest stamp today: "combinatorially self-consistent, geometry differentially validated." Fix: emit
   per-pair certificates (discriminant sign, exhaustive candidate count, carrier residuals, interval-
   membership decisions) for line/line, line/circle, circle/circle — cheap exact D24 algebra — and check
-  them. README/AGENT reconciled to state this scope (batch 2). *2026-08-06 · deferred · vv-guide §6*
+  them. README/AGENT reconciled to state this scope (batch 2). **This is debt-sprint item 8** (with the
+  multi-component gauge anchor #9b and the folded `CoincEdge`/`CoincSet` deletion) — a genuine
+  *geometric-checker* slice, not a quick fix: it needs independence from the solver (re-derive the
+  discriminant/residuals over the output, don't re-solve), binding the per-pair evidence to the input edges
+  (the #6-`CertifiedChart` transplant risk), and a re-verifiable per-component point-location for the
+  gauge. Given its own **focused design pass** rather than rushed at the tail of the sprint; a natural fold
+  into Milestone C, where `closure` builds the CAP-IN-D24 census + per-pair geometry and SEW-LINK needs the
+  gauge-anchored labels anyway. *2026-08-06 · deferred(→ own pass / C) · spine.rs, carrier.rs, witness.rs*
 
 - **`CertifiedChart` digest-binding — the *remaining* (persistence-only) half.** The in-memory
   claim/evidence binding is **done** (batch 2b): `CertifiedChart::certify` now re-derives the checked
@@ -87,13 +94,17 @@ fine — this is a log, not a schema.
   MarginFailure{sigma}}`, threaded through `slab_s0`/`trim_local`/`ChartFault`. Mostly semantic hygiene
   today. *2026-08-06 · deferred · `certify_core::certify1d`*
 
-- **CLIP ladder verifies rungs but not coverage.** `clip()` (certify1d.rs) returns `Certified` when the
-  supplied μ-subspans each verify, but never checks they **cover** the CLIP-W-failing set; and the
-  supplied common-zeros aren't checked against an exhaustive isolated-root census — a searcher can supply
-  one convenient subspan or omit an awkward zero. Same vacuity for empty `outer_fibers` in `trim_local`.
-  Fix: the checker must verify a partition (intervals ordered / disjoint / covering the parent failure
-  set; root count = supplied isolating intervals; one discharge per zero; no gaps or dups) and an
-  independent fiber census. A local-proof-vs-global-coverage hole. *2026-08-06 · deferred · spec §8.5 CLIP*
+- **CLIP ladder coverage — common-zero census DONE; μ-coverage + fiber-census remain.** *Census done
+  (debt-sprint item 6, `60e890e`):* `ZeroCensus`/`census_ok` — `clip()` now certifies the per-zero path
+  only if the supplied zeros are the complete isolated-root set of `b²+d²` (independently re-counted;
+  disjoint, σ-ordered, one-per-interval), closing the omit-an-awkward-zero hole. *Remaining (deferred with
+  rationale):* **(a)** μ-subspan coverage of the CLIP-W failing set `{R_W ≤ 0}` — sound-ly relating the
+  failing region (whose boundaries are *irrational* R_W roots) to the searcher's *rational* μ-spans, with
+  open/closed boundary handling under half-open Sturm counts, is genuinely hard, and there is **no CLIP
+  searcher** yet to validate against (all CLIP certs are hand-built fixtures; the producer is M4/closure).
+  Shipping an unvalidated coverage checker in the sprint meant to *fix* coverage was judged too risky.
+  **(b)** the `trim_local`/`clip_dom` sign-event fiber census (needs the chart-domain sign-event
+  polynomial). Both best done alongside C's searcher. *2026-08-06 · deferred(→C searcher) · spec §8.5 CLIP*
 
 - **`slab_locate` release-silent defaults + the multi-component cocycle gauge.** Two parts. (a) The
   critical-height genericity check is a `debug_assert!` (boolean.rs, gone in release) and unassigned
@@ -275,6 +286,26 @@ fine — this is a log, not a schema.
   *2026-08-04 · watching · `docs/proofs/ledger.md`*
 
 ## Resolved
+
+- **Debt sprint — 7 of 8 review-batch items paid down (branch `debt-sprint`).** *Done 2026-08-06:*
+  **(1)** structured `RegFault` splitting bad-paperwork from real degeneracy through the REG-Q family +
+  `ChartFault` (`5834d0e`). **(2)** `slab_locate` no longer silently defaults an unassigned cycle /
+  non-generic decomposition on the certified path — `CapOutFault::Incomplete` (`116ef78`). **(3)**
+  `link_iso_ok` permutation guard (`has_duplicate`), with the Aeneas-lifted Lean model regenerated +
+  `lake build` + axiom audit re-run clean (`4b94a53`); finding: Aeneas rejects `return` inside nested
+  loops. **(4)** verified the *live* coincidence merge handles **partial** overlap (`coincide`'s touches
+  seed the vertices; new fixture) — the dead `CoincEdge`/`CoincSet` deletion folds into item 8's witness
+  rework (`abbdf7a`). **(5)** CAP-IN-D24 minimal totality guard `validate_d24` — `ledge_dom_certified` is
+  now total over malformed input (`5ffbe34`). **(6, part 1)** CLIP-ladder **common-zero census**
+  (`ZeroCensus`/`census_ok`) closing the omitted-zero hole (`60e890e`). **(7)** CAP-OUT **source-ID
+  permutation bijection** replacing the coverage count (`boundary_bijection_ok`; `56accab`; vv-matrix
+  🚧→✅). Each a full-workspace-green commit (nextest/doctests/fmt/clippy -D/xtask; #3 also lake+audit).
+  **Deferred (judgment, with rationale):** item 6's **μ-coverage + fiber-census** — relating the CLIP-W
+  failing region (irrational R_W roots) to rational μ-spans is hard to do *soundly* and there is no CLIP
+  searcher to validate against; risky to ship an unvalidated coverage checker in the sprint meant to fix
+  coverage. Best done with C's searcher (see the CLIP To-do entry). Item 8 (per-pair certs + gauge) is a
+  genuine geometric-checker slice — given its own focused pass (see To-do). Superseded To-do entries:
+  RegFault, the CAP-OUT bijection, and the CAP-IN totality-guard half.
 
 - **`divrem` op refinement (algebra-rehaul R.4b.4).** *Done 2026-08-05:* `divrem_loop_spec` (the
   bit-serial restoring-division loop = Euclidean identity, `704196e`) + `divrem_eq` (the wrapper =
