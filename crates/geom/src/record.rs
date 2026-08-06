@@ -60,6 +60,11 @@ pub struct ChartEvidence<B: Backend = Bignum> {
 
 /// Which regularity check [`CertifiedChart::certify`] refuted.
 pub enum ChartFault<B: Backend = Bignum> {
+    /// The domain is malformed — some interval is reversed (`lo > hi`). `reg_q` assumes an
+    /// oriented interval (its Sturm root count is a saturating subtraction), so a reversed σ
+    /// span could report zero roots and verify on the value at `lo` alone; the domain is
+    /// rejected before any check runs.
+    InvalidDomain,
     /// The chart does not classify to a primitive tag.
     Untagged,
     /// REG-Q on `|q|²` was refuted (with the σ witness `reg_q` reported).
@@ -167,6 +172,15 @@ impl<B: Backend> CertifiedChart<B> {
         evidence: ChartEvidence<B>,
         kappa_cap: Rat<B>,
     ) -> Verdict<CertifiedChart<B>, ChartFault<B>, ()> {
+        // Domain well-formedness: every interval must be oriented (`lo ≤ hi`). `reg_q`'s
+        // Sturm count saturates, so a reversed σ span could verify on the value at `lo` alone;
+        // reject a malformed domain before any check runs.
+        if domain.sigma.lo.cmp(&domain.sigma.hi) == core::cmp::Ordering::Greater
+            || domain.mu.0.cmp(&domain.mu.1) == core::cmp::Ordering::Greater
+            || domain.w.0.cmp(&domain.w.1) == core::cmp::Ordering::Greater
+        {
+            return Verdict::Refuted(ChartFault::InvalidDomain);
+        }
         // Recompute the tag — never trust a supplied one.
         let tag = match classify(&chart) {
             Some(t) => t,

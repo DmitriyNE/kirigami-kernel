@@ -199,6 +199,29 @@ mod tests {
     }
 
     #[test]
+    fn certify_refutes_a_reversed_domain() {
+        // A reversed σ interval (lo > hi) is malformed: `reg_q`'s Sturm count saturates, so it
+        // could report zero roots and verify on the value at `lo` alone. The domain
+        // well-formedness gate rejects it before any check runs.
+        let chart = cone();
+        let good = cone_domain();
+        let t = regularity_targets(&chart, &good);
+        let ev = cone_evidence(&t);
+        let reversed = ChartDomain {
+            sigma: Interval {
+                lo: Rat::from_i128(1),
+                hi: Rat::from_i128(0),
+            },
+            mu: (Rat::from_i128(-1), Rat::new(-1, 2)),
+            w: (Rat::new(-1, 4), Rat::new(1, 4)),
+        };
+        assert!(matches!(
+            CertifiedChart::certify(chart, reversed, ev, Rat::from_i128(0)),
+            Verdict::Refuted(ChartFault::InvalidDomain)
+        ));
+    }
+
+    #[test]
     fn cone_principal_radius_shrinks_along_sigma() {
         // R₁ per unit μ is `g(σ) = (r′·n′)/|n′|² = −130/(97(1+σ²))` — *not* σ-constant: the
         // half-angle is fixed (n·ẑ ≡ 65/97) but the σ-parametrization is non-uniform, so the
