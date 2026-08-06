@@ -11,7 +11,11 @@
 //!   local check sees. Proven by `cocycle_implies_telescoping`.
 //! - [`classify_link`] / [`v_boundary`] / [`link_ok`] — CAP-OUT-LINK (spec §8.5):
 //!   classify a vertex from its cyclic sector-selected mask and compute `V_∂`
-//!   membership. The frame-invariant manifold/pinch test. Proven by
+//!   membership. `link_ok` is the frame-invariant **strict-manifold (no-pinch)
+//!   predicate**: it is `false` exactly on a pinch, which is why a pinch is `v ∉ V_∂`.
+//!   It is a per-vertex *classifier*, not a region gate — a pinched region (e.g. a
+//!   transverse `△`) is a valid, correctly-emitted result; whether to refuse one is the
+//!   consumer's policy (ultimately SEW-LINK's), not CAP-OUT's. Proven by
 //!   `link_ok_iff_no_pinch`.
 //! - [`link_iso_ok`] — `Link_emitted ≅ Link_geometric` (spec §8.5): the two cyclic
 //!   orders agree as an identity-fixing oriented isomorphism.
@@ -26,6 +30,10 @@
 /// packs the same (bit 0 = ∂F_A, bit 1 = ∂F_B; a coincident edge = `0b11`). The
 /// searcher supplies a labeling; this certifies it is a valid ℤ₂² cochain:
 /// - the arrays are well-shaped and every index is in range;
+/// - every label and every flip is in the ℤ₂² domain (only bits 0–1 set) — a value
+///   with any higher bit is a malformed certificate, not a member of ℤ₂², and is
+///   rejected rather than trusted (the checker enforces the domain the
+///   `cocycle_implies_telescoping` proof assumes, instead of trusting the constructor);
 /// - the seed (unbounded) cell is `(0, 0)`;
 /// - crossing each undirected edge flips exactly its bits: `labels[a] ^ flip ==
 ///   labels[b]`.
@@ -51,14 +59,27 @@ pub fn cocycle_ok(
     if edge_b.len() != m || edge_flip.len() != m {
         return false;
     }
+    // ℤ₂² domain: every label is a two-bit value. A high bit has no meaning in ℤ₂², so
+    // its presence is a malformed certificate — reject rather than trust the constructor.
+    let mut li = 0;
+    while li < labels.len() {
+        if labels[li] & !0b11 != 0 {
+            return false;
+        }
+        li += 1;
+    }
     // The unbounded cell is anchored at (A, B) = (0, 0).
     match labels.get(seed) {
         Some(&0) => {}
         _ => return false,
     }
-    // Every edge is locally consistent: crossing it flips exactly its bits.
+    // Every edge is locally consistent: its flip is a two-bit value, and crossing it
+    // flips exactly those bits.
     let mut i = 0;
     while i < m {
+        if edge_flip[i] & !0b11 != 0 {
+            return false;
+        }
         match (labels.get(edge_a[i]), labels.get(edge_b[i])) {
             (Some(&la), Some(&lb)) => {
                 if la ^ edge_flip[i] != lb {
@@ -87,8 +108,10 @@ pub enum LinkClass {
     /// vertex (`v ∈ V_∂`).
     Boundary,
     /// Two or more disjoint selected intervals — a non-manifold **pinch** (the
-    /// internal-tangency witness). CAP-OUT-LINK rejects it (spec: "disconnected ⇒
-    /// reject"; "π₀ keeps them separate, CAP-OUT-LINK rejects the vertex").
+    /// internal-tangency witness). CAP-OUT-LINK excludes it from `V_∂` (spec: "π₀ keeps
+    /// them separate, CAP-OUT-LINK rejects the vertex" — the vertex, not the region). The
+    /// pinched region is still valid and correctly emitted; the manifold requirement it
+    /// fails is enforced downstream where a shell is actually sewn (SEW-LINK), not here.
     Pinch,
 }
 
@@ -114,7 +137,7 @@ fn cyclic_true_runs(sectors: &[bool]) -> usize {
 
 /// Classify a vertex's link from its cyclic sector-selected mask (spec §8.5
 /// CAP-OUT-LINK): `0` runs ⇒ exterior, a full ring ⇒ interior, one proper interval ⇒
-/// boundary (`v ∈ V_∂`), two or more ⇒ pinch (reject). Pure, `no_std`, panic-free —
+/// boundary (`v ∈ V_∂`), two or more ⇒ pinch (`v ∉ V_∂`). Pure, `no_std`, panic-free —
 /// the `certify_core` TCB / extraction surface; Kani-proven (`link_ok_iff_no_pinch`).
 pub fn classify_link(sectors: &[bool]) -> LinkClass {
     match cyclic_true_runs(sectors) {
@@ -148,8 +171,11 @@ pub fn v_boundary(sectors: &[bool]) -> bool {
     matches!(classify_link(sectors), LinkClass::Boundary)
 }
 
-/// CAP-OUT-LINK acceptance at `v`: a 2-manifold-with-boundary link — not a pinch (spec
-/// §8.5: "disconnected ⇒ reject", manifoldness is a property of the *selected region*).
+/// The strict-manifold (no-pinch) predicate at `v`: `true` iff the link is a
+/// 2-manifold-with-boundary — not a pinch (spec §8.5). This is a *classifier* feeding
+/// `V_∂` membership and the downstream SEW-LINK gate, **not** a CAP-OUT region gate: the
+/// certified boolean (`arrange2d::boolean::ledge_dom_certified`) does not refuse a region
+/// on `!link_ok`, because a pinch (e.g. a transverse `△`) is a valid emitted result.
 pub fn link_ok(sectors: &[bool]) -> bool {
     !matches!(classify_link(sectors), LinkClass::Pinch)
 }
@@ -249,6 +275,25 @@ mod tests {
         assert!(!cocycle_ok(2, &labels, 0, &[0], &[5], &ef));
         // mismatched edge array lengths
         assert!(!cocycle_ok(2, &labels, 0, &[0, 1], &[1], &ef));
+    }
+
+    #[test]
+    fn rejects_values_outside_z2xz2() {
+        // A high bit (bit 2+) has no meaning in ℤ₂². The XOR equation alone cannot catch
+        // it — `0 ^ 4 == 4` holds — so the domain must be checked explicitly. A checker
+        // that merely trusts the constructor's two-bit packing would accept this.
+        let labels = [0u8, 4]; // cell 1's label carries bit 2 — not a ℤ₂² value
+        let ea = [0usize];
+        let eb = [1usize];
+        let ef = [0b100u8]; // flip carries bit 2; 0 ^ 4 == 4 satisfies the XOR check
+        assert!(
+            !cocycle_ok(2, &labels, 0, &ea, &eb, &ef),
+            "an out-of-domain (non-ℤ₂²) label/flip must be rejected"
+        );
+        // An out-of-domain flip alone (labels in-domain) is likewise rejected.
+        assert!(!cocycle_ok(2, &[0u8, 0], 0, &ea, &eb, &[0b100u8]));
+        // The in-domain counterpart of the same shape is accepted.
+        assert!(cocycle_ok(2, &[0u8, 1], 0, &ea, &eb, &[0b01u8]));
     }
 
     // --- CAP-OUT-LINK: V_∂ classification ---

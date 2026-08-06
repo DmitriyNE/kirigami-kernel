@@ -371,7 +371,8 @@ unlike `lattice::small` — it needs **no hand-written externals** (its lifted T
 The link checkers (`v_boundary`/`link_ok`/`link_iso_ok` + closure) lift, typecheck, and are **axiom-clean and
 sorry-free** (`#print axioms … [propext, Classical.choice, Quot.sound]`). `CertifyCheck.CapOut` proves the
 **dispatch-soundness** layer deductively over the lifted model: `link_ok` returns `false` iff the vertex is a
-`Pinch` (the CAP-OUT-LINK reject rule), `v_boundary ↔ Boundary`, and `V_∂ ⊆ accepted` — all axiom-clean.
+`Pinch` (a `V_∂` exclusion — the strict-manifold predicate, not a region rejection), `v_boundary ↔ Boundary`,
+and `V_∂ ⊆ accepted` — all axiom-clean.
 
 **The run-counter refinement is now proven in Lean** (`CertifyCheck.CapOutRefine`, axiom-clean): the
 Aeneas-lifted `cyclic_true_runs` provably computes the mathematical cyclic-run count (`cyclic_true_runs_spec`,

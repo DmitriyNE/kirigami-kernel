@@ -19,6 +19,94 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **CAP-OUT boundary bijection — upgrade the coverage count to a source-ID permutation certificate.**
+  `ledge_dom_certified`'s fourth gate is `separating_count == region_boundary_count`
+  (`arrange2d::boolean`, `CapOutFault::BoundaryEdgeCount`) — a scalar **coverage** count. It is honest
+  but weaker than the spec's completeness *bijections*: it certifies every separating edge is emitted
+  exactly once (given the tracer emits each boundary half-edge at most once), but checks neither per-edge
+  source identity, loop closure, orientation, nor the other two spec bijections ({selected components} ↔
+  {emitted faces}, V_∂ ↔ {emitted shell vertices}). Fix: stamp a stable source-edge id on every emitted
+  boundary edge and check an explicit permutation certificate (plus the component-id and shell-vertex-id
+  bijections) in the pure `certify_core` tier. Surfaced in review batch 1 (the docs/vv-matrix previously
+  over-claimed "bijection"; now labeled a coverage count). *2026-08-06 · deferred · `vv-matrix.md`
+  completeness-bijections row*
+
+- **CAP-IN-D24 input license — `ledge_dom_certified` is not total over malformed input.** The certified
+  entry takes raw `&[Edge]` (all-pub fields) and calls `Dcel::build`, which *panics* on ill-formed input
+  (`unreachable!` in `build` when the event spine is not `Verified`; `try_surd().unwrap()` in
+  `on_carrier`). No CAP-IN-D24 check gates it, so a hand-crafted edge (r² ≤ 0 circle, endpoints off
+  carrier, degenerate line, non-canonical piece) is a malformed-certificate route that panics rather than
+  rejects — counter to the "checker total over arbitrary serialized input" doctrine. Full fix =
+  `CanonicalEdge`/`ValidatedD24` newtypes minted only by a CAP-IN-D24 checker (the spec §8.5 input
+  license; lands with `closure`/M4, where the census already lives, `closure/src/lib.rs`). **Parked
+  decision:** land a *minimal* totality guard now (a D24 well-formedness pre-pass that returns
+  `Refuted`/`Unresolved` instead of panicking) vs. defer wholesale to M4 — revisit after the remaining
+  review batches. *2026-08-06 · deferred(→M4) · spec §8.5 CAP-IN-D24*
+
+- **CAP-OUT strict-manifold entry (`ShellReady`) — decide when SEW lands.** `ledge_dom_certified` is
+  deliberately *relaxed*: a pinch (non-manifold vertex, e.g. a transverse `△`) is a valid, reported
+  result (`CapOut.pinches`), not a refusal — the manifold requirement is owned by the downstream SEW-LINK
+  gate, and there is no pre-SEW consumer today (confirmed in review batch 1). When SEW (M4/M5) is built,
+  reconsider a typed strict entry `ledge_dom_manifold → ShellReady<B>` that additionally gates
+  `pinches.is_empty()` and returns a type only a no-pinch region inhabits — so "forgot to check
+  manifoldness" is a compile error and the proven `link_ok` is used in production. Deferred (not now)
+  because the newtype's contract is SEW's to specify; building it blind risks guessing wrong.
+  *2026-08-06 · deferred(→M4) · `certify_core::arrange::link_ok`*
+
+- **Front-half geometry is trusted — add per-pair D24 intersection certificates.** The
+  arrangement checkers (`certify_core::arrange`) read only the *combinatorial* certificate — indices,
+  labels, cyclic orders — never coordinates, so the geometric front-half (`carrier`/`decompose`/
+  `membership`/`classify`/`spine`) is *trusted* (differentially validated vs CGAL + property tests, not
+  checker-certified; vv-guide §6 "trusted front-half"). A carrier-solver bug — a dropped intersection, a
+  wrong point, a misclassified coincidence — can yield a self-consistent DCEL that passes every checker.
+  Honest stamp today: "combinatorially self-consistent, geometry differentially validated." Fix: emit
+  per-pair certificates (discriminant sign, exhaustive candidate count, carrier residuals, interval-
+  membership decisions) for line/line, line/circle, circle/circle — cheap exact D24 algebra — and check
+  them. README/AGENT reconciled to state this scope (batch 2). *2026-08-06 · deferred · vv-guide §6*
+
+- **`CertifiedChart`/`CapOut` digest-binding (the deferred half of the opaque-record fix).** Batch 2
+  made both types unforgeable *by construction* (private fields, checker-only constructors —
+  `CertifiedChart::certify`, `ledge_dom_certified`). The remaining half — binding a stored verdict to a
+  canonical **digest** of its claim/input so a certificate can't be transplanted across a
+  serialize/deserialize boundary, and retaining the certificate needed to *re-check* — is deferred until
+  a persistence path exists (there is none today; building it now = inventing a serialization format
+  speculatively, same YAGNI as `ShellReady`). *2026-08-06 · deferred · `geom::record`, `arrange2d::boolean`*
+
+- **CLIP ladder verifies rungs but not coverage.** `clip()` (certify1d.rs) returns `Certified` when the
+  supplied μ-subspans each verify, but never checks they **cover** the CLIP-W-failing set; and the
+  supplied common-zeros aren't checked against an exhaustive isolated-root census — a searcher can supply
+  one convenient subspan or omit an awkward zero. Same vacuity for empty `outer_fibers` in `trim_local`.
+  Fix: the checker must verify a partition (intervals ordered / disjoint / covering the parent failure
+  set; root count = supplied isolating intervals; one discharge per zero; no gaps or dups) and an
+  independent fiber census. A local-proof-vs-global-coverage hole. *2026-08-06 · deferred · spec §8.5 CLIP*
+
+- **`slab_locate` release-silent defaults + the multi-component cocycle gauge.** Two parts. (a) The
+  critical-height genericity check is a `debug_assert!` (boolean.rs, gone in release) and unassigned
+  cycles get `unwrap_or((false,false))`/`(0,0)` — an incomplete slab decomposition silently manufactures
+  outside-labels + bogus reps in release. Fix: make an incomplete decomposition / unassigned cycle an
+  explicit `CapOutFault`/`Unresolved`, not a default. (b) Deeper: `cocycle_ok` pins the ℤ₂² gauge only in
+  the seed's connected dual-component — for a disconnected dual graph (disjoint operands; holes, where
+  one region is bounded by several edge-disjoint cycles) every other component can be uniformly
+  XOR-shifted and still satisfy all edge equations, so its absolute labels come from *point-location*
+  (trusted), uncertified. This is the concrete #5 instance inside the "proven" checker; combined with (a)
+  a point-location bug on a disjoint component passes certification. Fix: per-component anchoring the
+  checker re-verifies (ties to the per-pair certificate work). *2026-08-06 · deferred · boolean.rs, arrange.rs*
+
+- **`link_iso` Kani harness is N=4; `link_iso_ok` doesn't validate its permutation precondition.**
+  `link_iso_matches_cyclic_adjacency` proves only length-4 permutations, though degree-6 vertices are
+  property-tested (vv-matrix already labels it "N=4"); the unbounded statement wants a Lean induction
+  (the `link_ok`/pinch harness, by contrast, is already N=6). And the harness *assumes* both inputs are
+  genuine permutations while `link_iso_ok` never checks that (in-pipeline inputs always are — the
+  vertex's incident-edge set — so this is narrow). Mark the Kani cell "bounded validation" and either
+  land the unbounded Lean induction or add the permutation guard. *2026-08-06 · deferred · proof.rs, arrange.rs*
+
+- **Coincidence lattice computed then discarded — consume `CoincSet` or delete it.** `arrange_events`
+  returns `(EventSet, CoincSet, Witness)` but `Dcel::build` binds `_coinc, _wit` and re-derives
+  coincidence via split + carrier-merge (dcel.rs step 3). Two coincidence implementations; the
+  elaborately-tested `coincide.rs` lattice is off the actual boolean critical path, inviting eventual
+  disagreement. Fix: either feed `CoincSet` into `Dcel::build` canonically, or drop it. `CoincEdge` doc
+  corrected to stop claiming it feeds the DCEL (batch 2). *2026-08-06 · deferred · spine.rs, dcel.rs, coincide.rs*
+
 - **Differential-fuzz — harness + real fuzz run DONE (`differential-fuzz` branch); one wiring follow-up.**
   Op-chain differential (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over
   size-bucketed operands + metamorphic mul identities) closes the two gaps the old single-op
