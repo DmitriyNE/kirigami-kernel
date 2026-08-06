@@ -16,7 +16,7 @@
 
 use crate::chart::Chart;
 use crate::tags::{Tag, classify};
-use certify_core::certify1d::{RegCert, reg_q};
+use certify_core::certify1d::{RegCert, RegFault, reg_q};
 use certify_core::{MarginSq, Verdict};
 use lattice::{Backend, Bignum, Interval, Poly, Rat, SturmChain};
 
@@ -67,16 +67,17 @@ pub enum ChartFault<B: Backend = Bignum> {
     InvalidDomain,
     /// The chart does not classify to a primitive tag.
     Untagged,
-    /// REG-Q on `|q|²` was refuted (with the σ witness `reg_q` reported).
-    QReg(Rat<B>),
+    /// REG-Q on `|q|²` was refuted (the [`RegFault`] distinguishes a bad certificate from a
+    /// real degeneracy).
+    QReg(RegFault<B>),
     /// REG-Q on `|n′|²` was refuted.
-    RulingReg(Rat<B>),
+    RulingReg(RegFault<B>),
     /// `det J` positivity was refuted at box corner `corner` (`0..4`).
     Slab {
         /// Which `(μ,w)` box corner (index into [`regularity_targets`]'s slab block).
         corner: usize,
-        /// The σ witness `reg_q` reported.
-        sigma: Rat<B>,
+        /// The [`RegFault`] `reg_q` reported for this corner.
+        fault: RegFault<B>,
     },
 }
 
@@ -139,7 +140,7 @@ fn check_reg<B: Backend>(
     target: &(Poly<B>, Poly<B>),
     ev: RegEvidence<B>,
     span: &Interval<B>,
-) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     reg_q(&RegCert {
         num: target.0.clone(),
         den: target.1.clone(),
@@ -207,7 +208,7 @@ impl<B: Backend> CertifiedChart<B> {
             Verdict::Refuted(s) => {
                 return Verdict::Refuted(ChartFault::Slab {
                     corner: 0,
-                    sigma: s,
+                    fault: s,
                 });
             }
             Verdict::Unresolved(()) => return Verdict::Unresolved(()),
@@ -217,7 +218,7 @@ impl<B: Backend> CertifiedChart<B> {
             Verdict::Refuted(s) => {
                 return Verdict::Refuted(ChartFault::Slab {
                     corner: 1,
-                    sigma: s,
+                    fault: s,
                 });
             }
             Verdict::Unresolved(()) => return Verdict::Unresolved(()),
@@ -227,7 +228,7 @@ impl<B: Backend> CertifiedChart<B> {
             Verdict::Refuted(s) => {
                 return Verdict::Refuted(ChartFault::Slab {
                     corner: 2,
-                    sigma: s,
+                    fault: s,
                 });
             }
             Verdict::Unresolved(()) => return Verdict::Unresolved(()),
@@ -237,7 +238,7 @@ impl<B: Backend> CertifiedChart<B> {
             Verdict::Refuted(s) => {
                 return Verdict::Refuted(ChartFault::Slab {
                     corner: 3,
-                    sigma: s,
+                    fault: s,
                 });
             }
             Verdict::Unresolved(()) => return Verdict::Unresolved(()),

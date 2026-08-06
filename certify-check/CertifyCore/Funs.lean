@@ -99,7 +99,7 @@ def lattice.rat.Rat.Insts.CoreCmpOrd {B : Type} {Clause0_Int : Type}
 }
 
 /-- [certify_core::arrange::cyclic_true_runs]: loop body 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 104:4-110:5 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 127:4-133:5 -/
 @[rust_loop_body]
 def arrange.cyclic_true_runs_loop.body
   (sectors : Slice Bool) (n : Std.Usize) (runs : Std.Usize) (i : Std.Usize) :
@@ -125,7 +125,7 @@ def arrange.cyclic_true_runs_loop.body
   else ok (done runs)
 
 /-- [certify_core::arrange::cyclic_true_runs]: loop 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 104:4-110:5 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 127:4-133:5 -/
 @[rust_loop]
 def arrange.cyclic_true_runs_loop
   (sectors : Slice Bool) (n : Std.Usize) (runs : Std.Usize) (i : Std.Usize) :
@@ -136,7 +136,7 @@ def arrange.cyclic_true_runs_loop
     (runs, i)
 
 /-- [certify_core::arrange::cyclic_true_runs]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 97:0-113:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 120:0-136:1 -/
 def arrange.cyclic_true_runs (sectors : Slice Bool) : Result Std.Usize := do
   let n := Slice.len sectors
   if n = 0#usize
@@ -152,7 +152,7 @@ def arrange.cyclic_true_runs (sectors : Slice Bool) : Result Std.Usize := do
     else ok runs
 
 /-- [certify_core::arrange::all_true]: loop body 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 136:4-143:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 159:4-166:1 -/
 @[rust_loop_body]
 def arrange.all_true_loop.body
   (sectors : Slice Bool) (i : Std.Usize) :
@@ -169,7 +169,7 @@ def arrange.all_true_loop.body
   else ok (done true)
 
 /-- [certify_core::arrange::all_true]: loop 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 136:4-143:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 159:4-166:1 -/
 @[rust_loop]
 def arrange.all_true_loop
   (sectors : Slice Bool) (i : Std.Usize) : Result Bool := do
@@ -178,13 +178,13 @@ def arrange.all_true_loop
     i
 
 /-- [certify_core::arrange::all_true]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 134:0-143:1 -/
+    Source: 'crates/certify-core/src/arrange.rs', lines 157:0-166:1 -/
 @[reducible]
 def arrange.all_true (sectors : Slice Bool) : Result Bool := do
   arrange.all_true_loop sectors 0#usize
 
 /-- [certify_core::arrange::classify_link]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 119:0-131:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 142:0-154:1
     Visibility: public -/
 def arrange.classify_link
   (sectors : Slice Bool) : Result arrange.LinkClass := do
@@ -199,7 +199,7 @@ def arrange.classify_link
   | _ => ok arrange.LinkClass.Pinch
 
 /-- [certify_core::arrange::v_boundary]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 147:0-149:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 170:0-172:1
     Visibility: public -/
 def arrange.v_boundary (sectors : Slice Bool) : Result Bool := do
   let lc ← arrange.classify_link sectors
@@ -210,7 +210,7 @@ def arrange.v_boundary (sectors : Slice Bool) : Result Bool := do
   | arrange.LinkClass.Pinch => ok false
 
 /-- [certify_core::arrange::link_ok]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 153:0-155:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 179:0-181:1
     Visibility: public -/
 def arrange.link_ok (sectors : Slice Bool) : Result Bool := do
   let lc ← arrange.classify_link sectors
@@ -222,8 +222,72 @@ def arrange.link_ok (sectors : Slice Bool) : Result Bool := do
     | arrange.LinkClass.Pinch => ok true
   ok (¬ b)
 
+/-- [certify_core::arrange::has_duplicate]: loop body 1:
+    Source: 'crates/certify-core/src/arrange.rs', lines 191:8-196:9 -/
+@[rust_loop_body]
+def arrange.has_duplicate_loop0_loop0.body
+  (xs : Slice Std.Usize) (n : Std.Usize) (i : Std.Usize) (found : Bool)
+  (j : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  if j < n
+  then
+    let i1 ← Slice.index_usize xs i
+    let i2 ← Slice.index_usize xs j
+    let found1 ← if i1 = i2
+                   then ok true
+                   else ok found
+    let j1 ← j + 1#usize
+    ok (cont (found1, j1))
+  else ok (done found)
+
+/-- [certify_core::arrange::has_duplicate]: loop 1:
+    Source: 'crates/certify-core/src/arrange.rs', lines 191:8-196:9 -/
+@[rust_loop]
+def arrange.has_duplicate_loop0_loop0
+  (xs : Slice Std.Usize) (n : Std.Usize) (found : Bool) (i : Std.Usize)
+  (j : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (found1, j1) => arrange.has_duplicate_loop0_loop0.body xs n i found1
+      j1)
+    (found, j)
+
+/-- [certify_core::arrange::has_duplicate]: loop body 0:
+    Source: 'crates/certify-core/src/arrange.rs', lines 189:4-198:5 -/
+@[rust_loop_body]
+def arrange.has_duplicate_loop0.body
+  (xs : Slice Std.Usize) (n : Std.Usize) (found : Bool) (i : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  if i < n
+  then
+    let j ← i + 1#usize
+    let found1 ← arrange.has_duplicate_loop0_loop0 xs n found i j
+    let i1 ← i + 1#usize
+    ok (cont (found1, i1))
+  else ok (done found)
+
+/-- [certify_core::arrange::has_duplicate]: loop 0:
+    Source: 'crates/certify-core/src/arrange.rs', lines 189:4-198:5 -/
+@[rust_loop]
+def arrange.has_duplicate_loop0
+  (xs : Slice Std.Usize) (n : Std.Usize) (found : Bool) (i : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (found1, i1) => arrange.has_duplicate_loop0.body xs n found1 i1)
+    (found, i)
+
+/-- [certify_core::arrange::has_duplicate]:
+    Source: 'crates/certify-core/src/arrange.rs', lines 185:0-200:1 -/
+def arrange.has_duplicate (xs : Slice Std.Usize) : Result Bool := do
+  let n := Slice.len xs
+  arrange.has_duplicate_loop0 xs n false 0#usize
+
 /-- [certify_core::arrange::link_iso_ok]: loop body 1:
-    Source: 'crates/certify-core/src/arrange.rs', lines 177:8-183:9
+    Source: 'crates/certify-core/src/arrange.rs', lines 232:8-238:9
     Visibility: public -/
 @[rust_loop_body]
 def arrange.link_iso_ok_loop0_loop0.body
@@ -244,7 +308,7 @@ def arrange.link_iso_ok_loop0_loop0.body
   else ok (done true)
 
 /-- [certify_core::arrange::link_iso_ok]: loop 1:
-    Source: 'crates/certify-core/src/arrange.rs', lines 177:8-183:9
+    Source: 'crates/certify-core/src/arrange.rs', lines 232:8-238:9
     Visibility: public -/
 @[rust_loop]
 def arrange.link_iso_ok_loop0_loop0
@@ -257,7 +321,7 @@ def arrange.link_iso_ok_loop0_loop0
     i
 
 /-- [certify_core::arrange::link_iso_ok]: loop body 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 174:4-190:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 229:4-245:1
     Visibility: public -/
 @[rust_loop_body]
 def arrange.link_iso_ok_loop0.body
@@ -275,7 +339,7 @@ def arrange.link_iso_ok_loop0.body
   else ok (done false)
 
 /-- [certify_core::arrange::link_iso_ok]: loop 0:
-    Source: 'crates/certify-core/src/arrange.rs', lines 174:4-190:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 229:4-245:1
     Visibility: public -/
 @[rust_loop]
 def arrange.link_iso_ok_loop0
@@ -288,7 +352,7 @@ def arrange.link_iso_ok_loop0
     off
 
 /-- [certify_core::arrange::link_iso_ok]:
-    Source: 'crates/certify-core/src/arrange.rs', lines 164:0-190:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 213:0-245:1
     Visibility: public -/
 def arrange.link_iso_ok
   (a : Slice Std.Usize) (b : Slice Std.Usize) : Result Bool := do
@@ -296,12 +360,21 @@ def arrange.link_iso_ok
   let i := Slice.len b
   if i != n
   then ok false
-  else if n = 0#usize
-       then ok true
-       else arrange.link_iso_ok_loop0 a b n 0#usize
+  else
+    if n = 0#usize
+    then ok true
+    else
+      let b1 ← arrange.has_duplicate a
+      if b1
+      then ok false
+      else
+        let b2 ← arrange.has_duplicate b
+        if b2
+        then ok false
+        else arrange.link_iso_ok_loop0 a b n 0#usize
 
 /-- [certify_core::certify1d::corner_range]: loop body 0:
-    Source: 'crates/certify-core/src/certify1d.rs', lines 127:8-130:9
+    Source: 'crates/certify-core/src/certify1d.rs', lines 184:8-187:9
     Visibility: public -/
 @[rust_loop_body]
 def certify1d.corner_range_loop.body
@@ -328,7 +401,7 @@ def certify1d.corner_range_loop.body
     else ok (cont (iter1, lo1, hi))
 
 /-- [certify_core::certify1d::corner_range]: loop 0:
-    Source: 'crates/certify-core/src/certify1d.rs', lines 127:8-130:9
+    Source: 'crates/certify-core/src/certify1d.rs', lines 184:8-187:9
     Visibility: public -/
 @[rust_loop]
 def certify1d.corner_range_loop
@@ -342,7 +415,7 @@ def certify1d.corner_range_loop
     (iter, lo, hi)
 
 /-- [certify_core::certify1d::corner_range]:
-    Source: 'crates/certify-core/src/certify1d.rs', lines 123:0-136:1
+    Source: 'crates/certify-core/src/certify1d.rs', lines 180:0-193:1
     Visibility: public -/
 def certify1d.corner_range
   {T : Type} (corecmpOrdInst : core.cmp.Ord T) (corecloneCloneInst :
@@ -363,7 +436,7 @@ def certify1d.corner_range
       (T × T) residual
 
 /-- [certify_core::certify1d::clip_sigma_branch]:
-    Source: 'crates/certify-core/src/certify1d.rs', lines 222:0-238:1 -/
+    Source: 'crates/certify-core/src/certify1d.rs', lines 279:0-295:1 -/
 def certify1d.clip_sigma_branch
   {T : Type} (corecmpOrdInst : core.cmp.Ord T) (lo : T) (hi : T) (m : T)
   (neg_m : T) (m_positive : Bool) :
@@ -388,7 +461,7 @@ def certify1d.clip_sigma_branch
   else ok none
 
 /-- [certify_core::certify1d::clip_sigma]:
-    Source: 'crates/certify-core/src/certify1d.rs', lines 198:0-210:1
+    Source: 'crates/certify-core/src/certify1d.rs', lines 255:0-267:1
     Visibility: public -/
 def certify1d.clip_sigma
   {B : Type} {Clause0_Int : Type} {Clause0_Rat : Type}

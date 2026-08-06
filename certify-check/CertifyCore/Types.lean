@@ -52,7 +52,7 @@ structure lattice.backend.Backend (Self : Type) (Self_Int : Type) (Self_Rat :
   rat_denom : Self_Rat → Result Self_Int
 
 /-- [certify_core::arrange::LinkClass]
-    Source: 'crates/certify-core/src/arrange.rs', lines 81:0-93:1
+    Source: 'crates/certify-core/src/arrange.rs', lines 102:0-116:1
     Visibility: public -/
 @[discriminant isize]
 inductive arrange.LinkClass where
@@ -62,7 +62,7 @@ inductive arrange.LinkClass where
 | Pinch : arrange.LinkClass
 
 /-- [certify_core::certify1d::ClipBranch]
-    Source: 'crates/certify-core/src/certify1d.rs', lines 142:0-149:1
+    Source: 'crates/certify-core/src/certify1d.rs', lines 199:0-206:1
     Visibility: public -/
 @[discriminant isize]
 inductive certify1d.ClipBranch where
@@ -70,7 +70,7 @@ inductive certify1d.ClipBranch where
 | Negative : certify1d.ClipBranch
 
 /-- [certify_core::certify1d::ClipSigmaCert]
-    Source: 'crates/certify-core/src/certify1d.rs', lines 153:0-162:1
+    Source: 'crates/certify-core/src/certify1d.rs', lines 210:0-219:1
     Visibility: public -/
 structure certify1d.ClipSigmaCert (B : Type) (Clause0_Int : Type) (Clause0_Rat
   : Type) where

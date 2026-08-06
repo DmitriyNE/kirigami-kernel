@@ -37,7 +37,7 @@
 use certify_core::Verdict;
 use certify_core::arrange::{LinkClass, classify_link, link_iso_ok};
 use core::cmp::Ordering;
-use geom::content::{Circle, CurveId, Edge, Half};
+use geom::content::{Circle, CurveId, Edge, Half, Point2};
 use lattice::{Backend, Rat, Surd};
 
 use crate::dcel::{Dcel, SubEdge};
@@ -49,6 +49,9 @@ use crate::locate::{
 type Label = (bool, bool);
 /// A rational point `(x, y)` known to lie in the interior of a cell.
 type Pt<B> = (Rat<B>, Rat<B>);
+/// A classified boundary loop mid-emission: its edge geometry, the source ids of those edges,
+/// and the interior rep point deciding its containment.
+type LoopParts<B> = (Vec<Edge<B>>, Vec<usize>, Pt<B>);
 
 /// Which of the two operands a source curve belongs to. Every input curve is assigned
 /// `A` or `B`; the boolean combines the region bounded by the `A` curves with the region
@@ -95,12 +98,85 @@ pub struct Region<B: Backend> {
     pub faces: Vec<Face<B>>,
 }
 
+/// Why CAP-IN-D24 rejected an input edge — a malformed D24 curve. Distinct from
+/// [`CapOutFault`]: a [`CapInFault`] is *unsupported input*, not a constructor bug. The
+/// certified entry validates every edge before building the arrangement so it stays **total**
+/// (it refuses malformed input rather than panicking inside `Dcel::build`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CapInFault {
+    /// A circle with `r² ≤ 0` — not a real circle (would trip `Surd::new`'s `d ≥ 0` bound).
+    NonPositiveRadius,
+    /// A line with `a = b = 0` — no direction.
+    DegenerateLine,
+    /// An endpoint does not lie on its own carrier, or has cross-radical coordinates (which
+    /// no valid D24 point has — the `try_surd` escape that would otherwise panic).
+    EndpointOffCarrier,
+    /// A non-canonical arc piece — `x_lo ≥ x_hi` (empty or reversed x-extent).
+    NonCanonicalArc,
+}
+
+/// Is `p` on the carrier of `e`, computed **panic-free**: `None` when the coordinates escape
+/// a single radical field (a malformed cross-radical point — no valid D24 point does this),
+/// `Some(on)` otherwise. The panic-free analogue of `Dcel::build`'s internal `on_carrier`.
+fn on_carrier_checked<B: Backend>(p: &Point2<B>, e: &Edge<B>) -> Option<bool> {
+    match e {
+        Edge::Seg(s) => {
+            let lin = p.x.scale(&s.line.a).add(&p.y.scale(&s.line.b)).try_surd()?;
+            Some(lin.add(&Surd::from_rat(s.line.c.clone())).sign() == 0)
+        }
+        Edge::Arc(a) => {
+            let nx = p.x.sub(&Surd::from_rat(a.circle.cx.clone())).try_surd()?;
+            let ny = p.y.sub(&Surd::from_rat(a.circle.cy.clone())).try_surd()?;
+            let sq = nx.square().add(&ny.square()).try_surd()?;
+            Some(sq.sub(&Surd::from_rat(a.circle.r2.clone())).sign() == 0)
+        }
+    }
+}
+
+/// CAP-IN-D24 (spec §8.5, minimal): validate that every input edge is a well-formed D24 piece
+/// before building the arrangement, so [`ledge_dom_certified`] is **total** — it refuses
+/// malformed input rather than panicking. Valid D24 guarantees every carrier-solved coordinate
+/// stays in one radical field, so the arrangement's `try_surd` conversions never escape. The
+/// full `CanonicalEdge`/`ValidatedD24` census (source-boundary components, flank correspondence)
+/// is M4/closure; this is the minimal totality guard.
+fn validate_d24<B: Backend>(edges: &[Edge<B>]) -> Result<(), CapInFault> {
+    for e in edges {
+        match e {
+            Edge::Seg(s) => {
+                if s.line.a.sign() == 0 && s.line.b.sign() == 0 {
+                    return Err(CapInFault::DegenerateLine);
+                }
+            }
+            Edge::Arc(a) => {
+                if a.circle.r2.sign() <= 0 {
+                    return Err(CapInFault::NonPositiveRadius);
+                }
+                if a.x_lo.cmp(&a.x_hi) != Ordering::Less {
+                    return Err(CapInFault::NonCanonicalArc);
+                }
+            }
+        }
+        let (start, end) = match e {
+            Edge::Seg(s) => (&s.start, &s.end),
+            Edge::Arc(a) => (&a.start, &a.end),
+        };
+        if on_carrier_checked(start, e) != Some(true) || on_carrier_checked(end, e) != Some(true) {
+            return Err(CapInFault::EndpointOffCarrier);
+        }
+    }
+    Ok(())
+}
+
 /// Why [`ledge_dom_certified`] refused a region: an internal-consistency check that a
 /// correctly-built region always passes. A fault therefore indicates a bug in the
 /// constructor, not an unsupported input — each variant names the failed check and the
-/// class of defect it catches.
+/// class of defect it catches. The one exception is [`CapOutFault::InvalidInput`], which
+/// reports *unsupported input* caught by the CAP-IN-D24 pre-pass.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CapOutFault {
+    /// The input is not well-formed D24 (a malformed edge) — caught by [`validate_d24`]
+    /// before the arrangement is built, keeping the certified entry total.
+    InvalidInput(CapInFault),
     /// The half-edge structure is malformed — a broken twin pairing or a dangling
     /// half-edge ([`Dcel::substrate_link_ok`]).
     SubstrateLink,
@@ -111,14 +187,19 @@ pub enum CapOutFault {
     /// At vertex `v`, the stored edge rotation disagrees with the geometric azimuth order
     /// (rejected by the verified `certify_core::arrange::link_iso_ok`).
     Link { vertex: usize },
-    /// The number of emitted boundary edges does not equal the number of edges separating
-    /// a kept cell from a dropped one — emission dropped or added a boundary edge. This is
-    /// a **coverage count**, not a full bijection: it certifies every separating edge is
-    /// emitted exactly once (given the tracer emits each boundary half-edge at most once),
-    /// but does not check per-edge source identity, loop closure, or orientation. The
-    /// stronger source-ID permutation certificate is a tracked follow-up (see
-    /// `docs/engineering-log.md`).
-    BoundaryEdgeCount,
+    /// The emitted boundary edges are not a permutation of the edges separating a kept cell
+    /// from a dropped one — emission dropped, duplicated, or invented a boundary edge. A real
+    /// **source-ID bijection** (`certify_core::arrange::boundary_bijection_ok`), not a count:
+    /// each emitted edge carries its source `SubEdge` id, and the set of emitted ids must equal
+    /// the set of separating-edge ids — so a drop-one-and-duplicate-another pair (which a count
+    /// misses) is caught.
+    BoundaryBijection,
+    /// The slab point-location did not cover every arrangement cell — some cycle got no
+    /// label, or a band height grazed a vertex `y` / circle centre (`critical_ys` incomplete).
+    /// A correctly-built arrangement covers every cell, so this is a decomposition defect; the
+    /// certified path refuses it rather than certify a silently-defaulted `(false, false)`
+    /// label (rejected by `slab_decomposition_generic` + the `all_assigned` flag).
+    Incomplete,
 }
 
 /// A certified boolean result: the emitted [`Region`] plus a classification of the
@@ -369,42 +450,63 @@ fn label_all_cycles<B: Backend>(
     slab_locate(d, operand_of).0
 }
 
-/// The slab decomposition, returning both the per-cell `(A, B)` labels and a rational
-/// point known to lie inside each cell. Boundary-loop orientation and hole-nesting use the
-/// interior points to decide which cell a traced loop bounds.
-fn slab_locate<B: Backend>(
-    d: &Dcel<B>,
-    operand_of: &impl Fn(CurveId) -> OperandId,
-) -> (Vec<Label>, Vec<Pt<B>>) {
-    let a_edges = operand_edges(d, operand_of, OperandId::A);
-    let b_edges = operand_edges(d, operand_of, OperandId::B);
-    let mut labels: Vec<Option<Label>> = vec![None; d.n_cycles];
-    let mut reps: Vec<Option<Pt<B>>> = vec![None; d.n_cycles];
-
+/// The generic band heights: one strictly below the lowest critical, one strictly between
+/// each consecutive pair, one above the highest. Empty when there are no criticals (an empty
+/// arrangement). Each is strictly between (or beyond) criticals, so — *iff* `critical_ys` is
+/// complete — it avoids every vertex `y` and circle `cy` (the ray-cast genericity precondition).
+fn slab_band_ys<B: Backend>(d: &Dcel<B>) -> Vec<Rat<B>> {
     let crit = critical_ys(d);
     if crit.is_empty() {
-        return (
-            vec![(false, false); d.n_cycles],
-            vec![(Rat::from_i128(0), Rat::from_i128(0)); d.n_cycles],
-        );
+        return Vec::new();
     }
-    // A generic rational height per gap: below the lowest, between each pair, above
-    // the highest. Each is strictly between (or beyond) criticals, so it avoids every
-    // vertex y and every circle cy — the ray-cast genericity precondition.
     let mut band_ys: Vec<Rat<B>> = Vec::with_capacity(crit.len() + 1);
     band_ys.push(rational_below(&crit[0]));
     for w in crit.windows(2) {
         band_ys.push(rational_between(&w[0], &w[1]));
     }
     band_ys.push(rational_above(&crit[crit.len() - 1]));
+    band_ys
+}
 
-    // Genericity self-check (#4): every band ray must strictly avoid all vertex y's and
-    // circle centres. This holds by construction iff `critical_ys` is complete; a fire
-    // here is a dropped-vertex / missing-circle defect that would otherwise mis-count a
-    // parity and silently mislabel a cell. Debug-only (zero release cost); exercised by
-    // the whole property/differential suite.
+/// Whether every slab band height is **generic** — strictly avoids every vertex `y` and
+/// circle centre `cy` — i.e. [`critical_ys`] is complete. A `false` here is a
+/// dropped-vertex / missing-circle decomposition defect that would otherwise mis-count a
+/// parity and silently mislabel a cell. This is `O(bands × arrangement)`, too costly for the
+/// fast [`ledge_dom`] path, so [`ledge_dom_certified`] runs it as an explicit gate (a
+/// [`debug_assert`] covers the fast path in dev builds).
+pub(crate) fn slab_decomposition_generic<B: Backend>(d: &Dcel<B>) -> bool {
+    slab_band_ys(d).iter().all(|y0| generic_height(d, y0))
+}
+
+/// The slab decomposition, returning the per-cell `(A, B)` labels, a rational interior point
+/// per cell, and whether **every** cycle was assigned a label. Boundary-loop orientation and
+/// hole-nesting use the interior points to decide which cell a traced loop bounds. An
+/// unassigned cycle (the `all_assigned = false` flag) is a decomposition defect: on the fast
+/// path it falls back to a default `(false, false)` label / origin rep, but
+/// [`ledge_dom_certified`] refuses it ([`CapOutFault::Incomplete`]) rather than certify a
+/// silently-manufactured label.
+fn slab_locate<B: Backend>(
+    d: &Dcel<B>,
+    operand_of: &impl Fn(CurveId) -> OperandId,
+) -> (Vec<Label>, Vec<Pt<B>>, bool) {
+    let a_edges = operand_edges(d, operand_of, OperandId::A);
+    let b_edges = operand_edges(d, operand_of, OperandId::B);
+    let mut labels: Vec<Option<Label>> = vec![None; d.n_cycles];
+    let mut reps: Vec<Option<Pt<B>>> = vec![None; d.n_cycles];
+
+    let band_ys = slab_band_ys(d);
+    if band_ys.is_empty() {
+        // No criticals — an empty arrangement; the unbounded cell(s) are correctly outside.
+        return (
+            vec![(false, false); d.n_cycles],
+            vec![(Rat::from_i128(0), Rat::from_i128(0)); d.n_cycles],
+            true,
+        );
+    }
+    // Genericity holds by construction iff `critical_ys` is complete; the certified path
+    // gates on `slab_decomposition_generic`, this only guards dev builds of the fast path.
     debug_assert!(
-        band_ys.iter().all(|y0| generic_height(d, y0)),
+        slab_decomposition_generic(d),
         "slab band height grazed a vertex y or circle centre — critical_ys is incomplete"
     );
 
@@ -469,6 +571,7 @@ fn slab_locate<B: Backend>(
         assign(&mut labels, &mut reps, xs[m - 1].down_cycle, xm, y0);
     }
 
+    let all_assigned = labels.iter().all(Option::is_some);
     (
         labels
             .into_iter()
@@ -477,6 +580,7 @@ fn slab_locate<B: Backend>(
         reps.into_iter()
             .map(|r| r.unwrap_or((Rat::from_i128(0), Rat::from_i128(0))))
             .collect(),
+        all_assigned,
     )
 }
 
@@ -501,6 +605,9 @@ fn boundary_succ<B: Backend>(d: &Dcel<B>, sel: &[bool], h: usize) -> usize {
 /// selected cell on its **left**, and one of the unselected cell on its **right**.
 struct BoundaryLoop<B: Backend> {
     edges: Vec<Edge<B>>,
+    /// The stable source-edge id (`SubEdge` arena index) of each edge, in loop order — for
+    /// the CAP-OUT `{separating edges} ↔ {emitted boundary edges}` bijection.
+    ids: Vec<usize>,
     left_rep: Pt<B>,
     right_rep: Pt<B>,
 }
@@ -510,7 +617,11 @@ struct BoundaryLoop<B: Backend> {
 /// cell to its left is *inside* it) or a hole (it is *outside*), and nest each hole
 /// into its immediate containing outer loop — one [`Face`] (outer + holes) per π₀
 /// component. `reps[c]` is a rational interior point of cell `c` (from [`slab_locate`]).
-fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)]) -> Region<B> {
+fn emit_region<B: Backend>(
+    d: &Dcel<B>,
+    sel: &[bool],
+    reps: &[(Rat<B>, Rat<B>)],
+) -> (Region<B>, Vec<usize>) {
     // The selected-side half-edge of each separating edge is a boundary half-edge.
     let mut is_boundary = vec![false; d.halfedges.len()];
     for k in 0..d.edges.len() {
@@ -520,7 +631,8 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
         }
     }
 
-    // Trace the boundary half-edges into closed loops.
+    // Trace the boundary half-edges into closed loops, recording each edge's source id
+    // (`SubEdge` arena index) alongside its geometry for the completeness bijection.
     let mut visited = vec![false; d.halfedges.len()];
     let mut loops: Vec<BoundaryLoop<B>> = Vec::new();
     for start in 0..d.halfedges.len() {
@@ -528,10 +640,12 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
             continue;
         }
         let mut edges = Vec::new();
+        let mut ids = Vec::new();
         let mut h = start;
         loop {
             visited[h] = true;
             edges.push(d.edges[d.halfedges[h].edge].edge.clone());
+            ids.push(d.halfedges[h].edge);
             h = boundary_succ(d, sel, h);
             if h == start {
                 break;
@@ -541,6 +655,7 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
         let right = d.halfedges[d.halfedges[start].twin].cycle;
         loops.push(BoundaryLoop {
             edges,
+            ids,
             left_rep: reps[left].clone(),
             right_rep: reps[right].clone(),
         });
@@ -548,13 +663,13 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
 
     // Classify: a loop is an outer boundary iff its (selected) left cell is inside it;
     // otherwise it is a hole, whose interior is the (unselected) right cell.
-    let mut outers: Vec<(Vec<Edge<B>>, Pt<B>)> = Vec::new();
-    let mut holes: Vec<(Vec<Edge<B>>, Pt<B>)> = Vec::new();
+    let mut outers: Vec<LoopParts<B>> = Vec::new();
+    let mut holes: Vec<LoopParts<B>> = Vec::new();
     for lp in loops {
         if winding_parity(&lp.left_rep.0, &lp.left_rep.1, &lp.edges) {
-            outers.push((lp.edges, lp.left_rep));
+            outers.push((lp.edges, lp.ids, lp.left_rep));
         } else {
-            holes.push((lp.edges, lp.right_rep));
+            holes.push((lp.edges, lp.ids, lp.right_rep));
         }
     }
 
@@ -563,26 +678,30 @@ fn emit_region<B: Backend>(d: &Dcel<B>, sel: &[bool], reps: &[(Rat<B>, Rat<B>)])
     // candidate). Containers are totally ordered by nesting, so this is well-defined.
     let mut faces: Vec<Face<B>> = outers
         .iter()
-        .map(|(e, _)| Face {
+        .map(|(e, _, _)| Face {
             outer: e.clone(),
             holes: Vec::new(),
         })
         .collect();
-    for (hedges, hpt) in holes {
+    // The emitted source ids = every outer's ids + every *nested* hole's ids. A hole with no
+    // container is dropped, and so are its ids — the bijection then catches the lost edges.
+    let mut emitted_ids: Vec<usize> = outers.iter().flat_map(|(_, ids, _)| ids.clone()).collect();
+    for (hedges, hids, hpt) in holes {
         let cands: Vec<usize> = (0..outers.len())
             .filter(|&oi| winding_parity(&hpt.0, &hpt.1, &outers[oi].0))
             .collect();
         let container = cands.iter().copied().find(|&oi| {
             cands.iter().all(|&oj| {
-                oj == oi || winding_parity(&outers[oi].1.0, &outers[oi].1.1, &outers[oj].0)
+                oj == oi || winding_parity(&outers[oi].2.0, &outers[oi].2.1, &outers[oj].0)
             })
         });
         if let Some(oi) = container {
             faces[oi].holes.push(hedges);
+            emitted_ids.extend(hids);
         }
     }
 
-    Region { faces }
+    (Region { faces }, emitted_ids)
 }
 
 /// Compute the boolean `op` of the two operands and return the result region.
@@ -621,9 +740,9 @@ pub fn ledge_dom<B: Backend>(
     op: BoolOp,
 ) -> Region<B> {
     let d = Dcel::build(edges);
-    let (labels, reps) = slab_locate(&d, operand_of);
+    let (labels, reps, _) = slab_locate(&d, operand_of);
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
-    emit_region(&d, &sel, &reps)
+    emit_region(&d, &sel, &reps).0
 }
 
 /// Compute the boolean `op` and certify the result (spec §8.5 CAP-OUT).
@@ -637,7 +756,8 @@ pub fn ledge_dom<B: Backend>(
 /// - the DCEL's twin-pairing integrity ([`CapOutFault::SubstrateLink`]);
 /// - the ℤ₂² `cocycle_ok` consistency of the cell labeling ([`CapOutFault::Cocycle`]);
 /// - `Link_emitted ≅ Link_geometric` at every vertex ([`CapOutFault::Link`]);
-/// - the separating-edge / boundary-edge coverage count ([`CapOutFault::BoundaryEdgeCount`]).
+/// - the `{separating edges} ↔ {emitted boundary edges}` source-ID bijection
+///   ([`CapOutFault::BoundaryBijection`]).
 ///
 /// The middle two are Kani-proven. On success it returns the [`CapOut`], which carries the
 /// region together with the CAP-OUT-LINK classification of the arrangement vertices (the
@@ -678,11 +798,21 @@ pub fn ledge_dom_certified<B: Backend>(
     operand_of: &impl Fn(CurveId) -> OperandId,
     op: BoolOp,
 ) -> Verdict<CapOut<B>, CapOutFault, ()> {
+    // CAP-IN-D24: reject malformed input up front so the entry is total (no panic in build).
+    if let Err(f) = validate_d24(edges) {
+        return Verdict::Refuted(CapOutFault::InvalidInput(f));
+    }
     let d = Dcel::build(edges);
     if !d.substrate_link_ok() {
         return Verdict::Refuted(CapOutFault::SubstrateLink);
     }
-    let (labels, reps) = slab_locate(&d, operand_of);
+    let (labels, reps, all_assigned) = slab_locate(&d, operand_of);
+    // Refuse a silently-defaulted labeling: every cell must have been located, and the slab
+    // decomposition must be generic (critical_ys complete) — else a manufactured outside-label
+    // would poison the certificate.
+    if !all_assigned || !slab_decomposition_generic(&d) {
+        return Verdict::Refuted(CapOutFault::Incomplete);
+    }
     certify_from_labels(&d, operand_of, op, labels, reps)
 }
 
@@ -724,15 +854,17 @@ fn certify_from_labels<B: Backend>(
         }
     }
 
-    // (3) select + emit from THIS labeling (spec §6 steps 6–8).
+    // (3) select + emit from THIS labeling (spec §6 steps 6–8), recording each emitted
+    // boundary edge's source id.
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
-    let region = emit_region(d, &sel, &reps);
+    let (region, emitted_ids) = emit_region(d, &sel, &reps);
 
-    // (4) separating-edge / boundary-edge coverage count (spec §8.5): every separating
-    // edge is emitted exactly once. A count, not a full source-ID bijection (see the
-    // `BoundaryEdgeCount` doc + `docs/engineering-log.md`).
-    if separating_count(d, &sel) != region_boundary_count(&region) {
-        return Verdict::Refuted(CapOutFault::BoundaryEdgeCount);
+    // (4) {separating edges} ↔ {emitted boundary edges} bijection (spec §8.5): the emitted
+    // source ids are a permutation of the separating-edge ids — every separating edge emitted
+    // exactly once, none dropped or duplicated (a real bijection, not just a count).
+    let separating = separating_ids(d, &sel);
+    if !certify_core::arrange::boundary_bijection_ok(&separating, &emitted_ids) {
+        return Verdict::Refuted(CapOutFault::BoundaryBijection);
     }
 
     // CAP-OUT-LINK classification (informational): V_∂ = manifold shell vertices,
@@ -813,7 +945,7 @@ pub fn has_pinch<B: Backend>(
     op: BoolOp,
 ) -> bool {
     let d = Dcel::build(edges);
-    let (labels, _reps) = slab_locate(&d, operand_of);
+    let (labels, _reps, _) = slab_locate(&d, operand_of);
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
     link_classes(&d, &sel).contains(&LinkClass::Pinch)
 }
@@ -859,6 +991,15 @@ pub fn separating_count<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> usize {
         .count()
 }
 
+/// The stable source-edge ids (`SubEdge` arena indices) of the **separating** edges — the
+/// set the emitted boundary edges must be a permutation of (the CAP-OUT completeness
+/// bijection). Duplicate-free by construction: one id per undirected edge.
+pub fn separating_ids<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> Vec<usize> {
+    (0..d.edges.len())
+        .filter(|&k| sel[d.halfedges[2 * k].cycle] != sel[d.halfedges[2 * k + 1].cycle])
+        .collect()
+}
+
 /// Total boundary edges a region emits (outer loops + holes) — the emitted side of the
 /// CAP-OUT separating-edge / boundary-edge coverage count (spec §8.5).
 pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
@@ -871,8 +1012,8 @@ pub fn region_boundary_count<B: Backend>(r: &Region<B>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geom::content::{Circle, Curve, Line, Orient, Point2, SegPiece};
-    use lattice::{Bignum, Rat};
+    use geom::content::{ArcPiece, Circle, Curve, Line, Orient, Point2, SegPiece, Winding};
+    use lattice::{Bignum, Rat, Surd};
 
     type Q = Rat<Bignum>;
 
@@ -1210,7 +1351,7 @@ mod tests {
     /// The number of `Pinch` (non-manifold) vertices in the △ of two disks.
     fn pinch_count(edges: &[Edge<Bignum>]) -> usize {
         let d = Dcel::build(edges);
-        let (labels, _) = slab_locate(&d, &ab);
+        let (labels, _, _) = slab_locate(&d, &ab);
         let sel: Vec<bool> = labels.iter().map(|&l| BoolOp::Xor.select(l)).collect();
         link_classes(&d, &sel)
             .iter()
@@ -1269,29 +1410,31 @@ mod tests {
         }
     }
 
-    /// Separating-edge / boundary-edge coverage count (CAP-OUT): for every op on every
-    /// corpus config, the number of separating (selected|unselected) edges equals the
-    /// total edges the region emits across its outer loops and holes.
+    /// {separating edges} ↔ {emitted boundary edges} **bijection** (CAP-OUT): for every op on
+    /// every corpus config, the emitted source-edge ids are a permutation of the
+    /// separating-edge ids — a real bijection (the count equality is a corollary).
     #[test]
-    fn separating_boundary_edge_count() {
+    fn separating_boundary_bijection() {
         for e in corpus() {
             let d = Dcel::build(&e);
-            let (labels, _) = slab_locate(&d, &ab);
+            let (labels, reps, _) = slab_locate(&d, &ab);
             for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
                 let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
-                let r = ledge_dom(&e, &ab, op);
-                assert_eq!(
-                    separating_count(&d, &sel),
-                    region_boundary_count(&r),
-                    "separating / boundary edge coverage count ({op:?})"
+                let (region, emitted) = emit_region(&d, &sel, &reps);
+                let separating = separating_ids(&d, &sel);
+                assert!(
+                    certify_core::arrange::boundary_bijection_ok(&separating, &emitted),
+                    "separating ↔ emitted boundary edge bijection ({op:?})"
                 );
+                // The count equality still holds as a corollary.
+                assert_eq!(separating_count(&d, &sel), region_boundary_count(&region));
             }
         }
     }
 
     /// The certified entry accepts the whole corpus (transverse, disjoint, annulus,
     /// tangency) for every op — all four CAP-OUT gates (substrate-link, cocycle, Link≅geom,
-    /// boundary-edge count) pass over the emitted region.
+    /// boundary bijection) pass over the emitted region.
     #[test]
     fn certified_verified_on_corpus() {
         for e in corpus() {
@@ -1332,7 +1475,7 @@ mod tests {
     fn certified_refutes_corrupted_labeling() {
         let e = two_disks();
         let d = Dcel::build(&e);
-        let (mut labels, reps) = slab_locate(&d, &ab);
+        let (mut labels, reps, _) = slab_locate(&d, &ab);
         labels[0].0 = !labels[0].0; // break the cochain around cell 0
         assert!(matches!(
             certify_from_labels(&d, &ab, BoolOp::Or, labels, reps),
@@ -1357,6 +1500,18 @@ mod tests {
         assert!(generic_height(&d, &Q::new(1, 2)), "y=1/2 is generic");
     }
 
+    /// The certified-path completeness gate does not false-fire on a valid arrangement: the
+    /// slab decomposition is generic and `slab_locate` assigns every cycle a label (so
+    /// `CapOutFault::Incomplete` never triggers for correctly-built input — the corpus
+    /// certifies).
+    #[test]
+    fn slab_decomposition_complete_on_valid_arrangement() {
+        let d = Dcel::build(&two_disks());
+        assert!(slab_decomposition_generic(&d), "critical_ys is complete");
+        let (_labels, _reps, all_assigned) = slab_locate(&d, &ab);
+        assert!(all_assigned, "every cycle located");
+    }
+
     /// **Boolean over polygon (segment) operands** (#3) — the disks-only corpus never
     /// exercised line-bounded regions. Two overlapping 4×4 squares: ∪ = one face, ∩ =
     /// the 2×2 overlap, △ certifies (two L-shapes pinched at the crossings).
@@ -1373,6 +1528,100 @@ mod tests {
         assert!(matches!(
             ledge_dom_certified(&e, &ab, BoolOp::Xor),
             Verdict::Verified(_)
+        ));
+    }
+
+    /// **Partial collinear edge overlap** — two same-height rectangles offset only
+    /// horizontally: A = [0,4]×[0,2], B = [2,6]×[0,2]. Their top/bottom edges are collinear
+    /// and overlap on `x ∈ [2,4]` (a *partial*, not identical, coincidence). The stage-1
+    /// coincidence lattice's touch points must seed the `x = 2` and `x = 4` vertices so the
+    /// shared merge folds correctly. ∪ = [0,6]×[0,2] (one 6×2 rectangle), ∩ = [2,4]×[0,2]
+    /// (the overlap), △ = two disjoint 2×2 squares.
+    #[test]
+    fn boolean_over_partially_overlapping_edges() {
+        let mut e = polygon(&[(0, 0), (4, 0), (4, 2), (0, 2)], 0);
+        e.extend(polygon(&[(2, 0), (6, 0), (6, 2), (2, 2)], 1));
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::Or),
+            1,
+            "∪ = one 6×2 rectangle"
+        );
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::And),
+            1,
+            "∩ = the 2×4 overlap"
+        );
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::Xor),
+            2,
+            "△ = two 2×2 squares"
+        );
+    }
+
+    /// **CAP-IN-D24 totality**: the certified entry refuses malformed input with a typed
+    /// `InvalidInput` fault rather than panicking inside `Dcel::build`. Three classes: a
+    /// degenerate line (`a = b = 0`), an endpoint off its own carrier, and a circle with
+    /// `r² ≤ 0` (which would otherwise trip `Surd::new`'s `d ≥ 0` bound).
+    #[test]
+    fn cap_in_rejects_malformed_input() {
+        let seg = |line: Line<Bignum>, s: (i128, i128), e: (i128, i128)| {
+            Edge::Seg(Box::new(SegPiece {
+                line,
+                start: Point2::from_rat(Q::from_i128(s.0), Q::from_i128(s.1)),
+                end: Point2::from_rat(Q::from_i128(e.0), Q::from_i128(e.1)),
+                orient: Orient::Ccw,
+                source: CurveId(0),
+            }))
+        };
+        // Degenerate line a = b = 0.
+        let degenerate = seg(
+            Line {
+                a: Q::from_i128(0),
+                b: Q::from_i128(0),
+                c: Q::from_i128(1),
+            },
+            (0, 0),
+            (1, 0),
+        );
+        assert!(matches!(
+            ledge_dom_certified(&[degenerate], &ab, BoolOp::Or),
+            Verdict::Refuted(CapOutFault::InvalidInput(CapInFault::DegenerateLine))
+        ));
+        // Endpoint (0,5) not on the carrier y = 0.
+        let off_carrier = seg(
+            Line {
+                a: Q::from_i128(0),
+                b: Q::from_i128(1),
+                c: Q::from_i128(0),
+            },
+            (0, 5),
+            (1, 0),
+        );
+        assert!(matches!(
+            ledge_dom_certified(&[off_carrier], &ab, BoolOp::Or),
+            Verdict::Refuted(CapOutFault::InvalidInput(CapInFault::EndpointOffCarrier))
+        ));
+        // Circle with r² = −1 — not a real circle.
+        let bad_circle = Edge::Arc(Box::new(ArcPiece {
+            circle: Circle {
+                cx: Q::from_i128(0),
+                cy: Q::from_i128(0),
+                r2: Q::from_i128(-1),
+            },
+            half: Half::Upper,
+            x_lo: Surd::from_rat(Q::from_i128(-1)),
+            x_hi: Surd::from_rat(Q::from_i128(1)),
+            start: Point2::from_rat(Q::from_i128(-1), Q::from_i128(0)),
+            end: Point2::from_rat(Q::from_i128(1), Q::from_i128(0)),
+            winding: Winding {
+                orient: Orient::Ccw,
+                source_span: None,
+            },
+            source: CurveId(0),
+        }));
+        assert!(matches!(
+            ledge_dom_certified(&[bad_circle], &ab, BoolOp::Or),
+            Verdict::Refuted(CapOutFault::InvalidInput(CapInFault::NonPositiveRadius))
         ));
     }
 

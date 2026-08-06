@@ -56,33 +56,76 @@ pub struct RegCert<B: Backend = Bignum> {
     pub res_chain: SturmChain<B>,
 }
 
+/// Why the REG-Q family ([`reg_q`] / [`slab_s0`] / [`trim_local`]) refused a certificate.
+///
+/// Separates a **malformed certificate** (bad paperwork — a non-positive margin or a forged
+/// Sturm chain; there is no real counterexample and the inequality may even hold) from a
+/// genuine **positivity failure** (a real degeneracy at a σ witness). Recovery logic — e.g. a
+/// REPARAM trigger, or a searcher deciding whether to subdivide — needs to tell the two apart.
+///
+/// For the positivity variants the `sigma` is the checker's witness (the span's lower bound);
+/// it marks the failing check, not necessarily the exact root (isolating the precise root is a
+/// future refinement).
+pub enum RegFault<B: Backend = Bignum> {
+    /// The separation margin is not strictly positive — not a regularity certificate at all.
+    NonPositiveMargin,
+    /// The supplied Sturm chain of `den` is not `den`'s chain (a forged or stale chain).
+    InvalidDenChain,
+    /// The supplied Sturm chain of the residual `R = num − m·den` is not `R`'s chain.
+    InvalidResidualChain,
+    /// The denominator is not strictly positive on the span (a real degeneracy).
+    NonPositiveDen {
+        /// The checker's σ witness (the span lower bound).
+        sigma: Rat<B>,
+    },
+    /// `num/den > m` does not hold on the span (a real margin failure).
+    MarginFailure {
+        /// The checker's σ witness (the span lower bound).
+        sigma: Rat<B>,
+    },
+    /// A stall-end ring datum ([`slab_s0`]) is not strictly positive.
+    StallLimit {
+        /// The non-positive ring value.
+        value: Rat<B>,
+    },
+    /// An outer-support-fiber corner ([`trim_local`]) is not strictly retained (`G_i ≤ 0`).
+    OuterFiber {
+        /// The non-positive corner value.
+        value: Rat<B>,
+    },
+}
+
 /// REG-Q (spec §8.5): certify `num/den > m` on the span, with `den > 0` and `m > 0`.
-/// Total — `Verified(m)` or `Refuted(σ)` at a span point where the margin fails.
+/// Total — `Verified(m)` or `Refuted(`[`RegFault`]`)`.
 ///
 /// The margin must be **strictly positive**: a regularity certificate exists to bound a
 /// √-cleared quantity *away* from zero. With `m ≤ 0` the residual `R = num − m·den` can be
 /// positive without `num > 0` (a negative `m` makes `Verified` on a degenerate `num ≡ 0` —
 /// the checker would certify nothing), so a non-positive margin is rejected outright rather
-/// than trusted from the searcher.
-pub fn reg_q<B: Backend>(cert: &RegCert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+/// than trusted from the searcher. The [`RegFault`] distinguishes that (and a forged chain)
+/// from a genuine positivity failure.
+pub fn reg_q<B: Backend>(cert: &RegCert<B>) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     let (lo, hi) = (&cert.span.lo, &cert.span.hi);
     // A non-positive separation margin is not a regularity certificate — reject it.
     if cert.m.0.sign() <= 0 {
-        return Verdict::Refuted(lo.clone());
+        return Verdict::Refuted(RegFault::NonPositiveMargin);
     }
     let r = cert.num.sub(&cert.den.scale(&cert.m.0)); // R = num − m·den
 
     // Re-verify the supplied chains — a chain we did not check is not evidence.
-    if !cert.den_chain.verify_chain(&cert.den) || !cert.res_chain.verify_chain(&r) {
-        return Verdict::Refuted(lo.clone());
+    if !cert.den_chain.verify_chain(&cert.den) {
+        return Verdict::Refuted(RegFault::InvalidDenChain);
+    }
+    if !cert.res_chain.verify_chain(&r) {
+        return Verdict::Refuted(RegFault::InvalidResidualChain);
     }
     // den > 0 on [lo, hi]: positive at the closed lower end and no root in (lo, hi].
     if cert.den.eval(lo).sign() <= 0 || cert.den_chain.count_in(lo, hi) != 0 {
-        return Verdict::Refuted(lo.clone());
+        return Verdict::Refuted(RegFault::NonPositiveDen { sigma: lo.clone() });
     }
     // R > 0 on [lo, hi] ⇒ num > m·den ⇒ num/den > m (den > 0).
     if r.eval(lo).sign() <= 0 || cert.res_chain.count_in(lo, hi) != 0 {
-        return Verdict::Refuted(lo.clone());
+        return Verdict::Refuted(RegFault::MarginFailure { sigma: lo.clone() });
     }
     Verdict::Verified(cert.m.clone())
 }
@@ -108,17 +151,21 @@ pub struct SlabS0Cert<B: Backend = Bignum> {
 /// SLAB-S0 (spec §8.5): the one-sided `inf(R₁ + w) > 0`, reduced by corner collapse at
 /// `w⁻` (the `+w` coefficient is structurally `+1`) to the [`reg_q`] positivity core,
 /// plus — on stall-end spans — that both `μ̂`-endpoint ring values are strictly positive.
-pub fn slab_s0<B: Backend>(cert: &SlabS0Cert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+pub fn slab_s0<B: Backend>(cert: &SlabS0Cert<B>) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     let core = reg_q(&cert.core);
     if !matches!(core, Verdict::Verified(_)) {
         return core;
     }
     if let Some(sl) = &cert.stall_end {
         if sl.value_lo.sign() <= 0 {
-            return Verdict::Refuted(sl.value_lo.clone());
+            return Verdict::Refuted(RegFault::StallLimit {
+                value: sl.value_lo.clone(),
+            });
         }
         if sl.value_hi.sign() <= 0 {
-            return Verdict::Refuted(sl.value_hi.clone());
+            return Verdict::Refuted(RegFault::StallLimit {
+                value: sl.value_hi.clone(),
+            });
         }
     }
     core
@@ -301,15 +348,73 @@ pub enum ClipVerdict {
     Subdivide,
 }
 
+/// The exhaustive common-zero census the CLIP ladder's per-zero rung must clear. The trim
+/// coefficients' common zeros are the real roots of `b² + d²` (over ℝ, `b²+d² = 0 ⟺ b = 0 ∧
+/// d = 0`). The searcher supplies that polynomial, a re-verified Sturm chain, and one
+/// isolating interval per supplied [`ZeroClip`]; the checker (via [`census_ok`]) confirms the
+/// zeros list is **complete** — no awkward root omitted to sneak a certification through.
+pub struct ZeroCensus<B: Backend = Bignum> {
+    /// `b² + d²`, whose real roots are exactly the common zeros.
+    pub discriminant: Poly<B>,
+    /// The searcher-supplied Sturm chain of `discriminant` (re-verified before counting).
+    pub chain: SturmChain<B>,
+    /// The σ-span the ladder runs over.
+    pub span: Interval<B>,
+    /// One isolating interval per common zero, in σ-order — one per supplied [`ZeroClip`].
+    pub intervals: Vec<Interval<B>>,
+}
+
+/// Whether `census` proves the supplied `n_zeros` common zeros are the **complete** isolated
+/// root set of `b² + d²` on the span: the chain is genuine, the total distinct-root count
+/// equals `n_zeros`, and the `intervals` are in-span, σ-ordered, disjoint, and each isolate
+/// exactly one root — so every root gets exactly one discharge and none is omitted.
+pub fn census_ok<B: Backend>(census: &ZeroCensus<B>, n_zeros: usize) -> bool {
+    if !census.chain.verify_chain(&census.discriminant) {
+        return false;
+    }
+    let (lo, hi) = (&census.span.lo, &census.span.hi);
+    if census.chain.count_in(lo, hi) as usize != n_zeros || census.intervals.len() != n_zeros {
+        return false;
+    }
+    let mut prev_hi: Option<&Rat<B>> = None;
+    for iv in &census.intervals {
+        // Inside the span.
+        if iv.lo.cmp(lo) == core::cmp::Ordering::Less
+            || iv.hi.cmp(hi) == core::cmp::Ordering::Greater
+        {
+            return false;
+        }
+        // σ-ordered and disjoint: `iv.lo ≥ previous iv.hi` (half-open `(lo, hi]`).
+        if let Some(p) = prev_hi {
+            if iv.lo.cmp(p) == core::cmp::Ordering::Less {
+                return false;
+            }
+        }
+        // Exactly one root inside.
+        if census.chain.count_in(&iv.lo, &iv.hi) != 1 {
+            return false;
+        }
+        prev_hi = Some(&iv.hi);
+    }
+    true
+}
+
 /// The CLIP transversality ladder (spec §8.5): CLIP-W over the whole span → CLIP-μ on the
 /// failing sub-spans → per isolated common zero one of [`clip_a`] / [`clip_sigma`] / an
 /// osculation reject. Short-circuits: the first fully-certified rung wins.
 ///
 /// `w` and `mu` are [`reg_q`] positivity certificates (the cleared `(n·b_J)²`, `(r·b_J)²`
-/// gauges); the searcher supplies the failing sub-spans and the isolated common zeros.
+/// gauges); the searcher supplies the failing sub-spans and the isolated common zeros. On the
+/// per-zero path, `census` must prove the supplied `zeros` are the **complete** common-zero
+/// set ([`census_ok`]) — an incomplete list (an omitted awkward zero) cannot certify.
 /// A [`ClipVerdict::Subdivide`] means the supplied certificate did not converge — refine
 /// and re-run; only [`ZeroClip::Osculation`] yields [`ClipVerdict::Rejected`].
-pub fn clip<B: Backend>(w: &RegCert<B>, mu: &[RegCert<B>], zeros: &[ZeroClip<B>]) -> ClipVerdict {
+pub fn clip<B: Backend>(
+    w: &RegCert<B>,
+    mu: &[RegCert<B>],
+    zeros: &[ZeroClip<B>],
+    census: Option<&ZeroCensus<B>>,
+) -> ClipVerdict {
     // CLIP-W: w-transverse across the whole span ⇒ done.
     if matches!(reg_q(w), Verdict::Verified(_)) {
         return ClipVerdict::Certified;
@@ -330,7 +435,10 @@ pub fn clip<B: Backend>(w: &RegCert<B>, mu: &[RegCert<B>], zeros: &[ZeroClip<B>]
             ZeroClip::BySigma(c) => all_resolved &= matches!(clip_sigma(c), Verdict::Verified(_)),
         }
     }
-    if all_resolved {
+    // Certify only if every zero discharged AND the zeros are the complete census — closing
+    // the local-proof-vs-global-coverage hole (an omitted zero is never certified).
+    let complete = matches!(census, Some(c) if census_ok(c, zeros.len()));
+    if all_resolved && complete {
         ClipVerdict::Certified
     } else {
         ClipVerdict::Subdivide
@@ -352,12 +460,14 @@ pub struct TrimLocalCert<B: Backend = Bignum> {
 /// TRIM-LOCAL (spec §8.5): the clip stays local — every outer-fiber corner is strictly
 /// retained (`G_i > 0`) **and** the interior is confined. Catches the re-entry a w-only
 /// quantification misses: a 1.49-wrap flank re-crosses the trim plane at distant σ.
-/// `Verified(m)` (the confinement margin) or `Refuted(G_i)` at the first failure.
-pub fn trim_local<B: Backend>(cert: &TrimLocalCert<B>) -> Verdict<MarginSq<Rat<B>>, Rat<B>, ()> {
+/// `Verified(m)` (the confinement margin) or `Refuted(`[`RegFault`]`)` at the first failure.
+pub fn trim_local<B: Backend>(
+    cert: &TrimLocalCert<B>,
+) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
     for fiber in &cert.outer_fibers {
         for g in fiber {
             if g.sign() <= 0 {
-                return Verdict::Refuted(g.clone());
+                return Verdict::Refuted(RegFault::OuterFiber { value: g.clone() });
             }
         }
     }
@@ -564,6 +674,33 @@ mod tests {
     }
 
     #[test]
+    fn reg_q_fault_distinguishes_paperwork_from_degeneracy() {
+        // Bad paperwork — no real counterexample, no σ witness:
+        let m0 = reg_cert(&[1, 0, 1], &[1], Q::from_i128(0), span(-2, 2));
+        assert!(matches!(
+            reg_q(&m0),
+            Verdict::Refuted(RegFault::NonPositiveMargin)
+        ));
+        let mut forged = reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2));
+        forged.res_chain = SturmChain::new(&poly(&[7]));
+        assert!(matches!(
+            reg_q(&forged),
+            Verdict::Refuted(RegFault::InvalidResidualChain)
+        ));
+        // A genuine positivity failure — a real degeneracy carrying a σ witness:
+        let too_large = reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2));
+        assert!(matches!(
+            reg_q(&too_large),
+            Verdict::Refuted(RegFault::MarginFailure { .. })
+        ));
+        let bad_den = reg_cert(&[1, 0, 1], &[0, 1], Q::new(1, 4), span(-2, 2));
+        assert!(matches!(
+            reg_q(&bad_den),
+            Verdict::Refuted(RegFault::NonPositiveDen { .. })
+        ));
+    }
+
+    #[test]
     fn reg_q_refutes_a_non_positive_margin() {
         // num ≡ 0, den = 1, m = −1: R = num − m·den = 1 > 0, so the residual test alone
         // would *pass* — yet num/den ≡ 0 is degenerate. A negative margin certifies
@@ -694,10 +831,20 @@ mod tests {
         assert!(matches!(clip_a(&toothless), Verdict::Unresolved(_)));
     }
 
+    /// A complete single-zero census: `b²+d² = σ` (one root at 0), one isolating interval.
+    fn one_zero_census() -> ZeroCensus<Bignum> {
+        ZeroCensus {
+            discriminant: poly(&[0, 1]),
+            chain: SturmChain::new(&poly(&[0, 1])),
+            span: span(-2, 2),
+            intervals: vec![span(-1, 1)],
+        }
+    }
+
     #[test]
     fn clip_ladder_certifies_when_clip_w_passes() {
         let w = reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2)); // reg_q Verifies
-        assert_eq!(clip::<Bignum>(&w, &[], &[]), ClipVerdict::Certified);
+        assert_eq!(clip::<Bignum>(&w, &[], &[], None), ClipVerdict::Certified);
     }
 
     #[test]
@@ -707,14 +854,15 @@ mod tests {
             a: Q::from_i128(5),
             m_a: MarginSq(Q::from_i128(1)),
         })];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Certified);
+        let census = one_zero_census();
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Certified);
     }
 
     #[test]
     fn clip_ladder_rejects_an_osculation() {
         let w = reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2)); // reg_q Refutes
         let zeros = [ZeroClip::<Bignum>::Osculation];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Rejected);
+        assert_eq!(clip(&w, &[], &zeros, None), ClipVerdict::Rejected);
     }
 
     #[test]
@@ -724,9 +872,58 @@ mod tests {
             corners: corners(-1, 1, -1, 1), // straddles ⇒ clip_sigma Unresolved
             m_sigma: Q::new(1, 4),
         })];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Subdivide);
+        let census = one_zero_census();
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Subdivide);
         // No zeros supplied at all ⇒ also Subdivide (failure not yet localized).
-        assert_eq!(clip::<Bignum>(&w, &[], &[]), ClipVerdict::Subdivide);
+        assert_eq!(clip::<Bignum>(&w, &[], &[], None), ClipVerdict::Subdivide);
+    }
+
+    #[test]
+    fn clip_census_rejects_an_omitted_zero() {
+        // b²+d² = σ²−1 has TWO roots (±1) but the searcher supplies only one ZeroClip — the
+        // census root-count catches the omission, so the ladder cannot certify (Subdivide).
+        let w = reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2)); // reg_q Refutes
+        let zeros = [ZeroClip::ByA(ClipACert {
+            a: Q::from_i128(5),
+            m_a: MarginSq(Q::from_i128(1)),
+        })];
+        let disc = poly(&[-1, 0, 1]); // σ² − 1
+        let census = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&disc),
+            span: span(-2, 2),
+            intervals: vec![span(0, 2)], // "isolates" +1 only, omits −1
+        };
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Subdivide);
+    }
+
+    #[test]
+    fn census_ok_checks_completeness() {
+        let disc = poly(&[-1, 0, 1]); // σ² − 1, roots ±1
+        let complete = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&disc),
+            span: span(-2, 2),
+            intervals: vec![span(-2, 0), span(0, 2)], // isolate −1 and +1
+        };
+        assert!(census_ok(&complete, 2));
+        assert!(!census_ok(&complete, 1)); // wrong claimed count
+        // A forged chain is rejected.
+        let forged = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&poly(&[7])),
+            span: span(-2, 2),
+            intervals: vec![span(-2, 0), span(0, 2)],
+        };
+        assert!(!census_ok(&forged, 2));
+        // An interval covering both roots (not one-per-interval) is rejected.
+        let not_isolating = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&disc),
+            span: span(-2, 2),
+            intervals: vec![span(-2, 2), span(-2, 2)],
+        };
+        assert!(!census_ok(&not_isolating, 2));
     }
 
     #[test]
