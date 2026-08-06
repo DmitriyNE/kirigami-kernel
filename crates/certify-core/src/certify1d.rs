@@ -348,15 +348,73 @@ pub enum ClipVerdict {
     Subdivide,
 }
 
+/// The exhaustive common-zero census the CLIP ladder's per-zero rung must clear. The trim
+/// coefficients' common zeros are the real roots of `b² + d²` (over ℝ, `b²+d² = 0 ⟺ b = 0 ∧
+/// d = 0`). The searcher supplies that polynomial, a re-verified Sturm chain, and one
+/// isolating interval per supplied [`ZeroClip`]; the checker (via [`census_ok`]) confirms the
+/// zeros list is **complete** — no awkward root omitted to sneak a certification through.
+pub struct ZeroCensus<B: Backend = Bignum> {
+    /// `b² + d²`, whose real roots are exactly the common zeros.
+    pub discriminant: Poly<B>,
+    /// The searcher-supplied Sturm chain of `discriminant` (re-verified before counting).
+    pub chain: SturmChain<B>,
+    /// The σ-span the ladder runs over.
+    pub span: Interval<B>,
+    /// One isolating interval per common zero, in σ-order — one per supplied [`ZeroClip`].
+    pub intervals: Vec<Interval<B>>,
+}
+
+/// Whether `census` proves the supplied `n_zeros` common zeros are the **complete** isolated
+/// root set of `b² + d²` on the span: the chain is genuine, the total distinct-root count
+/// equals `n_zeros`, and the `intervals` are in-span, σ-ordered, disjoint, and each isolate
+/// exactly one root — so every root gets exactly one discharge and none is omitted.
+pub fn census_ok<B: Backend>(census: &ZeroCensus<B>, n_zeros: usize) -> bool {
+    if !census.chain.verify_chain(&census.discriminant) {
+        return false;
+    }
+    let (lo, hi) = (&census.span.lo, &census.span.hi);
+    if census.chain.count_in(lo, hi) as usize != n_zeros || census.intervals.len() != n_zeros {
+        return false;
+    }
+    let mut prev_hi: Option<&Rat<B>> = None;
+    for iv in &census.intervals {
+        // Inside the span.
+        if iv.lo.cmp(lo) == core::cmp::Ordering::Less
+            || iv.hi.cmp(hi) == core::cmp::Ordering::Greater
+        {
+            return false;
+        }
+        // σ-ordered and disjoint: `iv.lo ≥ previous iv.hi` (half-open `(lo, hi]`).
+        if let Some(p) = prev_hi {
+            if iv.lo.cmp(p) == core::cmp::Ordering::Less {
+                return false;
+            }
+        }
+        // Exactly one root inside.
+        if census.chain.count_in(&iv.lo, &iv.hi) != 1 {
+            return false;
+        }
+        prev_hi = Some(&iv.hi);
+    }
+    true
+}
+
 /// The CLIP transversality ladder (spec §8.5): CLIP-W over the whole span → CLIP-μ on the
 /// failing sub-spans → per isolated common zero one of [`clip_a`] / [`clip_sigma`] / an
 /// osculation reject. Short-circuits: the first fully-certified rung wins.
 ///
 /// `w` and `mu` are [`reg_q`] positivity certificates (the cleared `(n·b_J)²`, `(r·b_J)²`
-/// gauges); the searcher supplies the failing sub-spans and the isolated common zeros.
+/// gauges); the searcher supplies the failing sub-spans and the isolated common zeros. On the
+/// per-zero path, `census` must prove the supplied `zeros` are the **complete** common-zero
+/// set ([`census_ok`]) — an incomplete list (an omitted awkward zero) cannot certify.
 /// A [`ClipVerdict::Subdivide`] means the supplied certificate did not converge — refine
 /// and re-run; only [`ZeroClip::Osculation`] yields [`ClipVerdict::Rejected`].
-pub fn clip<B: Backend>(w: &RegCert<B>, mu: &[RegCert<B>], zeros: &[ZeroClip<B>]) -> ClipVerdict {
+pub fn clip<B: Backend>(
+    w: &RegCert<B>,
+    mu: &[RegCert<B>],
+    zeros: &[ZeroClip<B>],
+    census: Option<&ZeroCensus<B>>,
+) -> ClipVerdict {
     // CLIP-W: w-transverse across the whole span ⇒ done.
     if matches!(reg_q(w), Verdict::Verified(_)) {
         return ClipVerdict::Certified;
@@ -377,7 +435,10 @@ pub fn clip<B: Backend>(w: &RegCert<B>, mu: &[RegCert<B>], zeros: &[ZeroClip<B>]
             ZeroClip::BySigma(c) => all_resolved &= matches!(clip_sigma(c), Verdict::Verified(_)),
         }
     }
-    if all_resolved {
+    // Certify only if every zero discharged AND the zeros are the complete census — closing
+    // the local-proof-vs-global-coverage hole (an omitted zero is never certified).
+    let complete = matches!(census, Some(c) if census_ok(c, zeros.len()));
+    if all_resolved && complete {
         ClipVerdict::Certified
     } else {
         ClipVerdict::Subdivide
@@ -770,10 +831,20 @@ mod tests {
         assert!(matches!(clip_a(&toothless), Verdict::Unresolved(_)));
     }
 
+    /// A complete single-zero census: `b²+d² = σ` (one root at 0), one isolating interval.
+    fn one_zero_census() -> ZeroCensus<Bignum> {
+        ZeroCensus {
+            discriminant: poly(&[0, 1]),
+            chain: SturmChain::new(&poly(&[0, 1])),
+            span: span(-2, 2),
+            intervals: vec![span(-1, 1)],
+        }
+    }
+
     #[test]
     fn clip_ladder_certifies_when_clip_w_passes() {
         let w = reg_cert(&[1, 0, 1], &[1], Q::new(1, 2), span(-2, 2)); // reg_q Verifies
-        assert_eq!(clip::<Bignum>(&w, &[], &[]), ClipVerdict::Certified);
+        assert_eq!(clip::<Bignum>(&w, &[], &[], None), ClipVerdict::Certified);
     }
 
     #[test]
@@ -783,14 +854,15 @@ mod tests {
             a: Q::from_i128(5),
             m_a: MarginSq(Q::from_i128(1)),
         })];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Certified);
+        let census = one_zero_census();
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Certified);
     }
 
     #[test]
     fn clip_ladder_rejects_an_osculation() {
         let w = reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2)); // reg_q Refutes
         let zeros = [ZeroClip::<Bignum>::Osculation];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Rejected);
+        assert_eq!(clip(&w, &[], &zeros, None), ClipVerdict::Rejected);
     }
 
     #[test]
@@ -800,9 +872,58 @@ mod tests {
             corners: corners(-1, 1, -1, 1), // straddles ⇒ clip_sigma Unresolved
             m_sigma: Q::new(1, 4),
         })];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Subdivide);
+        let census = one_zero_census();
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Subdivide);
         // No zeros supplied at all ⇒ also Subdivide (failure not yet localized).
-        assert_eq!(clip::<Bignum>(&w, &[], &[]), ClipVerdict::Subdivide);
+        assert_eq!(clip::<Bignum>(&w, &[], &[], None), ClipVerdict::Subdivide);
+    }
+
+    #[test]
+    fn clip_census_rejects_an_omitted_zero() {
+        // b²+d² = σ²−1 has TWO roots (±1) but the searcher supplies only one ZeroClip — the
+        // census root-count catches the omission, so the ladder cannot certify (Subdivide).
+        let w = reg_cert(&[1, 0, 1], &[1], Q::from_i128(2), span(-2, 2)); // reg_q Refutes
+        let zeros = [ZeroClip::ByA(ClipACert {
+            a: Q::from_i128(5),
+            m_a: MarginSq(Q::from_i128(1)),
+        })];
+        let disc = poly(&[-1, 0, 1]); // σ² − 1
+        let census = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&disc),
+            span: span(-2, 2),
+            intervals: vec![span(0, 2)], // "isolates" +1 only, omits −1
+        };
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Subdivide);
+    }
+
+    #[test]
+    fn census_ok_checks_completeness() {
+        let disc = poly(&[-1, 0, 1]); // σ² − 1, roots ±1
+        let complete = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&disc),
+            span: span(-2, 2),
+            intervals: vec![span(-2, 0), span(0, 2)], // isolate −1 and +1
+        };
+        assert!(census_ok(&complete, 2));
+        assert!(!census_ok(&complete, 1)); // wrong claimed count
+        // A forged chain is rejected.
+        let forged = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&poly(&[7])),
+            span: span(-2, 2),
+            intervals: vec![span(-2, 0), span(0, 2)],
+        };
+        assert!(!census_ok(&forged, 2));
+        // An interval covering both roots (not one-per-interval) is rejected.
+        let not_isolating = ZeroCensus {
+            discriminant: disc.clone(),
+            chain: SturmChain::new(&disc),
+            span: span(-2, 2),
+            intervals: vec![span(-2, 2), span(-2, 2)],
+        };
+        assert!(!census_ok(&not_isolating, 2));
     }
 
     #[test]

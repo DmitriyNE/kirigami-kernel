@@ -10,7 +10,7 @@
 #[cfg(test)]
 mod clip {
     use certify_core::certify1d::{
-        ClipACert, ClipSigmaCert, ClipVerdict, RegCert, ZeroClip, clip, clip_sigma,
+        ClipACert, ClipSigmaCert, ClipVerdict, RegCert, ZeroCensus, ZeroClip, clip, clip_sigma,
     };
     use certify_core::{MarginSq, Verdict};
     use lattice::{Bignum, Interval, Poly, Rat, SturmChain};
@@ -69,7 +69,20 @@ mod clip {
             a: Q::from_i128(3),
             m_a: MarginSq(Q::from_i128(4)), // 9 ≥ 4 ⇒ |a| separated ⇒ CLIP-a resolves it
         })];
-        assert_eq!(clip(&w, &[], &zeros), ClipVerdict::Certified);
+        // The single common zero is the complete census: b²+d² has one root on [−2, 2].
+        let census = ZeroCensus {
+            discriminant: poly(&[0, 1]),
+            chain: SturmChain::new(&poly(&[0, 1])),
+            span: Interval {
+                lo: Q::from_i128(-2),
+                hi: Q::from_i128(2),
+            },
+            intervals: vec![Interval {
+                lo: Q::from_i128(-1),
+                hi: Q::from_i128(1),
+            }],
+        };
+        assert_eq!(clip(&w, &[], &zeros, Some(&census)), ClipVerdict::Certified);
     }
 }
 
