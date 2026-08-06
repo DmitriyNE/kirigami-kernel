@@ -1423,6 +1423,33 @@ mod tests {
         ));
     }
 
+    /// **Partial collinear edge overlap** — two same-height rectangles offset only
+    /// horizontally: A = [0,4]×[0,2], B = [2,6]×[0,2]. Their top/bottom edges are collinear
+    /// and overlap on `x ∈ [2,4]` (a *partial*, not identical, coincidence). The stage-1
+    /// coincidence lattice's touch points must seed the `x = 2` and `x = 4` vertices so the
+    /// shared merge folds correctly. ∪ = [0,6]×[0,2] (one 6×2 rectangle), ∩ = [2,4]×[0,2]
+    /// (the overlap), △ = two disjoint 2×2 squares.
+    #[test]
+    fn boolean_over_partially_overlapping_edges() {
+        let mut e = polygon(&[(0, 0), (4, 0), (4, 2), (0, 2)], 0);
+        e.extend(polygon(&[(2, 0), (6, 0), (6, 2), (2, 2)], 1));
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::Or),
+            1,
+            "∪ = one 6×2 rectangle"
+        );
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::And),
+            1,
+            "∩ = the 2×4 overlap"
+        );
+        assert_eq!(
+            certified_faces(&e, &ab, BoolOp::Xor),
+            2,
+            "△ = two 2×2 squares"
+        );
+    }
+
     /// **Mixed line+circle operands** (#3): a 6×6 square A with a radius-2 disk B fully
     /// inside it. ∩ = the disk, ∪ = the square, △ = the square with a disk-shaped hole
     /// (one face, one hole) — the polygon analogue of the annulus.

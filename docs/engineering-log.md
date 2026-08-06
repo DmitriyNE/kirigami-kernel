@@ -115,12 +115,15 @@ fine — this is a log, not a schema.
   vertex's incident-edge set — so this is narrow). Mark the Kani cell "bounded validation" and either
   land the unbounded Lean induction or add the permutation guard. *2026-08-06 · deferred · proof.rs, arrange.rs*
 
-- **Coincidence lattice computed then discarded — consume `CoincSet` or delete it.** `arrange_events`
-  returns `(EventSet, CoincSet, Witness)` but `Dcel::build` binds `_coinc, _wit` and re-derives
-  coincidence via split + carrier-merge (dcel.rs step 3). Two coincidence implementations; the
-  elaborately-tested `coincide.rs` lattice is off the actual boolean critical path, inviting eventual
-  disagreement. Fix: either feed `CoincSet` into `Dcel::build` canonically, or drop it. `CoincEdge` doc
-  corrected to stop claiming it feeds the DCEL (batch 2). *2026-08-06 · deferred · spine.rs, dcel.rs, coincide.rs*
+- **Coincidence lattice — `CoincSet` edge-list is dead; deletion folds into 8a.** Verified (debt sprint,
+  item 4): `coincide` is *load-bearing* — its `touches` become `Coincident` incidences (`spine.rs:77`) that
+  seed the overlap-boundary vertices `Dcel::build`'s step-3 merge depends on, so the **live merge is correct
+  for *partial* overlap** (proven by the new `boolean_over_partially_overlapping_edges` fixture — two
+  horizontally-offset rectangles, ∪/∩/△). Only the `CoincEdge`/`CoincSet` **edge-list** is dead (dropped as
+  `_coinc`; `CoincOutcome` is `usize` counts, decoupled from `CoincEdge`). Its physical removal (`event.rs`
+  `CoincEdge`/`Operand`, `spine.rs` `CoincSet` + `arrange_events` return, the randomized
+  `coincident_edges_match_cgal` differential) **folds into item 8a's `PairWitness` rework** — one coherent
+  witness change rather than double-churn. *2026-08-06 · deferred(→8a) · spine.rs, coincide.rs, difftest*
 
 - **Differential-fuzz — harness + real fuzz run DONE (`differential-fuzz` branch); one wiring follow-up.**
   Op-chain differential (`crates/lattice/src/ratfuzz.rs`: `dashu` ≡ the *proven* `RefBackend` over
