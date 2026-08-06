@@ -119,6 +119,12 @@ pub enum CapOutFault {
     /// stronger source-ID permutation certificate is a tracked follow-up (see
     /// `docs/engineering-log.md`).
     BoundaryEdgeCount,
+    /// The slab point-location did not cover every arrangement cell — some cycle got no
+    /// label, or a band height grazed a vertex `y` / circle centre (`critical_ys` incomplete).
+    /// A correctly-built arrangement covers every cell, so this is a decomposition defect; the
+    /// certified path refuses it rather than certify a silently-defaulted `(false, false)`
+    /// label (rejected by `slab_decomposition_generic` + the `all_assigned` flag).
+    Incomplete,
 }
 
 /// A certified boolean result: the emitted [`Region`] plus a classification of the
@@ -369,42 +375,63 @@ fn label_all_cycles<B: Backend>(
     slab_locate(d, operand_of).0
 }
 
-/// The slab decomposition, returning both the per-cell `(A, B)` labels and a rational
-/// point known to lie inside each cell. Boundary-loop orientation and hole-nesting use the
-/// interior points to decide which cell a traced loop bounds.
-fn slab_locate<B: Backend>(
-    d: &Dcel<B>,
-    operand_of: &impl Fn(CurveId) -> OperandId,
-) -> (Vec<Label>, Vec<Pt<B>>) {
-    let a_edges = operand_edges(d, operand_of, OperandId::A);
-    let b_edges = operand_edges(d, operand_of, OperandId::B);
-    let mut labels: Vec<Option<Label>> = vec![None; d.n_cycles];
-    let mut reps: Vec<Option<Pt<B>>> = vec![None; d.n_cycles];
-
+/// The generic band heights: one strictly below the lowest critical, one strictly between
+/// each consecutive pair, one above the highest. Empty when there are no criticals (an empty
+/// arrangement). Each is strictly between (or beyond) criticals, so — *iff* `critical_ys` is
+/// complete — it avoids every vertex `y` and circle `cy` (the ray-cast genericity precondition).
+fn slab_band_ys<B: Backend>(d: &Dcel<B>) -> Vec<Rat<B>> {
     let crit = critical_ys(d);
     if crit.is_empty() {
-        return (
-            vec![(false, false); d.n_cycles],
-            vec![(Rat::from_i128(0), Rat::from_i128(0)); d.n_cycles],
-        );
+        return Vec::new();
     }
-    // A generic rational height per gap: below the lowest, between each pair, above
-    // the highest. Each is strictly between (or beyond) criticals, so it avoids every
-    // vertex y and every circle cy — the ray-cast genericity precondition.
     let mut band_ys: Vec<Rat<B>> = Vec::with_capacity(crit.len() + 1);
     band_ys.push(rational_below(&crit[0]));
     for w in crit.windows(2) {
         band_ys.push(rational_between(&w[0], &w[1]));
     }
     band_ys.push(rational_above(&crit[crit.len() - 1]));
+    band_ys
+}
 
-    // Genericity self-check (#4): every band ray must strictly avoid all vertex y's and
-    // circle centres. This holds by construction iff `critical_ys` is complete; a fire
-    // here is a dropped-vertex / missing-circle defect that would otherwise mis-count a
-    // parity and silently mislabel a cell. Debug-only (zero release cost); exercised by
-    // the whole property/differential suite.
+/// Whether every slab band height is **generic** — strictly avoids every vertex `y` and
+/// circle centre `cy` — i.e. [`critical_ys`] is complete. A `false` here is a
+/// dropped-vertex / missing-circle decomposition defect that would otherwise mis-count a
+/// parity and silently mislabel a cell. This is `O(bands × arrangement)`, too costly for the
+/// fast [`ledge_dom`] path, so [`ledge_dom_certified`] runs it as an explicit gate (a
+/// [`debug_assert`] covers the fast path in dev builds).
+pub(crate) fn slab_decomposition_generic<B: Backend>(d: &Dcel<B>) -> bool {
+    slab_band_ys(d).iter().all(|y0| generic_height(d, y0))
+}
+
+/// The slab decomposition, returning the per-cell `(A, B)` labels, a rational interior point
+/// per cell, and whether **every** cycle was assigned a label. Boundary-loop orientation and
+/// hole-nesting use the interior points to decide which cell a traced loop bounds. An
+/// unassigned cycle (the `all_assigned = false` flag) is a decomposition defect: on the fast
+/// path it falls back to a default `(false, false)` label / origin rep, but
+/// [`ledge_dom_certified`] refuses it ([`CapOutFault::Incomplete`]) rather than certify a
+/// silently-manufactured label.
+fn slab_locate<B: Backend>(
+    d: &Dcel<B>,
+    operand_of: &impl Fn(CurveId) -> OperandId,
+) -> (Vec<Label>, Vec<Pt<B>>, bool) {
+    let a_edges = operand_edges(d, operand_of, OperandId::A);
+    let b_edges = operand_edges(d, operand_of, OperandId::B);
+    let mut labels: Vec<Option<Label>> = vec![None; d.n_cycles];
+    let mut reps: Vec<Option<Pt<B>>> = vec![None; d.n_cycles];
+
+    let band_ys = slab_band_ys(d);
+    if band_ys.is_empty() {
+        // No criticals — an empty arrangement; the unbounded cell(s) are correctly outside.
+        return (
+            vec![(false, false); d.n_cycles],
+            vec![(Rat::from_i128(0), Rat::from_i128(0)); d.n_cycles],
+            true,
+        );
+    }
+    // Genericity holds by construction iff `critical_ys` is complete; the certified path
+    // gates on `slab_decomposition_generic`, this only guards dev builds of the fast path.
     debug_assert!(
-        band_ys.iter().all(|y0| generic_height(d, y0)),
+        slab_decomposition_generic(d),
         "slab band height grazed a vertex y or circle centre — critical_ys is incomplete"
     );
 
@@ -469,6 +496,7 @@ fn slab_locate<B: Backend>(
         assign(&mut labels, &mut reps, xs[m - 1].down_cycle, xm, y0);
     }
 
+    let all_assigned = labels.iter().all(Option::is_some);
     (
         labels
             .into_iter()
@@ -477,6 +505,7 @@ fn slab_locate<B: Backend>(
         reps.into_iter()
             .map(|r| r.unwrap_or((Rat::from_i128(0), Rat::from_i128(0))))
             .collect(),
+        all_assigned,
     )
 }
 
@@ -621,7 +650,7 @@ pub fn ledge_dom<B: Backend>(
     op: BoolOp,
 ) -> Region<B> {
     let d = Dcel::build(edges);
-    let (labels, reps) = slab_locate(&d, operand_of);
+    let (labels, reps, _) = slab_locate(&d, operand_of);
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
     emit_region(&d, &sel, &reps)
 }
@@ -682,7 +711,13 @@ pub fn ledge_dom_certified<B: Backend>(
     if !d.substrate_link_ok() {
         return Verdict::Refuted(CapOutFault::SubstrateLink);
     }
-    let (labels, reps) = slab_locate(&d, operand_of);
+    let (labels, reps, all_assigned) = slab_locate(&d, operand_of);
+    // Refuse a silently-defaulted labeling: every cell must have been located, and the slab
+    // decomposition must be generic (critical_ys complete) — else a manufactured outside-label
+    // would poison the certificate.
+    if !all_assigned || !slab_decomposition_generic(&d) {
+        return Verdict::Refuted(CapOutFault::Incomplete);
+    }
     certify_from_labels(&d, operand_of, op, labels, reps)
 }
 
@@ -813,7 +848,7 @@ pub fn has_pinch<B: Backend>(
     op: BoolOp,
 ) -> bool {
     let d = Dcel::build(edges);
-    let (labels, _reps) = slab_locate(&d, operand_of);
+    let (labels, _reps, _) = slab_locate(&d, operand_of);
     let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
     link_classes(&d, &sel).contains(&LinkClass::Pinch)
 }
@@ -1210,7 +1245,7 @@ mod tests {
     /// The number of `Pinch` (non-manifold) vertices in the △ of two disks.
     fn pinch_count(edges: &[Edge<Bignum>]) -> usize {
         let d = Dcel::build(edges);
-        let (labels, _) = slab_locate(&d, &ab);
+        let (labels, _, _) = slab_locate(&d, &ab);
         let sel: Vec<bool> = labels.iter().map(|&l| BoolOp::Xor.select(l)).collect();
         link_classes(&d, &sel)
             .iter()
@@ -1276,7 +1311,7 @@ mod tests {
     fn separating_boundary_edge_count() {
         for e in corpus() {
             let d = Dcel::build(&e);
-            let (labels, _) = slab_locate(&d, &ab);
+            let (labels, _, _) = slab_locate(&d, &ab);
             for op in [BoolOp::Xor, BoolOp::And, BoolOp::Or] {
                 let sel: Vec<bool> = labels.iter().map(|&l| op.select(l)).collect();
                 let r = ledge_dom(&e, &ab, op);
@@ -1332,7 +1367,7 @@ mod tests {
     fn certified_refutes_corrupted_labeling() {
         let e = two_disks();
         let d = Dcel::build(&e);
-        let (mut labels, reps) = slab_locate(&d, &ab);
+        let (mut labels, reps, _) = slab_locate(&d, &ab);
         labels[0].0 = !labels[0].0; // break the cochain around cell 0
         assert!(matches!(
             certify_from_labels(&d, &ab, BoolOp::Or, labels, reps),
@@ -1355,6 +1390,18 @@ mod tests {
             "y=3 = the crossing vertices"
         );
         assert!(generic_height(&d, &Q::new(1, 2)), "y=1/2 is generic");
+    }
+
+    /// The certified-path completeness gate does not false-fire on a valid arrangement: the
+    /// slab decomposition is generic and `slab_locate` assigns every cycle a label (so
+    /// `CapOutFault::Incomplete` never triggers for correctly-built input — the corpus
+    /// certifies).
+    #[test]
+    fn slab_decomposition_complete_on_valid_arrangement() {
+        let d = Dcel::build(&two_disks());
+        assert!(slab_decomposition_generic(&d), "critical_ys is complete");
+        let (_labels, _reps, all_assigned) = slab_locate(&d, &ab);
+        assert!(all_assigned, "every cycle located");
     }
 
     /// **Boolean over polygon (segment) operands** (#3) — the disks-only corpus never
