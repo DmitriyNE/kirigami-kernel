@@ -49,6 +49,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          # See ci.yml: disable FlakeHub Cache so a self-hosted runner (no FlakeHub
+          # subscription / OIDC id-token) doesn't block on auth; fall back to the local
+          # /nix/store + public binary caches.
+          use-flakehub: false
 
       # Regenerate `{Lattice,CertifyCore}/{Funs,Types}.lean` + the per-crate
       # `extract/*External_Template.lean` from the current Rust with the pinned Charon/Aeneas.
