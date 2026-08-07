@@ -19,29 +19,27 @@ fine — this is a log, not a schema.
 
 ## To do
 
-- **CAP-OUT boundary bijection — upgrade the coverage count to a source-ID permutation certificate.**
-  `ledge_dom_certified`'s fourth gate is `separating_count == region_boundary_count`
-  (`arrange2d::boolean`, `CapOutFault::BoundaryEdgeCount`) — a scalar **coverage** count. It is honest
-  but weaker than the spec's completeness *bijections*: it certifies every separating edge is emitted
-  exactly once (given the tracer emits each boundary half-edge at most once), but checks neither per-edge
-  source identity, loop closure, orientation, nor the other two spec bijections ({selected components} ↔
-  {emitted faces}, V_∂ ↔ {emitted shell vertices}). Fix: stamp a stable source-edge id on every emitted
-  boundary edge and check an explicit permutation certificate (plus the component-id and shell-vertex-id
-  bijections) in the pure `certify_core` tier. Surfaced in review batch 1 (the docs/vv-matrix previously
-  over-claimed "bijection"; now labeled a coverage count). *2026-08-06 · deferred · `vv-matrix.md`
-  completeness-bijections row*
+- **CAP-OUT completeness bijections — source-ID permutation DONE; the two *further* bijections remain.**
+  *Done (debt-sprint item 7, `56accab`; vv-matrix 🚧→✅):* the scalar coverage count
+  `separating_count == region_boundary_count` is replaced by a real **source-ID permutation**
+  certificate — `emit_region` stamps each emitted boundary edge with its `SubEdge` arena id, and the
+  pure `certify_core::arrange::boundary_bijection_ok` checks the emitted-id multiset is a permutation of
+  the separating-edge id set (so a drop-one/duplicate-another pair a scalar count misses is caught).
+  *Remaining:* the other two spec bijections — {selected components} ↔ {emitted faces} (component ids)
+  and V_∂ ↔ {emitted shell vertices} — plus per-loop closure/orientation. These fold into **item 8**:
+  they reuse its per-component gauge + per-pair emission plumbing. *2026-08-06 · deferred(→8) ·
+  `vv-matrix.md` completeness-bijections row*
 
-- **CAP-IN-D24 input license — `ledge_dom_certified` is not total over malformed input.** The certified
-  entry takes raw `&[Edge]` (all-pub fields) and calls `Dcel::build`, which *panics* on ill-formed input
-  (`unreachable!` in `build` when the event spine is not `Verified`; `try_surd().unwrap()` in
-  `on_carrier`). No CAP-IN-D24 check gates it, so a hand-crafted edge (r² ≤ 0 circle, endpoints off
-  carrier, degenerate line, non-canonical piece) is a malformed-certificate route that panics rather than
-  rejects — counter to the "checker total over arbitrary serialized input" doctrine. Full fix =
-  `CanonicalEdge`/`ValidatedD24` newtypes minted only by a CAP-IN-D24 checker (the spec §8.5 input
-  license; lands with `closure`/M4, where the census already lives, `closure/src/lib.rs`). **Parked
-  decision:** land a *minimal* totality guard now (a D24 well-formedness pre-pass that returns
-  `Refuted`/`Unresolved` instead of panicking) vs. defer wholesale to M4 — revisit after the remaining
-  review batches. *2026-08-06 · deferred(→M4) · spec §8.5 CAP-IN-D24*
+- **CAP-IN-D24 input license — minimal totality guard DONE; the full newtype census remains M4.** *Done
+  (debt-sprint item 5, `5ffbe34`):* `validate_d24(&[Edge]) -> Result<(), CapInFault>` runs *before*
+  `Dcel::build` in `ledge_dom_certified`, checking per edge `r² > 0` (circles), `a²+b² > 0` (lines),
+  each endpoint on its carrier (residual = 0), and canonical `x_lo < x_hi` — so a hand-crafted malformed
+  edge (r² ≤ 0 circle, endpoint off carrier, degenerate line, non-canonical piece) now returns
+  `CapOutFault::InvalidInput(CapInFault)` instead of panicking. The certified entry is now total over
+  arbitrary `&[Edge]`. *Remaining:* the full spec §8.5 input license — `CanonicalEdge`/`ValidatedD24`
+  newtypes minted only by a CAP-IN-D24 checker, so validity is carried in the type rather than
+  re-checked at the boundary — lands with `closure`/M4, where the census already lives
+  (`closure/src/lib.rs`). *2026-08-06 · deferred(→M4) · spec §8.5 CAP-IN-D24*
 
 - **CAP-OUT strict-manifold entry (`ShellReady`) — decide when SEW lands.** `ledge_dom_certified` is
   deliberately *relaxed*: a pinch (non-manifold vertex, e.g. a transverse `△`) is a valid, reported
@@ -85,15 +83,6 @@ fine — this is a log, not a schema.
   on `CertifiedChart` as searcher-derived, uncertified data (documented). *2026-08-06 · deferred ·
   `geom::record`*
 
-- **`reg_q` refutation witnesses conflate bad paperwork with real counterexamples.** For a non-positive
-  margin or a forged Sturm chain, `reg_q` returns `Refuted(lo)` — but `lo` is not a point where the
-  inequality fails; the certificate is malformed and the inequality may even hold. `CertifiedChart::certify`
-  then reports `ChartFault::QReg(lo)` etc., implying a geometric degeneracy at that σ. Recovery logic will
-  eventually need to tell "saw a counterexample" from "bad paperwork". Fix: a structured fault, e.g.
-  `RegFault::{NonPositiveMargin, InvalidDenChain, InvalidResidualChain, NonPositiveDen{sigma},
-  MarginFailure{sigma}}`, threaded through `slab_s0`/`trim_local`/`ChartFault`. Mostly semantic hygiene
-  today. *2026-08-06 · deferred · `certify_core::certify1d`*
-
 - **CLIP ladder coverage — common-zero census DONE; μ-coverage + fiber-census remain.** *Census done
   (debt-sprint item 6, `60e890e`):* `ZeroCensus`/`census_ok` — `clip()` now certifies the per-zero path
   only if the supplied zeros are the complete isolated-root set of `b²+d²` (independently re-counted;
@@ -106,25 +95,26 @@ fine — this is a log, not a schema.
   **(b)** the `trim_local`/`clip_dom` sign-event fiber census (needs the chart-domain sign-event
   polynomial). Both best done alongside C's searcher. *2026-08-06 · deferred(→C searcher) · spec §8.5 CLIP*
 
-- **`slab_locate` release-silent defaults + the multi-component cocycle gauge.** Two parts. (a) The
-  critical-height genericity check is a `debug_assert!` (boolean.rs, gone in release) and unassigned
-  cycles get `unwrap_or((false,false))`/`(0,0)` — an incomplete slab decomposition silently manufactures
-  outside-labels + bogus reps in release. Fix: make an incomplete decomposition / unassigned cycle an
-  explicit `CapOutFault`/`Unresolved`, not a default. (b) Deeper: `cocycle_ok` pins the ℤ₂² gauge only in
-  the seed's connected dual-component — for a disconnected dual graph (disjoint operands; holes, where
-  one region is bounded by several edge-disjoint cycles) every other component can be uniformly
-  XOR-shifted and still satisfy all edge equations, so its absolute labels come from *point-location*
-  (trusted), uncertified. This is the concrete #5 instance inside the "proven" checker; combined with (a)
-  a point-location bug on a disjoint component passes certification. Fix: per-component anchoring the
-  checker re-verifies (ties to the per-pair certificate work). *2026-08-06 · deferred · boolean.rs, arrange.rs*
+- **Multi-component cocycle gauge — the release-silent defaults are DONE; the gauge anchor remains (→8b).**
+  *Done (debt-sprint item 2, `116ef78`):* `slab_locate` no longer silently defaults on the certified
+  path — an incomplete slab decomposition or an unassigned cycle is now an explicit
+  `CapOutFault::Incomplete` (the release-gone `debug_assert!` genericity check and the
+  `unwrap_or((false,false))`/`(0,0)` defaults no longer sit on the certified route). *Remaining (the
+  deeper half):* `cocycle_ok` pins the ℤ₂² gauge only in the seed's connected dual-component — for a
+  disconnected dual graph (disjoint operands; holes, where one region is bounded by several edge-disjoint
+  cycles) every other component can be uniformly XOR-shifted and still satisfy all edge equations, so its
+  absolute labels come from *point-location* (trusted), uncertified — a point-location bug on a disjoint
+  component would pass certification. Fix: per-component anchoring the checker re-verifies — **item 8b**,
+  tied to the per-pair certificate work. *2026-08-06 · deferred(→8b) · boolean.rs, arrange.rs*
 
-- **`link_iso` Kani harness is N=4; `link_iso_ok` doesn't validate its permutation precondition.**
-  `link_iso_matches_cyclic_adjacency` proves only length-4 permutations, though degree-6 vertices are
-  property-tested (vv-matrix already labels it "N=4"); the unbounded statement wants a Lean induction
-  (the `link_ok`/pinch harness, by contrast, is already N=6). And the harness *assumes* both inputs are
-  genuine permutations while `link_iso_ok` never checks that (in-pipeline inputs always are — the
-  vertex's incident-edge set — so this is narrow). Mark the Kani cell "bounded validation" and either
-  land the unbounded Lean induction or add the permutation guard. *2026-08-06 · deferred · proof.rs, arrange.rs*
+- **`link_iso` — permutation guard DONE; the unbounded (N>4) proof remains a frontier.** *Done
+  (debt-sprint item 3, `4b94a53`):* `link_iso_ok` now validates its own precondition — a `has_duplicate`
+  in-range/no-duplicates guard rejects the non-permutation inputs the Kani harness had only *assumed*;
+  the Aeneas-lifted Lean model was regenerated and re-audited axiom-clean. *Remaining:*
+  `link_iso_matches_cyclic_adjacency` still proves only length-4 permutations (vv-matrix labels the cell
+  "N=4"); degree-6 vertices are property-tested, but the unbounded statement wants a Lean induction (the
+  `link_ok`/pinch harness, by contrast, is already N=6). Research frontier. *2026-08-06 ·
+  deferred(→frontier) · proof.rs, arrange.rs*
 
 - **Coincidence lattice — `CoincSet` edge-list is dead; deletion folds into 8a.** Verified (debt sprint,
   item 4): `coincide` is *load-bearing* — its `touches` become `Coincident` incidences (`spine.rs:77`) that
@@ -304,8 +294,11 @@ fine — this is a log, not a schema.
   failing region (irrational R_W roots) to rational μ-spans is hard to do *soundly* and there is no CLIP
   searcher to validate against; risky to ship an unvalidated coverage checker in the sprint meant to fix
   coverage. Best done with C's searcher (see the CLIP To-do entry). Item 8 (per-pair certs + gauge) is a
-  genuine geometric-checker slice — given its own focused pass (see To-do). Superseded To-do entries:
-  RegFault, the CAP-OUT bijection, and the CAP-IN totality-guard half.
+  genuine geometric-checker slice — given its own focused pass (see To-do). To-do reconciled
+  (2026-08-07): the RegFault entry was removed (fully done); the CAP-OUT-bijection, CAP-IN
+  totality-guard, slab_locate, and link_iso entries were rewritten to record what shipped vs. the
+  genuine remainder (the two further bijections → 8, the gauge anchor → 8b, the unbounded link_iso
+  proof → frontier).
 
 - **`divrem` op refinement (algebra-rehaul R.4b.4).** *Done 2026-08-05:* `divrem_loop_spec` (the
   bit-serial restoring-division loop = Euclidean identity, `704196e`) + `divrem_eq` (the wrapper =
