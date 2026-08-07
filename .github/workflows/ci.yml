@@ -6,13 +6,18 @@ on:
 
 # CI runs INSIDE the pinned Nix devShell so "CI == local"
 # (docs/environment-and-crate-layout.md §4). Both first-class targets are in the
-# matrix: x86_64-linux and aarch64-darwin.
+# matrix: x86_64-linux (self-hosted runner, labels [self-hosted, Linux, x86]) and
+# aarch64-darwin (GitHub-hosted macos-latest). runs-on takes the label list for the
+# Linux leg — a runner must carry ALL listed labels — and the macos-latest string
+# for the darwin leg.
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: [self-hosted, Linux, x86]
+          - os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
