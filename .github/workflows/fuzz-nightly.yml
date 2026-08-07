@@ -29,7 +29,9 @@ concurrency:
 
 jobs:
   fuzz:
-    runs-on: ubuntu-latest
+    # Self-hosted Linux/x86. Needs rustup available on the runner (the nightly +
+    # cargo-fuzz are provisioned outside nix, below).
+    runs-on: [self-hosted, Linux, x86]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

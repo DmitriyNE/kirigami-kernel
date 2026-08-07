@@ -44,7 +44,9 @@ on:
 jobs:
   drift:
     name: model matches Rust @ pinned Charon/Aeneas
-    runs-on: ubuntu-latest
+    # Self-hosted Linux/x86; the heavy Charon/Aeneas source build reuses the runner's
+    # persistent /nix/store across runs.
+    runs-on: [self-hosted, Linux, x86]
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
