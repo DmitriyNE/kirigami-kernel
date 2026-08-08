@@ -17,30 +17,27 @@
 //!
 //! # A degenerate offset is avoided by construction
 //!
-//! The M4 cylinder fold's charts have a pedal that collapses onto the fold axis at
-//! `w = 0` (the ruled patch degenerates to a line). The flanks are therefore
-//! sampled at `w = t.w.lo` — the **low end of the certified normal-offset box**
-//! `[w⁻, w⁺]` — where the patch is a genuine 2D face, faithful to the same interval
-//! the closure was certified over.
+//! The cylinder fold's charts have a pedal that collapses onto the fold axis at `w = 0`
+//! (the ruled patch degenerates to a line). The flanks are therefore sampled at
+//! `w = t.w.lo` — the **low end of the certified normal-offset box** `[w⁻, w⁺]` — where
+//! the patch is a genuine 2D face, faithful to the same interval the closure was
+//! certified over.
 //!
-//! # The M4 fixture is a certification artifact, not a physical joint
+//! # The fixture is a physical fold (M-D slice 1)
 //!
-//! The `fixtures::closure_joint` builders exist to make the *algebra* return
-//! `Verified`; their geometry is deliberately thin, so the assembled shell
-//! round-trips through STEP but does **not** render as a recognizable folded panel:
-//! - with `h ≡ 0` the "cylinder" chart has pedal `c ≡ 0`, so its rulings all pass
-//!   through the origin — geometrically a **cone** (apex at the origin), and the flank
-//!   strips taper toward that apex rather than staying parallel;
-//! - both flanks share that one chart, rendered over the two **disjoint** retained
-//!   σ-supports `[0, ¼]` and `[½, 1]` (the C2/C3 known-passing boxes, chosen to
-//!   certify — not to tile), so a middle band is undrawn and the two flank crease
-//!   edges (σ = 0 and σ = 1) never coincide;
-//! - the Ledge cap's 2D boundary is the CAP-IN-D24 **licensing square**, not the real
-//!   projected flank cut, lifted through the non-orthonormal frame of `lift`.
-//!
-//! A physically-authored joint (a true `h ≠ 0` cylinder, two distinct flanks meeting
-//! at a shared crease, a cap from the real projected cut) is M-D work — the treatment
-//! boxes must be re-tuned so the new geometry still certifies.
+//! The `fixtures::closure_joint` builders render a device-recognizable **90° cylinder
+//! self-fold** — the three Milestone-C fixture warts are discharged, so the assembled
+//! shell both certifies and reads as a folded panel:
+//! - **flank shape (D.1):** each flank is a true `h ≠ 0` cylinder (pedal `c = h·n ≠ 0`),
+//!   so its rulings stay parallel to the fold axis — not the `h ≡ 0` cone whose rulings
+//!   converge on an apex;
+//! - **shared crease (D.1):** the two flanks are *distinct* charts (B is A rigidly
+//!   translated ⊥ the rulings) whose crease neutral edges coincide on one line — the
+//!   strips abut with no gap, a real crease;
+//! - **metric cap (D.2):** the Ledge cap is lifted through the **orthonormal** crease
+//!   frame `{r₀/√s, n₀}` (see [`lift`]) — a unit cap square lifts to a unit world
+//!   square, no stretch. Its 2D outline is still the CAP-IN-D24 licensing square (a real
+//!   projected cut awaits the `V_∂`-guided seam, a later M-D slice).
 //!
 //! # Example
 //!
@@ -201,42 +198,43 @@ fn surd_to_rat<B: Backend>(s: &Surd<B>) -> Option<Rat<B>> {
     }
 }
 
-/// Lift a cap-plane point `(x, y)` back into 3-space through `frame`:
-/// `origin + x·u + y·v`, in pure rational arithmetic. `None` if either coordinate is
-/// irrational (not represented in this slice).
+/// Lift a cap-plane point `(x, y)` back into 3-space through the **orthonormal** crease
+/// frame, isometrically. With `s = |r₀|² = |n′₀|²` (one rational, `chart.normal_deriv_sq`
+/// at the crease station), the unit ruling is `û = r₀/√s` and the unit normal is `n₀`
+/// (`|n₀| = 1`, `û·n₀ = r₀·n₀/√s = 0`, since `n·n′ ≡ 0`). So
 ///
-/// **The frame is not orthonormal:** `u = ruling r₀` is used raw, and `|r₀| = |n′₀|`
-/// is generally ≠ 1 (e.g. `2` for the M4 `q = 1 + σi` chart at the crease), so a
-/// cap-plane distance along `u` is scaled by `|r₀|` in 3-space — a lifted square comes
-/// out stretched. Normalizing `u` would need `√|r₀|²`, a radical this exact-rational
-/// slice does not carry, so the raw ruling is kept and the distortion is accepted.
-/// Faithful (metric-preserving) cap lifting is deferred with the curved-crease atlas
-/// (M-D); today's cap is topologically placed, not metrically scaled.
-fn lift<B: Backend>(pt: &Point2<B>, frame: &PiFrame<B>) -> Option<Vertex<B>> {
+/// ```text
+/// world = origin + x·(r₀/√s) + y·n₀ = (origin + y·n₀) + (x·r₀/s)·√s,
+/// ```
+///
+/// and each world coordinate is a clean [`Surd`] `a + b√s` with `a = origin + y·n₀`,
+/// `b = x·r₀/s`, sharing the **single radical `d = s`** across the whole cap — no
+/// cross-radical arithmetic. The lift is metric-faithful: a unit cap square lifts to a
+/// unit (not stretched) world square. `None` if the cap coordinate is irrational — the
+/// cap-plane outline of this slice (the CAP-IN-D24 square) is rational by construction; a
+/// genuinely irrational cap coordinate (curved crease) escalates cross-radical and stays
+/// deferred with the curved-crease atlas.
+fn lift<B: Backend>(pt: &Point2<B>, frame: &PiFrame<B>, s: &Rat<B>) -> Option<Vertex<B>> {
     let x = surd_to_rat(&pt.x)?;
     let y = surd_to_rat(&pt.y)?;
     let comp = |k: usize| {
-        frame.origin[k]
-            .add(&x.mul(&frame.u[k]))
-            .add(&y.mul(&frame.v[k]))
+        let a = frame.origin[k].add(&y.mul(&frame.v[k]));
+        let b = x.mul(&frame.u[k]).div(s);
+        Surd::new(a, b, s.clone())
     };
-    Some([
-        Surd::from_rat(comp(0)),
-        Surd::from_rat(comp(1)),
-        Surd::from_rat(comp(2)),
-    ])
+    Some([comp(0), comp(1), comp(2)])
 }
 
 /// Fan-triangulate the cap: each face's outer loop, its edge-start points lifted into
 /// 3-space through `frame`, fanned from the first vertex. A loop that lifts to fewer
 /// than three points (an irrational coordinate this slice cannot represent) is skipped.
-fn cap_tris<B: Backend>(cap: &CapOut<B>, frame: &PiFrame<B>) -> Vec<Tri<B>> {
+fn cap_tris<B: Backend>(cap: &CapOut<B>, frame: &PiFrame<B>, s: &Rat<B>) -> Vec<Tri<B>> {
     let mut tris = Vec::new();
     for face in &cap.region().faces {
         let ring: Vec<Vertex<B>> = face
             .outer
             .iter()
-            .filter_map(|e| lift(edge_start(e), frame))
+            .filter_map(|e| lift(edge_start(e), frame, s))
             .collect();
         for i in 1..ring.len().saturating_sub(1) {
             tris.push(Tri {
@@ -299,8 +297,17 @@ pub fn shell_from_closure<B: Backend>(
         FLANK_STEPS,
     ));
     if let CapWitness::Ledge(cap) = &valid.cap {
-        if let Some(frame) = cap_frame(joint.flank_a().chart(), &joint.crease().sigma_a, w) {
-            tris.extend(cap_tris(cap, &frame));
+        let chart = joint.flank_a().chart();
+        let sigma_star = &joint.crease().sigma_a;
+        // `s = |r₀|² = |n′₀|²` at the crease station — the single radical the whole cap
+        // shares. A singular crease (`s = 0`) has no cap plane, so the cap is skipped.
+        if let (Some(frame), Some(s)) = (
+            cap_frame(chart, sigma_star, w),
+            chart.normal_deriv_sq().eval(sigma_star),
+        ) {
+            if s.sign() != 0 {
+                tris.extend(cap_tris(cap, &frame, &s));
+            }
         }
     }
     ShellRecord { tris }
@@ -331,6 +338,76 @@ mod tests {
         // 2·FLANK_STEPS per flank + a 4-vertex cap loop fanned into 2 triangles.
         assert_eq!(shell.len(), 4 * FLANK_STEPS + 2);
         assert!(matches!(valid.cap, CapWitness::Ledge(_)));
+    }
+
+    /// The cap lift is **metric-faithful** (D.2): the unit cap square lifts to a unit
+    /// world square — no stretch. Asserted on exact `Surd` coordinates. Between two
+    /// same-radical vertices `p, q` (shared `d = s`), the squared world distance is
+    /// `Σₖ (Δaₖ + Δbₖ√s)² = (Σ Δaₖ² + s·Σ Δbₖ²) + (2 Σ ΔaₖΔbₖ)·√s`; the identity
+    /// `|n₀| = 1`, `|r₀|² = s`, `r₀·n₀ = 0` forces the radical coefficient to `0` and the
+    /// rational part to the cap-plane `Δx² + Δy²`. (The pre-D.2 raw-ruling lift gave a
+    /// squared x-edge of `s = 4`, a 2× stretch — this asserts `1`.)
+    #[test]
+    fn the_cap_lift_is_metric_faithful_a_unit_square_stays_unit() {
+        let joint = one_joint();
+        let chart = joint.flank_a().chart();
+        let sigma_star = &joint.crease().sigma_a;
+        let w = Rat::from_i128(1);
+        let frame = cap_frame(chart, sigma_star, &w).expect("regular crease frame");
+        let s = chart
+            .normal_deriv_sq()
+            .eval(sigma_star)
+            .expect("regular normal derivative at the crease");
+        // The physical crease station has |r₀|² = 4 ≠ 1 — the raw-ruling lift stretched by 2×.
+        assert_eq!(
+            s,
+            Rat::from_i128(4),
+            "the crease-station ruling speed² is 4"
+        );
+
+        let corner = |x: i128, y: i128| {
+            let pt = Point2 {
+                x: Surd::from_rat(Rat::from_i128(x)),
+                y: Surd::from_rat(Rat::from_i128(y)),
+            };
+            lift(&pt, &frame, &s).expect("a rational cap corner lifts")
+        };
+        let (p00, p10, p11, p01) = (corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1));
+
+        // Exact squared world distance between two same-radical (d = s) Surd vertices,
+        // returned as `(rational_part, radical_coeff)` of `rational + radical·√s`.
+        let dist2 = |p: &Vertex<Bignum>, q: &Vertex<Bignum>| {
+            let (mut da2, mut db2, mut dadb) =
+                (Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0));
+            for k in 0..3 {
+                let (pa, pb, _) = p[k].parts();
+                let (qa, qb, _) = q[k].parts();
+                let da = qa.sub(pa);
+                let db = qb.sub(pb);
+                da2 = da2.add(&da.mul(&da));
+                db2 = db2.add(&db.mul(&db));
+                dadb = dadb.add(&da.mul(&db));
+            }
+            (da2.add(&s.mul(&db2)), dadb.add(&dadb))
+        };
+        // Each unit edge of the square lifts to a unit world edge (length² = 1, no √s term).
+        for (p, q) in [(&p00, &p10), (&p10, &p11), (&p11, &p01), (&p01, &p00)] {
+            let (rational, radical) = dist2(p, q);
+            assert_eq!(radical, Rat::from_i128(0), "world edge is rational (no √s)");
+            assert_eq!(
+                rational,
+                Rat::from_i128(1),
+                "unit cap edge stays unit in world"
+            );
+        }
+        // The diagonal lifts isometrically too (length² = 2), pinning both axes at once.
+        let (diag_rational, diag_radical) = dist2(&p00, &p11);
+        assert_eq!(diag_radical, Rat::from_i128(0));
+        assert_eq!(
+            diag_rational,
+            Rat::from_i128(2),
+            "unit diagonal stays √2 in world"
+        );
     }
 
     /// Every flank triangle is non-degenerate at `w = t.w.lo`: the cylinder patch is a

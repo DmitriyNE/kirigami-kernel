@@ -27,7 +27,9 @@
 //! stations (2 at σ=0, 1 at σ=1), so at a shared μ-range flank A's crease edge spans
 //! `x ∈ [−2, 2]` while flank B's spans `x ∈ [−1, 1]` — both on `L`, a 2:1 overhang. Equalising
 //! it needs the irrational station `σ = √2 − 1`, unavailable to a rational crease. The third
-//! wart (the metric-distorted LEDGE cap lift) is discharged in D.2 (`export::shell`).
+//! wart (the metric-distorted LEDGE cap lift) is discharged in `export::shell::lift`, which
+//! now lifts the cap through the orthonormal crease frame `{r₀/√s, n₀}` — a unit cap square
+//! lifts to a unit (not stretched) world square (`s = |r₀|² = chart.normal_deriv_sq(σ*)`).
 //!
 //! The builders compose — the fold certifies through the **MITER** branch (clean mitered
 //! corner, no separate cap face)…
