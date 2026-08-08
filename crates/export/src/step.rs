@@ -95,24 +95,24 @@ mod tests {
         let _ = std::fs::remove_file(p);
     }
 
-    /// The Milestone-C exit: the one-joint cylinder fold runs `closure_valid` →
-    /// **Verified**, the gate evaluates `VALID_solid-closure` over its stored
-    /// certificate → **Verified** (`T = Rat`, stamped with the real REG-V margin), and
-    /// the reconstructed shell writes to a `.step` file that reloads through BRepCheck.
-    #[test]
-    fn one_joint_closure_writes_a_reloadable_step_shell() {
+    /// Drive one certified treatment of the physical [`one_joint`] fold end to end and
+    /// assert it reaches a reloadable STEP file: `closure_valid` → **Verified**, the gate
+    /// evaluates `VALID_solid-closure` over its stored certificate → **Verified**
+    /// (`T = Rat`, stamped with the real REG-V margin), and the reconstructed shell writes
+    /// a `.step` that re-reads clean through `BRepCheck_Analyzer`. `filename` keeps the two
+    /// cap branches' scratch files distinct.
+    fn assert_one_joint_treatment_reloads(
+        joint: &closure::Joint<lattice::Bignum>,
+        t: &closure::valid::ClosureTreatment<'_, lattice::Bignum>,
+        filename: &str,
+    ) -> closure::valid::CapWitness<lattice::Bignum> {
         use certify_core::Verdict;
         use closure::valid::closure_valid;
-        use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
         use gate::store::CertStore;
         use lattice::{Bignum, Rat};
 
-        let joint = one_joint();
-        let d24 = ledge_d24();
-        let t = treatment(&d24);
-
         // CLOSURE_VALID(0): the certified joint verdict.
-        let valid = match closure_valid(&joint, &t) {
+        let valid = match closure_valid(joint, t) {
             Verdict::Verified(v) => v,
             other => panic!(
                 "the fold is CLOSURE_VALID: {}",
@@ -136,10 +136,10 @@ mod tests {
         );
 
         // The reconstructed shell writes a STEP file that reloads through BRepCheck.
-        let shell = crate::shell::shell_from_closure(&joint, &t, &valid);
+        let shell = crate::shell::shell_from_closure(joint, t, &valid);
         assert!(!shell.is_empty());
         let mut path = std::env::temp_dir();
-        path.push("kirigami-one-joint-shell.step");
+        path.push(filename);
         let p = path.to_str().expect("utf-8 temp path");
         assert_eq!(super::write_shell(p, &shell), "ok");
         assert!(
@@ -149,5 +149,43 @@ mod tests {
             "not a STEP part-21 file",
         );
         let _ = std::fs::remove_file(p);
+        valid.cap
+    }
+
+    /// M-D slice-1 exit, **LEDGE** branch: the physical 90° cylinder fold with a spanning
+    /// cap face runs `closure_valid` → Verified, passes the `VALID_solid-closure` gate, and
+    /// its shell (two flank strips + the metric-faithful cap fan) reloads through BRepCheck.
+    #[test]
+    fn one_joint_ledge_writes_a_reloadable_step_shell() {
+        use closure::valid::CapWitness;
+        use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
+
+        let joint = one_joint();
+        let d24 = ledge_d24();
+        let t = treatment(&d24);
+        let cap = assert_one_joint_treatment_reloads(&joint, &t, "kirigami-one-joint-ledge.step");
+        assert!(
+            matches!(cap, CapWitness::Ledge(_)),
+            "the ledge treatment certifies via the LEDGE cap branch"
+        );
+    }
+
+    /// M-D slice-1 exit, **MITER** branch: the *same* physical fold with a clean mitered
+    /// corner (no separate cap face — the flanks meet directly) runs `closure_valid` →
+    /// Verified, passes the `VALID_solid-closure` gate, and its shell (the two flank strips)
+    /// reloads through BRepCheck.
+    #[test]
+    fn one_joint_miter_writes_a_reloadable_step_shell() {
+        use closure::valid::CapWitness;
+        use fixtures::closure_joint::{miter_cap, one_joint, treatment_miter};
+
+        let joint = one_joint();
+        let cap_outline = miter_cap();
+        let t = treatment_miter(&cap_outline);
+        let cap = assert_one_joint_treatment_reloads(&joint, &t, "kirigami-one-joint-miter.step");
+        assert!(
+            matches!(cap, CapWitness::Miter(_)),
+            "the miter treatment certifies via the MITER cap branch"
+        );
     }
 }

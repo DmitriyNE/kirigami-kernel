@@ -819,8 +819,8 @@ append-only provenance-linked certificate store, chain rule enforced, `VALID_sol
 one joint). M6.3 met: `export::shell::shell_from_closure` assembles the exact float-free `ShellRecord`
 (two flank strips at the certified offset `w = t.w.lo` + the Ledge cap fanned through the joint `PiFrame`);
 the `step`-feature shim writes it with `STEPControl_Writer` and re-reads it through `BRepCheck_Analyzer`;
-the one-joint end-to-end (`one_joint_closure_writes_a_reloadable_step_shell`) runs the cylinder fold →
-`closure_valid` `Verified` → gate `VALID_solid-closure` **pass** → a 34-triangle `.step` that reloads
+the one-joint end-to-end (the `one_joint_*_writes_a_reloadable_step_shell` corpus) runs the cylinder fold →
+`closure_valid` `Verified` → gate `VALID_solid-closure` **pass** → a `.step` that reloads
 valid, on the public `fixtures::closure_joint` corpus.
 
 *Two honest scope notes.* (1) The faces are joined by OCCT's coincident-edge sewing
@@ -829,6 +829,108 @@ for the write-then-reload check; the V_∂-guided sew (and thereby a claim of ma
 than per-face `BRepCheck` validity) is a **M-D** follow-up. (2) The cap is exercised through the **Ledge**
 branch only; a Miter cap contributes no separate planar face, so the two-branch end-to-end reduces to the
 one branch whose geometry adds a face.
+
+### Milestone D (slice 1) acceptance criteria (a physically-meaningful one-joint fixture)
+
+*Authored before implementation, per the rule above.* The roadmap's Milestone D
+(`docs/implementation-plan-v1.md:53`) is the **whole device** — "full cone + lap seam + petal atlas;
+`VALID_solid-closure` end-to-end; STEP loaded into OpenCascade with its checker as the external audit;
+exit: the lens-assembly flex model as a certified solid." That is a culmination, not one vertical slice, so
+Milestone D is built as a **sequence of slices**. Three threads decompose the deferred work:
+
+1. **Physical fixture** — replace the certification-artifact fixture with a joint whose STEP renders as a
+   recognizable fold: a true `h ≠ 0` cylinder (parallel rulings, not a cone), two distinct flanks sharing
+   one crease (edges coincident, no gap), a metric-faithful cap. **This is slice 1.**
+2. **Audit + V_∂-guided seam** — drive the sew from the certified `v_boundary()` / `pinches()` (Kani-proven
+   in `certify_core::arrange`, but not yet consumed by `export`), and wire OpenCASCADE's `BRepCheck` as a
+   **differential oracle** compared against the internal SEW-LINK verdict. A later slice — near-vacuous
+   until slice 1 gives two flanks that actually meet.
+3. **Atlas breadth** — the petal cone-flank joint (roadmap `C:51`'s deferred second pass, blocked on the
+   spec §13 petal geometry) and multi-joint assembly toward the lens model. Later slices.
+
+*Two readings locked here.* (a) **`VALID_material` → Milestone E, not D.** It adds the conjunct
+`treatment(j) ∈ {SMOOTH, DEFERRED}` (spec §8.6:438), which requires physical transition bands (the M7
+`develop` cold-layer crate) and FRESH promotion — both already E. D stays scoped to `VALID_solid-closure`.
+(b) **The "external-kernel audit" is an *oracle*, not the certificate.** The spec is explicit — "no kernel
+CSG" (P5:16, §11:470, STEP:464); region/shell manifoldness is certified *internally* by CAP-OUT-LINK /
+SEW-LINK (§8.5); and "independent recomputation certifies nothing until compared against the stored answer
+— oracle ∧ audit, never oracle-instead-of-audit" (§8.2:332). OpenCASCADE's checker is therefore a
+differential oracle (as CGAL is for M3, `implementation-plan-v1.md:75`), compared against our verdict —
+never the source of truth. This governs thread 2, not slice 1.
+
+**Slice 1 — the physical joint fixture — met when:** the one-joint STEP shell is a recognizable physical
+fold that still certifies. Concretely:
+
+- **A true cylinder — met when:** `fixtures::closure_joint`'s flank charts carry `h ≠ 0`, so pedal `c ≠ 0`
+  and the rulings stay parallel (no apex). `geom::chart::Chart` already supports `h ≠ 0` (its `support`
+  field is a general `RatFunc`); with `h = const`, `c = h·n` traces a circular directrix — a genuine
+  cylinder. Asserted on exact coordinates: the reconstructed flank strips have a **nonzero, non-collapsing
+  pedal** across the retained σ-support.
+- **A shared crease, no gap — met when:** the two flanks are **distinct charts** whose crease-station
+  rulings *coincide* in world space at the joint's dihedral (the straight-crease fold construction — a
+  rigid rotation about the crease line; the MONO reflection `n_B = n_A − 2(n_A·B/B·B)B` degenerates cleanly
+  at `B ≡ 0`, spec §5.3:248), with retained σ-supports that **abut** the crease. Asserted: the flank-A and
+  flank-B crease edges are the **same** exact segment (a real seam), not two disjoint bands.
+- **Both cap branches, metric-faithful — met when:** the fixture certifies through **both** a clean-**Miter**
+  variant (`cap_miter: Some`, flanks meet directly, no cap face — exercising the C5 MITER machinery the M6
+  fixture left unused, filling roadmap `C:51`'s "clean miter *and* forced-ledge variants") **and** a
+  forced-**Ledge** variant whose cap lifts **isometrically**. The metric fix: `export::shell::lift`'s frame
+  is already orthogonal (`n·n′ = 0 ⇒ r₀·n₀ = 0`); normalizing `u = r₀/√s` with `s = normal_deriv_sq().eval(σ*)`
+  (one rational at the single crease station) lifts a rational cap point to a `Surd(a, b, s)` with a
+  **common `d = s`** — expressible in the existing `a+b√d` type, no new algebra. Asserted: a unit cap square
+  lifts to a **unit** (not `|r₀|`-stretched) world square, by an exact edge-length² equality on the surds.
+- **Still certified, still exported — met when:** each variant runs `closure_valid → Verified` (the MITER
+  variant via the miter branch), the gate evaluates `VALID_solid-closure` → `Verified`, and the shell writes
+  a `.step` that reloads through `BRepCheck` (feature `step`, under `nix develop`). No checker code changes —
+  the straight-crease machinery applies unchanged (an `h ≠ 0` cylinder still has `B ≡ 0`); only the
+  `treatment` margins (REG-V, `w`, σ_a/σ_b, trim/clip) are **re-tuned** to the new geometry, and the SEW
+  packet is rebuilt to describe the real flank-to-flank seam.
+
+**Generality (hard gate) — met when:** the device constants (radius, dihedral, σ-boxes) live **only** in
+`fixtures` (a non-certified crate); no certified crate gains a constant, and the flank *type* stays data on
+the chart, never a Rust branch.
+
+**Documentation (a merge gate) — met when:** the three warts documented in the `export::shell` /
+`fixtures::closure_joint` module docs (cone-taper, disjoint-support gap, stretched cap) are **discharged**
+and their doc notes updated to say so; new/changed public surface is documented usage-first with
+`-W missing_docs = 0`.
+
+**Deferred to later M-D slices / M-E** (documented, not dropped): the `v_boundary()`-guided seam +
+OpenCASCADE `BRepCheck` differential oracle (M-D thread 2 — now unblocked by the real crease); the full
+cone + lap-seam + **petal atlas** and multi-joint assembly (M-D later); the petal cone-flank joint (blocked
+on spec §13); `VALID_material`, FRESH, the `develop` crate (→ M-E); the curved-crease COLLAR / §14
+transition patch; a hand-rolled AP242 emitter.
+
+**Status: slice 1 met.** D.0: this decomposition + criteria authored; dispositions in
+`docs/engineering-log.md`. D.1 (`1410d2e`): the physical **90° cylinder self-fold** in
+`fixtures::closure_joint` — flank A a true unit cylinder about x̂ (`q = 1+σi`, `h ≡ 1`: nonzero pedal
+`c = h·n`, rulings ∥ x̂), flank B that cylinder rigidly translated by `t = (0,1,1)` ⊥ the rulings (a
+*distinct* chart, same `q`, support `h_B(σ) = 2(1−σ)/(1+σ²)`); crease stations σ_a = 0 (n = ẑ), σ_b = 1
+(n = −ŷ) → a 90° dihedral whose two crease neutral edges both lie on the shared ruling line
+`L = {(x,0,1)}`. It certifies through **both** cap branches on the same joint — **MITER**
+(`miter_cap` + `treatment_miter`, `cap_miter: Some`, no cap face) and **LEDGE** (`ledge_d24` + `treatment`).
+D.2 (`3697a9f`): `export::shell::lift` lifts the Ledge cap through the **orthonormal** crease frame
+`{r₀/√s, n₀}`, `s = |r₀|² = normal_deriv_sq(σ*)` — each world coordinate a `Surd(a, b, s)` with common
+`d = s`, **isometric** (unit cap square → unit world square, asserted by an exact edge-length² equality on
+the surds). D.3: the one-joint **end-to-end** corpus — `one_joint_ledge_writes_a_reloadable_step_shell` and
+`one_joint_miter_writes_a_reloadable_step_shell` each run `closure_valid → Verified` → gate
+`VALID_solid-closure` **pass** → a `.step` reloaded through `BRepCheck`. The three warts (cone-taper /
+disjoint-support gap / stretched cap) are discharged, their `export::shell` and `fixtures::closure_joint`
+module-doc notes updated to say so.
+
+*Two honest scope notes.* (1) A shared-crease dihedral is **geometrically impossible** with constant-`h`
+charts — matching two flanks' crease baselines `c + w·n` at a nonzero dihedral forces `n_A = n_B` (no fold)
+or a line-collapse. The fold is therefore shared at the **neutral surface `w = 0`** (where a true cylinder,
+unlike the cone, is non-degenerate), not at the exported offset band `w ∈ [1,2]`; the shell samples
+`w = t.w.lo = 1`, so the two flank strips render as offset cylinder faces meeting along `L` at the `w = 0`
+boundary of the certified band rather than as coincident edges at the sampled offset. The planned "rigid
+rotation about the crease line, same exact segment" is thus replaced by this offset-axis construction, which
+also carries a cosmetic **2:1 ruling-speed overhang** (`|r| = 2` at σ = 0 vs `1` at σ = 1; equalising needs
+the irrational station σ = √2 − 1) — so the two crease edges share the *line* `L`, not the same extent. The
+`the_fold_is_a_physical_shared_crease_right_angle` test asserts exactly this (both edges on `L`, `n_A·n_B = 0`,
+parallel rulings off a nonzero pedal). (2) The Ledge cap's 2D outline is still the CAP-IN-D24 **licensing
+square** (now lifted isometrically), not a real projected flank cut; the `v_boundary()`-guided cap + the
+external-kernel differential oracle is the next M-D slice, now unblocked by the real crease.
 
 ---
 

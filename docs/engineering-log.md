@@ -19,6 +19,18 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Milestone D scoped as a sequence of slices; slice 1 = the physical joint fixture.** The roadmap's D
+  (`implementation-plan-v1.md:53`) is the whole device (cone + lap-seam + petal atlas → lens-assembly
+  solid) — a culmination, not one vertical slice. Decomposed into three threads (physical fixture / audit +
+  `V_∂`-guided seam + OCC oracle / atlas breadth); criteria in `docs/vv-guide.md §8` (Milestone D). **Slice 1**
+  discharges the three M6 fixture warts — `h ≡ 0` cone → true `h ≠ 0` cylinder, disjoint-support gap → two
+  distinct flanks sharing one crease, stretched cap → metric-faithful `Surd(a,b,s)` lift — with the joint
+  still certifying through both the MITER and LEDGE branches. Two readings locked: **`VALID_material` → M-E**
+  (needs SMOOTH/DEFERRED bands + FRESH, both E — consistent with the FRESH deferral below); **the
+  external-kernel audit is an *oracle*, not the certificate** (spec "no kernel CSG"; region/shell
+  manifoldness is CAP-OUT-LINK / SEW-LINK; "oracle ∧ audit, never oracle-instead" §8.2:332) — that governs
+  thread 2, not slice 1. *2026-08-09 · open · `docs/vv-guide.md §8` (Milestone D), branch `milestone-d`*
+
 - **CAP-OUT completeness bijections — source-ID permutation DONE; the two *further* bijections remain.**
   *Done (debt-sprint item 7, `56accab`; vv-matrix 🚧→✅):* the scalar coverage count
   `separating_count == region_boundary_count` is replaced by a real **source-ID permutation**
