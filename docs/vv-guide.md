@@ -830,6 +830,81 @@ than per-face `BRepCheck` validity) is a **M-D** follow-up. (2) The cap is exerc
 branch only; a Miter cap contributes no separate planar face, so the two-branch end-to-end reduces to the
 one branch whose geometry adds a face.
 
+### Milestone D (slice 1) acceptance criteria (a physically-meaningful one-joint fixture)
+
+*Authored before implementation, per the rule above.* The roadmap's Milestone D
+(`docs/implementation-plan-v1.md:53`) is the **whole device** — "full cone + lap seam + petal atlas;
+`VALID_solid-closure` end-to-end; STEP loaded into OpenCascade with its checker as the external audit;
+exit: the lens-assembly flex model as a certified solid." That is a culmination, not one vertical slice, so
+Milestone D is built as a **sequence of slices**. Three threads decompose the deferred work:
+
+1. **Physical fixture** — replace the certification-artifact fixture with a joint whose STEP renders as a
+   recognizable fold: a true `h ≠ 0` cylinder (parallel rulings, not a cone), two distinct flanks sharing
+   one crease (edges coincident, no gap), a metric-faithful cap. **This is slice 1.**
+2. **Audit + V_∂-guided seam** — drive the sew from the certified `v_boundary()` / `pinches()` (Kani-proven
+   in `certify_core::arrange`, but not yet consumed by `export`), and wire OpenCASCADE's `BRepCheck` as a
+   **differential oracle** compared against the internal SEW-LINK verdict. A later slice — near-vacuous
+   until slice 1 gives two flanks that actually meet.
+3. **Atlas breadth** — the petal cone-flank joint (roadmap `C:51`'s deferred second pass, blocked on the
+   spec §13 petal geometry) and multi-joint assembly toward the lens model. Later slices.
+
+*Two readings locked here.* (a) **`VALID_material` → Milestone E, not D.** It adds the conjunct
+`treatment(j) ∈ {SMOOTH, DEFERRED}` (spec §8.6:438), which requires physical transition bands (the M7
+`develop` cold-layer crate) and FRESH promotion — both already E. D stays scoped to `VALID_solid-closure`.
+(b) **The "external-kernel audit" is an *oracle*, not the certificate.** The spec is explicit — "no kernel
+CSG" (P5:16, §11:470, STEP:464); region/shell manifoldness is certified *internally* by CAP-OUT-LINK /
+SEW-LINK (§8.5); and "independent recomputation certifies nothing until compared against the stored answer
+— oracle ∧ audit, never oracle-instead-of-audit" (§8.2:332). OpenCASCADE's checker is therefore a
+differential oracle (as CGAL is for M3, `implementation-plan-v1.md:75`), compared against our verdict —
+never the source of truth. This governs thread 2, not slice 1.
+
+**Slice 1 — the physical joint fixture — met when:** the one-joint STEP shell is a recognizable physical
+fold that still certifies. Concretely:
+
+- **A true cylinder — met when:** `fixtures::closure_joint`'s flank charts carry `h ≠ 0`, so pedal `c ≠ 0`
+  and the rulings stay parallel (no apex). `geom::chart::Chart` already supports `h ≠ 0` (its `support`
+  field is a general `RatFunc`); with `h = const`, `c = h·n` traces a circular directrix — a genuine
+  cylinder. Asserted on exact coordinates: the reconstructed flank strips have a **nonzero, non-collapsing
+  pedal** across the retained σ-support.
+- **A shared crease, no gap — met when:** the two flanks are **distinct charts** whose crease-station
+  rulings *coincide* in world space at the joint's dihedral (the straight-crease fold construction — a
+  rigid rotation about the crease line; the MONO reflection `n_B = n_A − 2(n_A·B/B·B)B` degenerates cleanly
+  at `B ≡ 0`, spec §5.3:248), with retained σ-supports that **abut** the crease. Asserted: the flank-A and
+  flank-B crease edges are the **same** exact segment (a real seam), not two disjoint bands.
+- **Both cap branches, metric-faithful — met when:** the fixture certifies through **both** a clean-**Miter**
+  variant (`cap_miter: Some`, flanks meet directly, no cap face — exercising the C5 MITER machinery the M6
+  fixture left unused, filling roadmap `C:51`'s "clean miter *and* forced-ledge variants") **and** a
+  forced-**Ledge** variant whose cap lifts **isometrically**. The metric fix: `export::shell::lift`'s frame
+  is already orthogonal (`n·n′ = 0 ⇒ r₀·n₀ = 0`); normalizing `u = r₀/√s` with `s = normal_deriv_sq().eval(σ*)`
+  (one rational at the single crease station) lifts a rational cap point to a `Surd(a, b, s)` with a
+  **common `d = s`** — expressible in the existing `a+b√d` type, no new algebra. Asserted: a unit cap square
+  lifts to a **unit** (not `|r₀|`-stretched) world square, by an exact edge-length² equality on the surds.
+- **Still certified, still exported — met when:** each variant runs `closure_valid → Verified` (the MITER
+  variant via the miter branch), the gate evaluates `VALID_solid-closure` → `Verified`, and the shell writes
+  a `.step` that reloads through `BRepCheck` (feature `step`, under `nix develop`). No checker code changes —
+  the straight-crease machinery applies unchanged (an `h ≠ 0` cylinder still has `B ≡ 0`); only the
+  `treatment` margins (REG-V, `w`, σ_a/σ_b, trim/clip) are **re-tuned** to the new geometry, and the SEW
+  packet is rebuilt to describe the real flank-to-flank seam.
+
+**Generality (hard gate) — met when:** the device constants (radius, dihedral, σ-boxes) live **only** in
+`fixtures` (a non-certified crate); no certified crate gains a constant, and the flank *type* stays data on
+the chart, never a Rust branch.
+
+**Documentation (a merge gate) — met when:** the three warts documented in the `export::shell` /
+`fixtures::closure_joint` module docs (cone-taper, disjoint-support gap, stretched cap) are **discharged**
+and their doc notes updated to say so; new/changed public surface is documented usage-first with
+`-W missing_docs = 0`.
+
+**Deferred to later M-D slices / M-E** (documented, not dropped): the `v_boundary()`-guided seam +
+OpenCASCADE `BRepCheck` differential oracle (M-D thread 2 — now unblocked by the real crease); the full
+cone + lap-seam + **petal atlas** and multi-joint assembly (M-D later); the petal cone-flank joint (blocked
+on spec §13); `VALID_material`, FRESH, the `develop` crate (→ M-E); the curved-crease COLLAR / §14
+transition patch; a hand-rolled AP242 emitter.
+
+**Status: in progress.** D.0: this decomposition + slice-1 criteria authored; dispositions in
+`docs/engineering-log.md`. D.1 (physical clean-miter fixture — the geometry GO/NO-GO), D.2 (Ledge variant +
+metric-faithful lift), D.3 (V&V + corpus + status → met) pending.
+
 ---
 
 ## 9. Sequencing
