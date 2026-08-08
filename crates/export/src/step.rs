@@ -41,6 +41,16 @@ mod ffi {
         /// audit (Milestone D). Callers should use [`write_shell`], which does the
         /// exact→`f64` cast; this raw binding takes floats directly.
         fn occt_write_shell(path: &str, tris: &[f64]) -> String;
+
+        /// Sew the same shell as [`occt_write_shell`] (no STEP write) and return
+        /// OCCT's own topology facts as a one-line `key=val` summary
+        /// (`faces=… edges=… free=… nonmanifold=… closed=<0|1> brepcheck=<0|1>`),
+        /// or `"error: <what>"`. The Milestone D differential **oracle**: these
+        /// facts are compared against the internal SEW-LINK / CAP-OUT verdict,
+        /// never trusted as the certificate. Callers should use [`audit_shell`],
+        /// which does the exact→`f64` cast and parses the summary into a typed
+        /// [`ShellAudit`]; this raw binding takes floats directly.
+        fn occt_shell_audit(tris: &[f64]) -> String;
     }
 }
 
@@ -70,6 +80,90 @@ pub fn record_to_floats<B: Backend>(rec: &ShellRecord<B>) -> Vec<f64> {
 /// audit (Milestone D).
 pub fn write_shell<B: Backend>(path: &str, rec: &ShellRecord<B>) -> String {
     ffi::occt_write_shell(path, &record_to_floats(rec))
+}
+
+/// The extended `BRepCheck`/topology facts OCCT observes about the sewn shell — the
+/// external-kernel differential **oracle**'s reading, to be *compared* against the
+/// internal SEW-LINK / CAP-OUT verdict, never trusted as the certificate
+/// ("oracle ∧ audit, never oracle-instead-of-audit"). Produced by [`audit_shell`].
+///
+/// The interesting Milestone-D fact is `free_edges`: slice 1's 2:1 ruling-speed
+/// overhang means the exported band is genuinely open along the crease, so OCCT
+/// reports `free_edges > 0` / `closed == false` even though the internal certificate
+/// is manifold — a divergence the differential harness asserts rather than hides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellAudit {
+    /// Number of faces in the sewn shell.
+    pub faces: usize,
+    /// Number of distinct edges in the sewn shell.
+    pub edges: usize,
+    /// Edges incident to exactly one face — the open-boundary (non-watertight) locus.
+    pub free_edges: usize,
+    /// Edges incident to three or more faces — the non-manifold locus.
+    pub nonmanifold_edges: usize,
+    /// Whether OCCT considers the shell topologically closed (`BRep_Tool::IsClosed`).
+    pub closed: bool,
+    /// Whether the sewn shell passes `BRepCheck_Analyzer::IsValid()`.
+    pub brepcheck_valid: bool,
+}
+
+/// Sew a certified [`ShellRecord`] into an OCCT shell in memory (no STEP write) and
+/// return its extended [`ShellAudit`] facts — the Milestone D external-kernel
+/// **differential oracle**. The result is *compared* against the internal SEW-LINK /
+/// CAP-OUT verdict, never used as the certificate. The exact→`f64` cast happens once,
+/// via [`record_to_floats`] (the same buffer [`write_shell`] emits). Returns `Err`
+/// with the shim's `"error: <what>"` message on a malformed buffer or an OCCT failure.
+///
+/// # Example (requires `--features step`)
+///
+/// ```no_run
+/// use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
+/// use closure::valid::closure_valid;
+/// use certify_core::Verdict;
+///
+/// let joint = one_joint();
+/// let d24 = ledge_d24();
+/// let t = treatment(&d24);
+/// let Verdict::Verified(valid) = closure_valid(&joint, &t) else {
+///     panic!("the fixture is CLOSURE_VALID");
+/// };
+/// let shell = export::shell::shell_from_closure(&joint, &t, &valid);
+/// let audit = export::step::audit_shell(&shell).expect("OCC audits the shell");
+/// assert!(audit.brepcheck_valid); // OCCT accepts each face; the crease is still open
+/// ```
+pub fn audit_shell<B: Backend>(rec: &ShellRecord<B>) -> Result<ShellAudit, String> {
+    parse_shell_audit(&ffi::occt_shell_audit(&record_to_floats(rec)))
+}
+
+/// Parse the shim's one-line `key=val` audit summary into a [`ShellAudit`]. An
+/// `"error: …"` summary (malformed buffer / OCCT failure) is returned verbatim as
+/// `Err`; a missing or non-numeric field is a parse `Err`.
+fn parse_shell_audit(summary: &str) -> Result<ShellAudit, String> {
+    if summary.starts_with("error:") {
+        return Err(summary.to_string());
+    }
+    let mut fields = std::collections::HashMap::new();
+    for tok in summary.split_whitespace() {
+        let (k, v) = tok
+            .split_once('=')
+            .ok_or_else(|| format!("malformed audit token {tok:?} in {summary:?}"))?;
+        fields.insert(k, v);
+    }
+    let uget = |k: &str| -> Result<usize, String> {
+        fields
+            .get(k)
+            .ok_or_else(|| format!("audit summary missing {k:?}: {summary:?}"))?
+            .parse::<usize>()
+            .map_err(|e| format!("audit field {k:?} is not a usize ({e}): {summary:?}"))
+    };
+    Ok(ShellAudit {
+        faces: uget("faces")?,
+        edges: uget("edges")?,
+        free_edges: uget("free")?,
+        nonmanifold_edges: uget("nonmanifold")?,
+        closed: uget("closed")? != 0,
+        brepcheck_valid: uget("brepcheck")? != 0,
+    })
 }
 
 #[cfg(test)]
@@ -187,5 +281,50 @@ mod tests {
             matches!(cap, CapWitness::Miter(_)),
             "the miter treatment certifies via the MITER cap branch"
         );
+    }
+
+    /// D2.1 GO/NO-GO: the extended OCCT audit links and runs on the slice-1 shell.
+    /// The `occt_shell_audit` binding sews the same shell as the writer and reports
+    /// topology facts; here we only assert the summary parses into a sane
+    /// [`ShellAudit`] (faces/edges present, OCCT accepts each face). The oracle's
+    /// *comparison* against the internal verdict is the D2.2 differential harness.
+    #[test]
+    fn occt_audits_the_one_joint_shell() {
+        use closure::valid::closure_valid;
+        use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
+
+        let joint = one_joint();
+        let d24 = ledge_d24();
+        let t = treatment(&d24);
+        let valid = match closure_valid(&joint, &t) {
+            certify_core::Verdict::Verified(v) => v,
+            _ => panic!("the fixture is CLOSURE_VALID"),
+        };
+        let shell = crate::shell::shell_from_closure(&joint, &t, &valid);
+        let audit = super::audit_shell(&shell).expect("OCC audits the sewn shell");
+        assert!(audit.faces > 0, "the sewn shell has faces: {audit:?}");
+        assert!(audit.edges > 0, "the sewn shell has edges: {audit:?}");
+        assert!(
+            audit.brepcheck_valid,
+            "OCCT accepts each planar face of the sewn shell: {audit:?}"
+        );
+    }
+
+    /// The `key=val` summary parser round-trips a well-formed line and rejects a
+    /// malformed one — a pure test needing no OCCT link.
+    #[test]
+    fn shell_audit_summary_parses() {
+        let a =
+            super::parse_shell_audit("faces=6 edges=12 free=4 nonmanifold=0 closed=0 brepcheck=1")
+                .expect("well-formed summary parses");
+        assert_eq!(a.faces, 6);
+        assert_eq!(a.edges, 12);
+        assert_eq!(a.free_edges, 4);
+        assert_eq!(a.nonmanifold_edges, 0);
+        assert!(!a.closed);
+        assert!(a.brepcheck_valid);
+
+        assert!(super::parse_shell_audit("error: no non-degenerate triangles").is_err());
+        assert!(super::parse_shell_audit("faces=oops edges=1").is_err());
     }
 }
