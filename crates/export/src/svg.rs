@@ -163,30 +163,40 @@ fn edge_points<B: Backend>(e: &Edge<B>, forward: bool) -> Vec<[f64; 2]> {
     p
 }
 
-/// Sample an x-monotone arc piece from its `start` to its `end`. Endpoints are read
-/// exactly; interior points use the circle's own `y = cy ± √(r² − (x − cx)²)` graph on the
-/// piece's [`Half`], so every sample lands on the arc (the `max(0.0)` clamps float slop at
-/// the x-extrema, where the radical is exactly zero).
+/// Sample an x-monotone arc piece from its `start` to its `end`, **uniformly in angle**
+/// (not in x) so a circle's near-vertical left/right renders as smoothly as its flat
+/// top/bottom. Endpoints are read exactly; interior points ride the circle itself,
+/// `(cx + r·cos θ, cy + r·sin θ)`, interpolating θ between the two endpoint angles.
+///
+/// Within one [`Half`] the endpoint angles need no unwrapping — a `Lower` arc lives in
+/// `θ ∈ [−π, 0]`, an `Upper` arc in `[0, π]` — except that `atan2` returns `+π` at a
+/// `Lower` arc's left extreme, so it is pulled down to `−π` for the interpolation to trace
+/// the lower arc rather than its reflection.
 fn arc_points<B: Backend>(a: &ArcPiece<B>) -> Vec<[f64; 2]> {
+    use core::f64::consts::PI;
     let cx = rat_to_f64(&a.circle.cx);
     let cy = rat_to_f64(&a.circle.cy);
-    let r2 = rat_to_f64(&a.circle.r2);
-    let x0 = surd_to_f64(&a.start.x);
-    let x1 = surd_to_f64(&a.end.x);
-    let sign = match a.half {
-        Half::Upper => 1.0,
-        Half::Lower => -1.0,
-    };
+    let r = rat_to_f64(&a.circle.r2).max(0.0).sqrt();
+    let [sx, sy] = pt(&a.start);
+    let [ex, ey] = pt(&a.end);
+    let mut th0 = (sy - cy).atan2(sx - cx);
+    let mut th1 = (ey - cy).atan2(ex - cx);
+    if let Half::Lower = a.half {
+        if th0 > 0.0 {
+            th0 -= 2.0 * PI;
+        }
+        if th1 > 0.0 {
+            th1 -= 2.0 * PI;
+        }
+    }
     let mut out = Vec::with_capacity(ARC_SAMPLES + 1);
-    out.push(pt(&a.start));
+    out.push([sx, sy]);
     for i in 1..ARC_SAMPLES {
         let t = i as f64 / ARC_SAMPLES as f64;
-        let x = x0 + (x1 - x0) * t;
-        let dx = x - cx;
-        let y = cy + sign * (r2 - dx * dx).max(0.0).sqrt();
-        out.push([x, y]);
+        let th = th0 + (th1 - th0) * t;
+        out.push([cx + r * th.cos(), cy + r * th.sin()]);
     }
-    out.push(pt(&a.end));
+    out.push([ex, ey]);
     out
 }
 
@@ -407,6 +417,29 @@ mod tests {
         let or = polys_for(&a, BoolOp::Or);
         assert_eq!(or.faces.len(), 1);
         assert!(or.faces[0].holes.is_empty(), "annulus ∪ is a filled disk");
+    }
+
+    /// Internal tangency `△` (`A∖B`, `B` tangent inside `A` at `(2,0)`) genuinely pinches to
+    /// a point there — the "spike" a coarse renderer shows is a sampling artifact, not bad
+    /// data. Guard the data: every flattened vertex stays inside the outer disk `A`
+    /// (`x² + y² ≤ 4`), so no boundary sample ever escapes/pierces it. Interior arc samples
+    /// ride circle `B` (`⊂ A`) or circle `A` (radius 2) exactly; a small tolerance absorbs
+    /// the `√`/`atan2`/`cos` float slop.
+    #[test]
+    fn internal_tangency_xor_stays_within_outer_disk() {
+        let it = gallery::internal_tangency();
+        let xor = polys_for(&it, BoolOp::Xor);
+        let tol = 1e-6;
+        for face in &xor.faces {
+            for ring in std::iter::once(&face.outer).chain(&face.holes) {
+                for &[x, y] in ring {
+                    assert!(
+                        x * x + y * y <= 4.0 + tol,
+                        "internal-tangency △ vertex ({x}, {y}) escapes outer disk A"
+                    );
+                }
+            }
+        }
     }
 
     /// Two disjoint disks (`△` of two overlapping disks is two lunes) yields ≥2 rings, and
