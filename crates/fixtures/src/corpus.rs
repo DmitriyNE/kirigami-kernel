@@ -2,9 +2,11 @@
 //! verdict asserted, transcribed as the checkers land — the day-one regression suite.
 //! Each entry is a configuration that once fooled, or could fool, a checker.
 //!
-//! Landed so far: the M2 CLIP transversality-ladder and EDGE-REG entries. The cone-flank
-//! TRIM-LOCAL entry (`cx-cone-flank-trim-mu`) needs the petal conical flank and lands with
-//! milestone C; the remaining entries land with their checkers.
+//! Landed so far: the M2 CLIP transversality-ladder and EDGE-REG entries, and the M4
+//! [`closure`](self#closure) generality entries (the certified `CLOSURE_VALID` pipe run
+//! across ≥2 developable classes and ≥2 cone angles — the C0 generality guard). The
+//! cone-flank TRIM-LOCAL entry (`cx-cone-flank-trim-mu`) needs the petal conical flank and
+//! lands with milestone C's petal pass; the remaining entries land with their checkers.
 
 /// CLIP-ladder counterexamples (spec §8.5) — the transversality traps.
 #[cfg(test)]
@@ -188,5 +190,118 @@ mod edge {
             edge_reg(&recertified).to_verdict(),
             Verdict::Verified(_)
         ));
+    }
+}
+
+/// M4 **generality** entries (the C0 generality guard, `docs/vv-guide.md §8`): the certified
+/// closure pipe run on **more than one developable class and more than one cone angle**, so
+/// nothing in `closure`/`certify_core` is silently locked to the cylinder or to the device
+/// cone's 65/97 half-angle.
+///
+/// The regularity bundle (REG-V ∧ WEDGE ∧ EXT-WEDGE) is the conjunct that directly consumes
+/// each flank's crease *geometry* — the two unit normals `n_A(σ_a)`, `n_B(σ_b)` — so it is
+/// exactly where an angle- or class-lock would surface. These entries fold each device against
+/// itself at two distinct crease stations and drive the bundle through the real
+/// `closure::wedge::wedge_cert` → `certify_core::wedge::regularity` path. The full
+/// MITER/LEDGE cap pipe is exercised end-to-end on the cylinder in `closure::valid::tests`; a
+/// genuine plane and the petal conical flank are deferred (`docs/closure-scoping.md §8`).
+#[cfg(test)]
+mod closure {
+    use crate::devices::{cone, cone_alt, cylinder};
+    use certify_core::wedge::regularity;
+    use certify_core::{MarginSq, Verdict};
+    use closure::wedge::wedge_cert;
+    use closure::{Crease, Flank, Joint, JointSign, MuRange};
+    use geom::chart::Chart;
+    use lattice::{Bignum, Rat};
+
+    type Q = Rat<Bignum>;
+
+    fn mu() -> MuRange<Bignum> {
+        MuRange {
+            lo: Q::from_i128(-1),
+            hi: Q::new(-1, 2),
+        }
+    }
+    fn dot(a: &[Q; 3], b: &[Q; 3]) -> Q {
+        a[0].mul(&b[0]).add(&a[1].mul(&b[1])).add(&a[2].mul(&b[2]))
+    }
+
+    /// Fold `chart` against itself at crease stations `σ_a ≠ σ_b`, derive a **real positive**
+    /// REG-V margin from the fold's actual dihedral `d = n_A·n_B` (`m = |V|²/2` with
+    /// `|V|² = (1−d)/(1+d)`), and certify the regularity bundle through the production path.
+    /// Returns the certified crease dot `d` (asserted to equal the geometry, and to be a
+    /// genuine, non-flat dihedral). Panics if the bundle refuses — a generality regression.
+    fn fold_certifies(make: impl Fn() -> Chart<Bignum>, sa: Q, sb: Q) -> Q {
+        // The two crease normals, straight from the chart — unit vectors by the exact
+        // quaternion construction (a non-trivial fact the checker re-verifies as NonUnitNormal).
+        let chart = make();
+        let n_a = chart.normal().eval(&sa).expect("normal at σ_a");
+        let n_b = chart.normal().eval(&sb).expect("normal at σ_b");
+        assert!(
+            dot(&n_a, &n_a).sub(&Q::from_i128(1)).is_zero()
+                && dot(&n_b, &n_b).sub(&Q::from_i128(1)).is_zero(),
+            "the chart's crease normals are unit vectors"
+        );
+        let d = dot(&n_a, &n_b);
+        // A genuine, non-flat, sub-π dihedral: |V|² = (1−d)/(1+d) is finite and strictly positive.
+        assert!(
+            d != Q::from_i128(1) && Q::from_i128(1).add(&d).sign() > 0,
+            "sub-π, non-flat fold"
+        );
+        let v_sq = Q::from_i128(1).sub(&d).div(&Q::from_i128(1).add(&d));
+        let m = v_sq.mul(&Q::new(1, 2)); // a real positive margin below the true |V|²
+
+        let joint = Joint::new(
+            Flank::new(make(), mu()),
+            Flank::new(make(), mu()),
+            Crease {
+                sigma_a: sa,
+                sigma_b: sb,
+            },
+            JointSign::Plus,
+        );
+        // s_bev = 1/8: EXT-WEDGE clears (s_bev(1+s_bev)|V|² < 1) with room for any sub-π fold.
+        let cert = wedge_cert(&joint, Q::new(1, 8), MarginSq(m.clone())).expect("crease normals");
+        match regularity(&cert) {
+            Verdict::Verified(w) => {
+                assert_eq!(w.n_dot, d, "the witness carries the true crease dot");
+                assert_eq!(w.reg_v_margin.0, m);
+                d
+            }
+            other => panic!(
+                "the regularity bundle must certify a regular fold (verified={})",
+                matches!(other, Verdict::Verified(_))
+            ),
+        }
+    }
+
+    /// The cylinder — the line-carrier developable the slice is built on (class 1). A 90° fold
+    /// (σ = 0 vs σ = 1) gives `d = 0`, `|V|² = 1`.
+    #[test]
+    fn cylinder_fold_is_regular() {
+        let d = fold_certifies(cylinder, Q::from_i128(0), Q::from_i128(1));
+        assert!(d.is_zero(), "the 90° cylinder self-fold has d = 0");
+    }
+
+    /// The device cone (class 2, half-angle `n·ẑ ≡ 65/97`). A different developable class than
+    /// the cylinder, certified by the *same* checker — the cone is not special-cased.
+    #[test]
+    fn device_cone_fold_is_regular() {
+        let d = fold_certifies(cone, Q::from_i128(0), Q::from_i128(1));
+        assert!(!d.is_zero(), "the cone self-fold is a non-right dihedral");
+    }
+
+    /// The second-angle cone (`n·ẑ ≡ 3/5`, distinct from 65/97). Certifies through the same
+    /// path with a *different* crease dot than the device cone — proof the bundle is not
+    /// locked to one half-angle.
+    #[test]
+    fn second_angle_cone_fold_is_regular() {
+        let d_alt = fold_certifies(cone_alt, Q::from_i128(0), Q::from_i128(1));
+        let d_dev = fold_certifies(cone, Q::from_i128(0), Q::from_i128(1));
+        assert_ne!(
+            d_alt, d_dev,
+            "the two cone angles fold to distinct dihedrals"
+        );
     }
 }

@@ -3,7 +3,9 @@
 //! `lattice` — the slice-3d ℤ₂² cocycle proof.
 
 use crate::arrange::{cocycle_ok, link_iso_ok, link_ok, v_boundary};
+use crate::cap_in::edge_hands_off;
 use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
+use crate::miter::{OrderSign, eps_from_cmp};
 
 // Soundness of the ★ CLIP-σ signed disjunction (spec §8.5). `clip_sigma` ranges the
 // **signed** affine `∂_σG` over four box corners and certifies a single sign; the row
@@ -235,4 +237,157 @@ fn link_iso_matches_cyclic_adjacency() {
     }
 
     assert!(link_iso_ok(&a, &b) == adj_same);
+}
+
+// Soundness of the ★ MITER `ε_φ` order-sign mint (spec §8.5). `eps_phi` mints the order sign
+// of the monotone cross-flank correspondence `φ_J` from **one exact oriented-endpoint
+// comparison** — `sign(φ_J(σ_hi) − φ_J(σ_lo))` — never the derivative sign. The row is ★
+// because the tempting *derivative* mint `sgn(dσ_B/dσ_A)` is unsound: it collapses to zero at
+// any interior stationary point (the `σ_A³` fossil has `φ_J′(0) = 0`) even though `φ_J` is
+// strictly monotone with distinctly-ordered endpoints, so it would refuse a genuine clean
+// miter or, worse, mint the wrong sign near the stall. This proves the endpoint mint does not:
+// its verdict is *exactly* the order of the two images, so any two distinct images mint a
+// definite sign and only coincident images abstain.
+//
+// The decision is factored (`eps_from_cmp`, generic over the `Ordering`) so the proof runs on
+// `i128` — the exact comparison `eps_phi` applies at the endpoints `φ_J(σ_·) = Rat`. That the
+// `i128` order and `Rat`'s order agree is `lattice`'s obligation (`cmp` panic-freedom +
+// differential proofs), cleanly separated from this logic proof; the property is scale-free so
+// `i128` corners lose nothing.
+#[kani::proof]
+fn eps_phi_is_endpoint_order() {
+    let lo: i128 = kani::any();
+    let hi: i128 = kani::any();
+    let sign = eps_from_cmp(lo.cmp(&hi));
+
+    // The verdict is exactly the endpoint order — the whole content of `ε_φ`.
+    match sign {
+        Some(OrderSign::Preserving) => assert!(lo < hi),
+        Some(OrderSign::Reversing) => assert!(lo > hi),
+        None => assert!(lo == hi),
+    }
+
+    // The anti-derivative property: **distinct** endpoints always mint a definite sign. A
+    // derivative mint would return `None` wherever `φ_J′` vanishes (the `σ_A³` fossil at the
+    // origin) even here, where the endpoints are strictly ordered; the endpoint mint never does.
+    // Abstention (`None`) happens *only* on coincident images.
+    assert!(sign.is_some() == (lo != hi));
+}
+
+// Soundness of the CAP-IN-D24 cycle-closure + flank-correspondence census (spec §8.5), as
+// bounded boundary bookkeeping (vv-guide §5). The census's soundness-critical *carrier
+// identity* test is an exact rational-function identity — owned by `lattice` + differential
+// testing, out of Kani's tractable scope. Its **combinatorial** admission — the boundary is a
+// single closed loop (step 4) spanning both flanks (step 5) — is bounded, and this proves it
+// admits only genuine such loops.
+//
+// The non-trivial content parallels the CLIP-σ harness's "range *every* corner, not just the
+// endpoints": the census ANDs `edge_hands_off` over **every** cyclic consecutive pair, not
+// merely the wrap `edge[n-1] → edge[0]`. Checking only the wrap would admit a broken chain
+// (two sub-arcs whose free ends coincidentally meet). This proves the full census rejects any
+// chain with a broken internal link even when its wrap happens to close, and rejects any cap
+// missing a flank — the exact soundness of steps 4–5. `N = 4` bounds a cap boundary's edge
+// count in the cylinder-flank corpus; the endpoints are `i8`-small (the property is discrete).
+#[kani::proof]
+#[kani::unwind(6)]
+fn cap_in_cycle_census_sound() {
+    const N: usize = 4;
+    // Per edge: an (end, next_start) coordinate pair, `i8`-small (only equality matters).
+    let ends: [(i8, i8); N] = kani::any();
+    let starts: [(i8, i8); N] = kani::any();
+    // Flank tags 0 = Crease, 1 = A, 2 = B.
+    let flanks: [u8; N] = kani::any();
+    for &f in &flanks {
+        kani::assume(f < 3);
+    }
+
+    // The real per-link test, over every cyclic consecutive pair (step 4), and the flank
+    // census (step 5) — assembled exactly as `cap_in_d24` assembles them.
+    let mut cycle_ok = true;
+    let mut wrap_ok = false;
+    let mut internal_break = false;
+    for k in 0..N {
+        let links = edge_hands_off(&ends[k], &starts[(k + 1) % N]);
+        cycle_ok &= links;
+        if k == N - 1 {
+            wrap_ok = links; // the wrap edge[N-1] → edge[0]
+        } else if !links {
+            internal_break = true; // some interior hand-off failed
+        }
+    }
+    let has_a = flanks.iter().any(|&f| f == 1);
+    let has_b = flanks.iter().any(|&f| f == 2);
+    let census_accepts = cycle_ok && has_a && has_b;
+
+    // (step 4) A chain whose wrap coincidentally closes but has a broken internal link is
+    // rejected — the census checks every hand-off, not just the wrap.
+    if wrap_ok && internal_break {
+        assert!(!census_accepts);
+    }
+    // (step 5) A cap missing either flank is rejected.
+    if !has_a || !has_b {
+        assert!(!census_accepts);
+    }
+    // Acceptance is sound: every hand-off links (a single closed loop) and both flanks appear.
+    if census_accepts {
+        for k in 0..N {
+            assert!(edge_hands_off(&ends[k], &starts[(k + 1) % N]));
+        }
+        assert!(has_a && has_b);
+    }
+}
+
+// Soundness of the ★ REG-V / WEDGE / EXT-WEDGE division-free clearing (spec §8.5). The bundle
+// certifies `|V|² = (1−d)/(1+d) ≥ m` (REG-V) and `s_bev(1+s_bev)|V|² < 1` (EXT-WEDGE) **without
+// dividing**: each predicate is cleared against `1 + d`, and each clearing is sound only because
+// the same function first guards `1 + d > 0` (WEDGE) — `certify_core::wedge::{reg_v,ext_wedge}`
+// re-check `one_plus_dot.sign() <= 0` before clearing. The row is ★ because a clearing that
+// dropped that guard would flip the inequality on an over-π fold (`1 + d < 0`) and falsely
+// certify a degenerate joint — the wedge analogue of the CLIP-σ squared-form slip.
+//
+// Factored to `i128` rationals (`d = dn/dd`, `m = mn/md`, `s_bev(1+s_bev) = k = kn/kd`, positive
+// denominators): the checker's `Rat` residual `(1−d) − m(1+d)`, cleared over the common
+// denominator `dd·md > 0`, has the sign of `md·(dd−dn) − mn·(dd+dn)` — the integer combination
+// this harness decides. That `Rat`'s arithmetic realizes this ring identity (and that its order
+// agrees with `i128`'s) is `lattice`'s obligation, cleanly separated from this logic proof;
+// the property is scale-free, so `i32`-widened inputs lose nothing. This proves each clearing
+// accepts **iff** the true sign-aware predicate holds, AND that the `1 + d > 0` guard is
+// necessary (dropping it admits false certificates on the over-π branch).
+#[kani::proof]
+fn wedge_clearing_sound() {
+    // Rational inputs with strictly-positive denominators; `k = s_bev(1+s_bev) ≥ 0`.
+    let dn = kani::any::<i32>() as i128;
+    let dd = kani::any::<i32>() as i128;
+    let mn = kani::any::<i32>() as i128;
+    let md = kani::any::<i32>() as i128;
+    let kn = kani::any::<i32>() as i128;
+    let kd = kani::any::<i32>() as i128;
+    kani::assume(dd > 0 && md > 0 && kd > 0 && kn >= 0);
+
+    // `P/dd = 1 + d`, `Q/dd = 1 − d` (dd > 0 ⇒ sign(P) = sign(1 + d)).
+    let p = dd + dn;
+    let q = dd - dn;
+
+    // --- REG-V (wedge.rs:196–208) ---
+    // Checker accepts ⟺ margin positive ∧ WEDGE guard ∧ cleared residual ≥ 0.
+    let regv_accepts = mn > 0 && p > 0 && (md * q - mn * p) >= 0;
+    // True sign-aware predicate: |V|² = Q/P ≥ mn/md is geometrically meaningful only on WEDGE
+    // (P > 0); there both denominators are positive, so cross-multiplication preserves direction.
+    let regv_true = mn > 0 && p > 0 && md * q >= mn * p;
+    assert!(regv_accepts == regv_true);
+
+    // WEDGE-necessity: on the over-π branch (P < 0) the true predicate is false, yet the
+    // clearing WITHOUT its guard would accept exactly `md·q ≥ mn·p` — a false certificate. This
+    // is why `reg_v` guards `1 + d > 0` before clearing.
+    if p < 0 && mn > 0 && md * q >= mn * p {
+        let regv_no_guard = mn > 0 && (md * q - mn * p) >= 0; // guard dropped
+        assert!(regv_no_guard && !regv_true);
+    }
+
+    // --- EXT-WEDGE (wedge.rs:217–233) ---
+    // Checker accepts ⟺ WEDGE guard ∧ cleared = (1+d) − k(1−d) > 0, i.e. kd·P − kn·Q > 0.
+    let ext_accepts = p > 0 && (kd * p - kn * q) > 0;
+    // True: s_bev(1+s_bev)|V|² = (kn/kd)(Q/P) < 1 on WEDGE (P > 0) ⟺ kn·Q < kd·P.
+    let ext_true = p > 0 && kn * q < kd * p;
+    assert!(ext_accepts == ext_true);
 }

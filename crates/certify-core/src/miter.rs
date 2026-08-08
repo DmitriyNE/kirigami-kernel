@@ -82,10 +82,27 @@ pub enum OrderSign {
 /// assert_eq!(eps_phi(&hi_lo, &hi_hi), Some(OrderSign::Reversing));
 /// ```
 pub fn eps_phi<B: Backend>(phi_at_lo: &Rat<B>, phi_at_hi: &Rat<B>) -> Option<OrderSign> {
-    match phi_at_hi.sub(phi_at_lo).sign() {
-        s if s > 0 => Some(OrderSign::Preserving),
-        s if s < 0 => Some(OrderSign::Reversing),
-        _ => None,
+    eps_from_cmp(phi_at_lo.cmp(phi_at_hi))
+}
+
+/// Mint the order sign from the *ordering* of the two endpoint images alone — the
+/// backend-free core of [`eps_phi`], factored out so the ★ soundness property runs on `i128`
+/// under Kani (the [`crate::proof`] `eps_phi_is_endpoint_order` harness). `order` is
+/// `φ_J(σ_lo).cmp(φ_J(σ_hi))` for the ordered support `σ_lo < σ_hi`:
+///
+/// - [`Less`](Ordering::Less) (`φ_J(σ_lo) < φ_J(σ_hi)`) ⇒ [`Preserving`](OrderSign::Preserving),
+/// - [`Greater`](Ordering::Greater) ⇒ [`Reversing`](OrderSign::Reversing),
+/// - [`Equal`](Ordering::Equal) ⇒ `None` (the images coincide — no monotone correspondence).
+///
+/// The decision reads *only* the endpoint order, so any two **distinct** images mint a definite
+/// sign — the exact guarantee a `sgn(dσ_B/dσ_A)` derivative mint lacks (it collapses to `None`
+/// wherever `φ_J′` vanishes, e.g. the `σ_A³` fossil at the origin, though the endpoints are
+/// strictly ordered). Total and `const`.
+pub const fn eps_from_cmp(order: Ordering) -> Option<OrderSign> {
+    match order {
+        Ordering::Less => Some(OrderSign::Preserving),
+        Ordering::Greater => Some(OrderSign::Reversing),
+        Ordering::Equal => None,
     }
 }
 

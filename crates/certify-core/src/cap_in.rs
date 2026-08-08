@@ -157,6 +157,17 @@ pub fn on_carrier<B: Backend>(comp: &BoundaryComponent<B>) -> bool {
     carrier_residual(comp).is_zero()
 }
 
+/// Does a boundary edge with endpoint `end` hand off to the next edge's `next_start`? — the
+/// per-link test of the CAP-IN-D24 cycle-closure census (step 4): both coordinates coincide
+/// exactly. The census ANDs this over **every** cyclic consecutive pair, not merely the wrap
+/// `edge[n-1] → edge[0]`; checking only the wrap would admit a chain with a broken internal
+/// link (two disjoint sub-loops whose free ends happen to meet). Generic over the coordinate
+/// order so the ★ soundness property ([`crate::proof`]'s `cap_in_cycle_census_sound`) runs on
+/// `i128` — the exact ordering `cap_in_d24` applies at `T = Rat`.
+pub fn edge_hands_off<T: Ord>(end: &(T, T), next_start: &(T, T)) -> bool {
+    end.0.cmp(&next_start.0) == Ordering::Equal && end.1.cmp(&next_start.1) == Ordering::Equal
+}
+
 /// A licensed cap-boundary edge: a [`Carrier`], the concrete rational endpoints the
 /// census evaluated, and the [`FlankId`] provenance. **Minted only** as part of a
 /// [`ValidatedD24`] by [`cap_in_d24`] — the fields are private, so a `CanonicalEdge`
@@ -374,11 +385,7 @@ pub fn cap_in_d24<B: Backend>(
     let n = edges.len();
     let mut k = 0;
     while k < n {
-        let end = &edges[k].end;
-        let next_start = &edges[(k + 1) % n].start;
-        if end.0.cmp(&next_start.0) != Ordering::Equal
-            || end.1.cmp(&next_start.1) != Ordering::Equal
-        {
+        if !edge_hands_off(&edges[k].end, &edges[(k + 1) % n].start) {
             return Verdict::Refuted(CapInFault::OpenCycle { at: k });
         }
         k += 1;
