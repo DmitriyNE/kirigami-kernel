@@ -41,6 +41,7 @@
 //! (C4–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
 
 pub mod cap_in;
+pub mod ledge;
 pub mod trim;
 pub mod wedge;
 

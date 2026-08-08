@@ -74,7 +74,13 @@ fine — this is a log, not a schema.
   `pinches.is_empty()` and returns a type only a no-pinch region inhabits — so "forgot to check
   manifoldness" is a compile error and the proven `link_ok` is used in production. Deferred (not now)
   because the newtype's contract is SEW's to specify; building it blind risks guessing wrong.
-  *2026-08-06 · deferred(→M4) · `certify_core::arrange::link_ok`*
+  *2026-08-06 · deferred(→M4) · `certify_core::arrange::link_ok`* **· C4 review (2026-08-08):**
+  re-confirmed the deferral — `closure::ledge::ledge_cap_certified` (the C4 LEDGE driver) returns the
+  **relaxed** `Verdict<CapOut>` verbatim, reporting `pinches()` rather than gating on them, and there is
+  still no pre-SEW consumer (the cylinder-flank cap is convex ⇒ `pinches().is_empty()` holds, asserted
+  in the unit test, but the driver does not *require* it). The `ShellReady` newtype stays SEW's to mint;
+  C4 introduces no new checker (pure wiring over the proven `ledge_dom_certified` + CAP-OUT-LINK).
+  *2026-08-08 · still deferred(→M5/SEW) · `closure::ledge`*
 
 - **Front-half geometry is trusted — add per-pair D24 intersection certificates.** The
   arrangement checkers (`certify_core::arrange`) read only the *combinatorial* certificate — indices,
@@ -276,6 +282,21 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **CGAL boolean oracle extended to segment (polygon) operands — the C4 LEDGE cap lane.** The
+  `cgal_boolean_*` shim only parsed disk operands (`C cx cy r2 operand`), so the LEDGE cap — a
+  straight-edge *polygon* (cylinder rulings + crease) — had no CGAL region differential. Added an
+  `L x1 y1 x2 y2 operand` boundary-edge line: per operand the edges accumulate into a CCW list and
+  build a `Gps_circle_segment_traits_2::Polygon_2` via **direct** `X_monotone_curve_2(source, target)`
+  construction (the traits' *linear*-segment ctor takes `Kernel::Point_2`, **not** the traits
+  `Point_2` — that was the compile fight). Direct construction is required over `make_x_monotone`
+  per-edge: the latter sorts each segment left-to-right and would flip right-to-left boundary edges,
+  breaking the loop. Two live gotchas: CGAL **hard-aborts** (`SIGABRT`, uncatchable) on a non-simple
+  polygon (a self-intersecting "bowtie" quad triggered it — the differential inputs must be verified
+  simple + CCW), and axis-aligned (vertical) edges hit CGAL's vertical-segment special case, so the
+  `ledge_cap_region_matches_cgal_polygon_boolean` cases use generic convex + simple-concave quads with
+  no axis-aligned edge. Face count **and** exact `a+b√d` boundary geometry now match CGAL for the C4
+  cap. *2026-08-08 · resolved · `difftest::cgal_shim` `boolean_components`*
 
 - **Developable ≠ constant curvature.** A cone's nonzero principal radius is `R₁ = ρ·tan β`
   (ρ = slant distance from the apex) — *not* constant; only the cylinder has constant `κ₁`.

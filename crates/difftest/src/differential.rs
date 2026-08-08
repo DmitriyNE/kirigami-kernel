@@ -650,4 +650,111 @@ mod tests {
             );
         }
     }
+
+    // --- the LEDGE cap (straight-edge polygon) boolean-region differential ----------
+    // A licensed LEDGE cap is a polygon (a cylinder's straight rulings + the crease),
+    // so the C4 path `ledge_dom_certified` over segment operands must match CGAL's
+    // `General_polygon_set_2` boolean over the SAME segments — the missing lane the
+    // disk oracle could not cover. `L x1 y1 x2 y2 operand` feeds CGAL a boundary edge.
+
+    /// A CCW quad by rational vertices.
+    type Quad = [(i128, i128); 4];
+
+    /// Our arrangement edges for one CCW quad, every edge on operand A (`CurveId(i)`).
+    fn quad_edges(v: &Quad) -> Vec<Edge<Bignum>> {
+        (0..4)
+            .map(|i| {
+                let (sx, sy) = v[i];
+                let (ex, ey) = v[(i + 1) % 4];
+                let a = qi(-(ey - sy));
+                let b = qi(ex - sx);
+                let c = a.mul(&qi(sx)).add(&b.mul(&qi(sy))).neg();
+                Edge::Seg(Box::new(SegPiece {
+                    line: Line { a, b, c },
+                    start: Point2::from_rat(qi(sx), qi(sy)),
+                    end: Point2::from_rat(qi(ex), qi(ey)),
+                    orient: Orient::Ccw,
+                    source: CurveId(i as u32),
+                }))
+            })
+            .collect()
+    }
+    /// The single-operand certified cap of a quad (the C4 `ledge_cap_certified` path).
+    fn our_cap(v: &Quad) -> arrange2d::boolean::CapOut<Bignum> {
+        let edges = quad_edges(v);
+        match arrange2d::boolean::ledge_dom_certified(&edges, &|_| OperandId::A, BoolOp::Or) {
+            Verdict::Verified(cap) => cap,
+            Verdict::Refuted(f) => panic!("cap must certify: {f:?}"),
+            Verdict::Unresolved(()) => panic!("cap census inconclusive"),
+        }
+    }
+    /// The CGAL segment-operand input: one `L` boundary edge per quad side (operand A).
+    fn cgal_quad_input(v: &Quad) -> String {
+        (0..4)
+            .map(|i| {
+                let (sx, sy) = v[i];
+                let (ex, ey) = v[(i + 1) % 4];
+                format!("L {sx}/1 {sy}/1 {ex}/1 {ey}/1 0")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    /// Boundary vertices of an emitted region (every outer + hole edge endpoint).
+    fn region_boundary_verts(r: &arrange2d::boolean::Region<Bignum>) -> Vec<P> {
+        let mut vs = Vec::new();
+        for f in &r.faces {
+            for e in f.outer.iter().chain(f.holes.iter().flatten()) {
+                let (s, t) = match e {
+                    Edge::Seg(s) => (s.start.clone(), s.end.clone()),
+                    Edge::Arc(a) => (a.start.clone(), a.end.clone()),
+                };
+                vs.push(s);
+                vs.push(t);
+            }
+        }
+        dedup_points(vs)
+    }
+    /// CGAL's boolean boundary vertex set, parsed from `xa xb xd ya yb yd` triples.
+    fn parse_cgal_boundary(out: &str) -> Vec<P> {
+        let vs = out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                Point2 {
+                    x: Surd::new(parse_q(t[0]), parse_q(t[1]), parse_q(t[2])),
+                    y: Surd::new(parse_q(t[3]), parse_q(t[4]), parse_q(t[5])),
+                }
+            })
+            .collect();
+        dedup_points(vs)
+    }
+
+    /// The certified LEDGE cap region equals CGAL's polygon-boolean region — face
+    /// count **and** exact boundary geometry — over the identical segment operands.
+    /// A generic convex quad (no axis-aligned edge) exercises the general-polygon
+    /// boundary without CGAL's vertical-segment special case; a non-convex (arrow)
+    /// quad checks a reflex vertex too.
+    #[test]
+    fn ledge_cap_region_matches_cgal_polygon_boolean() {
+        let cases: &[Quad] = &[
+            [(0, 0), (4, 1), (5, 4), (1, 3)], // generic convex quad
+            [(0, 0), (5, 1), (2, 2), (1, 5)], // simple concave quad: (2,2) is reflex
+        ];
+        for quad in cases {
+            let cap = our_cap(quad);
+            let cgal_faces: usize = cgal_boolean_count(&cgal_quad_input(quad), "or")
+                .parse()
+                .unwrap();
+            assert_eq!(cap.region().faces.len(), 1, "our π₀: one cap face {quad:?}");
+            assert_eq!(cgal_faces, 1, "CGAL: one polygon {quad:?}");
+            assert!(
+                same_points(
+                    &region_boundary_verts(cap.region()),
+                    &parse_cgal_boundary(&cgal_boolean_boundary(&cgal_quad_input(quad), "or"))
+                ),
+                "cap boundary geometry matches CGAL {quad:?}"
+            );
+        }
+    }
 }
