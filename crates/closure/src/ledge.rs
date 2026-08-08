@@ -2,8 +2,9 @@
 //! input that `arrange2d`'s verified boolean consumes, and drive it to a certified planar
 //! cap region.
 //!
-//! `LEDGE-BRANCH := CAP-IN-D24 ∧ LEDGE-DOM ∧ CAP-OUT ∧ SEW` (spec §8.5; SEW is M5). The first
-//! three are already built — C1 mints the [`ValidatedD24`] license, and
+//! `LEDGE-BRANCH := CAP-IN-D24 ∧ LEDGE-DOM ∧ CAP-OUT ∧ SEW` (spec §8.5). This module builds the
+//! first three; `SEW` — the shared final conjunct — is applied by
+//! [`valid::closure_valid`](crate::valid::closure_valid). C1 mints the [`ValidatedD24`] license, and
 //! [`arrange2d::boolean::ledge_dom_certified`] runs the whole §6 eight-step boolean *and* the
 //! CAP-OUT / CAP-OUT-LINK postcondition internally (arrangement → seed `(0,0)` → operand
 //! sidedness → ℤ₂² cocycle → coincident incidence → boolean select → separating edges →

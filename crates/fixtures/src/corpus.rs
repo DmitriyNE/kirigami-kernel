@@ -305,3 +305,174 @@ mod closure {
         );
     }
 }
+
+/// M5 **SEW** corpus (`docs/vv-guide.md §8`): the sewing obligation `SEW = SEW-EDGES ∧ SEW-LINK`
+/// driven end-to-end through the searcher (`sew`) into the pure checkers (`certify_core::sew`).
+///
+/// The clean-miter seam feeds MITER-REGION-IDENTITY → SEW-EDGES; SEW-LINK runs over every `V_∂`
+/// vertex of a genuine two-operand arrangement via `sew::check_vertex_link`; and the two canonical
+/// non-manifold sewings — an opposite-quadrant **occupancy pinch** and a count-passing
+/// **`a→c→b→d` crossing link** — are each refuted by name (the crossing is lesson #4: a multiset
+/// match would wave it through, `link_iso_ok` does not).
+#[cfg(test)]
+mod sew {
+    use arrange2d::boolean::{BoolOp, OperandId, label_cells, vertex_link};
+    use arrange2d::dcel::Dcel;
+    use certify_core::Verdict;
+    use certify_core::miter::{LedgerEdge, MiterLedger, Occupancy, OrderSign};
+    use certify_core::sew::{
+        FaceGermSpecies, SewCounts, SewEdgesFault, SewLinkFault, sew_edges, sew_link,
+    };
+    use geom::content::{CurveId, Edge, Line, Orient, Point2, SegPiece};
+    use lattice::{Bignum, Rat};
+    use sew::{check_vertex_link, records_from_miter_ledger};
+
+    type Q = Rat<Bignum>;
+
+    fn p(x: i128, y: i128) -> (Q, Q) {
+        (Q::from_i128(x), Q::from_i128(y))
+    }
+
+    /// A CCW polygon operand through `verts`, tagged `src` (source 0 → A, 1 → B).
+    fn polygon(verts: &[(i128, i128)], src: u32) -> Vec<Edge<Bignum>> {
+        let n = verts.len();
+        (0..n)
+            .map(|i| {
+                let (sx, sy) = verts[i];
+                let (ex, ey) = verts[(i + 1) % n];
+                let (a, b) = (Q::from_i128(-(ey - sy)), Q::from_i128(ex - sx));
+                let c = a
+                    .mul(&Q::from_i128(sx))
+                    .add(&b.mul(&Q::from_i128(sy)))
+                    .neg();
+                Edge::Seg(Box::new(SegPiece {
+                    line: Line { a, b, c },
+                    start: Point2::from_rat(Q::from_i128(sx), Q::from_i128(sy)),
+                    end: Point2::from_rat(Q::from_i128(ex), Q::from_i128(ey)),
+                    orient: Orient::Ccw,
+                    source: CurveId(src),
+                }))
+            })
+            .collect()
+    }
+
+    fn ab(src: CurveId) -> OperandId {
+        if src.0 == 0 {
+            OperandId::A
+        } else {
+            OperandId::B
+        }
+    }
+
+    /// Two overlapping squares crossing at (4,2) and (2,4): the Dcel + its Or-selection (cycle-indexed).
+    fn two_squares_union() -> (Dcel<Bignum>, Vec<bool>) {
+        let mut edges = polygon(&[(0, 0), (4, 0), (4, 4), (0, 4)], 0);
+        edges.extend(polygon(&[(2, 2), (6, 2), (6, 6), (2, 6)], 1));
+        let d = Dcel::build(&edges);
+        let cl = label_cells(&d, &ab);
+        let sel: Vec<bool> = cl.labels.iter().map(|&l| BoolOp::Or.select(l)).collect();
+        (d, sel)
+    }
+
+    /// A clean-miter seam sews: MITER-REGION-IDENTITY projects one coincident flank-to-flank ledger
+    /// edge, and SEW-EDGES accepts its opposite-side boundary-boundary occupancy.
+    #[test]
+    fn clean_miter_seam_sews() {
+        let ledger = MiterLedger {
+            edges: vec![LedgerEdge {
+                start: p(0, 0),
+                end: p(4, 0),
+                eps_phi: OrderSign::Preserving,
+                occupancy: Occupancy {
+                    a_l: true,
+                    a_r: false,
+                    b_l: false,
+                    b_r: true,
+                    frame: false,
+                },
+            }],
+        };
+        let records = records_from_miter_ledger(&ledger);
+        assert!(matches!(
+            sew_edges(
+                &records,
+                SewCounts {
+                    cap_to_flank: 0,
+                    flank_to_flank: 1
+                }
+            ),
+            Verdict::Verified(_)
+        ));
+    }
+
+    /// SEW-LINK over `V_∂` of a real two-square union: every boundary vertex's embedded link
+    /// certifies through the searcher (`vertex_link` → `sew_link`).
+    #[test]
+    fn union_boundary_links_sew() {
+        let (d, sel) = two_squares_union();
+        let mut checked = 0;
+        for v in 0..d.verts.len() {
+            let (_, _, sectors) = vertex_link(&d, &sel, v);
+            let picked = sectors.iter().filter(|&&b| b).count();
+            if picked == 0 || picked == sectors.len() {
+                continue; // interior/exterior — not on V_∂
+            }
+            let species = vec![FaceGermSpecies::Flank; picked];
+            assert!(
+                matches!(
+                    check_vertex_link(&d, &sel, v, &species),
+                    Verdict::Verified(_)
+                ),
+                "boundary vertex {v} must sew",
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2, "the union crossing has two boundary vertices");
+    }
+
+    /// An opposite-quadrant occupancy — both sides of one flank occupied, neither of the other —
+    /// is a non-manifold transverse pinch SEW-EDGES refuses.
+    #[test]
+    fn opposite_quadrant_occupancy_is_a_pinch() {
+        let ledger = MiterLedger {
+            edges: vec![LedgerEdge {
+                start: p(0, 0),
+                end: p(4, 0),
+                eps_phi: OrderSign::Preserving,
+                occupancy: Occupancy {
+                    a_l: true,
+                    a_r: true,
+                    b_l: false,
+                    b_r: false,
+                    frame: false,
+                },
+            }],
+        };
+        let records = records_from_miter_ledger(&ledger);
+        assert!(matches!(
+            sew_edges(
+                &records,
+                SewCounts {
+                    cap_to_flank: 0,
+                    flank_to_flank: 1
+                }
+            ),
+            Verdict::Refuted(SewEdgesFault::Pinch { .. })
+        ));
+    }
+
+    /// A count-passing `a→c→b→d` crossing link: the same four rays as the emitted order, so a
+    /// multiset match passes — but not a cyclic rotation, so SEW-LINK refuses it.
+    #[test]
+    fn crossing_link_is_refused() {
+        assert!(matches!(
+            sew_link(
+                &[0, 1, 2, 3],
+                &[0, 2, 1, 3],
+                &[true, true, false, false],
+                &[FaceGermSpecies::Flank, FaceGermSpecies::Flank],
+            ),
+            Verdict::Refuted(SewLinkFault::LinkMismatch)
+        ));
+    }
+}

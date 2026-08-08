@@ -17,7 +17,8 @@
 //! The treatment obligation `CLOSURE_VALID(j)` splits its cap into a disjunction of two
 //! constructions, `CLOSURE-CAP(j) := MITER-BRANCH ∨ LEDGE-BRANCH`: a **clean miter** pairs the
 //! flanks' cut edges directly; a **forced ledge** builds a planar cap region by the §6 boolean
-//! arrangement (`arrange2d::boolean::ledge_dom_certified`). `SEW` closes both and is M5.
+//! arrangement (`arrange2d::boolean::ledge_dom_certified`). `SEW` — the shared final conjunct —
+//! closes both.
 //!
 //! # Generality
 //!
@@ -43,9 +44,10 @@
 //! licensing it through `certify_core::miter` (MITER-FIT → MITER-EDGE-LEDGER → MITER-OUT), the
 //! disjoint alternative to the ledge. C6 adds the [`valid`] capstone — the
 //! `CLOSURE-CAP` (MITER ∨ LEDGE) disjunction ([`valid::closure_cap`]) and the closure-level
-//! `CLOSURE_VALID(j)` conjunction **minus SEW** ([`valid::closure_valid`]), composing every prior
-//! phase's checker into one treatment verdict. `SEW` (M5) and the petal cone-flank pass remain
-//! out of this slice (`docs/vv-guide.md §8`); no soundness decision is taken in this crate.
+//! full `CLOSURE_VALID(j)` conjunction ([`valid::closure_valid`]), composing every prior phase's
+//! checker — SEW included (`SEW = SEW-EDGES ∧ SEW-LINK`, audited by `certify_core::sew`) — into
+//! one treatment verdict. The petal cone-flank pass remains out of this slice
+//! (`docs/vv-guide.md §8`); no soundness decision is taken in this crate.
 
 pub mod cap_in;
 pub mod ledge;

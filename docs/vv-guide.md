@@ -725,9 +725,18 @@ straight-crease slice has no tangent incident rays; both are the curved/petal se
 (mirroring M3e's 2-manifold deferral). Also carried forward from M4: the **planar-span representation**
 and the genuine §13 planar-hub / petal cone-flank pass; the **thin M6** gate / STEP export.
 
-**Status: in progress.** M5.0 (this criteria block + the M4 status flip + the `sew` /
-`certify_core::sew` skeletons + the ARRANGEMENT-BITS occupancy-source decision) is the current phase on
-`milestone-c`; explicit **GO**. M5.1–M5.4 pending.
+**Status: M5 met.** M5.0–M5.4 landed on `milestone-c`: the pure-tier `certify_core::sew` checkers
+(`occupancy_row` + `identity_mode` dispatch — the `occupancy_row_sound` ★; `sew_edges` seam records +
+both-direction counts; `sew_link` over V_∂ concluding `Link_emitted ≅ Link_geometric` via the reused
+`link_iso_ok`), the `sew` searcher (`records_from_miter_ledger`, `check_vertex_link` over
+`arrange2d::boolean::vertex_link`), and `closure::valid::closure_valid` now returning the **full**
+`CLOSURE_VALID(j)` conjunction — `SEW := SEW-EDGES ∧ SEW-LINK` wired into both CLOSURE-CAP branches. The
+cylinder-flank joint's clean-miter and forced-ledge variants each produce a SEW-passing sewn shell
+(`fixtures::corpus`); an opposite-quadrant occupancy is refuted `SewEdges(Pinch)` and an `a→c→b→d`
+crossing link is refused `SewLink(LinkMismatch)`. Deferred to the curved/petal pass: the `apex`
+tangent-cone species and the coincident-ray tie-break jet machinery (no fold-vertex / tangent incident
+rays on a straight crease). No new ★: SEW-EDGES rides on `occupancy_row_sound`, SEW-LINK on the
+`[M3e]` `link_iso_ok` harness.
 
 ---
 
