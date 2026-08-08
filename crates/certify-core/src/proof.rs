@@ -2,10 +2,11 @@
 //! `cargo kani`; see `vv-guide §5/§8`). This is the first Kani surface outside
 //! `lattice` — the slice-3d ℤ₂² cocycle proof.
 
-use crate::arrange::{cocycle_ok, link_iso_ok, link_ok, v_boundary};
+use crate::arrange::{LinkClass, cocycle_ok, link_iso_ok, link_ok, v_boundary};
 use crate::cap_in::edge_hands_off;
 use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
-use crate::miter::{OrderSign, eps_from_cmp};
+use crate::miter::{Occupancy, OrderSign, eps_from_cmp};
+use crate::sew::occupancy_row;
 
 // Soundness of the ★ CLIP-σ signed disjunction (spec §8.5). `clip_sigma` ranges the
 // **signed** affine `∂_σG` over four box corners and certifies a single sign; the row
@@ -185,6 +186,65 @@ fn link_ok_iff_no_pinch() {
         i += 1;
     }
     assert!(v_boundary(&s) == (!ref_has_pinch(&s) && has_t && has_f));
+}
+
+// Soundness of the ★ SEW-EDGES quadrant→row classifier (spec §8.5). `occupancy_row` reuses
+// the already-proven `classify_link` on the four occupancy bits in cyclic quadrant order
+// `[A_L, B_L, A_R, B_R]`; this certifies that reuse reproduces the SEW pinch semantics for
+// every one of the sixteen patterns. The ★ is here because the *grouped* mask `[A_L, A_R, B_R,
+// B_L]` — the obvious "one flank then the other" order — is unsound: it puts the clean miter's
+// occupied `{A_L, B_R}` in opposite quadrants and rejects a valid shell edge as a pinch. The
+// alternating order proven below is the one that holds.
+
+/// Independent reference for the quadrant→row class: enumerate directly by the SEW pinch
+/// semantics — a `k = 2` occupancy is a pinch iff its two occupied cells are the two sides of
+/// the *same* flank (`A_L ∧ A_R` or `B_L ∧ B_R`); every other count is a plain interval.
+fn ref_occupancy_row(a_l: bool, a_r: bool, b_l: bool, b_r: bool) -> LinkClass {
+    let k = u8::from(a_l) + u8::from(a_r) + u8::from(b_l) + u8::from(b_r);
+    match k {
+        0 => LinkClass::Exterior,
+        4 => LinkClass::Interior,
+        2 => {
+            if (a_l && a_r) || (b_l && b_r) {
+                LinkClass::Pinch
+            } else {
+                LinkClass::Boundary
+            }
+        }
+        _ => LinkClass::Boundary, // k == 1 or k == 3: a single occupied run
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(8)]
+fn occupancy_row_sound() {
+    let a_l: bool = kani::any();
+    let a_r: bool = kani::any();
+    let b_l: bool = kani::any();
+    let b_r: bool = kani::any();
+    let frame: bool = kani::any();
+    let occ = Occupancy {
+        a_l,
+        a_r,
+        b_l,
+        b_r,
+        frame,
+    };
+
+    // The reused `classify_link` row agrees with the independent boundary-count reference,
+    // exhaustively over all sixteen occupancy patterns.
+    assert!(occupancy_row(occ) == ref_occupancy_row(a_l, a_r, b_l, b_r));
+
+    // Frame-invariance: an L↔R flip (swap each flank's two sides, flip the frame bit) leaves
+    // the class fixed — reversing the cycle preserves its run structure.
+    let flipped = Occupancy {
+        a_l: a_r,
+        a_r: a_l,
+        b_l: b_r,
+        b_r: b_l,
+        frame: !frame,
+    };
+    assert!(occupancy_row(occ) == occupancy_row(flipped));
 }
 
 // Soundness of the `Link_emitted ≅ Link_geometric` checker (spec §8.5):

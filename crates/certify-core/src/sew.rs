@@ -23,8 +23,11 @@
 //! module mints no parallel row enum. The **identity obligation** is dispatched by how many
 //! flanks change material across the edge (the boundary count) — [`IdentityMode`].
 
+use crate::arrange::{LinkClass, classify_link};
+use crate::miter::Occupancy;
+
 /// Which identity obligation SEW-EDGES imposes on an edge, dispatched by its
-/// [`Occupancy`](crate::miter::Occupancy) boundary count (spec §8.5 line 385: "identity
+/// [`Occupancy`] boundary count (spec §8.5 line 385: "identity
 /// obligations dispatched by occupancy"). This selects *which* equality the sewing checker
 /// must discharge; the discharge itself lands with the [`crate::miter`]/`arrange2d`
 /// provenance at M5.2.
@@ -44,4 +47,70 @@ pub enum IdentityMode {
     /// zero-output assertions, **no edge-pair identity** (demanding one is uninhabitable —
     /// the ledge's default case, before topology enters).
     Provenance,
+}
+
+/// The four occupancy bits in **cyclic quadrant order** `[A_L, B_L, A_R, B_R]`.
+///
+/// The order is forced by the manifold constraint: the canonical clean miter occupies
+/// `{A_L, B_R}` and must classify as [`LinkClass::Boundary`] (it is the paired shell edge),
+/// as must its L/R mirror `{A_R, B_L}`. That pins an **alternating-flank** cycle — same-flank
+/// opposite sides sit diagonally, so `{A_L, A_R}` (a genuine cross-flank pinch) lands in
+/// opposite quadrants and rejects, while `{A_L, B_R}` occupies adjacent quadrants and passes.
+/// (Interleaving `B_L`/`B_R` within the alternation is free: positions 1 and 3 share the same
+/// neighbour set `{0, 2}`, so both interleavings classify identically for every input.)
+/// Reading `frame` here is unnecessary — an L↔R frame flip reverses the cycle, preserving the
+/// cyclic run count and hence the class, so the row is frame-invariant by construction.
+fn quadrant_mask(occ: Occupancy) -> [bool; 4] {
+    [occ.a_l, occ.b_l, occ.a_r, occ.b_r]
+}
+
+/// The SEW-EDGES **quadrant test** for one edge: its [`Occupancy`] → one cyclic occupied
+/// interval ([`LinkClass::Boundary`]) / all four ([`LinkClass::Interior`]) / none
+/// ([`LinkClass::Exterior`]) / two opposite quadrants ([`LinkClass::Pinch`], which SEW rejects).
+///
+/// This mints no new decision procedure: the four bits in cyclic quadrant order
+/// (in cyclic quadrant order) are fed to the already-Kani-proven [`classify_link`]. Soundness — that
+/// this reproduces the independent boundary-count reference for every one of the sixteen bit
+/// patterns — is the ★ (`occupancy_row_sound` in `proof.rs`).
+///
+/// ```
+/// use certify_core::miter::Occupancy;
+/// use certify_core::sew::occupancy_row;
+/// use certify_core::arrange::LinkClass;
+///
+/// // Canonical clean miter: {A_L, B_R} occupied — a paired shell edge.
+/// let clean = Occupancy { a_l: true, a_r: false, b_l: false, b_r: true, frame: false };
+/// assert_eq!(occupancy_row(clean), LinkClass::Boundary);
+///
+/// // Both sides of one flank occupied, neither of the other: an opposite-quadrant pinch.
+/// let pinch = Occupancy { a_l: true, a_r: true, b_l: false, b_r: false, frame: false };
+/// assert_eq!(occupancy_row(pinch), LinkClass::Pinch);
+/// ```
+pub fn occupancy_row(occ: Occupancy) -> LinkClass {
+    classify_link(&quadrant_mask(occ))
+}
+
+/// The SEW-EDGES **identity dispatch**: which equality the sewing checker must discharge for
+/// this edge, keyed by its [`Occupancy`] boundary count (how many flanks change material across
+/// it). See [`IdentityMode`] for what each arm obligates.
+///
+/// ```
+/// use certify_core::miter::Occupancy;
+/// use certify_core::sew::{identity_mode, IdentityMode};
+///
+/// // Two boundaries (both flanks flip): PAIR-IDENTICAL — the clean miter's whole domain.
+/// let clean = Occupancy { a_l: true, a_r: false, b_l: false, b_r: true, frame: false };
+/// assert_eq!(identity_mode(clean), IdentityMode::PairIdentical);
+///
+/// // No boundary (neither flank flips): provenance only, no edge-pair identity.
+/// let none = Occupancy { a_l: false, a_r: false, b_l: false, b_r: false, frame: false };
+/// assert_eq!(identity_mode(none), IdentityMode::Provenance);
+/// ```
+pub fn identity_mode(occ: Occupancy) -> IdentityMode {
+    let boundaries = u8::from(occ.a_l != occ.a_r) + u8::from(occ.b_l != occ.b_r);
+    match boundaries {
+        2 => IdentityMode::PairIdentical,
+        1 => IdentityMode::OutputSourceIdentical,
+        _ => IdentityMode::Provenance,
+    }
 }
