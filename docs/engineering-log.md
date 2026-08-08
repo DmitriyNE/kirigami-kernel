@@ -329,6 +329,19 @@ fine — this is a log, not a schema.
   contrasting conic class. The genuine planar-hub §13 petal disk waits on the planar-span type.
   *2026-08-08 · finding · `docs/closure-scoping.md §8`, `docs/vv-guide.md §8` (M4)*
 
+- **EDGE-OCCUPANCY is asymmetric across the two closure branches — the LEDGE side recomputes it, no
+  new `arrange2d` private surface.** M5.0 recon: the MITER branch carries the four-bit occupancy + frame
+  bit *first-class* (`certify_core::miter::LedgerEdge.occupancy`, minted at M4), so its constructor
+  (MITER-REGION-IDENTITY) just reads it. The LEDGE branch does **not**: the emitted `arrange2d::boolean::
+  CapOut`/`Region` carry only `source: CurveId` + `orient` per edge; the transverse occupancy lives
+  transiently in `boolean.rs` (`sector_mask`/`edge_flips` are private). **Resolution for ARRANGEMENT-BITS
+  (adopted):** recompute the four bits in the `sew` searcher from the **public** surface — `label_cells`
+  → `CellLabeling { labels, adj, seed }` (`boolean.rs:242`) + `separating_ids` (`:997`) — the spec's
+  "projection of the §6 cell labels, four lookups". No `arrange2d` visibility change is needed for the
+  cylinder slice; a minimal public `CapOut` accessor is added only if the recompute later proves to need
+  the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
+  origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
+
 ## Deferred (by milestone)
 
 - **The planar-span representation (`n′ ≡ 0`) — a `PlanarChart` / relaxed `Chart` with its own

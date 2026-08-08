@@ -635,10 +635,99 @@ cone-flank** second pass (the fold/stall/directrix adversary — also blocked on
 geometry); **SEW** (SEW-EDGES ∧ SEW-LINK — M5; M4 emits its EDGE-OCCUPANCY input); the **thin M6**
 gate / STEP export; non-straight (curved) crease scope for COLLAR.
 
-**Status: in progress.** C0 (recon + scoping report `docs/closure-scoping.md` + these criteria +
-`closure` crate skeleton + generality fixtures: promoted `cylinder()` + a second-angle cone) is the
-current phase on `milestone-c`; explicit **GO**, with one plan-assumption change (cylinder-first, not
-plane-first — `docs/closure-scoping.md §8`) surfaced for confirmation. C1–C6 pending.
+**Status: M4 met.** C0–C6 landed on `milestone-c` and merged to `main` (merge `efb174c`): the C0
+scoping report (`docs/closure-scoping.md`; cylinder-first, not plane-first — §8) + these criteria +
+generality fixtures (promoted `cylinder()` + a second-angle cone); CAP-IN-D24 license census
+(C1); the REG-V/WEDGE/EXT-WEDGE regularity bundle (C2); the trim/clip searcher driving the reused
+`certify1d` CLIP-DOM/TRIM-LOCAL ladder (C3); the LEDGE branch via `ledge_dom_certified` + CAP-OUT
+(C4); the degree-1 MITER branch with `ε_φ` by one exact endpoint compare (C5); the `CLOSURE-CAP =
+MITER ∨ LEDGE` disjunction and `CLOSURE_VALID(j)` **minus SEW** capstone (C6). The ★ Kani harnesses
+`eps_phi_is_endpoint_order`, `cap_in_cycle_census_sound`, `wedge_clearing_sound` run in `ci.yml`.
+SEW (the remaining conjunct on both branches) is Milestone C part 2 — the M5 criteria below.
+
+---
+
+### Milestone C (part 2) acceptance criteria (the SEW obligation — M5 `sew`)
+
+*Authored before implementation, per the rule above.* SEW is the shared final conjunct of **both**
+CLOSURE-CAP branches — `MITER-BRANCH := … ∧ SEW`, `LEDGE-BRANCH := … ∧ SEW` (spec §8.5 lines 421–422) —
+so closing it turns M4's `CLOSURE_VALID(j)` **minus SEW** into the **full** obligation: a *watertight
+sewn shell*. `SEW := SEW-EDGES ∧ SEW-LINK` is **defined once, in §8.5 line 385**, and is cited here,
+never redefined (a same-commit twin definition fails the `:=` census). Scope is the same
+straight-crease cylinder-flank slice M4 established (`docs/closure-scoping.md`): line cut-edges, both
+branches, no `apex` FACE-GERM species (fold-vertices are VERTEX's / banded), no curved-crease jet ties.
+
+**Searcher/checker split, pinned here** (same doctrine as `arrange2d` vs `certify_core::arrange`): the
+untrusted **searcher/constructor** lives in the `sew` crate — it *produces* the EDGE-OCCUPANCY packets
+and the link records from the M4 branch outputs; the pure-tier `certify_core::sew` **checkers** own
+every certified predicate (the extraction/TCB surface), consuming packets and records agnostic to
+origin. **M4 mints SEW's inputs, M5 only reads them**: `ε_φ` (`miter::OrderSign`, minted by
+`eps_from_cmp`) and the four-bit `Occupancy` + frame bit (`miter::Occupancy`) — no re-mint. The one ★
+soundness-critical decision is the **occupancy→row quadrant classifier**, discharged by Kani.
+
+**SEW-EDGES — the edge layer — met when:**
+- The **input signature is EDGE-OCCUPANCY = (A_L, A_R, B_L, B_R) + frame bit** per edge — the four
+  adjacent-cell occupancies verbatim (two interior-side signs cannot encode one-vs-three quadrants);
+  left = the cross-product side of `(t_e, n_Π × t_e)`, the packet **frame-covariant**. Two
+  **constructors**: **ARRANGEMENT-BITS** (a projection of the §6 cell labels — four lookups, recomputed
+  in `sew` from the public `arrange2d::boolean::CellLabeling`/`separating_ids` on the LEDGE branch) and
+  **MITER-REGION-IDENTITY** (scoped to the boundary-boundary stratum `A_L ≠ A_R ∧ B_L ≠ B_R`; sides
+  from the stored boundary orientations, same-side agreement derived ∘ `ε_φ` and **checked**; reads
+  `miter::LedgerEdge.occupancy` on the MITER branch).
+- **Identity obligations dispatched by occupancy** (`Occupancy::is_boundary_boundary` is the key): two
+  boundaries ⇒ **PAIR-IDENTICAL** (point-set identity + `ε_φ`); one boundary ⇒ **OUTPUT-SOURCE-IDENTICAL**
+  (same carrier ∧ interval **containment** — the arrangement legitimately splits sources — ∧ `ε` vs the
+  source half-edge sense, a re-verification of the stored back-reference); zero boundaries ⇒ provenance
+  + the zero-output assertions, **no edge-pair identity**.
+- **The quadrant test on the packet** — one cyclic interval / all four / none; **opposite quadrants ⇒
+  pinch, reject** — plus **typed exact counts both directions** and the reverse equality `{records} =
+  {cap-to-flank} ⊔ {flank-to-flank}`; empty and internal ⇒ zero incidence ∧ zero records, asserted.
+- Verified: a boundary-boundary miter edge dispatches to PAIR-IDENTICAL and passes; an
+  arrangement-split source dispatches to OUTPUT-SOURCE-IDENTICAL with interval containment; an
+  **opposite-quadrant** occupancy is refused as a pinch; the reverse-equality count mismatch refutes.
+
+**SEW-LINK — the vertex layer, over V_∂ only — met when:**
+- `V_∂` (not `V_cand`) is the domain — asking a suppressed-interior candidate's nonexistent faces for a
+  cycle is what the edge layer forbade; on the miter branch `V_cand = V_∂`. For each `v ∈ V_∂` the
+  **embedded spherical link** is built: rays licensed by **EDGE-REG**, **sectors by FACE-GERM(species)**
+  — **cap** ⇒ Π + the CAP-OUT-LINK sector (cited via `classify_link`); **flank** ⇒ SLAB ∧ CLIP-DOM
+  corner ∧ `N_i^cut` (the chart immersion *is* the germ certificate); **fan** ⇒ WEDGE ∧ REG-V; **no
+  branch ⇒ reject**.
+- **Conclusion: `Link_emitted(v) ≅ Link_geometric(v)`** — the stored half-edge walk equals the
+  geometric azimuth sort as an **identity-fixing, oriented cyclic isomorphism**, checked by **reuse** of
+  `certify_core::arrange::link_iso_ok` (oracle ∧ audit, never oracle-instead-of-audit — computing the
+  reference and never comparing the records lets `a→c→b→d` pass every per-edge count while crossing).
+- Verified: a cylinder-flank cap vertex's emitted link matches its geometric sort; an `a→c→b→d`
+  crossing link — count-passing — is **refused** by the record comparison.
+
+**★ soundness discharge — met when:** a bounded **Kani** harness `occupancy_row_sound` proves the
+SEW-EDGES quadrant→row classifier correct — exhaustive over the four (+frame) occupancy bits,
+cross-checked against `classify_link` on the four-quadrant cyclic mask (the independent, already-proven
+reference; pattern of `link_ok_iff_no_pinch`) — registered by name in `ci.yml`. It fills the
+`occupancy→row ★ [M4]` row of `vv-matrix.md`. Lean lift optional per the checker doctrine.
+
+**CLOSURE_VALID(j) closure + generality — met when:** `SEW := SEW-EDGES ∧ SEW-LINK` is composed into
+**both** CLOSURE-CAP branches in `closure::valid`, so `closure_valid` returns the **full**
+`CLOSURE_VALID(j)` (the "minus SEW" wording is dropped from code and docs; `ClosureFault` gains the SEW
+arm; SEW stays *cited* per §8.5, the `:=` census green). **No device-specific constant** appears in
+`sew` or `certify_core::sew` (the flank *type* is data, never a branch). The exit corpus in `fixtures`:
+the cylinder-flank joint's clean-miter **and** forced-ledge variants each produce a **SEW-passing sewn
+shell**; a pinch (opposite-quadrant) and an `a→c→b→d` crossing are each refuted by name.
+
+**Documentation (a merge gate, not a retrofit) — met when:** every new public item across `sew` and
+`certify_core::sew` is documented usage-first and history-free (no slice/phase tags), with worked
+runnable doctests on the entry points; `-W missing_docs` = 0 on the new surface; `cargo doc` clean.
+
+**Deferred to later milestones** (documented, not silently dropped): the SEW-LINK **`apex`
+tangent-cone species** (no fold-vertex on a straight crease) and the **coincident-ray tie-break
+machinery** (invariant jet / normal-jet ladder / osculation-reject / 3D II ties) — the transverse
+straight-crease slice has no tangent incident rays; both are the curved/petal second pass, banded here
+(mirroring M3e's 2-manifold deferral). Also carried forward from M4: the **planar-span representation**
+and the genuine §13 planar-hub / petal cone-flank pass; the **thin M6** gate / STEP export.
+
+**Status: in progress.** M5.0 (this criteria block + the M4 status flip + the `sew` /
+`certify_core::sew` skeletons + the ARRANGEMENT-BITS occupancy-source decision) is the current phase on
+`milestone-c`; explicit **GO**. M5.1–M5.4 pending.
 
 ---
 
