@@ -7,3 +7,8 @@
 //! `{semantics, status}`. Floats live only in this crate behind the
 //! `diagnostics` feature (plots and viewers) — never in a value that carries a
 //! certificate.
+
+/// Exact→`f64` approximation for diagnostics rendering — the single, quarantined
+/// bridge from the certified-exact number types to display floats.
+#[cfg(feature = "diagnostics")]
+pub mod approx;

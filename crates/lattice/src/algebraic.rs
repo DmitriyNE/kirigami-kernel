@@ -72,6 +72,14 @@ impl<B: Backend> Surd<B> {
     pub fn sign(&self) -> i8 {
         sign_ab(&self.a, &self.b, &self.d)
     }
+    /// The defining triple `(a, b, d)` of `a + b√d` — the surd's mathematical
+    /// identity. Exposed for **diagnostics rendering** (the `export` crate
+    /// approximates `a + b·√d` as a display float); each component is an
+    /// opaque-tier [`Rat`], so this leaks no representation, only the algebraic
+    /// form.
+    pub fn parts(&self) -> (&Rat<B>, &Rat<B>, &Rat<B>) {
+        (&self.a, &self.b, &self.d)
+    }
     /// The squared value `(a+b√d)² = (a²+b²d) + (2ab)√d`, for `MarginSq<Rat>` use.
     pub fn square(&self) -> Surd<B> {
         let ab = self.a.mul(&self.b);

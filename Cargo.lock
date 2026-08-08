@@ -298,6 +298,7 @@ dependencies = [
  "develop",
  "gate",
  "geom",
+ "lattice",
  "sew",
 ]
 

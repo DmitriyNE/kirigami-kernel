@@ -13,6 +13,7 @@ publish.workspace = true
 diagnostics = []
 
 [dependencies]
+lattice.workspace = true
 certify-core.workspace = true
 geom.workspace = true
 arrange2d.workspace = true
