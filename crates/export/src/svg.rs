@@ -1,6 +1,6 @@
 //! 2D SVG rendering of certified boolean regions — diagnostics only.
 //!
-//! A [`Region`] carries no floats; a browser needs pixels. This module flattens a
+//! A [`Region`](arrange2d::boolean::Region) carries no floats; a browser needs pixels. This module flattens a
 //! region's exact boundary loops to `f64` polylines through the quarantined
 //! [`approx`](crate::approx) bridge, then serialises each face as one `<svg>` `<path>`
 //! (all of its rings, `fill-rule="evenodd"`). Nothing here ever feeds a predicate:
@@ -10,12 +10,12 @@
 //! The one non-float decision is *edge orientation and grouping*: a boundary loop's edges
 //! arrive as an unordered bag whose stored `start`/`end` may run either way, and a loop that
 //! **pinches** (a tangency, a figure-eight) is emitted as several cycles sharing a vertex.
-//! So each loop is decomposed into closed cycles by chaining on **exact** [`Point2`]
+//! So each loop is decomposed into closed cycles by chaining on **exact** [`Point2`](geom::content::Point2)
 //! equality — never joining two edges that do not share a vertex — and every cycle is drawn
 //! as an `evenodd` subpath, letting nesting and pinches resolve themselves. See
-//! [`region_to_polys`].
+//! [`region_to_polys`](crate::svg::region_to_polys).
 //!
-//! [`gallery_html`] assembles a page of these SVGs; the `gallery` example drives it.
+//! [`gallery_html`](crate::svg::gallery_html) assembles a page of these SVGs; the `gallery` example drives it.
 
 use crate::approx::{rat_to_f64, surd_to_f64};
 use arrange2d::boolean::Region;

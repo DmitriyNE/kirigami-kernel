@@ -247,6 +247,18 @@ fine — this is a log, not a schema.
   "cone ⇒ symmetric ⇒ constant radius" assumption.
   *2026-08-04 · watching · `fixtures::devices::cone_principal_radius_shrinks_along_sigma`*
 
+- **An exact cone development is transcendental — so the flat↔rolled morph is diagnostics-only.**
+  The device cone's azimuth is `φ(σ) = 2·arctan σ − 90°` and its half-angle β is constant with
+  `sin β` irrational (`n·ẑ ≡ 65/97`), so the isometric unrolling (flat angle `θ = sin β · Δφ`,
+  flat radius = apex distance) lands outside ℚ. A *certified* development therefore cannot live
+  in the rational kernel; it is future `develop`-layer work (M7). The viewer's morph is an honest
+  `f64` unrolling in `export::mesh3d::develop_cone` (apex at the origin since `c ≡ 0`; the flat
+  angle accumulates the true 3D angle between successive rulings = the directrix arc length on the
+  unit sphere, which reduces to `sin β · Δφ` here). Empirically the certified strip develops to a
+  **60.3° annular sector** (`= sin β · 90°`), and radius is preserved to machine epsilon. The
+  development is float — it never touches a predicate, so it stays inside spec invariant 1.
+  *2026-08-08 · watching · `export::mesh3d::flat_development_is_isometric_along_rulings`*
+
 ## Deferred (by milestone)
 
 - **Petal conical-flank fixture + the `cx-cone-flank-trim-mu` corpus entry.** Spec §13

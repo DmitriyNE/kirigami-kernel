@@ -1,8 +1,9 @@
 //! Emit `cone.html` — the certified device cone strip, rendered in 3D with Three.js.
 //!
 //! Samples [`fixtures::devices::certified_cone`]'s mid-surface (`w = 0`) through the quarantined
-//! exact→`f64` bridge into a triangle mesh + ruling generators, then writes a self-contained
-//! viewer page (lit surface, orbit controls, a `(μ,w)` panel with the certified sub-box marked).
+//! exact→`f64` bridge into a triangle mesh + ruling generators + its flat isometric development,
+//! then writes a self-contained viewer page (lit surface, orbit controls, a flat↔rolled morph
+//! slider, a `(μ,w)` panel with the certified sub-box marked).
 //!
 //! Run it with the `diagnostics` feature (the only place floats are allowed):
 //!
@@ -88,7 +89,7 @@ fn main() {
         "wrote {out} — {} verts, {} tris, {} rulings, {} bytes ({})",
         mesh.positions.len(),
         mesh.tris.len(),
-        mesh.rulings.len(),
+        mesh.ruling_rows.len(),
         html.len(),
         if vendor.is_some() {
             "Three.js inlined"

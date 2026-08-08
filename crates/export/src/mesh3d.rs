@@ -1,26 +1,39 @@
 //! 3D rendering of the certified cone strip — diagnostics only.
 //!
-//! A [`CertifiedChart`] carries no floats; a browser needs vertices. This module samples the
+//! A [`CertifiedChart`](geom::record::CertifiedChart) carries no floats; a browser needs vertices. This module samples the
 //! chart's exact thickened surface `C(σ,μ,w)` over a `(σ,μ)` grid at the mid-surface `w = 0`,
 //! flattens each point to `f64` through the quarantined [`approx`](crate::approx) bridge, and
-//! packs the result into a [`StripMesh`] — grid vertices, two triangles per cell, the straight
-//! ruling generators, and the certified `(σ,μ,w)` sub-box. [`cone_html`] wraps that mesh in a
-//! self-contained Three.js viewer page (lit surface, orbit controls, ruling lines, a `(μ,w)`
-//! parameter panel with the certified box highlighted). Nothing here ever feeds a predicate:
+//! packs the result into a [`StripMesh`](crate::mesh3d::StripMesh) — grid vertices (rolled and
+//! flat-developed), two triangles per cell, the ruling generators, and the certified `(σ,μ,w)`
+//! sub-box. [`cone_html`](crate::mesh3d::cone_html) wraps that mesh in a self-contained Three.js
+//! viewer page (lit surface, orbit controls, ruling
+//! lines, a flat↔rolled morph slider, a `(μ,w)` parameter panel with the certified box
+//! highlighted). Nothing here ever feeds a predicate:
 //! floats appear at the last moment, for display, exactly as [`approx`](crate::approx)
 //! prescribes.
 //!
-//! # What is *not* here
+//! # The flat↔rolled morph
 //!
-//! The rolled 3D strip is the **mid-surface** (`w = 0`) in its embedded pose. There is no
-//! flat↔rolled morph: an exact isometric development is not yet implemented (`develop` is a
-//! stub), so inventing a flat map for a slider would be a fiction, not a diagnostic. The true
-//! wrap-onto-cone correspondence lands with the development layer.
+//! The mesh also carries an **isometric development** of the strip — its flat unrolling — so the
+//! viewer can morph between the flat sheet and the rolled cone. Because every ruling passes
+//! through the apex (`c ≡ 0`), the strip is a cone and its development is exact: the flat radius
+//! is the 3D distance from the apex (preserved along each ruling), and the flat angle accumulates
+//! the true angle between successive rulings — the arc their unit directions trace on the sphere,
+//! which for this circular cone is `sin β · Δφ`. The result is an annular sector, not the `(μ,w)`
+//! parameter rectangle. See [`develop_cone`](crate::mesh3d::develop_cone).
+//!
+//! This flat map is **diagnostics only** — it is computed in `f64` and carries no certificate.
+//! An exact cone development is transcendental (`arctan σ` and `sin β` are not algebraic), so a
+//! *certified* development cannot live in the rational kernel; that is future work for the
+//! `develop` layer (M7). What the viewer shows is the numerically-correct unrolling, for
+//! intuition, not a proof.
 //!
 //! # Three.js delivery
 //!
-//! [`cone_html`] takes a [`ThreeSrc`]: [`ThreeSrc::Cdn`] emits a pinned `unpkg` import map (needs
-//! the network), while [`ThreeSrc::Inline`] base64-encodes a vendored `three.module.js` +
+//! [`cone_html`](crate::mesh3d::cone_html) takes a [`ThreeSrc`](crate::mesh3d::ThreeSrc):
+//! [`ThreeSrc::Cdn`](crate::mesh3d::ThreeSrc::Cdn) emits a pinned `unpkg` import map (needs
+//! the network), while [`ThreeSrc::Inline`](crate::mesh3d::ThreeSrc::Inline) base64-encodes a
+//! vendored `three.module.js` +
 //! `OrbitControls.js` into a `data:`-URL import map, so the page renders fully offline. The
 //! `cone` example drives both (`--vendor <dir>` selects inline).
 
@@ -54,12 +67,16 @@ pub struct CertBox {
 /// certified region shows as a proper sub-band; σ is sampled over exactly the certified span.
 #[derive(Clone, Debug)]
 pub struct StripMesh {
-    /// Grid vertices `[x, y, z]`, row-major (`i*ncols + j`).
+    /// Grid vertices `[x, y, z]` in the rolled 3D pose, row-major (`i*ncols + j`).
     pub positions: Vec<[f64; 3]>,
+    /// The isometric flat development of every vertex (`z = 0` plane), same indexing as
+    /// [`positions`](Self::positions). The viewer morphs between the two. See [`develop_cone`].
+    pub flat: Vec<[f64; 3]>,
     /// Two triangles per grid cell, as vertex-index triples.
     pub tris: Vec<[u32; 3]>,
-    /// A decimated set of straight ruling generators (each a σ = const line), as endpoint pairs.
-    pub rulings: Vec<[[f64; 3]; 2]>,
+    /// A decimated set of σ rows to draw as ruling generators (each row is one straight
+    /// generator); rendered from whichever pose is current, so rulings morph with the strip.
+    pub ruling_rows: Vec<usize>,
     /// The σ sample values (length `nrows`).
     pub sigmas: Vec<f64>,
     /// The μ sample values (length `ncols`).
@@ -138,14 +155,14 @@ pub fn sample_cone_strip<B: Backend>(
         }
     }
 
-    // Rulings are the σ = const generators (straight, since the surface is affine in μ). Decimate
-    // to a readable count; each is the full μ-span segment of its row.
+    // Rulings are the σ = const generators (straight, since the surface is affine in μ). Record a
+    // decimated set of row indices; the viewer draws each as the full μ-span segment of its row,
+    // from whichever pose (flat or rolled) is current.
     let nrul = nrows.min(13);
-    let mut rulings = Vec::with_capacity(nrul);
-    for k in 0..nrul {
-        let i = k * (nrows - 1) / (nrul - 1);
-        rulings.push([positions[i * ncols], positions[i * ncols + (ncols - 1)]]);
-    }
+    let ruling_rows: Vec<usize> = (0..nrul).map(|k| k * (nrows - 1) / (nrul - 1)).collect();
+
+    // The flat isometric development of the rolled strip, for the viewer's morph.
+    let flat = develop_cone(&positions, nrows, ncols);
 
     // The certified sub-box, and the wider display ranges the panel/band sit inside.
     let certified = CertBox {
@@ -161,8 +178,9 @@ pub fn sample_cone_strip<B: Backend>(
 
     StripMesh {
         positions,
+        flat,
         tris,
-        rulings,
+        ruling_rows,
         sigmas: sigmas_q.iter().map(rat_to_f64).collect(),
         mus: mus_q.iter().map(rat_to_f64).collect(),
         nrows,
@@ -184,6 +202,77 @@ fn linspace<B: Backend>(lo: &Rat<B>, hi: &Rat<B>, n: usize) -> Vec<Rat<B>> {
             lo.add(&span.mul(&frac))
         })
         .collect()
+}
+
+/// The isometric flat development (unrolling) of a cone strip, apex at the origin.
+///
+/// The strip's rulings all pass through the apex, so it is a cone and unrolls to the plane
+/// without distortion: each vertex keeps its distance from the apex (its 3D norm), and successive
+/// σ rows fan out by the true angle between their ruling directions — the arc their unit
+/// directions trace on the sphere. The result is an annular sector in the `z = 0` plane, sharing
+/// the apex with the rolled pose so the two can be linearly morphed vertex-by-vertex.
+///
+/// `positions` is the rolled grid, row-major (`i*ncols + j`), with `nrows` σ rows and `ncols` μ
+/// columns; the flat vertices come back in the same layout. This is diagnostics-only float math —
+/// an exact cone development is transcendental (see the module docs).
+///
+/// ```
+/// use export::mesh3d::develop_cone;
+/// // Two generators from the apex (90° apart), two samples along each ruling.
+/// let positions = vec![
+///     [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], // row 0: along +x
+///     [0.0, 1.0, 0.0], [0.0, 2.0, 0.0], // row 1: along +y
+/// ];
+/// let flat = develop_cone(&positions, 2, 2);
+/// assert!(flat.iter().all(|f| f[2].abs() < 1e-12)); // planar (z = 0)
+/// let r = (flat[3][0] * flat[3][0] + flat[3][1] * flat[3][1]).sqrt();
+/// assert!((r - 2.0).abs() < 1e-12); // apex distance preserved
+/// ```
+pub fn develop_cone(positions: &[[f64; 3]], nrows: usize, ncols: usize) -> Vec<[f64; 3]> {
+    if nrows == 0 || ncols == 0 {
+        return Vec::new();
+    }
+    let norm = |p: &[f64; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+    // Unit ruling direction for a row: its longest sample, normalized. Every sample in a row is
+    // colinear through the apex, so the longest one is simply the most numerically stable.
+    let unit_row = |i: usize| -> [f64; 3] {
+        let mut best = [0.0_f64; 3];
+        let mut best_n = 0.0_f64;
+        for j in 0..ncols {
+            let p = &positions[i * ncols + j];
+            let n = norm(p);
+            if n > best_n {
+                best_n = n;
+                best = *p;
+            }
+        }
+        if best_n > 0.0 {
+            [best[0] / best_n, best[1] / best_n, best[2] / best_n]
+        } else {
+            [1.0, 0.0, 0.0]
+        }
+    };
+
+    // Flat angle per row: accumulate the angle between successive unit rulings, from θ₀ = 0.
+    let mut theta = vec![0.0_f64; nrows];
+    let mut prev = unit_row(0);
+    for i in 1..nrows {
+        let u = unit_row(i);
+        let dot = (prev[0] * u[0] + prev[1] * u[1] + prev[2] * u[2]).clamp(-1.0, 1.0);
+        theta[i] = theta[i - 1] + dot.acos();
+        prev = u;
+    }
+
+    // Lay each vertex at (radius = its apex distance, angle = its row's flat angle).
+    let mut flat = Vec::with_capacity(nrows * ncols);
+    for (i, &th) in theta.iter().enumerate() {
+        let (c, s) = (th.cos(), th.sin());
+        for j in 0..ncols {
+            let rho = norm(&positions[i * ncols + j]);
+            flat.push([rho * c, rho * s, 0.0]);
+        }
+    }
+    flat
 }
 
 // --- JSON payload ------------------------------------------------------------------------
@@ -208,15 +297,15 @@ fn join<T>(xs: &[T], f: impl Fn(&T) -> String) -> String {
 /// Serialize a [`StripMesh`] to the compact JSON the viewer reads (all display floats).
 pub fn strip_json(m: &StripMesh) -> String {
     let positions = join(&m.positions, vec3);
+    let flat = join(&m.flat, vec3);
     let tris = join(&m.tris, |t| format!("[{},{},{}]", t[0], t[1], t[2]));
-    let rulings = join(&m.rulings, |seg| {
-        format!("[{},{}]", vec3(&seg[0]), vec3(&seg[1]))
-    });
+    let ruling_rows = join(&m.ruling_rows, |r| format!("{r}"));
     let sigmas = join(&m.sigmas, |s| num(*s));
     let mus = join(&m.mus, |s| num(*s));
     let cb = &m.certified;
     format!(
-        "{{\"positions\":[{positions}],\"tris\":[{tris}],\"rulings\":[{rulings}],\
+        "{{\"positions\":[{positions}],\"flat\":[{flat}],\"tris\":[{tris}],\
+         \"rulingRows\":[{ruling_rows}],\
          \"sigmas\":[{sigmas}],\"mus\":[{mus}],\"nrows\":{nrows},\"ncols\":{ncols},\
          \"certified\":{{\"sigma\":[{cs0},{cs1}],\"mu\":[{cm0},{cm1}],\"w\":[{cw0},{cw1}]}},\
          \"muRange\":[{mr0},{mr1}],\"wRange\":[{wr0},{wr1}],\"kappaCap\":{kappa}}}",
@@ -349,7 +438,8 @@ fn mu_w_svg(m: &StripMesh) -> String {
 }
 
 /// The viewer module: builds the scene from the embedded JSON, lights the strip, draws rulings,
-/// fits the camera, and wires the display toggles. Reads `#strip-data`; no server needed.
+/// fits the camera, and wires the display toggles + the flat↔rolled morph slider. Reads
+/// `#strip-data`; no server needed.
 const VIEWER_JS: &str = r#"
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -363,9 +453,17 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0f1117);
 
-// --- surface geometry ---
-const pos = new Float32Array(D.positions.length * 3);
-D.positions.forEach((p, i) => { pos[3*i] = p[0]; pos[3*i+1] = p[1]; pos[3*i+2] = p[2]; });
+// --- two poses (flat + rolled); the morph slider lerps between them per vertex ---
+const N = D.positions.length;
+const rolled = D.positions, flat = D.flat;
+const pos = new Float32Array(N * 3); // current (morphed) positions
+function applyMorph(t) {              // t: 0 = flat, 1 = rolled
+  for (let v = 0; v < N; v++)
+    for (let k = 0; k < 3; k++)
+      pos[3*v+k] = flat[v][k] * (1 - t) + rolled[v][k] * t;
+}
+applyMorph(1);
+
 const idx = new Uint32Array(D.tris.length * 3);
 D.tris.forEach((t, i) => { idx[3*i] = t[0]; idx[3*i+1] = t[1]; idx[3*i+2] = t[2]; });
 
@@ -373,15 +471,14 @@ const geo = new THREE.BufferGeometry();
 geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
 geo.setIndex(new THREE.BufferAttribute(idx, 1));
 geo.computeVertexNormals();
-geo.computeBoundingSphere();
 
 // Per-vertex color: gold inside the certified (σ,μ) band, blue elsewhere.
 const base = new THREE.Color(0x5b8def), hot = new THREE.Color(0xffd166);
 const [cs0, cs1] = D.certified.sigma, [cm0, cm1] = D.certified.mu;
 const eps = 1e-9;
-const banded = new Float32Array(D.positions.length * 3);
-const plain = new Float32Array(D.positions.length * 3);
-for (let v = 0; v < D.positions.length; v++) {
+const banded = new Float32Array(N * 3);
+const plain = new Float32Array(N * 3);
+for (let v = 0; v < N; v++) {
   const i = Math.floor(v / D.ncols), j = v % D.ncols;
   const inBand = D.sigmas[i] >= cs0 - eps && D.sigmas[i] <= cs1 + eps
               && D.mus[j]   >= cm0 - eps && D.mus[j]   <= cm1 + eps;
@@ -397,27 +494,49 @@ const mat = new THREE.MeshStandardMaterial({
 const mesh = new THREE.Mesh(geo, mat);
 scene.add(mesh);
 
-// --- ruling generators ---
-const rpos = new Float32Array(D.rulings.length * 6);
-D.rulings.forEach((s, i) => {
-  rpos[6*i] = s[0][0]; rpos[6*i+1] = s[0][1]; rpos[6*i+2] = s[0][2];
-  rpos[6*i+3] = s[1][0]; rpos[6*i+4] = s[1][1]; rpos[6*i+5] = s[1][2];
-});
+// --- ruling generators: one segment per decimated σ row, rebuilt from the current pose ---
+const rpos = new Float32Array(D.rulingRows.length * 6);
+function rebuildRulings() {
+  D.rulingRows.forEach((ri, i) => {
+    const a = ri * D.ncols, b = ri * D.ncols + (D.ncols - 1);
+    rpos[6*i]   = pos[3*a];   rpos[6*i+1] = pos[3*a+1]; rpos[6*i+2] = pos[3*a+2];
+    rpos[6*i+3] = pos[3*b];   rpos[6*i+4] = pos[3*b+1]; rpos[6*i+5] = pos[3*b+2];
+  });
+}
+rebuildRulings();
 const rgeo = new THREE.BufferGeometry();
 rgeo.setAttribute('position', new THREE.BufferAttribute(rpos, 3));
 const rulings = new THREE.LineSegments(
   rgeo, new THREE.LineBasicMaterial({ color: 0xe8ecf4, transparent: true, opacity: 0.55 }));
 scene.add(rulings);
 
+// Re-lerp the mesh + rulings and refresh normals for a given morph amount.
+function setMorph(t) {
+  applyMorph(t);
+  geo.attributes.position.needsUpdate = true;
+  geo.computeVertexNormals();
+  rebuildRulings();
+  rgeo.attributes.position.needsUpdate = true;
+}
+
 // --- lights ---
 scene.add(new THREE.HemisphereLight(0xffffff, 0x2a3444, 0.7));
 const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(4, 5, 6); scene.add(key);
 const fill = new THREE.DirectionalLight(0xbcd0ff, 0.4); fill.position.set(-5, -3, -4); scene.add(fill);
 
-// --- camera + controls, fit to the strip ---
-const bs = geo.boundingSphere;
+// --- camera + controls, fit to enclose BOTH poses so the morph never clips ---
+function bounds(sets) {
+  const c = new THREE.Vector3(); let n = 0;
+  for (const s of sets) for (const p of s) { c.x += p[0]; c.y += p[1]; c.z += p[2]; n++; }
+  c.multiplyScalar(1 / Math.max(n, 1));
+  let r = 1e-3;
+  for (const s of sets) for (const p of s)
+    r = Math.max(r, Math.hypot(p[0] - c.x, p[1] - c.y, p[2] - c.z));
+  return { center: c, radius: r };
+}
+const bs = bounds([rolled, flat]);
 const cam = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
-const r = Math.max(bs.radius, 1e-3);
+const r = bs.radius;
 cam.position.set(bs.center.x + r * 1.8, bs.center.y + r * 1.3, bs.center.z + r * 2.2);
 const controls = new OrbitControls(cam, canvas);
 controls.target.copy(bs.center);
@@ -440,13 +559,20 @@ function tick() {
 }
 tick();
 
-// --- toggles ---
+// --- toggles + morph ---
 const bind = (id, fn) => document.getElementById(id).addEventListener('change', e => fn(e.target.checked));
 bind('rulings', on => { rulings.visible = on; });
 bind('wire', on => { mat.wireframe = on; });
 bind('highlight', on => {
   geo.setAttribute('color', new THREE.BufferAttribute(on ? banded : plain, 3));
   geo.attributes.color.needsUpdate = true;
+});
+const morph = document.getElementById('morph');
+const morphVal = document.getElementById('morph-val');
+morph.addEventListener('input', e => {
+  const t = parseFloat(e.target.value);
+  setMorph(t);
+  morphVal.textContent = t.toFixed(2);
 });
 "#;
 
@@ -468,6 +594,8 @@ aside{flex:0 0 17rem;display:flex;flex-direction:column;gap:1rem}\
 dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:.15rem .5rem;font-size:.85rem}\
 dt{color:#667}dd{margin:0;font-variant-numeric:tabular-nums}\
 label{display:block;font-size:.9rem;margin:.15rem 0}\
+input[type=range]{width:100%;vertical-align:middle}\
+.hint{font-size:.78rem;color:#778;margin:.4rem 0 0}\
 code{background:#eef;padding:0 .2em;border-radius:3px}\
 .swatch{display:inline-block;width:.8em;height:.8em;border-radius:2px;vertical-align:baseline}";
 
@@ -486,10 +614,17 @@ pub fn cone_html(title: &str, mesh: &StripMesh, three: &ThreeSrc) -> String {
          (<code>w = 0</code>), sampled exactly through the quarantined exact→<code>f64</code> \
          bridge and rolled into its embedded 3D pose. The \
          <span class=\"swatch\" style=\"background:#ffd166\"></span> gold band and box mark the \
-         <strong>certified</strong> sub-domain. The flat↔rolled morph lands in a later phase.</p>\
+         <strong>certified</strong> sub-domain. Drag <strong>morph</strong> to unroll it into the \
+         flat isometric development — a diagnostics-only <code>f64</code> unrolling, not a \
+         certificate.</p>\
          </header><main>\
          <div class=\"stage\"><canvas id=\"view\"></canvas></div>\
          <aside>\
+         <section class=\"card\"><h2>Flat ↔ rolled</h2>\
+         <label>morph <input type=\"range\" id=\"morph\" min=\"0\" max=\"1\" step=\"0.01\" \
+         value=\"1\"> <span id=\"morph-val\">1.00</span></label>\
+         <p class=\"hint\">0 = flat development, 1 = rolled cone. Isometric unrolling in \
+         <code>f64</code> — an exact cone development is transcendental (future work).</p></section>\
          <section class=\"card\"><h2>(μ, w) domain</h2>{panel}</section>\
          <section class=\"card\"><h2>Certified sub-box</h2><dl>\
          <dt>σ</dt><dd>[{cs0}, {cs1}]</dd>\
@@ -533,7 +668,8 @@ mod tests {
         assert_eq!(m.sigmas.len(), 5);
         assert_eq!(m.mus.len(), 4);
         assert_eq!(m.tris.len(), 2 * 4 * 3); // two per (4×3) cell
-        assert!(!m.rulings.is_empty());
+        assert_eq!(m.flat.len(), m.positions.len());
+        assert!(!m.ruling_rows.is_empty());
         // Every triangle index is in range.
         for t in &m.tris {
             for &v in t {
@@ -577,11 +713,48 @@ mod tests {
     #[test]
     fn rulings_are_straight_row_segments() {
         let m = mesh(8, 6);
-        // Each ruling endpoint pair spans the μ extent of a row: distinct, nonzero length.
-        for [a, b] in &m.rulings {
+        // Each ruling row spans the μ extent of its row: in range, distinct, nonzero length.
+        assert!(!m.ruling_rows.is_empty());
+        for &ri in &m.ruling_rows {
+            assert!(ri < m.nrows, "ruling row index in range");
+            let a = m.positions[ri * m.ncols];
+            let b = m.positions[ri * m.ncols + (m.ncols - 1)];
             let d2: f64 = (0..3).map(|k| (a[k] - b[k]).powi(2)).sum();
             assert!(d2 > 1e-9, "ruling must have nonzero length");
         }
+    }
+
+    #[test]
+    fn flat_development_is_isometric_along_rulings() {
+        let m = mesh(24, 8);
+        assert_eq!(m.flat.len(), m.positions.len());
+        // The development lies in the z = 0 plane.
+        for f in &m.flat {
+            assert!(f[2].abs() < 1e-9, "flat point must be planar");
+        }
+        // Distance from the apex (origin) is preserved vertex-by-vertex: |flat| == |rolled|.
+        for (f, p) in m.flat.iter().zip(&m.positions) {
+            let rf = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
+            let rp = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            assert!(
+                (rf - rp).abs() < 1e-9,
+                "development must preserve apex distance"
+            );
+        }
+        // The flat sector spans a positive but partial turn (the certified cone is ~60°).
+        let ang = |q: &[f64; 3]| q[1].atan2(q[0]);
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for f in &m.flat {
+            let a = ang(f);
+            lo = lo.min(a);
+            hi = hi.max(a);
+        }
+        let span = hi - lo;
+        assert!(
+            span > 1e-3 && span < 2.0 * std::f64::consts::PI,
+            "flat sector spans a partial turn, got {span}"
+        );
     }
 
     #[test]
@@ -591,8 +764,9 @@ mod tests {
         assert!(j.starts_with('{') && j.ends_with('}'));
         for key in [
             "\"positions\"",
+            "\"flat\"",
             "\"tris\"",
-            "\"rulings\"",
+            "\"rulingRows\"",
             "\"sigmas\"",
             "\"mus\"",
             "\"certified\"",
@@ -617,6 +791,7 @@ mod tests {
         assert!(html.contains("id=\"view\""));
         assert!(html.contains("id=\"strip-data\""));
         assert!(html.contains("Certified sub-box"));
+        assert!(html.contains("id=\"morph\"")); // the flat↔rolled morph slider
         assert!(html.contains("<svg")); // the (μ,w) panel
     }
 
