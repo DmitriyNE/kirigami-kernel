@@ -10,3 +10,4 @@ publish.workspace = true
 certify-core.workspace = true
 arrange2d.workspace = true
 closure.workspace = true
+lattice.workspace = true
