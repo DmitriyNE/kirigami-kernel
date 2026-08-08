@@ -812,11 +812,23 @@ material grade); the full cone + lap-seam + **petal atlas** and `VALID_material`
 **external-kernel audit** — `.step` → OCC/NX/Fusion, run *its* checker (→ M-D); the curved-crease
 COLLAR; a hand-rolled AP242 emitter (future work — OCCT is the writer for now).
 
-**Status: in progress.** Criteria authored (M6.0); the OCCT STEP shim is de-risked GO (the `export`
-`step` feature writes + reloads a box under `nix develop` — `docs/engineering-log.md`). M6.1 met (the pure
-`certify_core::gate` algebra + `gate_conj_sound` ★); M6.2 met (the `gate::store` append-only
-provenance-linked certificate store, chain rule enforced, `VALID_solid-closure` evaluated for one joint).
-M6.3 pending.
+**Status: thin M6 met — Milestone C complete.** M6.0: criteria authored + the OCCT STEP shim de-risked
+GO (the `export` `step` feature writes + reloads a box under `nix develop` — `docs/engineering-log.md`).
+M6.1 met (the pure `certify_core::gate` algebra + `gate_conj_sound` ★). M6.2 met (the `gate::store`
+append-only provenance-linked certificate store, chain rule enforced, `VALID_solid-closure` evaluated for
+one joint). M6.3 met: `export::shell::shell_from_closure` assembles the exact float-free `ShellRecord`
+(two flank strips at the certified offset `w = t.w.lo` + the Ledge cap fanned through the joint `PiFrame`);
+the `step`-feature shim writes it with `STEPControl_Writer` and re-reads it through `BRepCheck_Analyzer`;
+the one-joint end-to-end (`one_joint_closure_writes_a_reloadable_step_shell`) runs the cylinder fold →
+`closure_valid` `Verified` → gate `VALID_solid-closure` **pass** → a 34-triangle `.step` that reloads
+valid, on the public `fixtures::closure_joint` corpus.
+
+*Two honest scope notes.* (1) The faces are joined by OCCT's coincident-edge sewing
+(`BRepBuilderAPI_Sewing`), not the explicit `v_boundary()` (V_∂)-guided seam the criterion names — adequate
+for the write-then-reload check; the V_∂-guided sew (and thereby a claim of manifold watertightness rather
+than per-face `BRepCheck` validity) is a **M-D** follow-up. (2) The cap is exercised through the **Ledge**
+branch only; a Miter cap contributes no separate planar face, so the two-branch end-to-end reduces to the
+one branch whose geometry adds a face.
 
 ---
 

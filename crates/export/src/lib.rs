@@ -13,9 +13,13 @@
 //! `diagnostics` feature (plots and viewers) — never in a value that carries a
 //! certificate.
 
-/// Exact→`f64` approximation for diagnostics rendering — the single, quarantined
-/// bridge from the certified-exact number types to display floats.
-#[cfg(feature = "diagnostics")]
+/// The neutral exact shell record (triangulated boundary of a certified one-joint
+/// closure) — always compiled and float-free; the geometry the STEP writer consumes.
+pub mod shell;
+
+/// Exact→`f64` approximation for diagnostics rendering and the STEP writer — the
+/// single, quarantined bridge from the certified-exact number types to display floats.
+#[cfg(any(feature = "diagnostics", feature = "step"))]
 pub mod approx;
 
 /// 2D SVG rendering of certified boolean regions (extractor + `<svg>` + gallery page).

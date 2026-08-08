@@ -9,6 +9,7 @@
 //! - [`gallery`] — public demo shapes (boolean-input configurations lifted from the
 //!   `arrange2d` corpus) for the export/viewer gallery.
 
+pub mod closure_joint;
 pub mod corpus;
 pub mod devices;
 pub mod gallery;
