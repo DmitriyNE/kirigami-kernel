@@ -2,15 +2,18 @@
 //!
 //! A [`Region`] carries no floats; a browser needs pixels. This module flattens a
 //! region's exact boundary loops to `f64` polylines through the quarantined
-//! [`approx`](crate::approx) bridge, then serialises them as an `<svg>` `<path>`
-//! (outer loop + holes, `fill-rule="evenodd"`). Nothing here ever feeds a predicate:
+//! [`approx`](crate::approx) bridge, then serialises each face as one `<svg>` `<path>`
+//! (all of its rings, `fill-rule="evenodd"`). Nothing here ever feeds a predicate:
 //! floats appear at the last moment, for display, exactly as [`approx`](crate::approx)
 //! prescribes.
 //!
-//! The one non-float decision is *edge orientation*: a boundary loop's edges arrive in
-//! walk order but each [`Edge`]'s stored `start`/`end` may run against the walk, so the
-//! loop is chained head-to-tail by **exact** [`Point2`] equality — arcs are then sampled
-//! into the resulting float ring. See [`region_to_polys`].
+//! The one non-float decision is *edge orientation and grouping*: a boundary loop's edges
+//! arrive as an unordered bag whose stored `start`/`end` may run either way, and a loop that
+//! **pinches** (a tangency, a figure-eight) is emitted as several cycles sharing a vertex.
+//! So each loop is decomposed into closed cycles by chaining on **exact** [`Point2`]
+//! equality — never joining two edges that do not share a vertex — and every cycle is drawn
+//! as an `evenodd` subpath, letting nesting and pinches resolve themselves. See
+//! [`region_to_polys`].
 //!
 //! [`gallery_html`] assembles a page of these SVGs; the `gallery` example drives it.
 
@@ -22,16 +25,16 @@ use lattice::Backend;
 /// Interior samples per arc edge when flattening (endpoints are added exactly on top).
 const ARC_SAMPLES: usize = 24;
 
-/// One face flattened to float polylines: an `outer` ring and zero or more `holes`.
+/// One face flattened to float polylines: all of its boundary rings, outer and hole alike.
 ///
 /// Each ring is a closed polyline (the first vertex is not repeated at the end — closure
-/// is implied). Holes are counter-oriented interior rings, cut out under `evenodd`.
+/// is implied). The whole set is drawn as a single `evenodd` path, so an interior ring is
+/// cut out and a pinched loop's several cycles compose without a spurious joining chord —
+/// the outer/hole distinction is topological and irrelevant to the even-odd fill.
 #[derive(Clone, Debug)]
 pub struct FacePolys {
-    /// The outer boundary ring, as `[x, y]` float vertices.
-    pub outer: Vec<[f64; 2]>,
-    /// The interior hole rings.
-    pub holes: Vec<Vec<[f64; 2]>>,
+    /// The face's boundary rings, as `[x, y]` float vertices — outer cycles and hole cycles.
+    pub rings: Vec<Vec<[f64; 2]>>,
 }
 
 /// A whole region flattened to float polylines — one [`FacePolys`] per connected face.
@@ -114,18 +117,22 @@ pub fn bounds_of_edges<B: Backend>(edges: &[Edge<B>]) -> Bounds {
 
 /// Flatten a certified region to float polylines (diagnostics only).
 ///
-/// Each face's `outer`/`holes` edge sequences are in walk order; this chains them
-/// head-to-tail by **exact** [`Point2`] equality (deciding each edge's direction without
-/// a float comparison), then samples arcs and reads endpoints through the
-/// [`approx`](crate::approx) bridge.
+/// Each face's boundary loops (its outer loop and any holes) are decomposed into closed
+/// cycles by chaining edges on **exact** [`Point2`] equality (deciding each edge's direction
+/// without a float comparison, and splitting a pinched loop at its shared vertex), then arcs
+/// are sampled and endpoints read through the [`approx`](crate::approx) bridge. A face's
+/// cycles — outer and hole alike — are pooled into one [`FacePolys`], drawn `evenodd`.
 pub fn region_to_polys<B: Backend>(region: &Region<B>) -> RegionPolys {
     RegionPolys {
         faces: region
             .faces
             .iter()
-            .map(|f| FacePolys {
-                outer: flatten_loop(&f.outer),
-                holes: f.holes.iter().map(|h| flatten_loop(h)).collect(),
+            .map(|f| {
+                let mut rings = flatten_cycles(&f.outer);
+                for h in &f.holes {
+                    rings.extend(flatten_cycles(h));
+                }
+                FacePolys { rings }
             })
             .collect(),
     }
@@ -200,31 +207,56 @@ fn arc_points<B: Backend>(a: &ArcPiece<B>) -> Vec<[f64; 2]> {
     out
 }
 
-/// Chain one boundary loop's edges (walk order) into a single closed float ring, orienting
-/// each edge by exact [`Point2`] equality with its neighbour.
-fn flatten_loop<B: Backend>(edges: &[Edge<B>]) -> Vec<[f64; 2]> {
-    match edges.len() {
-        0 => return Vec::new(),
-        1 => return edge_points(&edges[0], true),
-        _ => {}
-    }
-    // Orient edge 0 so its exit endpoint is the one it shares with edge 1.
-    let (_, e0_end) = endpoints(&edges[0]);
-    let (e1_a, e1_b) = endpoints(&edges[1]);
-    let e0_forward = *e0_end == *e1_a || *e0_end == *e1_b;
+/// Decompose one boundary loop's edges into closed float rings.
+///
+/// The edges are treated as an unordered bag. Starting from each not-yet-used edge, the walk
+/// greedily extends by picking any unused edge sharing the current endpoint (by **exact**
+/// [`Point2`] equality) and orienting it to continue, until it returns to the cycle's start;
+/// then a fresh cycle begins on the remaining edges. Two edges are joined only when they
+/// truly meet, so a pinched loop (the kernel emits, e.g., internal tangency as circle-A's
+/// arcs then circle-B's arcs — one boundary component, two cycles sharing the pinch vertex)
+/// splits into its cycles instead of being bridged by a spurious chord across the gap.
+///
+/// A well-formed face boundary has every vertex at even degree, so this consumes every edge
+/// into closed cycles; the `break` on no match is a guard against malformed input, not an
+/// expected path.
+fn flatten_cycles<B: Backend>(edges: &[Edge<B>]) -> Vec<Vec<[f64; 2]>> {
+    let n = edges.len();
+    let mut used = vec![false; n];
+    let mut cycles = Vec::new();
 
-    let mut ring = edge_points(&edges[0], e0_forward);
-    let mut cur_end: &Point2<B> = far_end(&edges[0], e0_forward);
+    for start in 0..n {
+        if used[start] {
+            continue;
+        }
+        // Open a cycle on `edges[start]`, oriented start→end (direction is arbitrary — a
+        // cycle is symmetric, so chaining from either end returns to the other).
+        used[start] = true;
+        let (cycle_start, _) = endpoints(&edges[start]);
+        let mut ring = edge_points(&edges[start], true);
+        let mut cur_end = far_end(&edges[start], true);
 
-    for e in &edges[1..] {
-        let (es, _) = endpoints(e);
-        let forward = *es == *cur_end;
-        let pts = edge_points(e, forward);
-        // pts[0] duplicates the running end — skip it.
-        ring.extend_from_slice(&pts[1..]);
-        cur_end = far_end(e, forward);
+        while *cur_end != *cycle_start {
+            // Find any unused edge incident to `cur_end`.
+            let next = (0..n).find(|&j| {
+                if used[j] {
+                    return false;
+                }
+                let (a, b) = endpoints(&edges[j]);
+                *a == *cur_end || *b == *cur_end
+            });
+            let Some(j) = next else { break };
+            used[j] = true;
+            let (a, _) = endpoints(&edges[j]);
+            let forward = *a == *cur_end;
+            let pts = edge_points(&edges[j], forward);
+            // pts[0] duplicates the running end — skip it.
+            ring.extend_from_slice(&pts[1..]);
+            cur_end = far_end(&edges[j], forward);
+        }
+        cycles.push(ring);
     }
-    ring
+    cycles
 }
 
 // --- SVG serialisation ------------------------------------------------------------------
@@ -260,7 +292,7 @@ fn ring_path(ring: &[[f64; 2]]) -> String {
 /// ```
 /// use export::svg::{polys_svg, Bounds, FacePolys, RegionPolys};
 /// let tri = vec![[0.0, 0.0], [2.0, 0.0], [1.0, 2.0]];
-/// let polys = RegionPolys { faces: vec![FacePolys { outer: tri.clone(), holes: vec![] }] };
+/// let polys = RegionPolys { faces: vec![FacePolys { rings: vec![tri.clone()] }] };
 /// let svg = polys_svg(&polys, &Bounds::of_points(tri), 120);
 /// assert!(svg.starts_with("<svg"));
 /// assert!(svg.contains("<path"));
@@ -278,10 +310,12 @@ pub fn polys_svg(polys: &RegionPolys, frame: &Bounds, px: u32) -> String {
 
     let mut paths = String::new();
     for face in &polys.faces {
-        let mut d = ring_path(&face.outer);
-        for hole in &face.holes {
-            d.push(' ');
-            d.push_str(&ring_path(hole));
+        let mut d = String::new();
+        for (i, ring) in face.rings.iter().enumerate() {
+            if i > 0 {
+                d.push(' ');
+            }
+            d.push_str(&ring_path(ring));
         }
         paths.push_str(&format!(
             "<path d=\"{d}\" fill=\"#5b8def\" fill-opacity=\"0.35\" \
@@ -405,45 +439,76 @@ mod tests {
         }
     }
 
-    /// The annulus `△` is one face with exactly one hole; the outer disk `∪` is one face,
-    /// no holes — the extractor preserves face/hole structure.
+    /// Longest chord between consecutive vertices of a ring (its closing edge included).
+    /// Finely-sampled arcs give short chords; a spurious joining chord shows up as a big one.
+    fn max_chord(ring: &[[f64; 2]]) -> f64 {
+        let mut m = 0.0f64;
+        for i in 0..ring.len() {
+            let a = ring[i];
+            let b = ring[(i + 1) % ring.len()];
+            m = m.max(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt());
+        }
+        m
+    }
+
+    /// The annulus `△` is one face carrying two rings (outer disk + inner hole); its `∪` is
+    /// one face with a single ring (a filled disk).
     #[test]
-    fn annulus_xor_has_one_hole() {
+    fn annulus_xor_has_ring_and_hole() {
         let a = gallery::annulus();
         let xor = polys_for(&a, BoolOp::Xor);
         assert_eq!(xor.faces.len(), 1, "annulus △ is one face");
-        assert_eq!(xor.faces[0].holes.len(), 1, "annulus △ has one hole");
+        assert_eq!(
+            xor.faces[0].rings.len(),
+            2,
+            "annulus △ is an outer ring plus one hole ring"
+        );
 
         let or = polys_for(&a, BoolOp::Or);
         assert_eq!(or.faces.len(), 1);
-        assert!(or.faces[0].holes.is_empty(), "annulus ∪ is a filled disk");
+        assert_eq!(
+            or.faces[0].rings.len(),
+            1,
+            "annulus ∪ is a single filled disk"
+        );
     }
 
-    /// Internal tangency `△` (`A∖B`, `B` tangent inside `A` at `(2,0)`) genuinely pinches to
-    /// a point there — the "spike" a coarse renderer shows is a sampling artifact, not bad
-    /// data. Guard the data: every flattened vertex stays inside the outer disk `A`
-    /// (`x² + y² ≤ 4`), so no boundary sample ever escapes/pierces it. Interior arc samples
-    /// ride circle `B` (`⊂ A`) or circle `A` (radius 2) exactly; a small tolerance absorbs
-    /// the `√`/`atan2`/`cos` float slop.
+    /// Internal tangency `△` (`A∖B`, `B` tangent inside `A` at `(2,0)`) is a crescent that
+    /// pinches to a point at the tangency. The kernel emits its boundary as one face whose
+    /// loop is really two cycles — circle `A` then circle `B` — sharing the pinch vertex.
+    /// The flattener must split them into two rings, *not* bridge `A`'s far side to `B` with
+    /// a diameter-spanning chord (the old spike). Guard all three facts: two rings, no long
+    /// chord (finely-sampled arcs only), and every vertex inside the outer disk `A`.
     #[test]
-    fn internal_tangency_xor_stays_within_outer_disk() {
+    fn internal_tangency_xor_is_two_clean_cycles() {
         let it = gallery::internal_tangency();
         let xor = polys_for(&it, BoolOp::Xor);
-        let tol = 1e-6;
-        for face in &xor.faces {
-            for ring in std::iter::once(&face.outer).chain(&face.holes) {
-                for &[x, y] in ring {
-                    assert!(
-                        x * x + y * y <= 4.0 + tol,
-                        "internal-tangency △ vertex ({x}, {y}) escapes outer disk A"
-                    );
-                }
+        assert_eq!(xor.faces.len(), 1, "internal-tangency △ is one face");
+        let face = &xor.faces[0];
+        assert_eq!(
+            face.rings.len(),
+            2,
+            "crescent is circle A plus circle B as two cycles, not one bridged loop"
+        );
+        for ring in &face.rings {
+            // Circle A has radius 2; its finest-sampled chord is well under 1. A spike back
+            // across the disk would be ~4. This is the direct regression guard.
+            assert!(
+                max_chord(ring) < 1.0,
+                "internal-tangency △ ring has a spurious long chord (spike): {}",
+                max_chord(ring)
+            );
+            for &[x, y] in ring {
+                assert!(
+                    x * x + y * y <= 4.0 + 1e-6,
+                    "internal-tangency △ vertex ({x}, {y}) escapes outer disk A"
+                );
             }
         }
     }
 
-    /// Two disjoint disks (`△` of two overlapping disks is two lunes) yields ≥2 rings, and
-    /// every ring is a non-degenerate closed polyline.
+    /// Across every gallery shape and op, each face has at least one ring and every ring is a
+    /// non-degenerate closed polyline (≥3 vertices).
     #[test]
     fn every_ring_is_nonempty() {
         for shape in gallery::all() {
@@ -451,14 +516,14 @@ mod tests {
                 let polys = polys_for(&shape, op);
                 for face in &polys.faces {
                     assert!(
-                        face.outer.len() >= 3,
-                        "shape `{}` {op:?}: outer ring too short",
+                        !face.rings.is_empty(),
+                        "shape `{}` {op:?}: face has no rings",
                         shape.name
                     );
-                    for hole in &face.holes {
+                    for ring in &face.rings {
                         assert!(
-                            hole.len() >= 3,
-                            "shape `{}` {op:?}: degenerate hole",
+                            ring.len() >= 3,
+                            "shape `{}` {op:?}: degenerate ring",
                             shape.name
                         );
                     }
