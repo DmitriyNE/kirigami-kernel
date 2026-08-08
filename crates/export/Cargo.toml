@@ -11,6 +11,10 @@ publish.workspace = true
 # A float that reaches a predicate is a bug (spec invariant 1); the
 # no-float-certified lint guards the pure crates.
 diagnostics = []
+# The OCCT-backed real `.step` writer (a `cxx` C++ FFI shim to OpenCASCADE's
+# STEPControl_Writer). Off by default so the default build/CI needs no system
+# OCCT; build with `--features step` under `nix develop`. Mirrors difftest's `cgal`.
+step = ["dep:cxx"]
 
 [dependencies]
 lattice.workspace = true
@@ -21,6 +25,11 @@ closure.workspace = true
 sew.workspace = true
 gate.workspace = true
 develop.workspace = true
+# The OCCT STEP shim (behind `step`) — no OCCT type crosses the FFI; strings/paths only.
+cxx = { version = "1.0", optional = true }
+
+[build-dependencies]
+cxx-build = "1.0"
 
 [dev-dependencies]
 # The `gallery` example + the `svg` unit/doc tests render the public demo shapes.

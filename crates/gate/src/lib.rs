@@ -7,3 +7,5 @@
 //! algebra those evaluations reduce to lives in `certify_core::gate`; this crate
 //! is the stateful shell around it. VALID_complement is evaluated over the
 //! clipped domains `D^closure` where clips exist.
+
+pub mod store;

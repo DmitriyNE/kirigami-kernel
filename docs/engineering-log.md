@@ -283,6 +283,23 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **OCCT STEP-export shim de-risk (thin-M6 GO/NO-GO) — GO.** The `export` crate's off-by-default
+  `step` feature builds a `cxx` shim to OpenCASCADE's `STEPControl_Writer`; the M6.0 smoke writes a
+  unit box, reads it back, and `BRepCheck`s the reload — green under `nix develop` (OCCT 7.9.3, 350
+  STEP entities). Two darwin gotchas worth remembering: (1) OCCT nests its headers in
+  `<occt>/include/opencascade/` and they `#include` each other **unqualified**, so that dir must be on
+  the include path *directly* (the nix cc-wrapper only injects `<occt>/include`); `build.rs` derives it
+  from the `-isystem` token in `NIX_CFLAGS_COMPILE` (or `OCCT_INCLUDE_DIR`). (2) The STEP reader/writer
+  moved to `libTKDESTEP` in OCCT 7.8+ (was `libTKSTEP`). The **stdlib-ABI question** resolved the
+  opposite way from a naïve read: OCCT is prebuilt *libc++*, but the shim + the `cxx` runtime compile
+  with the nix-default g++/**libstdc++** (forcing `clang++` fails — the shim's libc++ `rust::String`
+  ctors don't match the libstdc++ cxx runtime). It links anyway because the shim only crosses the OCCT
+  boundary via `const char*`/`double`/OCCT types — no `std::` object crosses — so libc++ and libstdc++
+  coexist at load time. *Caveat carried to M6.3:* an OCCT exception (`Standard_Failure`, a libc++
+  `std::exception`) caught by the libstdc++ `catch` in the shim is technically cross-ABI; fine for
+  valid geometry, but the M6.3 writer should prefer status codes / validity pre-checks over relying on
+  the catch for malformed input. *2026-08-08 · resolved · `crates/export/{build.rs,src/occt_shim.cc,src/step.rs}`*
+
 - **CGAL boolean oracle extended to segment (polygon) operands — the C4 LEDGE cap lane.** The
   `cgal_boolean_*` shim only parsed disk operands (`C cx cy r2 operand`), so the LEDGE cap — a
   straight-edge *polygon* (cylinder rulings + crease) — had no CGAL region differential. Added an
@@ -360,6 +377,14 @@ fine — this is a log, not a schema.
 
 - **SLAB-S1 / QPOS Bernstein positivity.** No Bernstein primitive yet.
   *2026-08-04 · deferred(→M4) · vv-guide §8 (B deferrals)*
+
+- **FRESH promotion (three-way containment re-test) — deferred out of thin M6.** FRESH keys on the
+  fab-gating stamp fields (`materialStripWidth`): a regenerated enclosure ⊆ stamp ⇒ green, disjoint ⇒
+  stale hard-fail, partial ⇒ undecided (spec:203). That is a `VALID_material` / material-grade concern,
+  not `VALID_solid-closure` — the thin-M6 gate proves solid-closure only. The M6.2 certificate store
+  ships a documented FRESH *stub* (the provenance chain rule it enforces — a stamp bounded below by its
+  sources' certified enclosures, never a naked float — is the FRESH precondition, but the re-test
+  itself is not built). *2026-08-08 · deferred(→M-E material grade) · spec:203, `certify_core::gate` / `gate`*
 
 - **The full EDGE-REG verdict logic + EDGE-EMB / EDGE-EDGE (embeddedness).** The Milestone-B
   version is only the `Pass | Fail | Stall` core plus `to_verdict`.

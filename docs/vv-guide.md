@@ -740,6 +740,98 @@ rays on a straight crease). No new ★: SEW-EDGES rides on `occupancy_row_sound`
 
 ---
 
+### Milestone C (part 3) acceptance criteria (the thin M6 — the gate + the STEP export)
+
+*Authored before implementation, per the rule above.* Milestone C's stated exit is a
+"**STEP-exportable shell for one joint, gate-passing**" (`docs/implementation-plan-v1.md:51`). With M4
+(`closure`) and M5 (`sew`) landed, `closure_valid` already returns the full `CLOSURE_VALID(j)`; the
+**thin M6** closes C by (a) evaluating the gate formula `VALID_solid-closure` over one joint and (b)
+writing that joint's shell to a real `.step` file. Two spec formulas anchor it (spec §8.6, lines
+438–439):
+
+```
+VALID_material      := VALID_complement ∧ ⋀_j ( treatment(j) ∈ {SMOOTH, DEFERRED} ∧ CLOSURE_VALID(j) )
+VALID_solid-closure := VALID_complement ∧ ⋀_j CLOSURE_VALID(j)
+```
+
+Thin M6 delivers **`VALID_solid-closure` for one joint** and its STEP shell. It is explicitly *thin*:
+the full cone+petal **atlas** and `VALID_material`, and the **external-kernel audit** (load the `.step`
+back into OpenCASCADE/NX/Fusion and run *its* checker), are **Milestone D**; **FRESH** promotion is
+**material-grade (Milestone E)**. Gate formulas are truth-valued only — no "band or fail" disjunct (spec
+§8.2/§8.6). The pure verdict algebra lives in `certify_core::gate` (the TCB/extraction surface, `no_std`);
+the stateful certificate store is the `gate` shell crate; the STEP writer is an `export` deliverable
+(floats permitted there, behind the `step` feature, via the quarantined `approx` bridge).
+
+**M6.1 — the pure gate algebra (`certify_core::gate`; the ★) — met when:** the **first reusable
+verdict-propagation combinator** over `Verdict<E,W,M>` (workspace-wide, conjunction is 121 hand-rolled
+3-arm matches — this is the algebra they reduce to): a short-circuiting **conjunction fold** with
+all-`Verified` ⇒ `Verified`; **any** `Refuted` ⇒ the **first** `Refuted` (order-preserving); else (some
+`Unresolved`, none `Refuted`) ⇒ `Unresolved`. `VALID_solid-closure` is expressed as this fold over the
+per-joint `CLOSURE_VALID(j)` verdicts, with the `VALID_complement` conjunct **vacuously `Verified`** on
+the one-joint straight-crease slice (no complement clips). **★ Kani `gate_conj_sound`:** exhaustive over
+the three-valued lattice for a bounded N — the fold is `Verified` **iff** every input is `Verified`;
+`Refuted` (returning the **first** refuter) **iff** any input is `Refuted`; else `Unresolved`.
+Registered by name in `ci.yml`; fills a new gate-algebra ★ row in `vv-matrix.md`. Lean lift optional per
+the checker doctrine.
+
+**M6.2 — the certificate store (`gate` shell) — met when:** an **append-only, provenance-linked**
+record store — each entry a certificate id + a `Verdict` + provenance links to its source evaluations +
+a **stamp** (the certified enclosure) — over which `VALID_solid-closure` is evaluated for one joint via
+the M6.1 algebra. The **provenance chain rule** (spec:203) is enforced: a stamp is bounded below by its
+sources' certified enclosures, so the store ingests only certified `Verdict` / `MarginSq` data, **never
+a naked float**. **FRESH** is a documented deferred **stub** (the three-way containment re-test is
+material-grade, M-E; the store's provenance-chain enforcement is its precondition, but the re-test is
+not built).
+
+**M6.3 — the STEP-exportable shell + the OCCT `.step` writer — met when:** a neutral **shell record**
+(exact) is assembled from `closure::valid::ClosureValid { wedge, cap }` — the cap face (a Ledge
+`CapWitness::Ledge(CapOut)` region's `Line`/`Arc` loops lifted into the 3D cap plane via the `cap_in`
+`PiFrame`) plus the two flank faces (ruled from the joint charts over their `MuRange`), sewn along the
+`v_boundary()` (V_∂). The `export` `step`-feature shim builds a `TopoDS_Shell` from the record (exact →
+`f64` through `approx`), writes it with `STEPControl_Writer`, and a shim-side **re-read + `BRepCheck`**
+confirms the file loads (**write-then-reload**, *not* the external-kernel audit — that is M-D). The
+one-joint **end-to-end**: the cylinder-flank joint → `closure_valid` `Verified` → gate
+`VALID_solid-closure` **pass** → a `.step` written **and** reloaded, asserted as a `fixtures` corpus
+fixture (both cap branches where the geometry supports it). Fills the `STEP shell [export]`
+`vv-matrix.md` row.
+
+**Generality (hard gate) — met when:** no device-specific constant (no `65/97`, no cone-angle literal)
+appears in `certify_core::gate`, `gate`, or the shell-record assembly — the gate is a fold over
+verdicts, agnostic to the treatment that produced them; the shell record is built from the generic
+`ClosureValid` / chart data, the flank *type* carried by the chart, never a Rust branch.
+
+**Documentation (a merge gate, not a retrofit) — met when:** every new public item across
+`certify_core::gate`, `gate`, and `export::step` (+ the shell-record assembly) is documented usage-first
+and history-free (no slice/phase tags), with worked runnable doctests on the entry points;
+`-W missing_docs` = 0 on the new surface; `cargo doc` clean. The `step` feature is **off by default**, so
+default builds / CI clippy need no system OCCT (mirrors difftest's `cgal`); the OCCT-backed round-trip
+is exercised under `nix develop --features step`.
+
+**Deferred to later milestones** (documented, not silently dropped): **FRESH** promotion (→ M-E,
+material grade); the full cone + lap-seam + **petal atlas** and `VALID_material` (→ M-D); the
+**external-kernel audit** — `.step` → OCC/NX/Fusion, run *its* checker (→ M-D); the curved-crease
+COLLAR; a hand-rolled AP242 emitter (future work — OCCT is the writer for now).
+
+**Status: thin M6 met — Milestone C complete.** M6.0: criteria authored + the OCCT STEP shim de-risked
+GO (the `export` `step` feature writes + reloads a box under `nix develop` — `docs/engineering-log.md`).
+M6.1 met (the pure `certify_core::gate` algebra + `gate_conj_sound` ★). M6.2 met (the `gate::store`
+append-only provenance-linked certificate store, chain rule enforced, `VALID_solid-closure` evaluated for
+one joint). M6.3 met: `export::shell::shell_from_closure` assembles the exact float-free `ShellRecord`
+(two flank strips at the certified offset `w = t.w.lo` + the Ledge cap fanned through the joint `PiFrame`);
+the `step`-feature shim writes it with `STEPControl_Writer` and re-reads it through `BRepCheck_Analyzer`;
+the one-joint end-to-end (`one_joint_closure_writes_a_reloadable_step_shell`) runs the cylinder fold →
+`closure_valid` `Verified` → gate `VALID_solid-closure` **pass** → a 34-triangle `.step` that reloads
+valid, on the public `fixtures::closure_joint` corpus.
+
+*Two honest scope notes.* (1) The faces are joined by OCCT's coincident-edge sewing
+(`BRepBuilderAPI_Sewing`), not the explicit `v_boundary()` (V_∂)-guided seam the criterion names — adequate
+for the write-then-reload check; the V_∂-guided sew (and thereby a claim of manifold watertightness rather
+than per-face `BRepCheck` validity) is a **M-D** follow-up. (2) The cap is exercised through the **Ledge**
+branch only; a Miter cap contributes no separate planar face, so the two-branch end-to-end reduces to the
+one branch whose geometry adds a face.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.

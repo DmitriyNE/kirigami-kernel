@@ -296,6 +296,8 @@ dependencies = [
  "arrange2d",
  "certify-core",
  "closure",
+ "cxx",
+ "cxx-build",
  "develop",
  "fixtures",
  "gate",
