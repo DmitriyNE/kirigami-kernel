@@ -813,7 +813,10 @@ material grade); the full cone + lap-seam + **petal atlas** and `VALID_material`
 COLLAR; a hand-rolled AP242 emitter (future work — OCCT is the writer for now).
 
 **Status: in progress.** Criteria authored (M6.0); the OCCT STEP shim is de-risked GO (the `export`
-`step` feature writes + reloads a box under `nix develop` — `docs/engineering-log.md`). M6.1–M6.3 pending.
+`step` feature writes + reloads a box under `nix develop` — `docs/engineering-log.md`). M6.1 met (the pure
+`certify_core::gate` algebra + `gate_conj_sound` ★); M6.2 met (the `gate::store` append-only
+provenance-linked certificate store, chain rule enforced, `VALID_solid-closure` evaluated for one joint).
+M6.3 pending.
 
 ---
 
