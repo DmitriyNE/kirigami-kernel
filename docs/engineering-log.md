@@ -40,14 +40,14 @@ fine — this is a log, not a schema.
   seam does not exist at the sampled band, so the oracle's headline output is *surfacing* that overhang as a
   documented, CI-enforced divergence (OCC free-edges/non-watertight vs internal manifold) — never overturning
   the certificate. The geometry-changing seam (indexed-shell FFI + geometry-derived `SewInput`) is **slice 3**.
-  Criteria in `docs/vv-guide.md §8` (Milestone D slice 2). *2026-08-09 · open · `docs/vv-guide.md §8`, branch `milestone-d`*
+  Criteria in `docs/vv-guide.md §8` (Milestone D slice 2). *2026-08-09 · DONE — slice 2 met (`c5800e8` criteria, `1eb404a` shim+audit+CI leg, `9d59418` differential harness + `pinches()` gate; agreement + documented overhang divergence asserted for both cap branches) · `docs/vv-guide.md §8`, branch `milestone-d`*
 
 - **Finding: the `export` `step` feature is not exercised in CI at all.** `.github/workflows/ci.yml` runs
   `cargo nextest run --workspace` and the doctests with **no** `--features step`, and `export::step` is
   `#[cfg(feature = "step")]` — so the slice-1 STEP end-to-end suite (`one_joint_{ledge,miter}_writes_a_reloadable_step_shell`)
   is green only when run locally under `nix develop --features step`, never in CI. M-D slice 2 adds the
   missing dedicated `nix develop --features step` leg (mirroring the CGAL oracle leg at `ci.yml:65-66`), which
-  retroactively covers slice 1. *2026-08-09 · open(→ M-D.2) · `.github/workflows/ci.yml`*
+  retroactively covers slice 1. *2026-08-09 · DONE (`1eb404a`: the `--features step` CI leg runs `clippy` + `nextest -p export` + `step` doctests inside `nix develop`, covering the slice-1 `one_joint_*` tests and slice-2's `export::differential`) · `.github/workflows/ci.yml`*
 
 - **CAP-OUT completeness bijections — source-ID permutation DONE; the two *further* bijections remain.**
   *Done (debt-sprint item 7, `56accab`; vv-matrix 🚧→✅):* the scalar coverage count

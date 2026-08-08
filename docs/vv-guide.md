@@ -928,9 +928,12 @@ rotation about the crease line, same exact segment" is thus replaced by this off
 also carries a cosmetic **2:1 ruling-speed overhang** (`|r| = 2` at σ = 0 vs `1` at σ = 1; equalising needs
 the irrational station σ = √2 − 1) — so the two crease edges share the *line* `L`, not the same extent. The
 `the_fold_is_a_physical_shared_crease_right_angle` test asserts exactly this (both edges on `L`, `n_A·n_B = 0`,
-parallel rulings off a nonzero pedal). (2) The Ledge cap's 2D outline is still the CAP-IN-D24 **licensing
-square** (now lifted isometrically), not a real projected flank cut; the `v_boundary()`-guided cap + the
-external-kernel differential oracle is the next M-D slice, now unblocked by the real crease.
+parallel rulings off a nonzero pedal). *Slice 2 turns this prose note into a CI-enforced fact:* the OCC
+differential oracle (below) asserts `free_edges > 0` ∧ `closed == false` on the exported band while the
+internal certificate stays manifold — the overhang, made a differential expectation rather than a footnote.
+(2) The Ledge cap's 2D outline is still the CAP-IN-D24 **licensing square** (now lifted isometrically), not a
+real projected flank cut; the `v_boundary()`-guided cap + the external-kernel differential oracle is the next
+M-D slice, now unblocked by the real crease.
 
 ### Milestone D (slice 2) acceptance criteria (the OpenCASCADE differential oracle)
 
@@ -986,9 +989,16 @@ the emitted geometry** via the untrusted constructors `records_from_miter_ledger
 petal atlas / multi-joint assembly (M-D later); the petal cone-flank joint (blocked spec §13);
 `VALID_material` / FRESH / `develop` (→ M-E).
 
-**Status: D2.0 — criteria authored** (this section; dispositions in `docs/engineering-log.md`). D2.1–D2.3
-pending: the `occt_shell_audit` shim + audit wrapper (GO/NO-GO on the OCCT header/toolkit link), the
-`export::differential` harness + emitted-path `pinches()` gate, and the V&V corpus + CI leg + doc gate.
+**Status: slice 2 met.** D2.0 (`c5800e8`): this section + dispositions in `docs/engineering-log.md`. D2.1
+(`1eb404a`): `occt_shell_audit` in the `cxx` shim (sewing loop shared with `occt_write_shell`) reporting the
+extended facts as a typed `ShellAudit`, plus the `audit_shell<B>` wrapper — GO, the `TopExp` / `BRep_Tool` /
+`TopTools` headers link with the existing `TKBRep` toolkit (no toolkit added); the CI `--features step` leg
+landed here. D2.2 (`9d59418`): the `export::differential` harness — for **both** LEDGE and MITER, the
+agreement conjuncts (`Verified`; internal `pinches().len() == 0` ∧ OCC `nonmanifold_edges == 0`; OCC
+`IsValid()`) hold and the documented overhang divergence (`free_edges > 0` ∧ `closed == false`, measured
+`free = 38`/`36`) is asserted as expected — plus the emitted-path gate on `pinches().is_empty()` in
+`shell_from_closure`. D2.3: this status + the `vv-matrix` row + `-W missing_docs = 0` on the new surface. The
+watertight `V_∂`-guided seam remains slice 3 (below).
 
 ---
 
