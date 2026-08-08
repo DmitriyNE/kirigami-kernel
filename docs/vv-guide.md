@@ -504,6 +504,121 @@ carried forward, not dropped.
 
 ---
 
+### Milestone C (part 1) acceptance criteria (the CLOSURE treatment for one joint — M4 `closure`)
+
+*Authored before implementation, per the rule above.* Milestone C is "one joint end-to-end"
+(M4 `closure` + M5 `sew` + a thin M6); this block covers the front half, **M4 `closure`** — the
+searcher for the `CLOSURE_VALID(j)` treatment obligation (spec §8.5/§8.6, and `docs/closure-scoping.md`
+for the per-conjunct disposition). C needs both A and B, which are met, so it is the roadmap's next.
+Exit: **a straight-root cylinder-flank joint produces a gate-passing certified cap through *both* the
+clean-miter (MITER) and forced-ledge (LEDGE) branches** — `CLOSURE_VALID(j)` minus SEW (SEW is M5). A
+genuine plane is not a `Chart` today (`n′ ≡ 0`; see `docs/closure-scoping.md §8`), so the cylinder —
+representable, line cut-edges, moving normal — is the first slice; the §13 planar-hub petal is deferred.
+
+**Searcher/checker split, pinned here** (same doctrine as `arrange2d` vs `certify_core::arrange`):
+`closure` is the untrusted **searcher** — it builds the joint fields (`b_J`, `G_i`, `V`) and flank
+edges and runs the CLIP/MITER searches; the pure-tier `certify_core` **checkers** own every certified
+predicate (the extraction/TCB surface). `CLOSURE-CAP(j) := MITER-BRANCH ∨ LEDGE-BRANCH` is a genuine
+disjunction of constructions. The one ★ soundness-critical decision is **MITER-FIT monotonicity /
+`ε_φ`** (the `σ_B=σ_A³` fossil), with **CAP-IN-D24** the second ★, both discharged by Kani.
+
+**The joint searcher (`closure`, untrusted, any two charts) — met when:**
+- `closure`'s entry takes **two arbitrary `geom::Chart`s** (strip spans — cone / cylinder / …) + a
+  straight crease + orientation + retained-μ ranges — flank *type* is data, never a control-flow branch —
+  and builds the joint-level fields: `b_J = s_J(n_A − n_B)` (`b_A=b_J`, `b_B=−b_J`), the retained-side
+  `G_i = (C_i − x₀)·b_i` (kept side `G_i ≥ 0`; the raw `H_i` is diagnostic-only, never in a predicate),
+  `V`/`s_bev` (the fan generator + bevel slope), and the flank edges as `geom::content::Edge`s.
+- The searcher emits `(claim, certificate)` bundles consumed by the `certify_core` checkers; no
+  soundness decision is taken in `closure`. Verified: the fields are exact over ℚ(σ) (differential vs
+  the `geom` field accessors), and `H_i` appears in no predicate (the `no_repr_leak`-style discipline).
+
+**CAP-IN-D24 input license (C1) — met when:**
+- The `CanonicalEdge` / `ValidatedD24` newtypes are **minted only** by the CAP-IN-D24 checker, over the
+  existing `validate_d24` totality seed: per source boundary component, carrier by named identity test
+  (planar ⇒ line; cylinder-type ⇒ ruling lines; **cone/oblique/generalized ⇒ conic ⇒ FAIL**), exact
+  finite interval, endpoint ownership, verified flank correspondence.
+- Consulted **only on the LEDGE branch** — a clean miter never invokes it; for conic caps it is FALSE,
+  not vacuous. Verified: cylinder-type (ruling-line) flanks mint `ValidatedD24`; a cone (conic) flank is
+  refused with the named fault; endpoint-off-carrier / degenerate / non-canonical inputs are refused
+  (extends the `validate_d24` corpus).
+
+**Per-flank regularity bundle (C2) — met when:**
+- New `certify_core` checkers over the joint fields, reusing the `reg_q`/`slab_s0` squared-margin
+  gauge: **REG-V** (`|V|² ≥ m > 0` on the open support + fan sector sub-π on [0,1]; `V=0` deletes the
+  record), **WEDGE** (per-t wedge embedding), **EXT-WEDGE** (`s_bev(1+s_bev)|V|² < 1`), **SIDE(b_J)**
+  (one-sided-w sign + trim complementarity on `{Q⋛0}`), **COLLAR** (quotient-wedge embedding; straight-
+  crease scope). `TUBE-LOCAL`/`TUBE-SELF` are the total-discharge / vacuous straight-crease case
+  (`κ_max = 0`, §13), recorded as such.
+- Verified: each refutes on a perturbed field (bad `|V|²` margin, over-π fan sector, `s_bev` past the
+  EXT-WEDGE bound, wrong-side `SIDE`), matching the `MarginSq` refutation pattern.
+
+**The trim/clip searcher (C3) — met when:**
+- `closure` builds `G_A`/`G_B` from the joint and drives the **reused** `certify1d` CLIP-DOM ladder
+  (`clip`/`clip_dom`: CLIP-W → CLIP-μ → per-zero {CLIP-a | CLIP-σ | reject}, margins squared, CLIP-σ
+  signed) and **TRIM-LOCAL** (`trim_local`: `G_i > 0` at all four outer-fiber corners + interior
+  confinement). Closes the engineering-log "CLIP μ-coverage + fiber-census — producer is M4/closure".
+- Verified: a synthetic joint trim certifies through CLIP-a and CLIP-σ; a re-entrant trim is caught by
+  TRIM-LOCAL; the `cx-sigma-mu-crossing` unsoundness stays `Unresolved` (no four-corner `|·|`).
+
+**The LEDGE branch end-to-end (C4) — met when:**
+- On the forced-ledge cylinder-flank variant: CAP-IN-D24 (C1) → **reuse** `arrange2d::boolean::
+  ledge_dom_certified` (the §6 steps (1)–(8): arrangement → seed (0,0) → operand sidedness → ℤ₂²
+  cocycle → coincident incidence → boolean select → separating edges → π₀-quotient emit) → **reuse**
+  CAP-OUT (`certify_core::arrange`, CAP-OUT-LINK) ⇒ a certified planar cap region. Mostly wiring; the
+  `ShellReady` strict-manifold entry is decided here.
+- Verified: a CGAL exact-geometry differential on the planar cap region (the boolean-region lane), and
+  the emitted faces match the expected connected components.
+
+**The MITER branch, line-edge / degree-1 (C5) — met when:**
+- On the clean-miter cylinder-flank variant: **MITER-FIT** degree-1 corollary (`ℓ_i` affine + monotone via
+  Sturm; `φ_J` explicit degree-1 rational map, no resultant machinery), **MITER-EDGE-LEDGER**
+  (materialize the passed identities as PAIR-IDENTICAL + EDGE-OCCUPANCY), **MITER-OUT** (EDGE-REG via
+  **reuse** `edge_reg`; EDGE-EMB / EDGE-EDGE / CYCLE / EDGE-COVERAGE / VERTEX-ISOLATION).
+- **`ε_φ` is the order sign of the monotone correspondence** (a theorem on the regular locus, minted by
+  *one* exact oriented-endpoint comparison), **never** the derivative-sign definition. Verified: the
+  `σ_B = σ_A³` fossil (strictly monotone, positive endpoint order, zero derivative at 0) does not
+  falsely certify; a reversed-order pairing is refused.
+
+**CLOSURE-CAP disjunction + gate wiring (C6) — met when:**
+- `CLOSURE-CAP(j) = MITER-BRANCH ∨ LEDGE-BRANCH` and the closure-level `CLOSURE_VALID(j)` conjunction
+  **minus SEW** are wired in `certify_core`, with the `:=` census (`xtask lint`) satisfied and SEW
+  cited per §8.5 (never redefined). `vv-matrix.md` gains the `[M4]` rows.
+
+**Generality (a hard gate, not a claim) — met when:**
+- **No device-specific constant** (no `65/97`, no cone-angle literal) appears in `closure` or
+  `certify_core` — checked by grep-lint / review; device data stays in `fixtures`/`export`/tests.
+- The M4 exit **corpus spans ≥ 2 representable developable classes and ≥ 2 cone angles**:
+  `fixtures::devices` grows a promoted `cylinder()` (out of the `tags.rs` test) and a **second-angle
+  cone (≠ 65/97)**. The certified both-branches pipe is demonstrated on the cylinder-flank joint; the
+  cone demonstrates CAP-IN-D24 *correctly refusing* a conic cap (the class distinction is real, not
+  cone-hardcoded); the second angle proves nothing is 65/97-locked — so generality is *exercised*, not
+  merely asserted (spec §13 co-normativity). A genuine `plane()` needs the deferred planar-span type.
+
+**★ soundness discharge — met when:**
+- A bounded **Kani** harness proves **MITER-FIT monotonicity / `ε_φ`** correct and rejects the
+  `σ_B=σ_A³` fossil class (the load-bearing ★, pattern of `clip_sigma_signed_disjunction_sound`),
+  registered by name in `ci.yml`; and a **CAP-IN-D24** harness proves the carrier-identity census
+  refuses conic caps. Lean lift optional per the checker doctrine (upgrades the cell, does not gate).
+
+**Documentation (a merge gate, not a retrofit) — met when:** every new public item across `closure`
+and the new `certify_core` checkers is documented usage-first and history-free (no slice/phase tags),
+with worked runnable doctests on the entry points; `-W missing_docs` = 0 on the new surface; `cargo
+doc` clean under `-D` broken/private intra-doc links.
+
+**Deferred to later milestones** (documented, not silently dropped): the **planar-span
+representation** (`n′ ≡ 0` — a `PlanarChart` / relaxed `Chart` with its own pedal/ruling calculus; a
+`geom`/M1-adjacent feature) and hence the *genuine* §13 planar-hub petal disk and the **petal
+cone-flank** second pass (the fold/stall/directrix adversary — also blocked on the §13 petal
+geometry); **SEW** (SEW-EDGES ∧ SEW-LINK — M5; M4 emits its EDGE-OCCUPANCY input); the **thin M6**
+gate / STEP export; non-straight (curved) crease scope for COLLAR.
+
+**Status: in progress.** C0 (recon + scoping report `docs/closure-scoping.md` + these criteria +
+`closure` crate skeleton + generality fixtures: promoted `cylinder()` + a second-angle cone) is the
+current phase on `milestone-c`; explicit **GO**, with one plan-assumption change (cylinder-first, not
+plane-first — `docs/closure-scoping.md §8`) surfaced for confirmation. C1–C6 pending.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.

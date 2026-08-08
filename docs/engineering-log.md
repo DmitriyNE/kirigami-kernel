@@ -259,7 +259,25 @@ fine — this is a log, not a schema.
   development is float — it never touches a predicate, so it stays inside spec invariant 1.
   *2026-08-08 · watching · `export::mesh3d::flat_development_is_isometric_along_rulings`*
 
+- **A genuine plane is not a `Chart` — the closure vertical slice is cylinder-first, not plane-first.**
+  C0 recon (M4/closure) found the approved plan's "two-planar-flank" / `plane()` assumption false at the
+  representation level: the spec (§, line 81) distinguishes a **`strip`** span (`|n′| > 0`) from a
+  **`planar`** span (`n′ ≡ 0`, a coefficient identity), and `geom::chart::Chart` implements only the
+  *strip* case — `Chart::new` debug-asserts `|n′|² ≢ 0` (`chart.rs:106`) and its whole field calculus
+  divides by `|n′|²`. A plane (constant normal) has `n′ ≡ 0`, so it cannot be a `Chart`, and `geom` has
+  no planar-span type. **Resolution:** the **cylinder** is the representable developable whose ruling
+  cut-edges are straight *lines* (so CAP-IN-D24 passes and both closure branches run) *and* it carries a
+  moving normal for the regularity bundle — so the M4 slice is built on it, with the **cone** as the
+  contrasting conic class. The genuine planar-hub §13 petal disk waits on the planar-span type.
+  *2026-08-08 · finding · `docs/closure-scoping.md §8`, `docs/vv-guide.md §8` (M4)*
+
 ## Deferred (by milestone)
+
+- **The planar-span representation (`n′ ≡ 0`) — a `PlanarChart` / relaxed `Chart` with its own
+  pedal/ruling calculus.** A `geom`/M1-adjacent feature; unblocks the *genuine* §13 planar-hub petal disk
+  (the closure slice uses the cylinder as the representable line-carrier stand-in meanwhile). See the
+  finding above.
+  *2026-08-08 · deferred(→M-C petal pass / M1-adjacent) · `crates/geom/src/chart.rs`*
 
 - **Petal conical-flank fixture + the `cx-cone-flank-trim-mu` corpus entry.** Spec §13
   geometry is not yet pinned; needed for closure/sew.
