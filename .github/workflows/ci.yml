@@ -92,7 +92,10 @@ jobs:
               --harness cocycle_implies_telescoping \
               --harness link_ok_iff_no_pinch \
               --harness link_iso_matches_cyclic_adjacency \
-              --harness clip_sigma_signed_disjunction_sound'
+              --harness clip_sigma_signed_disjunction_sound \
+              --harness eps_phi_is_endpoint_order \
+              --harness cap_in_cycle_census_sound \
+              --harness wedge_clearing_sound'
 
       # Lean extraction / proof surface (vv-guide §7 spike). Builds `certify-check`
       # (hand-written specs + the Sturm hypothesis-checker + the Aeneas-lifted

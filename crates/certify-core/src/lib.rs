@@ -34,9 +34,12 @@ pub mod margin;
 pub mod verdict;
 
 pub mod arrange;
+pub mod cap_in;
 pub mod certify1d;
 pub mod gate;
+pub mod miter;
 pub mod sew;
+pub mod wedge;
 
 // Kani bounded-model-checking harnesses for the pure checkers (compiled only under
 // `cargo kani`; see `vv-guide §5/§8`) — the first Kani surface outside `lattice`.

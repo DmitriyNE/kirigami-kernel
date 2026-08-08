@@ -188,6 +188,16 @@ GPolygon circle_polygon(const CGAL::Gmpq& cx, const CGAL::Gmpq& cy, const CGAL::
   }
   return pgn;
 }
+
+// A straight-edge cap boundary as a CCW general polygon. Each edge is a linear
+// `X_monotone_curve_2` built directly from its ordered endpoints — direction is
+// preserved (unlike make_x_monotone, which sorts left-to-right and would break the
+// boundary chain), so the caller's CCW vertex order is honoured verbatim.
+GPolygon segment_polygon(const std::vector<std::pair<KPoint, KPoint>>& edges) {
+  GPolygon pgn;
+  for (const auto& e : edges) pgn.push_back(GXcv(e.first, e.second));
+  return pgn;
+}
 }  // namespace
 
 // The number of connected components (polygons-with-holes) of a boolean `op` over
@@ -205,22 +215,32 @@ namespace {
 // components (polygons-with-holes). Input: `C cx cy r2 operand` per line.
 std::vector<GPolygonWH> boolean_components(rust::Str input, rust::Str op) {
   CGAL::General_polygon_set_2<GpsTraits> a, b;
+  // Straight-edge cap operands (`L` lines) accumulate here — one CCW edge list per
+  // operand — then build a general polygon each; circles (`C`) join immediately.
+  std::vector<std::pair<KPoint, KPoint>> seg_edges[2];
   std::istringstream lines{std::string(input)};
   std::string line;
   while (std::getline(lines, line)) {
     std::istringstream ts(line);
-    std::string kind, cx, cy, r2;
-    unsigned operand;
+    std::string kind;
     if (!(ts >> kind)) continue;
-    if (kind != "C") continue;
-    ts >> cx >> cy >> r2 >> operand;
-    GPolygon p = circle_polygon(parse_q(cx), parse_q(cy), parse_q(r2));
-    if (operand == 0) {
-      a.join(p);
-    } else {
-      b.join(p);
+    if (kind == "C") {
+      std::string cx, cy, r2;
+      unsigned operand;
+      ts >> cx >> cy >> r2 >> operand;
+      GPolygon p = circle_polygon(parse_q(cx), parse_q(cy), parse_q(r2));
+      (operand == 0 ? a : b).join(p);
+    } else if (kind == "L") {
+      std::string x1, y1, x2, y2;
+      unsigned operand;
+      ts >> x1 >> y1 >> x2 >> y2 >> operand;
+      if (operand > 1) continue;
+      seg_edges[operand].emplace_back(KPoint(parse_q(x1), parse_q(y1)),
+                                      KPoint(parse_q(x2), parse_q(y2)));
     }
   }
+  if (!seg_edges[0].empty()) a.join(segment_polygon(seg_edges[0]));
+  if (!seg_edges[1].empty()) b.join(segment_polygon(seg_edges[1]));
   CGAL::General_polygon_set_2<GpsTraits> r = a;
   std::string o(op);
   if (o == "xor") {

@@ -40,6 +40,31 @@ fine — this is a log, not a schema.
   newtypes minted only by a CAP-IN-D24 checker, so validity is carried in the type rather than
   re-checked at the boundary — lands with `closure`/M4, where the census already lives
   (`closure/src/lib.rs`). *2026-08-06 · deferred(→M4) · spec §8.5 CAP-IN-D24*
+  - **DONE (C1, milestone-c):** `certify_core::cap_in` mints `ValidatedD24` (opaque, private-field
+    `CanonicalEdge` cycle) only via `cap_in_d24`, which runs the full census — carrier identity by
+    exact `on_carrier` rational-function residual (a conic satisfies no line/circle identity →
+    `OffCarrier`, *falsely* not vacuously), finite interval, rational endpoints, closed cycle, and
+    A/B flank correspondence — returning a two-valued `Verdict`. The `closure::cap_in` searcher
+    projects a flank chart into the cap plane (`PiFrame`, `project`, `ruling_edge`, `sigma_edge`,
+    `line_through`): a cylinder ruling → line passes; a cone σ-cut → conic is refused. Consumed on
+    the LEDGE branch only. The `arrange2d::validate_d24` boundary guard stays as the totality
+    net; the type-level license supersedes it as the *input* gate. *2026-08-08 · done(C1) · spec §8.5*
+  - **DONE (C2, milestone-c) — regularity bundle + a SIDE/COLLAR scope split.** `certify_core::wedge`
+    checks REG-V ∧ WEDGE ∧ EXT-WEDGE at the crease. On the straight-crease **constant-V** scope
+    `|V|² = (1 − d)/(1 + d)` with `d = n_A·n_B`, so all three are **division-free `Rat` ring
+    comparisons** clearing `1 + d > 0` — no Sturm/span (simpler than `reg_q`, same `MarginSq`/`Verdict`
+    idiom). The searcher `closure::wedge::wedge_cert` evaluates the two flank charts' unit normals at
+    the crease stations; the checker re-derives `d` and verifies the normals are unit before clearing.
+    **Scope decision (feeds C3):** SIDE(b_J) and COLLAR are bundle members whose crease-local witness is
+    *implied* by REG-V ∧ WEDGE (`|b_J|² = 2(1 − d) > 0`; the `Q(s)` split is complementary for free) and
+    WEDGE ∧ EXT-WEDGE (quotient-wedge embeds) respectively — so C2 delivers three *independent*
+    crease-local atoms, not five. SIDE's independently-refutable "wrong-side" content (retained side
+    `G_i ≥ 0` over the actual support) is **TRIM-LOCAL** and COLLAR's cross-t **TUBE** padding by
+    `D²_collar = 4w²s_bev²|V|²/(1+s_bev²|V|²)` is **TUBE-LOCAL** — both need the `G_i`/tube fields, so
+    they land in C3 with their siblings, not fabricated as thin crease-local predicates here. `s_bev`
+    and the REG-V margin are authored treatment data threaded through the searcher call (not on
+    `Joint`), to be folded into the `{s_J, b_J, φ_J}` closure bundle at C6. *2026-08-08 · done(C2) ·
+    spec §8.5 :266/:382*
 
 - **CAP-OUT strict-manifold entry (`ShellReady`) — decide when SEW lands.** `ledge_dom_certified` is
   deliberately *relaxed*: a pinch (non-manifold vertex, e.g. a transverse `△`) is a valid, reported
@@ -49,7 +74,13 @@ fine — this is a log, not a schema.
   `pinches.is_empty()` and returns a type only a no-pinch region inhabits — so "forgot to check
   manifoldness" is a compile error and the proven `link_ok` is used in production. Deferred (not now)
   because the newtype's contract is SEW's to specify; building it blind risks guessing wrong.
-  *2026-08-06 · deferred(→M4) · `certify_core::arrange::link_ok`*
+  *2026-08-06 · deferred(→M4) · `certify_core::arrange::link_ok`* **· C4 review (2026-08-08):**
+  re-confirmed the deferral — `closure::ledge::ledge_cap_certified` (the C4 LEDGE driver) returns the
+  **relaxed** `Verdict<CapOut>` verbatim, reporting `pinches()` rather than gating on them, and there is
+  still no pre-SEW consumer (the cylinder-flank cap is convex ⇒ `pinches().is_empty()` holds, asserted
+  in the unit test, but the driver does not *require* it). The `ShellReady` newtype stays SEW's to mint;
+  C4 introduces no new checker (pure wiring over the proven `ledge_dom_certified` + CAP-OUT-LINK).
+  *2026-08-08 · still deferred(→M5/SEW) · `closure::ledge`*
 
 - **Front-half geometry is trusted — add per-pair D24 intersection certificates.** The
   arrangement checkers (`certify_core::arrange`) read only the *combinatorial* certificate — indices,
@@ -94,6 +125,18 @@ fine — this is a log, not a schema.
   Shipping an unvalidated coverage checker in the sprint meant to *fix* coverage was judged too risky.
   **(b)** the `trim_local`/`clip_dom` sign-event fiber census (needs the chart-domain sign-event
   polynomial). Both best done alongside C's searcher. *2026-08-06 · deferred(→C searcher) · spec §8.5 CLIP*
+  - **Producer landed (C3, milestone-c).** `closure::trim` is the missing CLIP producer: it builds
+    `b_J` and the retained-side field `G_i = (C_i − x₀)·b_i` as three σ-rational coefficients
+    (`g0`, `g_mu = ∂_μG`, `g_w = ∂_wG`) and drives all three reused checkers from a real joint —
+    `clip_w_cert`/`clip_mu_cert` (the cleared `g_w²`/`g_mu²` `reg_q` gauges), `trim_local_cert` (outer
+    corners + one confinement fiber), `sigma_deriv_corners` (the signed CLIP-σ leaf), and
+    `field.corners` → `clip_dom` (the fiber census). The 90° cylinder self-fold certifies TRIM-LOCAL +
+    CLIP-W end-to-end, so the checkers are no longer only hand-built fixtures. **Still deferred as
+    *searcher-completeness* refinements** (the checkers are sound regardless; this is about the searcher
+    *automatically* supplying complete inputs): **(a)** deriving the CLIP-μ failing sub-spans from the
+    *irrational* `R_W` roots (the caller currently supplies sub-spans), and **(b)** Sturm-isolating the
+    fiber sign-event σ's rather than sampling representative stations. *2026-08-08 · producer done,
+    coverage-completeness deferred · spec §8.5 CLIP*
 
 - **Multi-component cocycle gauge — the release-silent defaults are DONE; the gauge anchor remains (→8b).**
   *Done (debt-sprint item 2, `116ef78`):* `slab_locate` no longer silently defaults on the certified
@@ -240,6 +283,21 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **CGAL boolean oracle extended to segment (polygon) operands — the C4 LEDGE cap lane.** The
+  `cgal_boolean_*` shim only parsed disk operands (`C cx cy r2 operand`), so the LEDGE cap — a
+  straight-edge *polygon* (cylinder rulings + crease) — had no CGAL region differential. Added an
+  `L x1 y1 x2 y2 operand` boundary-edge line: per operand the edges accumulate into a CCW list and
+  build a `Gps_circle_segment_traits_2::Polygon_2` via **direct** `X_monotone_curve_2(source, target)`
+  construction (the traits' *linear*-segment ctor takes `Kernel::Point_2`, **not** the traits
+  `Point_2` — that was the compile fight). Direct construction is required over `make_x_monotone`
+  per-edge: the latter sorts each segment left-to-right and would flip right-to-left boundary edges,
+  breaking the loop. Two live gotchas: CGAL **hard-aborts** (`SIGABRT`, uncatchable) on a non-simple
+  polygon (a self-intersecting "bowtie" quad triggered it — the differential inputs must be verified
+  simple + CCW), and axis-aligned (vertical) edges hit CGAL's vertical-segment special case, so the
+  `ledge_cap_region_matches_cgal_polygon_boolean` cases use generic convex + simple-concave quads with
+  no axis-aligned edge. Face count **and** exact `a+b√d` boundary geometry now match CGAL for the C4
+  cap. *2026-08-08 · resolved · `difftest::cgal_shim` `boolean_components`*
+
 - **Developable ≠ constant curvature.** A cone's nonzero principal radius is `R₁ = ρ·tan β`
   (ρ = slant distance from the apex) — *not* constant; only the cylinder has constant `κ₁`.
   This is why the mesh κ-cap is the domain minimum (the tightest radius, nearest the apex),
@@ -259,7 +317,25 @@ fine — this is a log, not a schema.
   development is float — it never touches a predicate, so it stays inside spec invariant 1.
   *2026-08-08 · watching · `export::mesh3d::flat_development_is_isometric_along_rulings`*
 
+- **A genuine plane is not a `Chart` — the closure vertical slice is cylinder-first, not plane-first.**
+  C0 recon (M4/closure) found the approved plan's "two-planar-flank" / `plane()` assumption false at the
+  representation level: the spec (§, line 81) distinguishes a **`strip`** span (`|n′| > 0`) from a
+  **`planar`** span (`n′ ≡ 0`, a coefficient identity), and `geom::chart::Chart` implements only the
+  *strip* case — `Chart::new` debug-asserts `|n′|² ≢ 0` (`chart.rs:106`) and its whole field calculus
+  divides by `|n′|²`. A plane (constant normal) has `n′ ≡ 0`, so it cannot be a `Chart`, and `geom` has
+  no planar-span type. **Resolution:** the **cylinder** is the representable developable whose ruling
+  cut-edges are straight *lines* (so CAP-IN-D24 passes and both closure branches run) *and* it carries a
+  moving normal for the regularity bundle — so the M4 slice is built on it, with the **cone** as the
+  contrasting conic class. The genuine planar-hub §13 petal disk waits on the planar-span type.
+  *2026-08-08 · finding · `docs/closure-scoping.md §8`, `docs/vv-guide.md §8` (M4)*
+
 ## Deferred (by milestone)
+
+- **The planar-span representation (`n′ ≡ 0`) — a `PlanarChart` / relaxed `Chart` with its own
+  pedal/ruling calculus.** A `geom`/M1-adjacent feature; unblocks the *genuine* §13 planar-hub petal disk
+  (the closure slice uses the cylinder as the representable line-carrier stand-in meanwhile). See the
+  finding above.
+  *2026-08-08 · deferred(→M-C petal pass / M1-adjacent) · `crates/geom/src/chart.rs`*
 
 - **Petal conical-flank fixture + the `cx-cone-flank-trim-mu` corpus entry.** Spec §13
   geometry is not yet pinned; needed for closure/sew.

@@ -1,12 +1,17 @@
 //! The normative device instances (spec §13).
 //!
-//! Currently the **cone** ([`cone`]): a rational right circular cone with apex at the
-//! origin (`CONE(0)`) and half-angle ≈ 42° (`n·ẑ = 65/97 ≈ sin 42.07°`). The kernel is
-//! exact over ℚ, so the spec's β = 42° is realized by the nearest convenient rational
-//! cone; the device is a golden/validation instance, its geometry checked to tolerance.
+//! - The **cone** ([`cone`]): a rational right circular cone with apex at the origin
+//!   (`CONE(0)`) and half-angle ≈ 42° (`n·ẑ = 65/97 ≈ sin 42.07°`). The kernel is exact
+//!   over ℚ, so the spec's β = 42° is realized by the nearest convenient rational cone;
+//!   the device is a golden/validation instance, its geometry checked to tolerance.
+//! - A **second-angle cone** ([`cone_alt`], `n·ẑ ≡ 3/5`) and the device **cylinder**
+//!   ([`cylinder`], about the `x`-axis) — the generality corpus: two developable classes
+//!   and two cone angles, so nothing downstream is locked to the 42° cone.
 //!
-//! The petal conical flank (the general-case adversary) is not yet pinned by spec §13
-//! and lands with milestone C.
+//! The cylinder is the line-carrier flank the closure (M4) vertical slice is built on; a
+//! genuine plane (a `planar` span, `n′ ≡ 0`) is not yet a [`Chart`] and the petal conical
+//! flank is not yet pinned by spec §13 — both land in a later milestone-C pass
+//! (`docs/closure-scoping.md §8`).
 
 use certify_core::Verdict;
 use geom::chart::Chart;
@@ -21,6 +26,55 @@ use lattice::{Bignum, Interval, Poly, Rat, RatFunc, SturmChain};
 pub fn cone() -> Chart<Bignum> {
     let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
     let q = [poly(&[9]), poly(&[4]), poly(&[0, 4]), poly(&[0, 9])];
+    Chart::new(q, RatFunc::zero())
+}
+
+/// A **second-angle** rational cone (apex at the origin, `h ≡ 0`, `n·ẑ ≡ 3/5 ≈ sin 36.87°`) —
+/// a generality witness distinct from [`cone`]'s 65/97, so the closure pipe is demonstrably
+/// not locked to one half-angle.
+///
+/// Built from `q(σ) = (2, 1, σ, 2σ)`: `|q|² = 5(1 + σ²)` and the normal's `z`-numerator is
+/// `3(1 + σ²)`, so `n·ẑ ≡ 3/5` exactly, constant along and across rulings (the cone invariant).
+///
+/// ```
+/// use fixtures::devices::cone_alt;
+/// use lattice::{Bignum, Poly, Rat, RatFunc};
+///
+/// // n·ẑ ≡ 3/5 — a different cone than the device's 65/97.
+/// let nz = cone_alt().normal().comp(2);
+/// assert_eq!(nz, RatFunc::from_poly(Poly::<Bignum>::constant(Rat::new(3, 5))));
+/// ```
+pub fn cone_alt() -> Chart<Bignum> {
+    let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+    let q = [poly(&[2]), poly(&[1]), poly(&[0, 1]), poly(&[0, 2])];
+    Chart::new(q, RatFunc::zero())
+}
+
+/// The device **cylinder**: a right circular cylinder about the `x`-axis (`n_x ≡ 0`), from
+/// `q(σ) = (1, σ, 0, 0)` with `h ≡ 0`.
+///
+/// A cylinder is the representable developable whose ruling cut-edges are straight **lines**
+/// (spec §8.5, *cylinder-type ⇒ ruling lines*), so it is the line-carrier flank the closure
+/// (M4) vertical slice is built on — unlike a genuine plane, which is a `planar` span
+/// (`n′ ≡ 0`) not yet representable as a [`Chart`] (`docs/closure-scoping.md §8`), the cylinder
+/// still carries a moving normal to drive the per-flank regularity checks.
+///
+/// ```
+/// use fixtures::devices::cylinder;
+/// use geom::tags::{classify, Tag};
+/// use lattice::{Bignum, Rat};
+///
+/// match classify(&cylinder()) {
+///     Some(Tag::Cylinder { axis }) => assert_eq!(
+///         axis,
+///         [Rat::<Bignum>::from_i128(1), Rat::from_i128(0), Rat::from_i128(0)],
+///     ),
+///     other => panic!("expected a cylinder, got {other:?}"),
+/// }
+/// ```
+pub fn cylinder() -> Chart<Bignum> {
+    let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+    let q = [poly(&[1]), poly(&[0, 1]), poly(&[0]), poly(&[0])];
     Chart::new(q, RatFunc::zero())
 }
 
@@ -125,6 +179,31 @@ mod tests {
     fn cone_is_a_cone_through_the_origin() {
         let apex = [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)];
         assert_eq!(classify(&cone()), Some(Tag::Cone { apex }));
+    }
+
+    #[test]
+    fn cone_alt_is_a_distinct_angle_cone() {
+        // A cone through the origin, but a different half-angle than the device cone.
+        let apex = [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)];
+        assert_eq!(classify(&cone_alt()), Some(Tag::Cone { apex }));
+        // n·ẑ ≡ 3/5, not 65/97 — the generality witness.
+        let nz = cone_alt().normal().comp(2);
+        assert_eq!(
+            nz,
+            RatFunc::from_poly(poly(&[3])).div(&RatFunc::from_poly(poly(&[5])))
+        );
+        assert_ne!(nz, cone().normal().comp(2));
+    }
+
+    #[test]
+    fn cylinder_is_a_cylinder_about_x() {
+        // A second developable class: the normal traces the great circle n_x ≡ 0.
+        assert_eq!(
+            classify(&cylinder()),
+            Some(Tag::Cylinder {
+                axis: [Rat::from_i128(1), Rat::from_i128(0), Rat::from_i128(0)],
+            }),
+        );
     }
 
     fn cone_domain() -> ChartDomain<Bignum> {
