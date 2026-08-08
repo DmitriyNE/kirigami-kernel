@@ -37,6 +37,7 @@ pub mod arrange;
 pub mod cap_in;
 pub mod certify1d;
 pub mod gate;
+pub mod miter;
 pub mod sew;
 pub mod wedge;
 

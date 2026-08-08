@@ -37,11 +37,17 @@
 //! EXT-WEDGE) through `certify_core::wedge`. C3 adds the [`trim`] searcher — building the
 //! retained-side field `G_i = (C_i − x₀)·b_i` and driving the reused `certify_core::certify1d`
 //! CLIP-DOM ladder + TRIM-LOCAL (SIDE's wrong-side test is TRIM-LOCAL; COLLAR's TUBE padding is
-//! vacuous on the straight crease). The remaining per-branch certificates land per phase
-//! (C4–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
+//! vacuous on the straight crease). C4 adds the [`ledge`] branch — bridging a licensed cap
+//! boundary into `arrange2d`'s verified boolean (CAP-IN-D24 → LEDGE-DOM → CAP-OUT). C5 adds the
+//! [`miter`] branch — pairing the two flanks' projected cut edges into a clean miter and
+//! licensing it through `certify_core::miter` (MITER-FIT → MITER-EDGE-LEDGER → MITER-OUT), the
+//! disjoint alternative to the ledge. The remaining wiring (the `CLOSURE-CAP := MITER ∨ LEDGE`
+//! disjunction, C6) lands per phase (`docs/vv-guide.md §8`); no soundness decision is taken in
+//! this crate.
 
 pub mod cap_in;
 pub mod ledge;
+pub mod miter;
 pub mod trim;
 pub mod wedge;
 
