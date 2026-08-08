@@ -277,6 +277,30 @@ fine — this is a log, not a schema.
 
 ## Resolved
 
+- **Invariant 1 consolidated onto one type-aware dylint lint — the `xtask` token scan is gone.** *Done
+  2026-08-08 (branch `no-float-dylint-only`):* invariant 1 (no floats in certified paths) was guarded by
+  **two** overlapping lints — the `cargo xtask lint` `f32`/`f64` **token** scan and the `no_float` dylint
+  **literal** check. The token scan was comment-blind (it false-positived on Phase-1 doc prose — `` `f64`
+  cast ``, which prompted this) and couldn't tell lib code from test code, so it over-policed
+  `#[cfg(test)]`/`tests/` and needed a `testgen.rs` carve-out that only existed to escape it. Fix: extend
+  the dylint lint with `check_ty` (matches `Res::PrimTy(PrimTy::Float(_))`) so it now catches float
+  **types** — fn sigs, fields, casts, generic args (`Vec<f64>`), and type-relative paths (`f64::EPSILON`,
+  caught as a `Ty` node — no extra `check_expr` arm needed) — **and** the existing literal check; then
+  delete `fn no_float`, its report call, its unit test, and the now-dead `contains_word`/`is_word_byte`
+  helpers from `xtask`. The dylint lint is now the sole invariant-1 gate. UI fixture `ui/lattice.rs`
+  exercises all nine cases (3 literals + fn param/return + field + generic + cast + assoc). *Decision —
+  floats are allowed in tests:* the ban's real scope is the certified **predicate path** (AGENT.md inv 1;
+  vv-guide §6), not test code. A test float can't reach a predicate (`cfg(test)` is compiled out), and
+  floats are *useful* in tests — independent `f64` **oracles** (compute expected, assert the exact result
+  matches — the highest-value float use in an exact kernel), input **generators**, readable expectations.
+  Scoping to lib targets (`-p`, no `--all-targets`) is not a gap but the intended policy. *Accepted edge:*
+  dylint doesn't lint **doctests**, so a float in a `///` example is unguarded — style, not soundness (a
+  doctest float can't reach a certified predicate either). *Trade-off:* dylint is now the only gate, on the
+  rustup-nightly CI leg; a broken dylint toolchain surfaces as **red CI** (loud, blocks merge — not a
+  silent gap), and local float-checking now means running `cargo dylint`, not `cargo xtask lint` (noted in
+  AGENT.md). *2026-08-08 · resolved · `lints/no_float/`, `xtask/src/main.rs`, `ci.yml`, AGENT.md inv 1,
+  vv-guide §6*
+
 - **Debt sprint — 7 of 8 review-batch items paid down (branch `debt-sprint`).** *Done 2026-08-06:*
   **(1)** structured `RegFault` splitting bad-paperwork from real degeneracy through the REG-Q family +
   `ChartFault` (`5834d0e`). **(2)** `slab_locate` no longer silently defaults an unassigned cycle /
