@@ -5,8 +5,10 @@
 use crate::arrange::{LinkClass, cocycle_ok, link_iso_ok, link_ok, v_boundary};
 use crate::cap_in::edge_hands_off;
 use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
+use crate::gate::conj;
 use crate::miter::{Occupancy, OrderSign, eps_from_cmp};
 use crate::sew::occupancy_row;
+use crate::verdict::Verdict;
 
 // Soundness of the ★ CLIP-σ signed disjunction (spec §8.5). `clip_sigma` ranges the
 // **signed** affine `∂_σG` over four box corners and certifies a single sign; the row
@@ -450,4 +452,83 @@ fn wedge_clearing_sound() {
     // True: s_bev(1+s_bev)|V|² = (kn/kd)(Q/P) < 1 on WEDGE (P > 0) ⟺ kn·Q < kd·P.
     let ext_true = p > 0 && kn * q < kd * p;
     assert!(ext_accepts == ext_true);
+}
+
+// Soundness of the ★ gate verdict-propagation fold (spec §8.6; the first reusable
+// combinator the workspace's 121 hand-rolled 3-arm conjunction matches reduce to).
+// `conj` is the strong-Kleene conjunction: verified iff every conjunct is verified,
+// refuted (the first one) iff any is refuted, else unresolved (the first one). This
+// proves that biconditional exhaustively over the three-valued lattice for a bounded N,
+// AND that the selected witness/margin is the *leftmost* of its kind — the non-trivial
+// content, since the fold must return the first refuter even past an earlier unresolved
+// conjunct (a refuted conjunct dominates regardless of position), and the first
+// unresolved only when no refuter exists anywhere.
+//
+// Each conjunct is a 2-bit tag (0 = Verified, 1 = Refuted, 2 = Unresolved) with the
+// conjunct index as its witness/margin payload, so the returned payload reveals *which*
+// conjunct the fold selected. `N = 4` bounds the conjunct count (the one-joint slice folds
+// two conjuncts — VALID_complement + one CLOSURE_VALID — with headroom); the property is
+// combinatorial in the tags, so the bound loses nothing. `unwind(5)` bounds the ≤N loops
+// (the reference scans and `conj`'s own fold).
+#[kani::proof]
+#[kani::unwind(5)]
+fn gate_conj_sound() {
+    const N: usize = 4;
+    let tags: [u8; N] = kani::any();
+    let mut i = 0;
+    while i < N {
+        kani::assume(tags[i] < 3);
+        i += 1;
+    }
+
+    // Build the conjunct array; the payload is the index, so a returned witness/margin
+    // identifies the selected conjunct. `Verdict<i32, i32, i32>` is `Copy`.
+    let mut arr = [Verdict::<i32, i32, i32>::Verified(0); N];
+    i = 0;
+    while i < N {
+        arr[i] = match tags[i] {
+            0 => Verdict::Verified(i as i32),
+            1 => Verdict::Refuted(i as i32),
+            _ => Verdict::Unresolved(i as i32),
+        };
+        i += 1;
+    }
+
+    // Independent reference: the strong-Kleene outcome and the leftmost index of each kind.
+    let mut any_refuted = false;
+    let mut all_verified = true;
+    let mut first_refuted = N; // sentinel = "none"
+    let mut first_unresolved = N;
+    i = 0;
+    while i < N {
+        if tags[i] != 0 {
+            all_verified = false;
+        }
+        if tags[i] == 1 {
+            any_refuted = true;
+            if first_refuted == N {
+                first_refuted = i;
+            }
+        }
+        if tags[i] == 2 && first_unresolved == N {
+            first_unresolved = i;
+        }
+        i += 1;
+    }
+
+    let r = conj(arr);
+
+    // Soundness AND completeness: the three outcomes partition the tag space, and `conj`
+    // lands in exactly the cell the reference does (biconditional, both directions).
+    assert!(matches!(r, Verdict::Verified(())) == all_verified);
+    assert!(matches!(r, Verdict::Refuted(_)) == any_refuted);
+    assert!(matches!(r, Verdict::Unresolved(_)) == (!any_refuted && !all_verified));
+
+    // The selected witness/margin is the *leftmost* of its kind — the ordering guarantee.
+    if let Verdict::Refuted(w) = r {
+        assert!(w == first_refuted as i32);
+    }
+    if let Verdict::Unresolved(m) = r {
+        assert!(m == first_unresolved as i32);
+    }
 }
