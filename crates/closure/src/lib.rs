@@ -30,9 +30,12 @@
 //!
 //! # Status
 //!
-//! C0 skeleton: the joint **input** data model ([`Flank`], [`Joint`]). The derived fields and
-//! the per-branch certificates land per phase (C1–C6, `docs/vv-guide.md §8`); no soundness
-//! decision is taken in this crate.
+//! C0 skeleton: the joint **input** data model ([`Flank`], [`Joint`]). C1 adds the
+//! [`cap_in`] searcher — projecting a flank chart into the cap plane and licensing the
+//! result through `certify_core::cap_in`. The remaining per-branch certificates land per
+//! phase (C2–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
+
+pub mod cap_in;
 
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Rat};

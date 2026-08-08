@@ -34,6 +34,7 @@ pub mod margin;
 pub mod verdict;
 
 pub mod arrange;
+pub mod cap_in;
 pub mod certify1d;
 pub mod gate;
 pub mod sew;

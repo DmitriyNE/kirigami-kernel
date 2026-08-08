@@ -40,6 +40,15 @@ fine — this is a log, not a schema.
   newtypes minted only by a CAP-IN-D24 checker, so validity is carried in the type rather than
   re-checked at the boundary — lands with `closure`/M4, where the census already lives
   (`closure/src/lib.rs`). *2026-08-06 · deferred(→M4) · spec §8.5 CAP-IN-D24*
+  - **DONE (C1, milestone-c):** `certify_core::cap_in` mints `ValidatedD24` (opaque, private-field
+    `CanonicalEdge` cycle) only via `cap_in_d24`, which runs the full census — carrier identity by
+    exact `on_carrier` rational-function residual (a conic satisfies no line/circle identity →
+    `OffCarrier`, *falsely* not vacuously), finite interval, rational endpoints, closed cycle, and
+    A/B flank correspondence — returning a two-valued `Verdict`. The `closure::cap_in` searcher
+    projects a flank chart into the cap plane (`PiFrame`, `project`, `ruling_edge`, `sigma_edge`,
+    `line_through`): a cylinder ruling → line passes; a cone σ-cut → conic is refused. Consumed on
+    the LEDGE branch only. The `arrange2d::validate_d24` boundary guard stays as the totality
+    net; the type-level license supersedes it as the *input* gate. *2026-08-08 · done(C1) · spec §8.5*
 
 - **CAP-OUT strict-manifold entry (`ShellReady`) — decide when SEW lands.** `ledge_dom_certified` is
   deliberately *relaxed*: a pinch (non-manifold vertex, e.g. a transverse `△`) is a valid, reported
