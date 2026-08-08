@@ -25,4 +25,16 @@ rust::String occt_write_box_smoke(rust::Str path);
 // valid OCCT shape), NOT the external-kernel audit (Milestone D).
 rust::String occt_write_shell(rust::Str path, rust::Slice<const double> tris);
 
+// Milestone D differential oracle: sew the SAME shell `occt_write_shell` emits
+// (shared helper, no STEP write) and report OCCT's own topology facts as a
+// one-line `key=val` summary — `faces=<n> edges=<n> free=<n> nonmanifold=<n>
+// closed=<0|1> brepcheck=<0|1>`. `free` counts edges incident to exactly one
+// face (open boundary); `nonmanifold` counts edges incident to >=3 faces;
+// `closed` is BRep_Tool::IsClosed; `brepcheck` is BRepCheck_Analyzer::IsValid.
+// `tris` is a flat run of 9 doubles per triangle (length a positive multiple of
+// 9). Returns "error: <what>" on a malformed buffer or an OCCT failure. These
+// facts are COMPARED against the internal SEW-LINK / CAP-OUT verdict, never
+// trusted as the certificate ("oracle ∧ audit, never oracle-instead-of-audit").
+rust::String occt_shell_audit(rust::Slice<const double> tris);
+
 }  // namespace kirigami

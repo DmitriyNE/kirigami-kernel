@@ -65,6 +65,16 @@ jobs:
       - name: CGAL differential + degenerate-heavy stratum suite
         run: nix develop --command bash -c 'ARRANGE_STRATUM_WEIGHT=8 cargo nextest run -p arrange2d -p difftest --features cgal'
 
+      # M-D: the OpenCASCADE STEP export + differential oracle (the first CI run of
+      # `--features step` — builds the OCCT cxx shim). Covers the slice-1 one-joint
+      # STEP round-trip tests AND slice-2's `export::differential` harness (OCCT
+      # BRepCheck free-edge/manifold facts compared against the internal SEW-LINK /
+      # CAP-OUT verdict, oracle ∧ audit). The default `--workspace` legs above pass
+      # no `--features`, so `export::step` is compiled out there — this is its only
+      # CI coverage. `clippy` too, so the cxx `unsafe` surface is lint-gated.
+      - name: OCCT STEP export + differential oracle (--features step)
+        run: nix develop --command bash -c 'cargo clippy -p export --features step --all-targets -- -D warnings && cargo nextest run -p export --features step && cargo test -p export --features step --doc'
+
       # The vv-guide §6/§8 milestone gate (a LANDED ★ vv-matrix row must carry a
       # {Kani ∨ Lean ∨ runtime-checked-hypothesis} proof cell) now runs inside
       # `cargo xtask lint`, above (the `vv-matrix gate` check).

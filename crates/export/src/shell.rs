@@ -297,16 +297,22 @@ pub fn shell_from_closure<B: Backend>(
         FLANK_STEPS,
     ));
     if let CapWitness::Ledge(cap) = &valid.cap {
-        let chart = joint.flank_a().chart();
-        let sigma_star = &joint.crease().sigma_a;
-        // `s = |r₀|² = |n′₀|²` at the crease station — the single radical the whole cap
-        // shares. A singular crease (`s = 0`) has no cap plane, so the cap is skipped.
-        if let (Some(frame), Some(s)) = (
-            cap_frame(chart, sigma_star, w),
-            chart.normal_deriv_sq().eval(sigma_star),
-        ) {
-            if s.sign() != 0 {
-                tris.extend(cap_tris(cap, &frame, &s));
+        // Emit the cap face only when the certificate reports no pinch vertices.
+        // A pinched cap boundary is non-manifold — CAP-OUT-LINK excludes the pinch
+        // from `V_∂`, so fanning `face.outer` across it would emit a non-manifold
+        // face. `pinches().is_empty()` is that certificate precondition (read-only).
+        if cap.pinches().is_empty() {
+            let chart = joint.flank_a().chart();
+            let sigma_star = &joint.crease().sigma_a;
+            // `s = |r₀|² = |n′₀|²` at the crease station — the single radical the whole cap
+            // shares. A singular crease (`s = 0`) has no cap plane, so the cap is skipped.
+            if let (Some(frame), Some(s)) = (
+                cap_frame(chart, sigma_star, w),
+                chart.normal_deriv_sq().eval(sigma_star),
+            ) {
+                if s.sign() != 0 {
+                    tris.extend(cap_tris(cap, &frame, &s));
+                }
             }
         }
     }
