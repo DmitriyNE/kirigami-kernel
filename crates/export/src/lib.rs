@@ -7,3 +7,18 @@
 //! `{semantics, status}`. Floats live only in this crate behind the
 //! `diagnostics` feature (plots and viewers) — never in a value that carries a
 //! certificate.
+
+/// Exact→`f64` approximation for diagnostics rendering — the single, quarantined
+/// bridge from the certified-exact number types to display floats.
+#[cfg(feature = "diagnostics")]
+pub mod approx;
+
+/// 2D SVG rendering of certified boolean regions (extractor + `<svg>` + gallery page).
+/// Builds on [`approx`] — floats touch the display only, never a predicate.
+#[cfg(feature = "diagnostics")]
+pub mod svg;
+
+/// 3D rendering of the certified cone strip (surface sampler + Three.js viewer page).
+/// Builds on [`approx`] — floats touch the display only, never a predicate.
+#[cfg(feature = "diagnostics")]
+pub mod mesh3d;

@@ -342,6 +342,63 @@ impl<B: Backend> Rat<B> {
             Rat(RatRepr::Slow(r)) => B::rat_is_zero(r),
         }
     }
+
+    /// The reduced numerator and denominator as base-10 strings — for
+    /// **diagnostics rendering only** (the float cast lives in the `export` crate;
+    /// the certified tiers stay float-free, spec invariant 1). The denominator is
+    /// always positive, with the sign carried on the numerator. The result is
+    /// tier-independent — a `Fast` and a `Slow` holding the same rational render
+    /// identically — so this observes the *value*, never the opaque tier.
+    ///
+    /// ```
+    /// use lattice::{Bignum, Rat};
+    /// let r = Rat::<Bignum>::new(-6, 4); // reduces to -3/2
+    /// assert_eq!(r.numer_denom_decimal(), ("-3".into(), "2".into()));
+    /// ```
+    pub fn numer_denom_decimal(&self) -> (alloc::string::String, alloc::string::String) {
+        use alloc::string::ToString;
+        match self {
+            Rat(RatRepr::Fast(x)) => (x.num.to_string(), x.den.to_string()),
+            Rat(RatRepr::Slow(r)) => (
+                int_to_dec_string::<B>(&B::rat_numer(r)),
+                int_to_dec_string::<B>(&B::rat_denom(r)),
+            ),
+        }
+    }
+}
+
+/// Render a backend integer to a base-10 string. Float-free (diagnostics helper
+/// behind [`Rat::numer_denom_decimal`]); repeated truncating division by ten,
+/// each remainder a single digit `0..=9`.
+fn int_to_dec_string<B: Backend>(a: &B::Int) -> alloc::string::String {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    let sign = B::int_sign(a);
+    if sign == 0 {
+        return String::from("0");
+    }
+    let mut mag = if sign < 0 {
+        B::int_neg(a)
+    } else {
+        B::int_clone(a)
+    };
+    let ten = B::int_from_i128(10);
+    let mut digits: Vec<u8> = Vec::new();
+    while !B::int_is_zero(&mag) {
+        let (q, r) = B::int_divrem(&mag, &ten);
+        // `r` is in `0..=9`, so it always fits `i128`; `unwrap_or` keeps this panic-free.
+        let d = B::int_try_to_i128(&r).unwrap_or(0);
+        digits.push(b'0' + (d as u8));
+        mag = q;
+    }
+    let mut s = String::new();
+    if sign < 0 {
+        s.push('-');
+    }
+    for &d in digits.iter().rev() {
+        s.push(d as char);
+    }
+    s
 }
 
 impl<B: Backend> Clone for Rat<B> {

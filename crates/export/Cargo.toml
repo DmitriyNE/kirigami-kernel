@@ -13,6 +13,7 @@ publish.workspace = true
 diagnostics = []
 
 [dependencies]
+lattice.workspace = true
 certify-core.workspace = true
 geom.workspace = true
 arrange2d.workspace = true
@@ -20,3 +21,19 @@ closure.workspace = true
 sew.workspace = true
 gate.workspace = true
 develop.workspace = true
+
+[dev-dependencies]
+# The `gallery` example + the `svg` unit/doc tests render the public demo shapes.
+fixtures.workspace = true
+
+# Emits `gallery.html`: `cargo run --example gallery --features diagnostics`. Gated on the
+# `diagnostics` feature so the default build/clippy never compiles the float renderer.
+[[example]]
+name = "gallery"
+required-features = ["diagnostics"]
+
+# Emits `cone.html`: `cargo run --example cone --features diagnostics` (add `--vendor <dir>`
+# to inline Three.js for offline use). Gated on `diagnostics` like the gallery renderer.
+[[example]]
+name = "cone"
+required-features = ["diagnostics"]
