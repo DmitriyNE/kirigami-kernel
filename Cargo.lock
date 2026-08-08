@@ -296,6 +296,7 @@ dependencies = [
  "certify-core",
  "closure",
  "develop",
+ "fixtures",
  "gate",
  "geom",
  "lattice",

@@ -21,3 +21,13 @@ closure.workspace = true
 sew.workspace = true
 gate.workspace = true
 develop.workspace = true
+
+[dev-dependencies]
+# The `gallery` example + the `svg` unit/doc tests render the public demo shapes.
+fixtures.workspace = true
+
+# Emits `gallery.html`: `cargo run --example gallery --features diagnostics`. Gated on the
+# `diagnostics` feature so the default build/clippy never compiles the float renderer.
+[[example]]
+name = "gallery"
+required-features = ["diagnostics"]

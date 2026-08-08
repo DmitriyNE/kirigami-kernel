@@ -22,3 +22,7 @@ result-*
 
 # Charon/Aeneas extraction intermediates (models are committed as certify-check/Lattice/*.lean)
 *.llbc
+
+# Diagnostics output: the `export` gallery example regenerates this on demand
+# (`cargo run --example gallery --features diagnostics`); never committed.
+/gallery.html

@@ -12,3 +12,8 @@
 /// bridge from the certified-exact number types to display floats.
 #[cfg(feature = "diagnostics")]
 pub mod approx;
+
+/// 2D SVG rendering of certified boolean regions (extractor + `<svg>` + gallery page).
+/// Builds on [`approx`] — floats touch the display only, never a predicate.
+#[cfg(feature = "diagnostics")]
+pub mod svg;
