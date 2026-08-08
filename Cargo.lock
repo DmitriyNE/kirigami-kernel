@@ -671,6 +671,8 @@ dependencies = [
  "arrange2d",
  "certify-core",
  "closure",
+ "geom",
+ "lattice",
 ]
 
 [[package]]

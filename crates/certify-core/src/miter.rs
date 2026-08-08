@@ -202,18 +202,19 @@ pub enum MiterFault<B: Backend = Bignum> {
     },
 }
 
-/// `u × v` for 2D vectors — the scalar `u_x·v_y − u_y·v_x`.
-fn cross2<B: Backend>(u: &(Rat<B>, Rat<B>), v: &(Rat<B>, Rat<B>)) -> Rat<B> {
+/// `u × v` for 2D vectors — the scalar `u_x·v_y − u_y·v_x`. Shared with [`crate::sew`]'s
+/// exact collinearity checks (`pub(crate)` — one definition, no duplicate).
+pub(crate) fn cross2<B: Backend>(u: &(Rat<B>, Rat<B>), v: &(Rat<B>, Rat<B>)) -> Rat<B> {
     u.0.mul(&v.1).sub(&u.1.mul(&v.0))
 }
 
 /// `u · v` for 2D vectors.
-fn dot2<B: Backend>(u: &(Rat<B>, Rat<B>), v: &(Rat<B>, Rat<B>)) -> Rat<B> {
+pub(crate) fn dot2<B: Backend>(u: &(Rat<B>, Rat<B>), v: &(Rat<B>, Rat<B>)) -> Rat<B> {
     u.0.mul(&v.0).add(&u.1.mul(&v.1))
 }
 
 /// `p − q`.
-fn sub2<B: Backend>(p: &(Rat<B>, Rat<B>), q: &(Rat<B>, Rat<B>)) -> (Rat<B>, Rat<B>) {
+pub(crate) fn sub2<B: Backend>(p: &(Rat<B>, Rat<B>), q: &(Rat<B>, Rat<B>)) -> (Rat<B>, Rat<B>) {
     (p.0.sub(&q.0), p.1.sub(&q.1))
 }
 

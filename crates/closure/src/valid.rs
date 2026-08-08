@@ -1,5 +1,5 @@
 //! The closure-level obligation: the `CLOSURE-CAP(j)` disjunction (`MITER-BRANCH ∨
-//! LEDGE-BRANCH`) and the `CLOSURE_VALID(j)` conjunction (spec §8.5), **minus SEW** (SEW is M5).
+//! LEDGE-BRANCH`) and the full `CLOSURE_VALID(j)` conjunction (spec §8.5), SEW included.
 //!
 //! This is the C6 capstone — the wiring that composes the C1–C5 searchers into the single
 //! treatment verdict. It mints no new soundness decision: every conjunct is still decided by a
@@ -17,7 +17,7 @@
 //! region by the §6 boolean. The disjunction certifies iff *either* branch does; a caller may
 //! offer one branch or both.
 //!
-//! # CLOSURE_VALID(j) minus SEW — the conjunction
+//! # CLOSURE_VALID(j) — the conjunction
 //!
 //! [`closure_valid`] assembles, from a [`Joint`] and its authored treatment parameters:
 //!
@@ -27,14 +27,17 @@
 //!   σ-support (the CLIP-W rung of [`clip`](certify_core::certify1d::clip));
 //! - **SIDE(b_J) ∧ TRIM-LOCAL** — each flank's retained side is uniformly `G_i > 0` over its
 //!   support (the outer-fiber positivity of [`trim_local`](certify_core::certify1d::trim_local));
-//! - **CLOSURE-CAP** — the disjunction above.
+//! - **CLOSURE-CAP** — the disjunction above;
+//! - **SEW = SEW-EDGES ∧ SEW-LINK** — the shared final conjunct of both cap branches: the sewn
+//!   shell's edge-occupancy ledger and every boundary vertex's embedded spherical link, audited by
+//!   the pure [`sew_edges`](certify_core::sew::sew_edges) / [`sew_link`](certify_core::sew::sew_link)
+//!   checkers over the searcher's [`SewInput`].
 //!
 //! The remaining conjuncts are discharged by the **straight-crease scope** the M4 slice lives
 //! on: FLANK-FIT, TUBE-LOCAL, TUBE-SELF and REMOTE/VERTEX are vacuous where `κ_max = 0` (zero
 //! tube width, spec §13; see [`crate::trim`] and [`crate::wedge`] module docs), and the
-//! straight-crease scope predicate is the population itself. **SEW** — the shared M5 obligation
-//! of both cap branches — is out of this plan; `closure_valid` certifies `CLOSURE_VALID(j)`
-//! *up to* SEW.
+//! straight-crease scope predicate is the population itself. With SEW in, `closure_valid`
+//! certifies the full `CLOSURE_VALID(j)` — a watertight sewn shell.
 //!
 //! Nothing keys on the flank *type*: [`closure_valid`] threads two arbitrary
 //! [`geom::chart::Chart`]s' fields through the same checkers, and every fault falls out of a
@@ -46,6 +49,9 @@ use certify_core::Verdict;
 use certify_core::cap_in::ValidatedD24;
 use certify_core::certify1d::{ClipVerdict, RegFault, clip, trim_local};
 use certify_core::miter::{CutEnds, MiterOutFault, MiterOutWitness, Occupancy, OrderSign};
+use certify_core::sew::{
+    EdgeRecord, FaceGermSpecies, SewCounts, SewEdgesFault, SewLinkFault, sew_edges, sew_link,
+};
 use certify_core::wedge::{WedgeFault, WedgeWitness, regularity};
 use lattice::{Backend, Bignum, Interval, Rat};
 
@@ -121,8 +127,9 @@ pub enum CapFault<B: Backend = Bignum> {
     },
 }
 
-/// `CLOSURE-CAP(j)`, the `MITER-BRANCH ∨ LEDGE-BRANCH` disjunction (spec §8.5, SEW deferred to M5): certify the
-/// closure cap by whichever disjunct succeeds, attempting the clean miter first.
+/// `CLOSURE-CAP(j)`, the `MITER-BRANCH ∨ LEDGE-BRANCH` disjunction (spec §8.5): certify the
+/// closure cap by whichever disjunct succeeds, attempting the clean miter first. SEW — the shared
+/// final conjunct of both branches — is applied once by [`closure_valid`], not here.
 ///
 /// The MITER branch ([`clean_miter_cap`](crate::miter::clean_miter_cap)) is tried when a
 /// [`MiterInput`] is offered; a refusal falls through to the LEDGE branch
@@ -193,6 +200,49 @@ pub fn closure_cap<B: Backend>(
     })
 }
 
+/// One boundary vertex's **SEW-LINK** inputs: the embedded spherical link (its incident rays in
+/// stored rotation order vs geometric azimuth order) and the FACE-GERM species cover of its
+/// selected sectors. The searcher builds these from the sewn shell's arrangement
+/// (`arrange2d::boolean::vertex_link` + the germ classification); [`sew_link`] audits them.
+pub struct VertexLink {
+    /// `Link_emitted` — the incident rays in stored rotation-walk order.
+    pub emitted: Vec<usize>,
+    /// `Link_geometric` — the same rays in geometric azimuth-sort order.
+    pub geometric: Vec<usize>,
+    /// The cyclic sector-selected mask, aligned to `geometric`.
+    pub sectors: Vec<bool>,
+    /// The FACE-GERM species of each *selected* sector, in azimuth order.
+    pub species: Vec<FaceGermSpecies>,
+}
+
+/// The searcher's **SEW** inputs — the shared final conjunct of both CLOSURE-CAP branches
+/// (`SEW = SEW-EDGES ∧ SEW-LINK`, spec §8.5). The EDGE-OCCUPANCY records + declared incidence
+/// counts (SEW-EDGES) and every boundary vertex's embedded link (SEW-LINK). Built by the sewing
+/// searcher (the `sew` crate) from the certified cap; audited here by the pure `certify_core::sew`
+/// checkers. An empty/internal joint declares zero counts and zero records, and has no boundary
+/// vertices — `SewInput::default`.
+pub struct SewInput<B: Backend = Bignum> {
+    /// The emitted EDGE-OCCUPANCY records of the sewn shell.
+    pub records: Vec<EdgeRecord<B>>,
+    /// The declared source-side incidence counts (both directions).
+    pub counts: SewCounts,
+    /// The boundary vertices' embedded links (the SEW-LINK domain is `V_∂`).
+    pub links: Vec<VertexLink>,
+}
+
+impl<B: Backend> Default for SewInput<B> {
+    fn default() -> Self {
+        SewInput {
+            records: Vec::new(),
+            counts: SewCounts {
+                cap_to_flank: 0,
+                flank_to_flank: 0,
+            },
+            links: Vec::new(),
+        }
+    }
+}
+
 /// The authored **treatment parameters** of a closure joint — everything the searcher supplies
 /// beyond the geometric [`Joint`] itself. Threaded into [`closure_valid`].
 ///
@@ -225,6 +275,8 @@ pub struct ClosureTreatment<'a, B: Backend = Bignum> {
     pub cap_miter: Option<MiterInput<'a, B>>,
     /// The forced-ledge disjunct input (if offered).
     pub cap_ledge: Option<&'a ValidatedD24<B>>,
+    /// The SEW inputs — the sewn shell's edge records + counts and boundary-vertex links.
+    pub sew: SewInput<B>,
 }
 
 /// The evidence a [`closure_valid`] `Verified` carries: the regularity witness and which
@@ -237,7 +289,7 @@ pub struct ClosureValid<B: Backend = Bignum> {
     pub cap: CapWitness<B>,
 }
 
-/// Which conjunct of `CLOSURE_VALID(j)` (minus SEW) refused.
+/// Which conjunct of `CLOSURE_VALID(j)` refused.
 pub enum ClosureFault<B: Backend = Bignum> {
     /// A crease normal, bisector, or pedal was singular at a crease station — the searcher
     /// could not build the certificate.
@@ -261,16 +313,27 @@ pub enum ClosureFault<B: Backend = Bignum> {
     },
     /// CLOSURE-CAP certified neither disjunct.
     Cap(CapFault<B>),
+    /// SEW-EDGES refused the sewn shell's edge-occupancy ledger (a pinch, a bad identity, or a
+    /// count mismatch).
+    SewEdges(SewEdgesFault),
+    /// SEW-LINK refused a boundary vertex's embedded spherical link.
+    SewLink {
+        /// The offending vertex's index into [`SewInput::links`].
+        vertex: usize,
+        /// The link refutation.
+        fault: SewLinkFault,
+    },
 }
 
-/// `CLOSURE_VALID(j)` **minus SEW** (spec §8.5): the closure-level conjunction that certifies a
-/// joint's treatment up to the M5 sewing obligation.
+/// `CLOSURE_VALID(j)` (spec §8.5): the closure-level conjunction that certifies a joint's treatment
+/// as a watertight sewn shell.
 ///
 /// Assembles, short-circuiting to the first refutation: the regularity bundle, CLIP-DOM and
-/// TRIM-LOCAL for both flanks' retained-side fields `G_A`/`G_B`, and CLOSURE-CAP. The remaining
-/// spec conjuncts (FLANK-FIT, TUBE-LOCAL/SELF, REMOTE, VERTEX) are vacuous on the straight-crease
-/// scope (`κ_max = 0`; module docs). Returns [`Verified`](Verdict::Verified) with a
-/// [`ClosureValid`] witness, or [`Refuted`](Verdict::Refuted) naming the failed conjunct.
+/// TRIM-LOCAL for both flanks' retained-side fields `G_A`/`G_B`, CLOSURE-CAP, and finally
+/// **SEW = SEW-EDGES ∧ SEW-LINK** over the searcher's [`SewInput`]. The remaining spec conjuncts
+/// (FLANK-FIT, TUBE-LOCAL/SELF, REMOTE, VERTEX) are vacuous on the straight-crease scope
+/// (`κ_max = 0`; module docs). Returns [`Verified`](Verdict::Verified) with a [`ClosureValid`]
+/// witness, or [`Refuted`](Verdict::Refuted) naming the failed conjunct.
 pub fn closure_valid<B: Backend>(
     joint: &Joint<B>,
     t: &ClosureTreatment<'_, B>,
@@ -342,6 +405,23 @@ pub fn closure_valid<B: Backend>(
         Verdict::Unresolved(()) => return Verdict::Unresolved(()),
     };
 
+    // SEW = SEW-EDGES ∧ SEW-LINK — the shared final conjunct of both cap branches: audit the sewn
+    // shell's edge-occupancy ledger, then every boundary vertex's embedded spherical link.
+    match sew_edges(&t.sew.records, t.sew.counts) {
+        Verdict::Verified(_) => {}
+        Verdict::Refuted(f) => return Verdict::Refuted(ClosureFault::SewEdges(f)),
+        Verdict::Unresolved(()) => return Verdict::Unresolved(()),
+    }
+    for (vertex, l) in t.sew.links.iter().enumerate() {
+        match sew_link(&l.emitted, &l.geometric, &l.sectors, &l.species) {
+            Verdict::Verified(_) => {}
+            Verdict::Refuted(fault) => {
+                return Verdict::Refuted(ClosureFault::SewLink { vertex, fault });
+            }
+            Verdict::Unresolved(()) => return Verdict::Unresolved(()),
+        }
+    }
+
     Verdict::Verified(ClosureValid { wedge, cap })
 }
 
@@ -352,6 +432,7 @@ mod tests {
     use crate::miter::segment_cut_ends;
     use crate::{Crease, Flank, JointSign};
     use certify_core::cap_in::{FlankId, cap_in_d24};
+    use certify_core::sew::{EdgeIdentity, EdgeProvenance};
     use geom::chart::Chart;
     use lattice::{Poly, RatFunc};
 
@@ -398,8 +479,47 @@ mod tests {
             hi: Rat::new(hi.0, hi.1),
         }
     }
+    /// A SEW-passing packet for the sewn fold: one flank-to-flank clean-miter seam edge
+    /// (opposite-side boundary-boundary occupancy, a coincident PAIR-IDENTICAL pair) and one
+    /// boundary vertex whose link is a trivially-consistent one-arc boundary (`Link_emitted`
+    /// identical to `Link_geometric`, its selected sectors covered by flank germs).
+    fn sew_ok() -> SewInput<Bignum> {
+        let seam = EdgeRecord {
+            occupancy: Occupancy {
+                a_l: true,
+                a_r: false,
+                b_l: false,
+                b_r: true,
+                frame: false,
+            },
+            provenance: EdgeProvenance::FlankToFlank,
+            identity: EdgeIdentity::PairIdentical {
+                a_start: p(0, 0),
+                a_end: p(4, 0),
+                b_start: p(0, 0),
+                b_end: p(4, 0),
+                eps: OrderSign::Preserving,
+            },
+        };
+        let link = VertexLink {
+            emitted: vec![0, 1, 2, 3],
+            geometric: vec![0, 1, 2, 3],
+            sectors: vec![true, true, false, false],
+            species: vec![FaceGermSpecies::Flank, FaceGermSpecies::Flank],
+        };
+        SewInput {
+            records: vec![seam],
+            counts: SewCounts {
+                cap_to_flank: 0,
+                flank_to_flank: 1,
+            },
+            links: vec![link],
+        }
+    }
+
     /// The treatment scaffold shared by both cap-branch tests — regularity + trim params tuned
-    /// to the 90° fold (from the C2/C3 known-passing boxes). Caller supplies the cap disjunct.
+    /// to the 90° fold (from the C2/C3 known-passing boxes) and a SEW-passing packet. Caller
+    /// supplies the cap disjunct.
     fn treatment<'a>(
         cap_miter: Option<MiterInput<'a, Bignum>>,
         cap_ledge: Option<&'a ValidatedD24<Bignum>>,
@@ -417,6 +537,7 @@ mod tests {
             clip_margin: MarginSq(Rat::new(1, 32)),
             cap_miter,
             cap_ledge,
+            sew: sew_ok(),
         }
     }
     /// The MITER cap inputs a [`diamond`] hands to a [`MiterInput`]: the cut edges, the claimed
@@ -576,6 +697,62 @@ mod tests {
         assert!(matches!(
             closure_valid(&flat, &t),
             Verdict::Refuted(ClosureFault::Regularity(_))
+        ));
+    }
+
+    #[test]
+    fn closure_valid_refuses_a_pinch_occupancy() {
+        // A regular, cap-certified fold, but the sewn shell carries an opposite-quadrant pinch —
+        // both sides of flank A occupied, neither of B — a non-manifold transverse link SEW-EDGES
+        // must reject even though every geometric conjunct upstream passed.
+        let d24 = square_d24();
+        let mut t = treatment(None, Some(&d24));
+        t.sew.records = vec![EdgeRecord {
+            occupancy: Occupancy {
+                a_l: true,
+                a_r: true,
+                b_l: false,
+                b_r: false,
+                frame: false,
+            },
+            provenance: EdgeProvenance::FlankToFlank,
+            identity: EdgeIdentity::PairIdentical {
+                a_start: p(0, 0),
+                a_end: p(4, 0),
+                b_start: p(0, 0),
+                b_end: p(4, 0),
+                eps: OrderSign::Preserving,
+            },
+        }];
+        t.sew.counts = SewCounts {
+            cap_to_flank: 0,
+            flank_to_flank: 1,
+        };
+        assert!(matches!(
+            closure_valid(&fold(), &t),
+            Verdict::Refuted(ClosureFault::SewEdges(SewEdgesFault::Pinch { .. }))
+        ));
+    }
+
+    #[test]
+    fn closure_valid_refuses_a_crossing_link() {
+        // The shell's edges sew, but a boundary vertex's link is `a→c→b→d`: the same rays as the
+        // emitted order, so a multiset/count test passes — yet not a cyclic rotation of it, so the
+        // embedding crosses. SEW-LINK (via link_iso_ok) refuses what a count check would miss.
+        let d24 = square_d24();
+        let mut t = treatment(None, Some(&d24));
+        t.sew.links = vec![VertexLink {
+            emitted: vec![0, 1, 2, 3],
+            geometric: vec![0, 2, 1, 3],
+            sectors: vec![true, true, false, false],
+            species: vec![FaceGermSpecies::Flank, FaceGermSpecies::Flank],
+        }];
+        assert!(matches!(
+            closure_valid(&fold(), &t),
+            Verdict::Refuted(ClosureFault::SewLink {
+                fault: SewLinkFault::LinkMismatch,
+                ..
+            })
         ));
     }
 }
