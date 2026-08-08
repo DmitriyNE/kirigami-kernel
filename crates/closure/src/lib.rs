@@ -32,10 +32,13 @@
 //!
 //! C0 skeleton: the joint **input** data model ([`Flank`], [`Joint`]). C1 adds the
 //! [`cap_in`] searcher — projecting a flank chart into the cap plane and licensing the
-//! result through `certify_core::cap_in`. The remaining per-branch certificates land per
-//! phase (C2–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
+//! result through `certify_core::cap_in`. C2 adds the [`wedge`] regularity searcher —
+//! extracting the two crease normals and licensing the fan bundle (REG-V / WEDGE /
+//! EXT-WEDGE) through `certify_core::wedge`. The remaining per-branch certificates land per
+//! phase (C3–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
 
 pub mod cap_in;
+pub mod wedge;
 
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Rat};

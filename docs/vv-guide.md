@@ -543,14 +543,24 @@ disjunction of constructions. The one ★ soundness-critical decision is **MITER
   (extends the `validate_d24` corpus).
 
 **Per-flank regularity bundle (C2) — met when:**
-- New `certify_core` checkers over the joint fields, reusing the `reg_q`/`slab_s0` squared-margin
-  gauge: **REG-V** (`|V|² ≥ m > 0` on the open support + fan sector sub-π on [0,1]; `V=0` deletes the
-  record), **WEDGE** (per-t wedge embedding), **EXT-WEDGE** (`s_bev(1+s_bev)|V|² < 1`), **SIDE(b_J)**
-  (one-sided-w sign + trim complementarity on `{Q⋛0}`), **COLLAR** (quotient-wedge embedding; straight-
-  crease scope). `TUBE-LOCAL`/`TUBE-SELF` are the total-discharge / vacuous straight-crease case
-  (`κ_max = 0`, §13), recorded as such.
-- Verified: each refutes on a perturbed field (bad `|V|²` margin, over-π fan sector, `s_bev` past the
-  EXT-WEDGE bound, wrong-side `SIDE`), matching the `MarginSq` refutation pattern.
+- New `certify_core::wedge` checkers over the joint's two **unit crease normals**, in the
+  `MarginSq`/`Verdict` idiom. On the straight-crease (**constant-V**) scope the fan is carried by
+  `V = (n_A × n_B)/(1 + n_A·n_B)`, so `|V|² = (1 − d)/(1 + d)` with `d = n_A·n_B`, and every gauge is a
+  **division-free ring comparison** clearing the WEDGE denominator `1 + d > 0` (no Sturm, no span): 
+  **WEDGE** (`1 + d > 0` — fan sector sub-π on [0,1]), **REG-V** (`|V|² ≥ m > 0`, cleared to
+  `(1 − d) − m(1 + d) ≥ 0`; `V=0` deletes the record), **EXT-WEDGE** (`s_bev(1+s_bev)|V|² < 1`, cleared
+  to `(1 + d) − s_bev(1+s_bev)(1 − d) > 0` — the [0,1] WEDGE bound does *not* certify the extension).
+- **SIDE(b_J)** and **COLLAR** are decomposed by scope. Their **crease-local witness** is delivered by
+  the C2 bundle: SIDE's oriented bisector is nonzero (`|b_J|² = 2(1 − d) > 0`) and the bevel split
+  `Q(s)=1−2s−|V|²s²` is complementary (`Q(0)>0>Q(1)` free) once REG-V ∧ WEDGE hold; COLLAR's
+  quotient-wedge embeds once WEDGE ∧ EXT-WEDGE hold. Their **independently-refutable, support-scoped**
+  content — SIDE's "wrong-side" test (retained side `G_i ≥ 0` over the actual flank support) and
+  COLLAR's cross-t **TUBE** padding by `D_collar` — needs the `G_i`/tube fields, so it lands with its
+  sibling checkers in **C3** (TRIM-LOCAL) and TUBE-LOCAL, noted there. `TUBE-SELF` is the vacuous
+  straight-crease case (`κ_max = 0`, §13).
+- Verified: each atom refutes on a perturbed field — below-margin `|V|²` (zero-dihedral), over-π fan
+  sector (antipodal normals), `s_bev` past the EXT-WEDGE bound — plus malformed-input rejection
+  (non-unit normal, non-positive margin, negative bevel), matching the `MarginSq` refutation pattern.
 
 **The trim/clip searcher (C3) — met when:**
 - `closure` builds `G_A`/`G_B` from the joint and drives the **reused** `certify1d` CLIP-DOM ladder

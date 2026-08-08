@@ -49,6 +49,22 @@ fine — this is a log, not a schema.
     `line_through`): a cylinder ruling → line passes; a cone σ-cut → conic is refused. Consumed on
     the LEDGE branch only. The `arrange2d::validate_d24` boundary guard stays as the totality
     net; the type-level license supersedes it as the *input* gate. *2026-08-08 · done(C1) · spec §8.5*
+  - **DONE (C2, milestone-c) — regularity bundle + a SIDE/COLLAR scope split.** `certify_core::wedge`
+    checks REG-V ∧ WEDGE ∧ EXT-WEDGE at the crease. On the straight-crease **constant-V** scope
+    `|V|² = (1 − d)/(1 + d)` with `d = n_A·n_B`, so all three are **division-free `Rat` ring
+    comparisons** clearing `1 + d > 0` — no Sturm/span (simpler than `reg_q`, same `MarginSq`/`Verdict`
+    idiom). The searcher `closure::wedge::wedge_cert` evaluates the two flank charts' unit normals at
+    the crease stations; the checker re-derives `d` and verifies the normals are unit before clearing.
+    **Scope decision (feeds C3):** SIDE(b_J) and COLLAR are bundle members whose crease-local witness is
+    *implied* by REG-V ∧ WEDGE (`|b_J|² = 2(1 − d) > 0`; the `Q(s)` split is complementary for free) and
+    WEDGE ∧ EXT-WEDGE (quotient-wedge embeds) respectively — so C2 delivers three *independent*
+    crease-local atoms, not five. SIDE's independently-refutable "wrong-side" content (retained side
+    `G_i ≥ 0` over the actual support) is **TRIM-LOCAL** and COLLAR's cross-t **TUBE** padding by
+    `D²_collar = 4w²s_bev²|V|²/(1+s_bev²|V|²)` is **TUBE-LOCAL** — both need the `G_i`/tube fields, so
+    they land in C3 with their siblings, not fabricated as thin crease-local predicates here. `s_bev`
+    and the REG-V margin are authored treatment data threaded through the searcher call (not on
+    `Joint`), to be folded into the `{s_J, b_J, φ_J}` closure bundle at C6. *2026-08-08 · done(C2) ·
+    spec §8.5 :266/:382*
 
 - **CAP-OUT strict-manifold entry (`ShellReady`) — decide when SEW lands.** `ledge_dom_certified` is
   deliberately *relaxed*: a pinch (non-manifold vertex, e.g. a transverse `△`) is a valid, reported
