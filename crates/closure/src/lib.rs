@@ -34,10 +34,14 @@
 //! [`cap_in`] searcher — projecting a flank chart into the cap plane and licensing the
 //! result through `certify_core::cap_in`. C2 adds the [`wedge`] regularity searcher —
 //! extracting the two crease normals and licensing the fan bundle (REG-V / WEDGE /
-//! EXT-WEDGE) through `certify_core::wedge`. The remaining per-branch certificates land per
-//! phase (C3–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
+//! EXT-WEDGE) through `certify_core::wedge`. C3 adds the [`trim`] searcher — building the
+//! retained-side field `G_i = (C_i − x₀)·b_i` and driving the reused `certify_core::certify1d`
+//! CLIP-DOM ladder + TRIM-LOCAL (SIDE's wrong-side test is TRIM-LOCAL; COLLAR's TUBE padding is
+//! vacuous on the straight crease). The remaining per-branch certificates land per phase
+//! (C4–C6, `docs/vv-guide.md §8`); no soundness decision is taken in this crate.
 
 pub mod cap_in;
+pub mod trim;
 pub mod wedge;
 
 use geom::chart::Chart;

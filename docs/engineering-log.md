@@ -119,6 +119,18 @@ fine — this is a log, not a schema.
   Shipping an unvalidated coverage checker in the sprint meant to *fix* coverage was judged too risky.
   **(b)** the `trim_local`/`clip_dom` sign-event fiber census (needs the chart-domain sign-event
   polynomial). Both best done alongside C's searcher. *2026-08-06 · deferred(→C searcher) · spec §8.5 CLIP*
+  - **Producer landed (C3, milestone-c).** `closure::trim` is the missing CLIP producer: it builds
+    `b_J` and the retained-side field `G_i = (C_i − x₀)·b_i` as three σ-rational coefficients
+    (`g0`, `g_mu = ∂_μG`, `g_w = ∂_wG`) and drives all three reused checkers from a real joint —
+    `clip_w_cert`/`clip_mu_cert` (the cleared `g_w²`/`g_mu²` `reg_q` gauges), `trim_local_cert` (outer
+    corners + one confinement fiber), `sigma_deriv_corners` (the signed CLIP-σ leaf), and
+    `field.corners` → `clip_dom` (the fiber census). The 90° cylinder self-fold certifies TRIM-LOCAL +
+    CLIP-W end-to-end, so the checkers are no longer only hand-built fixtures. **Still deferred as
+    *searcher-completeness* refinements** (the checkers are sound regardless; this is about the searcher
+    *automatically* supplying complete inputs): **(a)** deriving the CLIP-μ failing sub-spans from the
+    *irrational* `R_W` roots (the caller currently supplies sub-spans), and **(b)** Sturm-isolating the
+    fiber sign-event σ's rather than sampling representative stations. *2026-08-08 · producer done,
+    coverage-completeness deferred · spec §8.5 CLIP*
 
 - **Multi-component cocycle gauge — the release-silent defaults are DONE; the gauge anchor remains (→8b).**
   *Done (debt-sprint item 2, `116ef78`):* `slab_locate` no longer silently defaults on the certified

@@ -563,12 +563,25 @@ disjunction of constructions. The one ★ soundness-critical decision is **MITER
   (non-unit normal, non-positive margin, negative bevel), matching the `MarginSq` refutation pattern.
 
 **The trim/clip searcher (C3) — met when:**
-- `closure` builds `G_A`/`G_B` from the joint and drives the **reused** `certify1d` CLIP-DOM ladder
-  (`clip`/`clip_dom`: CLIP-W → CLIP-μ → per-zero {CLIP-a | CLIP-σ | reject}, margins squared, CLIP-σ
-  signed) and **TRIM-LOCAL** (`trim_local`: `G_i > 0` at all four outer-fiber corners + interior
-  confinement). Closes the engineering-log "CLIP μ-coverage + fiber-census — producer is M4/closure".
-- Verified: a synthetic joint trim certifies through CLIP-a and CLIP-σ; a re-entrant trim is caught by
-  TRIM-LOCAL; the `cx-sigma-mu-crossing` unsoundness stays `Unresolved` (no four-corner `|·|`).
+- New `closure::trim` **searcher** (no new checker — it is the missing *producer* for the reused
+  `certify1d` checkers). It builds `b_J = s_J·(n_A − n_B)` and the retained-side field
+  `G_i = (C_i − x₀)·b_i` as its three σ-rational coefficients in the affine `(μ, w)` expansion —
+  `g0 = (pedal − x₀)·b`, `g_mu = ruling·b = ∂_μG`, `g_w = normal·b = ∂_wG` (`b_A = b_J`, `b_B = −b_J`)
+  — then hands the checkers their certificates: **TRIM-LOCAL** (`trim_local`: `G_i > 0` at the four
+  corners of each outer support fiber + a single-fiber interior confinement `reg_q`), the **CLIP-DOM
+  ladder** (`clip`: CLIP-W = `g_w² ≥ m` and CLIP-μ = `g_mu² ≥ m` cleared `reg_q` gauges → per-zero
+  {CLIP-a | signed CLIP-σ from `∂_σG` corners | reject}), and the **CLIP-DOM census** (`clip_dom` /
+  `classify_fiber` over `G_i` box corners). Closes the engineering-log "CLIP μ-coverage + fiber-census
+  — producer is M4/closure".
+- **SIDE(b_J)'s support-level wrong-side test IS TRIM-LOCAL's corner positivity** (a `G_i ≤ 0` outer
+  fiber refutes with `RegFault::OuterFiber`) — no separate checker. **COLLAR's cross-`t` TUBE padding
+  `D²_collar` is vacuous** on the straight-crease scope (`κ_max = 0`, §13), so TUBE-LOCAL / TUBE-SELF
+  discharge totally — the C2 deferrals land here with no new runtime obligation.
+- Verified: a 90° cylinder self-fold (`g_mu ≡ 0` — crease-parallel rulings, so `G_i` is w-only)
+  certifies through TRIM-LOCAL and CLIP-W; extending the support past the `g_w` root puts an outer
+  fiber on the deleted side ⇒ `trim_local` refutes (the SIDE catch); `clip_dom` reports a connected
+  retained support. The signed CLIP-σ leaf keeps the `cx-sigma-mu-crossing` slip `Unresolved`
+  (no four-corner `|·|`).
 
 **The LEDGE branch end-to-end (C4) — met when:**
 - On the forced-ledge cylinder-flank variant: CAP-IN-D24 (C1) → **reuse** `arrange2d::boolean::
