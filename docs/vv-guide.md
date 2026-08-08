@@ -932,6 +932,64 @@ parallel rulings off a nonzero pedal). (2) The Ledge cap's 2D outline is still t
 square** (now lifted isometrically), not a real projected flank cut; the `v_boundary()`-guided cap + the
 external-kernel differential oracle is the next M-D slice, now unblocked by the real crease.
 
+### Milestone D (slice 2) acceptance criteria (the OpenCASCADE differential oracle)
+
+*Authored before implementation, per the rule above.* Slice 2 picks up **thread 2's oracle half**: wire
+OpenCASCADE's `BRepCheck` as a **differential oracle** compared against the internal verdict, and make
+`export` **consume** the certified `v_boundary()` / `pinches()` (read-only) rather than ignore them. The
+geometry-changing watertight **V_∂-guided seam** — an indexed-shell FFI channel so OCCT welds by identity
+not float tolerance, and a `SewInput` derived from the emitted geometry — is deferred to **slice 3**: a
+geometrically-coincident seam does not exist in the slice-1 fixture at the sampled band (the 2:1
+ruling-speed overhang above means the two crease edges share the *line* `L` but not the same extent), so
+building one now would fabricate topology the "oracle ∧ audit" doctrine forbids.
+
+- **The oracle, compared not trusted — met when:** a strings-only `occt_shell_audit` (in the existing
+  `export` `step`-feature `cxx` shim, alongside `occt_write_shell`) sews the *same* triangle soup and
+  reports **extended** `BRepCheck` facts beyond today's bare `IsValid()` — free-edge count (edges incident
+  to exactly one face, via `TopExp::MapShapesAndAncestors`), non-manifold-edge count (≥3 incident faces),
+  shell closedness (`BRep_Tool::IsClosed`), and the analyzer's own validity — as a typed `ShellAudit`. A
+  test-only `export::differential` harness (`#[cfg(all(test, feature = "step"))]`, mirroring
+  `difftest::differential` for CGAL) then **compares** it against the internal verdict: the agreement
+  conjuncts (`closure_valid → Verified`; internal `pinches().len() == 0` ⟺ OCC `nonmanifold_edges == 0`;
+  OCC `IsValid()`) are asserted equal, and the **documented divergence** — OCC `free_edges > 0` ∧
+  `closed == false` while the internal certificate says manifold — is asserted as *expected*, mirroring
+  `difftest`'s `boolean_xor_pinch_documented`. The divergence's two causes are recorded in the assertion's
+  doc comment: (i) the 2:1 overhang leaves the sampled-offset flank edges collinear-but-not-coextensive,
+  and (ii) the fixture's `SewInput` is hand-authored and *decoupled* from the emitted triangles. The
+  external kernel is thus **oracle ∧ audit, never oracle-instead-of-audit** (§8.2:332; spec "no kernel
+  CSG" P5:16/§11:470/STEP:464; `implementation-plan-v1.md:75`) — it *surfaces* the slice-1 scope note as a
+  CI-enforced fact, never overturns the certificate.
+- **Certificate consumption — met when:** `export` reads the certified `v_boundary()` / `pinches()` off
+  `valid.cap` (the `CapOut` carried on `CapWitness::Ledge`) — in the comparison layer (the internal-verdict
+  summary), and in the **emitted path** by gating the Ledge `cap_tris` fan in `shell_from_closure` on
+  `valid.cap.pinches().is_empty()` (a real certificate precondition before a cap face is emitted). No
+  fabricated seam: consumption is read-only via existing accessors; the geometry-derived `SewInput` and
+  indexed shell are slice 3.
+- **CI coverage — met when:** the `export` `step`-gated suite runs **in CI** (a dedicated
+  `nix develop --features step` leg — `cargo nextest run -p export --features step` + the `step` doctests),
+  mirroring the CGAL oracle leg. This closes a gap the default `--workspace` legs leave open (the `step`
+  module compiles out without the feature), and retroactively covers slice 1's `one_joint_*` STEP tests.
+
+**Generality (hard gate) — met when:** the oracle, the audit wrapper, and all certificate consumption live
+**only** in `export` (the non-certified float/FFI tier); no certified crate (`certify-core`, `arrange2d`,
+`closure`, `sew`) changes, and no device constant is added — the comparison reads existing accessors.
+
+**Documentation (a merge gate) — met when:** the new public surface (`ShellAudit`, `audit_shell`, the
+bridge fn) is documented usage-first with `-W missing_docs = 0`, and the slice-1 §8 scope note (1) is
+updated to point at this slice's oracle as its resolution.
+
+**Deferred to slice 3 / later** (documented, not dropped): the watertight **V_∂-guided seam** — sampling
+the `w = 0` crease loop (or an explicit shared crease edge), an **indexed-shell FFI channel** (shared
+vertices + edge identity so OCCT welds by identity not float tolerance), and a `SewInput` **derived from
+the emitted geometry** via the untrusted constructors `records_from_miter_ledger` / `arrangement_bits` /
+`check_vertex_link` (already present in the `sew` crate); the STEP-reloaded (round-trip) audit variant; the
+petal atlas / multi-joint assembly (M-D later); the petal cone-flank joint (blocked spec §13);
+`VALID_material` / FRESH / `develop` (→ M-E).
+
+**Status: D2.0 — criteria authored** (this section; dispositions in `docs/engineering-log.md`). D2.1–D2.3
+pending: the `occt_shell_audit` shim + audit wrapper (GO/NO-GO on the OCCT header/toolkit link), the
+`export::differential` harness + emitted-path `pinches()` gate, and the V&V corpus + CI leg + doc gate.
+
 ---
 
 ## 9. Sequencing
