@@ -23,6 +23,25 @@
 //! `[w⁻, w⁺]` — where the patch is a genuine 2D face, faithful to the same interval
 //! the closure was certified over.
 //!
+//! # The M4 fixture is a certification artifact, not a physical joint
+//!
+//! The `fixtures::closure_joint` builders exist to make the *algebra* return
+//! `Verified`; their geometry is deliberately thin, so the assembled shell
+//! round-trips through STEP but does **not** render as a recognizable folded panel:
+//! - with `h ≡ 0` the "cylinder" chart has pedal `c ≡ 0`, so its rulings all pass
+//!   through the origin — geometrically a **cone** (apex at the origin), and the flank
+//!   strips taper toward that apex rather than staying parallel;
+//! - both flanks share that one chart, rendered over the two **disjoint** retained
+//!   σ-supports `[0, ¼]` and `[½, 1]` (the C2/C3 known-passing boxes, chosen to
+//!   certify — not to tile), so a middle band is undrawn and the two flank crease
+//!   edges (σ = 0 and σ = 1) never coincide;
+//! - the Ledge cap's 2D boundary is the CAP-IN-D24 **licensing square**, not the real
+//!   projected flank cut, lifted through the non-orthonormal frame of `lift`.
+//!
+//! A physically-authored joint (a true `h ≠ 0` cylinder, two distinct flanks meeting
+//! at a shared crease, a cap from the real projected cut) is M-D work — the treatment
+//! boxes must be re-tuned so the new geometry still certifies.
+//!
 //! # Example
 //!
 //! ```
@@ -185,6 +204,14 @@ fn surd_to_rat<B: Backend>(s: &Surd<B>) -> Option<Rat<B>> {
 /// Lift a cap-plane point `(x, y)` back into 3-space through `frame`:
 /// `origin + x·u + y·v`, in pure rational arithmetic. `None` if either coordinate is
 /// irrational (not represented in this slice).
+///
+/// **The frame is not orthonormal:** `u = ruling r₀` is used raw, and `|r₀| = |n′₀|`
+/// is generally ≠ 1 (e.g. `2` for the M4 `q = 1 + σi` chart at the crease), so a
+/// cap-plane distance along `u` is scaled by `|r₀|` in 3-space — a lifted square comes
+/// out stretched. Normalizing `u` would need `√|r₀|²`, a radical this exact-rational
+/// slice does not carry, so the raw ruling is kept and the distortion is accepted.
+/// Faithful (metric-preserving) cap lifting is deferred with the curved-crease atlas
+/// (M-D); today's cap is topologically placed, not metrically scaled.
 fn lift<B: Backend>(pt: &Point2<B>, frame: &PiFrame<B>) -> Option<Vertex<B>> {
     let x = surd_to_rat(&pt.x)?;
     let y = surd_to_rat(&pt.y)?;

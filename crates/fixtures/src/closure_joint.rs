@@ -8,6 +8,17 @@
 //! flank type — the fold is two cylinder charts, differing from a cone only in their
 //! quaternion spline.
 //!
+//! # This is a certification fixture, not a physically-authored joint
+//!
+//! It is tuned to make the *algebra* return `Verified`, not to look like a device. Its
+//! assembled shell round-trips through STEP but does not render as a recognizable fold:
+//! with `h ≡ 0` the "cylinder" is geometrically a **cone** (pedal `c ≡ 0`, rulings
+//! through the origin); **both** flanks are that one chart over the *disjoint* retained
+//! supports `σ ∈ [0, ¼]` and `[½, 1]` (a visible gap, and the two crease edges never
+//! meet); and [`ledge_d24`]'s square is the CAP-IN-D24 *licensing* polygon, not the
+//! real projected flank cut. A physical fixture is M-D work — see
+//! `export::shell` and `docs/vv-guide.md §8`.
+//!
 //! The three builders compose:
 //!
 //! ```

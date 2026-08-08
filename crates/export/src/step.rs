@@ -48,7 +48,7 @@ pub use ffi::occt_write_box_smoke;
 
 /// Flatten an exact [`ShellRecord`] into the writer's float buffer — 9 `f64` per
 /// triangle (`v0.xyz, v1.xyz, v2.xyz`), each exact `a + b√d` vertex cast through the
-/// quarantined [`surd_to_f64`](crate::approx::surd_to_f64) bridge. This is the single
+/// quarantined [`surd_to_f64`] bridge. This is the single
 /// point where the exact shell becomes floating-point, at the last moment before OCCT.
 pub fn record_to_floats<B: Backend>(rec: &ShellRecord<B>) -> Vec<f64> {
     let mut out = Vec::with_capacity(rec.len() * 9);
