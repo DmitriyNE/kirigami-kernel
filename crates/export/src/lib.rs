@@ -17,3 +17,8 @@ pub mod approx;
 /// Builds on [`approx`] — floats touch the display only, never a predicate.
 #[cfg(feature = "diagnostics")]
 pub mod svg;
+
+/// 3D rendering of the certified cone strip (surface sampler + Three.js viewer page).
+/// Builds on [`approx`] — floats touch the display only, never a predicate.
+#[cfg(feature = "diagnostics")]
+pub mod mesh3d;

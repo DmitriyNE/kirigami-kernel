@@ -31,3 +31,9 @@ fixtures.workspace = true
 [[example]]
 name = "gallery"
 required-features = ["diagnostics"]
+
+# Emits `cone.html`: `cargo run --example cone --features diagnostics` (add `--vendor <dir>`
+# to inline Three.js for offline use). Gated on `diagnostics` like the gallery renderer.
+[[example]]
+name = "cone"
+required-features = ["diagnostics"]
