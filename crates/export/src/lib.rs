@@ -37,3 +37,10 @@ pub mod mesh3d;
 #[cfg(feature = "step")]
 #[allow(unsafe_code)] // the cxx bridge — the sole quarantined unsafe surface
 pub mod step;
+
+/// Test-only differential-oracle harness (Milestone D slice 2): compares OCCT's
+/// `BRepCheck` topology facts about the emitted shell against the internal
+/// SEW-LINK / CAP-OUT verdict — "oracle ∧ audit, never oracle-instead-of-audit".
+/// Mirrors `difftest`'s CGAL harness. Off the default build (needs system OCCT).
+#[cfg(all(test, feature = "step"))]
+mod differential;
