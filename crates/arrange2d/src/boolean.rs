@@ -983,6 +983,32 @@ pub fn links_consistent<B: Backend>(d: &Dcel<B>) -> bool {
     (0..d.verts.len()).all(|v| link_iso_ok(&link_emitted(d, v), &outgoing_sorted(d, v)))
 }
 
+/// The per-vertex link data the SEW-LINK layer (`sew` / `certify_core::sew`) consumes at a
+/// boundary vertex `v` under selection `sel`: `(Link_emitted, Link_geometric, sectors)`.
+///
+/// - `Link_emitted` — the incident outgoing half-edges in the **stored** rotation order (the
+///   DCEL walk).
+/// - `Link_geometric` — the same half-edges in **geometric azimuth-sort** order.
+/// - `sectors` — the cyclic sector-selected mask, aligned to the azimuth order (the selection
+///   bit of the face on each ray's left).
+///
+/// All three are indexed by the same outgoing half-edges, so `Link_emitted.len() ==
+/// sectors.len()` (one ray per sector). This exposes the same three internals CAP-OUT-LINK and
+/// [`links_consistent`] are built from, so the sewing searcher reuses arrange2d's geometry
+/// rather than re-deriving the azimuth sort. The manifold/isomorphism checks themselves are the
+/// reused `certify_core::arrange::{classify_link, link_iso_ok}`.
+pub fn vertex_link<B: Backend>(
+    d: &Dcel<B>,
+    sel: &[bool],
+    v: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<bool>) {
+    (
+        link_emitted(d, v),
+        outgoing_sorted(d, v),
+        sector_mask(d, sel, v),
+    )
+}
+
 /// The number of **separating** edges (selected | unselected) for a selection — the
 /// emitted boundary edges (spec §6 step 7: exactly one selected and one unselected side).
 pub fn separating_count<B: Backend>(d: &Dcel<B>, sel: &[bool]) -> usize {

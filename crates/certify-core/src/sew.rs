@@ -27,7 +27,7 @@ use core::cmp::Ordering;
 
 use lattice::{Backend, Bignum, Rat};
 
-use crate::arrange::{LinkClass, classify_link};
+use crate::arrange::{LinkClass, classify_link, link_iso_ok};
 use crate::miter::{Occupancy, OrderSign, cross2, dot2, sub2};
 use crate::verdict::Verdict;
 
@@ -452,6 +452,162 @@ pub fn sew_edges<B: Backend>(
     })
 }
 
+/// The FACE-GERM species of a sector (a face incident to a `V_∂` vertex) — which germ
+/// certificate licenses that sector in the spherical link (spec §8.5 SEW-LINK). The straight-
+/// crease slice licenses three; the `Apex` tangent-cone germ is deferred (see [`sew_link`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FaceGermSpecies {
+    /// **Cap** sector — the crease plane Π with the CAP-OUT-LINK sector germ (cited via
+    /// [`classify_link`]).
+    Cap,
+    /// **Flank** sector — SLAB ∧ CLIP-DOM corner ∧ `N_i^cut`; the chart immersion *is* the germ
+    /// certificate.
+    Flank,
+    /// **Fan** sector — WEDGE ∧ REG-V.
+    Fan,
+    /// **Apex** (tangent-cone / fold-vertex) sector — **deferred** to the curved/petal second
+    /// pass and refused by [`sew_link`]. A straight crease has no fold-vertex, so a well-formed
+    /// straight-crease joint never produces one; presenting one is out-of-slice and rejected
+    /// ("no branch ⇒ reject") rather than certified.
+    Apex,
+}
+
+/// The SEW-LINK verdict evidence at a `V_∂` vertex: the number of selected sectors whose germ
+/// species was licensed (the size of the certified boundary link).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SewLink {
+    /// The number of selected sectors in the certified link.
+    pub sectors: usize,
+}
+
+/// Why SEW-LINK refused a vertex's link (spec §8.5 SEW-LINK).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SewLinkFault {
+    /// `emitted` and `sectors` disagree on the ray count — a malformed link (one ray per sector).
+    RayArity {
+        /// Number of emitted rays.
+        rays: usize,
+        /// Number of sectors.
+        sectors: usize,
+    },
+    /// The vertex is not in `V_∂`: its sector mask is not one proper cyclic interval
+    /// ([`classify_link`] ≠ [`LinkClass::Boundary`]) — exterior, interior, or a pinch. Asking a
+    /// non-boundary vertex for a link cycle is what the edge layer forbids.
+    NotBoundary {
+        /// The offending vertex's [`LinkClass`].
+        class: LinkClass,
+    },
+    /// The number of germ species does not equal the number of selected sectors (one germ per
+    /// selected face).
+    SpeciesArity {
+        /// Number of selected sectors.
+        selected: usize,
+        /// Number of species supplied.
+        given: usize,
+    },
+    /// A selected sector's germ species is not a licensed straight-crease branch (an
+    /// [`Apex`](FaceGermSpecies::Apex) — deferred).
+    UnlicensedSpecies {
+        /// The offending sector's position among the selected sectors.
+        sector: usize,
+    },
+    /// `Link_emitted ≇ Link_geometric`: the stored rotation walk is not an identity-fixing
+    /// oriented cyclic isomorphism of the geometric azimuth sort — a crossing link (e.g.
+    /// `a → c → b → d`) that passes every per-edge count yet is not the true cyclic order.
+    LinkMismatch,
+}
+
+/// The number of selected sectors (a while-loop count — extraction-friendly, panic-free).
+fn selected_count(sectors: &[bool]) -> usize {
+    let mut n = 0usize;
+    let mut i = 0;
+    while i < sectors.len() {
+        if sectors[i] {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// SEW-LINK at one `V_∂` vertex (spec §8.5): certify its **embedded spherical link**.
+///
+/// The rays are the incident outgoing half-edges; `emitted` is their stored rotation walk and
+/// `geometric` the geometric azimuth sort of the *same* rays. `sectors` is the cyclic
+/// sector-selected mask (aligned to `emitted`, one bit per ray — the face on its left), and
+/// `species` the FACE-GERM species of the selected sectors, in cyclic order. The checker:
+///
+/// 1. **Ray/sector arity** — `emitted.len() == sectors.len()` (one ray per sector);
+/// 2. **Domain** — the vertex is in `V_∂`: `sectors` is one proper cyclic interval
+///    ([`classify_link`] = [`LinkClass::Boundary`]); exterior / interior / pinch are refused;
+/// 3. **Germ dispatch** — one species per selected sector, each a licensed straight-crease
+///    branch ([`Cap`](FaceGermSpecies::Cap) / [`Flank`](FaceGermSpecies::Flank) /
+///    [`Fan`](FaceGermSpecies::Fan); an [`Apex`](FaceGermSpecies::Apex) is refused — "no branch ⇒
+///    reject");
+/// 4. **The audit** — `Link_emitted ≅ Link_geometric` via the reused, Kani-validated
+///    [`link_iso_ok`]: an identity-fixing oriented cyclic isomorphism, not a mere multiset match
+///    (this is what refuses a count-passing `a → c → b → d` crossing).
+///
+/// The sector germ *sub*-certificates (SLAB / CLIP-DOM / WEDGE / REG-V / the CAP-OUT-LINK
+/// sector) are discharged upstream by the M4 CLOSURE-CAP branches and cited by species tag here,
+/// not re-derived. Total: `Verified` / `Refuted`, never `Unresolved`.
+///
+/// ```
+/// use certify_core::sew::{sew_link, FaceGermSpecies, SewLink};
+/// use certify_core::Verdict;
+///
+/// // A boundary vertex: four rays, the two selected sectors forming one cyclic interval.
+/// let emitted = [10usize, 11, 12, 13];
+/// let geometric = [11usize, 12, 13, 10]; // a cyclic rotation of `emitted` — same order.
+/// let sectors = [true, true, false, false];
+/// let species = [FaceGermSpecies::Cap, FaceGermSpecies::Flank];
+/// let v = sew_link(&emitted, &geometric, &sectors, &species);
+/// assert_eq!(v, Verdict::Verified(SewLink { sectors: 2 }));
+///
+/// // The same rays wired as a crossing walk `a → c → b → d` — count-passing, but refused.
+/// let crossing = [10usize, 12, 11, 13];
+/// assert!(matches!(sew_link(&crossing, &geometric, &sectors, &species), Verdict::Refuted(_)));
+/// ```
+pub fn sew_link(
+    emitted: &[usize],
+    geometric: &[usize],
+    sectors: &[bool],
+    species: &[FaceGermSpecies],
+) -> Verdict<SewLink, SewLinkFault, ()> {
+    // 1. One ray per sector.
+    if emitted.len() != sectors.len() {
+        return Verdict::Refuted(SewLinkFault::RayArity {
+            rays: emitted.len(),
+            sectors: sectors.len(),
+        });
+    }
+    // 2. Domain: only a V_∂ vertex (one proper cyclic interval) carries a link obligation.
+    let class = classify_link(sectors);
+    if class != LinkClass::Boundary {
+        return Verdict::Refuted(SewLinkFault::NotBoundary { class });
+    }
+    // 3. One germ species per selected sector, each a licensed straight-crease branch.
+    let selected = selected_count(sectors);
+    if species.len() != selected {
+        return Verdict::Refuted(SewLinkFault::SpeciesArity {
+            selected,
+            given: species.len(),
+        });
+    }
+    let mut i = 0;
+    while i < species.len() {
+        if matches!(species[i], FaceGermSpecies::Apex) {
+            return Verdict::Refuted(SewLinkFault::UnlicensedSpecies { sector: i });
+        }
+        i += 1;
+    }
+    // 4. The audit: emitted rotation walk ≅ geometric azimuth sort (refuses a crossing link).
+    if !link_iso_ok(emitted, geometric) {
+        return Verdict::Refuted(SewLinkFault::LinkMismatch);
+    }
+    Verdict::Verified(SewLink { sectors: selected })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,6 +996,109 @@ mod tests {
                 frame: false
             }),
             IdentityMode::Provenance
+        );
+    }
+
+    // ---- SEW-LINK ----
+
+    #[test]
+    fn sew_link_accepts_boundary_vertex() {
+        // Four rays; the two selected sectors form one cyclic interval ⇒ Boundary. Emitted is a
+        // cyclic rotation of geometric — same order.
+        let emitted = [10usize, 11, 12, 13];
+        let geometric = [12usize, 13, 10, 11];
+        let sectors = [true, true, false, false];
+        let species = [FaceGermSpecies::Cap, FaceGermSpecies::Flank];
+        assert_eq!(
+            sew_link(&emitted, &geometric, &sectors, &species),
+            Verdict::Verified(SewLink { sectors: 2 })
+        );
+    }
+
+    #[test]
+    fn sew_link_refuses_crossing() {
+        // Same rays and sectors, but the emitted walk crosses (a→c→b→d): count-passing, refused.
+        let emitted = [10usize, 12, 11, 13];
+        let geometric = [10usize, 11, 12, 13];
+        let sectors = [true, true, false, false];
+        let species = [FaceGermSpecies::Cap, FaceGermSpecies::Flank];
+        assert_eq!(
+            sew_link(&emitted, &geometric, &sectors, &species),
+            Verdict::Refuted(SewLinkFault::LinkMismatch)
+        );
+    }
+
+    #[test]
+    fn sew_link_refuses_non_boundary() {
+        // A pinch: two disjoint selected intervals ⇒ classify_link = Pinch, v ∉ V_∂.
+        let emitted = [1usize, 2, 3, 4];
+        let geometric = [1usize, 2, 3, 4];
+        let sectors = [true, false, true, false];
+        let species = [FaceGermSpecies::Cap, FaceGermSpecies::Flank];
+        assert_eq!(
+            sew_link(&emitted, &geometric, &sectors, &species),
+            Verdict::Refuted(SewLinkFault::NotBoundary {
+                class: LinkClass::Pinch
+            })
+        );
+        // Interior (all selected) is also outside V_∂.
+        assert_eq!(
+            sew_link(
+                &[1usize, 2],
+                &[1usize, 2],
+                &[true, true],
+                &[FaceGermSpecies::Cap, FaceGermSpecies::Flank]
+            ),
+            Verdict::Refuted(SewLinkFault::NotBoundary {
+                class: LinkClass::Interior
+            })
+        );
+    }
+
+    #[test]
+    fn sew_link_refuses_ray_sector_arity() {
+        assert_eq!(
+            sew_link(
+                &[1usize, 2, 3],
+                &[1usize, 2, 3],
+                &[true, false],
+                &[FaceGermSpecies::Cap]
+            ),
+            Verdict::Refuted(SewLinkFault::RayArity {
+                rays: 3,
+                sectors: 2
+            })
+        );
+    }
+
+    #[test]
+    fn sew_link_refuses_species_arity() {
+        // One selected sector but two species supplied.
+        assert_eq!(
+            sew_link(
+                &[1usize, 2, 3],
+                &[1usize, 2, 3],
+                &[true, false, false],
+                &[FaceGermSpecies::Cap, FaceGermSpecies::Flank]
+            ),
+            Verdict::Refuted(SewLinkFault::SpeciesArity {
+                selected: 1,
+                given: 2
+            })
+        );
+    }
+
+    #[test]
+    fn sew_link_refuses_apex_species() {
+        // A deferred apex germ on a selected sector ⇒ "no branch ⇒ reject".
+        assert_eq!(
+            sew_link(
+                &[1usize, 2, 3, 4],
+                &[1usize, 2, 3, 4],
+                &[true, true, false, false],
+                &[FaceGermSpecies::Cap, FaceGermSpecies::Apex]
+            ),
+            Verdict::Refuted(SewLinkFault::UnlicensedSpecies { sector: 1 })
         );
     }
 }

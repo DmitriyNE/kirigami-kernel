@@ -8,9 +8,13 @@
 //! link, FACE-GERM branch index, invariant-jet ties). Constructions here;
 //! their checkers are in `certify_core::sew`.
 
-use arrange2d::boolean::CellLabeling;
+use arrange2d::boolean::{CellLabeling, vertex_link};
+use arrange2d::dcel::Dcel;
+use certify_core::Verdict;
 use certify_core::miter::{MiterLedger, Occupancy, OrderSign};
-use certify_core::sew::{EdgeIdentity, EdgeProvenance, EdgeRecord};
+use certify_core::sew::{
+    EdgeIdentity, EdgeProvenance, EdgeRecord, FaceGermSpecies, SewLink, SewLinkFault, sew_link,
+};
 use lattice::Backend;
 
 /// **MITER-REGION-IDENTITY** constructor: project a [`MiterLedger`]'s edges into SEW-EDGES
@@ -111,16 +115,135 @@ pub fn arrangement_bits(labeling: &CellLabeling, edge_k: usize, frame: bool) -> 
     })
 }
 
+/// **SEW-LINK** searcher wrapper: build the embedded spherical link of boundary vertex `v` from a
+/// certified arrangement and hand it to [`sew_link`](certify_core::sew::sew_link).
+///
+/// The geometry is entirely arrange2d's — [`vertex_link`] returns the three internals CAP-OUT-LINK
+/// is built from: `Link_emitted` (the stored rotation walk), `Link_geometric` (the azimuth sort of
+/// the same outgoing rays), and the sector mask (the selected-face bit on each ray's left). This
+/// does no geometry of its own; it only routes those to the pure checker, which concludes
+/// `Link_emitted ≅ Link_geometric` and audits the FACE-GERM `species` against the selected sectors.
+///
+/// `sel` is the per-cycle selection (index a cycle → is its face in the sewn shell); `species` names
+/// the FACE-GERM branch of each *selected* sector, in azimuth order.
+///
+/// ```
+/// use sew::check_vertex_link;
+/// use certify_core::sew::{FaceGermSpecies, SewLink};
+/// use certify_core::Verdict;
+/// use arrange2d::boolean::{label_cells, BoolOp, OperandId};
+/// use arrange2d::dcel::Dcel;
+/// use geom::content::{CurveId, Edge, Line, Orient, Point2, SegPiece};
+/// use lattice::{Bignum, Rat};
+///
+/// type Q = Rat<Bignum>;
+/// // Two overlapping squares (src 0 = A, src 1 = B), crossing at (4,2) and (2,4).
+/// let poly = |verts: &[(i128, i128)], src: u32| -> Vec<Edge<Bignum>> {
+///     let n = verts.len();
+///     (0..n).map(|i| {
+///         let (sx, sy) = verts[i];
+///         let (ex, ey) = verts[(i + 1) % n];
+///         let (a, b) = (Q::from_i128(-(ey - sy)), Q::from_i128(ex - sx));
+///         let c = a.mul(&Q::from_i128(sx)).add(&b.mul(&Q::from_i128(sy))).neg();
+///         Edge::Seg(Box::new(SegPiece {
+///             line: Line { a, b, c },
+///             start: Point2::from_rat(Q::from_i128(sx), Q::from_i128(sy)),
+///             end: Point2::from_rat(Q::from_i128(ex), Q::from_i128(ey)),
+///             orient: Orient::Ccw,
+///             source: CurveId(src),
+///         }))
+///     }).collect()
+/// };
+/// let mut edges = poly(&[(0, 0), (4, 0), (4, 4), (0, 4)], 0);
+/// edges.extend(poly(&[(2, 2), (6, 2), (6, 6), (2, 6)], 1));
+/// let d = Dcel::build(&edges);
+/// let ab = |src: CurveId| if src.0 == 0 { OperandId::A } else { OperandId::B };
+/// let cl = label_cells(&d, &ab);
+/// let sel: Vec<bool> = cl.labels.iter().map(|&l| BoolOp::Or.select(l)).collect();
+///
+/// // The union boundary passes SEW-LINK at every boundary vertex.
+/// let mut checked = 0;
+/// for v in 0..d.verts.len() {
+///     let (_, _, sectors) = arrange2d::boolean::vertex_link(&d, &sel, v);
+///     let picked = sectors.iter().filter(|&&b| b).count();
+///     if picked == 0 || picked == sectors.len() { continue; } // interior/exterior, not V_∂
+///     let species = vec![FaceGermSpecies::Flank; picked];
+///     assert!(matches!(check_vertex_link(&d, &sel, v, &species), Verdict::Verified(_)));
+///     checked += 1;
+/// }
+/// assert!(checked > 0, "the union has boundary vertices");
+/// ```
+pub fn check_vertex_link<B: Backend>(
+    d: &Dcel<B>,
+    sel: &[bool],
+    v: usize,
+    species: &[FaceGermSpecies],
+) -> Verdict<SewLink, SewLinkFault, ()> {
+    let (emitted, geometric, sectors) = vertex_link(d, sel, v);
+    sew_link(&emitted, &geometric, &sectors, species)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use certify_core::Verdict;
+    use arrange2d::boolean::{BoolOp, OperandId, label_cells};
     use certify_core::miter::LedgerEdge;
     use certify_core::sew::{SewCounts, SewEdges, sew_edges};
+    use geom::content::{CurveId, Edge, Line, Orient, Point2, SegPiece};
     use lattice::{Bignum, Rat};
+
+    type Q = Rat<Bignum>;
 
     fn p(x: i128, y: i128) -> (Rat<Bignum>, Rat<Bignum>) {
         (Rat::from_i128(x), Rat::from_i128(y))
+    }
+
+    /// A CCW polygon operand through `verts`, tagged `src` (source 0 → A, 1 → B).
+    fn polygon(verts: &[(i128, i128)], src: u32) -> Vec<Edge<Bignum>> {
+        let n = verts.len();
+        (0..n)
+            .map(|i| {
+                let (sx, sy) = verts[i];
+                let (ex, ey) = verts[(i + 1) % n];
+                let (a, b) = (Q::from_i128(-(ey - sy)), Q::from_i128(ex - sx));
+                let c = a
+                    .mul(&Q::from_i128(sx))
+                    .add(&b.mul(&Q::from_i128(sy)))
+                    .neg();
+                Edge::Seg(Box::new(SegPiece {
+                    line: Line { a, b, c },
+                    start: Point2::from_rat(Q::from_i128(sx), Q::from_i128(sy)),
+                    end: Point2::from_rat(Q::from_i128(ex), Q::from_i128(ey)),
+                    orient: Orient::Ccw,
+                    source: CurveId(src),
+                }))
+            })
+            .collect()
+    }
+
+    fn ab(src: CurveId) -> OperandId {
+        if src.0 == 0 {
+            OperandId::A
+        } else {
+            OperandId::B
+        }
+    }
+
+    /// Two overlapping unit-grid squares, crossing at (4,2) and (2,4): a Dcel + its Or-selection.
+    fn two_squares_union() -> (Dcel<Bignum>, Vec<bool>) {
+        let mut edges = polygon(&[(0, 0), (4, 0), (4, 4), (0, 4)], 0);
+        edges.extend(polygon(&[(2, 2), (6, 2), (6, 6), (2, 6)], 1));
+        let d = Dcel::build(&edges);
+        let cl = label_cells(&d, &ab);
+        let sel: Vec<bool> = cl.labels.iter().map(|&l| BoolOp::Or.select(l)).collect();
+        (d, sel)
+    }
+
+    /// A vertex is on V_∂ for `sel` iff some, but not all, of its sectors are selected.
+    fn is_boundary_vertex(d: &Dcel<Bignum>, sel: &[bool], v: usize) -> Option<usize> {
+        let (_, _, sectors) = vertex_link(d, sel, v);
+        let picked = sectors.iter().filter(|&&b| b).count();
+        (picked > 0 && picked < sectors.len()).then_some(picked)
     }
 
     #[test]
@@ -212,5 +335,60 @@ mod tests {
             cocycle_ok: true,
         };
         assert_eq!(arrangement_bits(&bad, 0, false), None);
+    }
+
+    #[test]
+    fn check_vertex_link_verifies_union_boundary() {
+        let (d, sel) = two_squares_union();
+        let mut checked = 0;
+        for v in 0..d.verts.len() {
+            let Some(picked) = is_boundary_vertex(&d, &sel, v) else {
+                continue;
+            };
+            let species = vec![FaceGermSpecies::Flank; picked];
+            assert!(
+                matches!(
+                    check_vertex_link(&d, &sel, v, &species),
+                    Verdict::Verified(_)
+                ),
+                "boundary vertex {v} must pass SEW-LINK",
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2, "the union crossing has two boundary vertices");
+    }
+
+    #[test]
+    fn check_vertex_link_refuses_interior_vertex() {
+        let (d, sel) = two_squares_union();
+        // A vertex all of whose sectors are selected is Interior, not V_∂ — SEW-LINK is a
+        // boundary-only obligation and must refuse it rather than silently accept.
+        let interior = (0..d.verts.len()).find(|&v| {
+            let (_, _, sectors) = vertex_link(&d, &sel, v);
+            !sectors.is_empty() && sectors.iter().all(|&b| b)
+        });
+        if let Some(v) = interior {
+            let (_, _, sectors) = vertex_link(&d, &sel, v);
+            let species = vec![FaceGermSpecies::Flank; sectors.iter().filter(|&&b| b).count()];
+            assert!(matches!(
+                check_vertex_link(&d, &sel, v, &species),
+                Verdict::Refuted(SewLinkFault::NotBoundary { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn check_vertex_link_refuses_species_arity() {
+        let (d, sel) = two_squares_union();
+        let v = (0..d.verts.len())
+            .find(|&v| is_boundary_vertex(&d, &sel, v).is_some())
+            .expect("a boundary vertex exists");
+        // One fewer species than selected sectors: the FACE-GERM cover is short.
+        let picked = is_boundary_vertex(&d, &sel, v).unwrap();
+        let species = vec![FaceGermSpecies::Flank; picked - 1];
+        assert!(matches!(
+            check_vertex_link(&d, &sel, v, &species),
+            Verdict::Refuted(SewLinkFault::SpeciesArity { .. })
+        ));
     }
 }
