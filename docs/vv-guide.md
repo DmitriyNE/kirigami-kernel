@@ -118,7 +118,7 @@ Milestone acceptance criteria are written **before** each milestone's implementa
 - `cargo check`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --all --check` are green on both `x86_64-linux` and `aarch64-darwin`.
 - The pure tier (`lattice`, `certify-core`) is `#![no_std]` + `#![forbid(unsafe_code)]`; the only crate not forbidding unsafe is `difftest` (FFI, non-certified oracle).
 - `nix develop` provides the pinned toolchain (`rustc` == the `rust-toolchain.toml` pin) plus the difftest/Lean tooling; `flake.lock` is committed.
-- CI runs the three lint scripts + fmt + clippy + tests inside the devShell; the `no-float-certified` lint is active over the pure tier.
+- CI runs the `cargo xtask lint` checks + fmt + clippy + tests inside the devShell; invariant 1 (no floats — literals **and** `f32`/`f64` types) is enforced by the separate `no_float` dylint lint over the certified lib paths (rustup-nightly leg, not xtask).
 
 **`lattice` (task 2) — met when:**
 - The bignum backend is chosen by the documented benchmark (Sturm on a degree-12 polynomial over 256-bit rationals) **and** is `no_std + alloc`; it sits behind `backend::Backend`, with no raw bignum ops outside `lattice`.
@@ -144,7 +144,7 @@ Milestone acceptance criteria are written **before** each milestone's implementa
 **Decomposition + event spine (Phases 1–4) — met when:**
 - Canonical x-monotone decomposition (pending-v0.25 profile) is exact: a full circle splits into simple x-monotone pieces at its exact x-extremal points, the axis-aligned chart subsumes the pole, no `Edge` spans more than one simple arc, and winding is provenance (never DCEL multiplicity).
 - The event spine implements spec §6 steps 1–4 most-degenerate-first: CARRIER-COINCIDENT tested first; carrier∩carrier solved exactly as degree-≤2 `Surd` points; interval membership on **both** edges before any classification (non-members discarded, no record); retained points classified transverse/tangent under the `d²>0 ∨ ¬COINCIDENT` guard, with sidedness bits. Line predicates use the exact PARALLEL (direction cross) and COINCIDENT (three-minor) forms. Zero-length is an identity (ℓ=0 ⇒ vertex id; `0<ℓ<q_sep` stays a real edge); below-lattice-decidability ⇒ `Unresolved(margin)`.
-- **No floats in any certified predicate path** (the `no-float-certified` lint extended to `arrange2d`).
+- **No floats in any certified predicate path** (the `no_float` dylint lint over `lattice`, `certify-core`, `arrange2d` — float literals **and** `f32`/`f64` types; test code is exempt).
 - The M3a-core corpus fixtures reproduce their verdicts as `cx_*` unit tests: `cx_antipodal_arcs`, `cx_coincident_vs_tangent_circles`, `cx_tangent_outside_arc`, `cx_parallel_distinct_lines`, `cx_full_circle_edge`.
 
 **V&V activation (Phase 5) — met when:**

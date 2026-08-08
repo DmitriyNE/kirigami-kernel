@@ -5,9 +5,10 @@
 //! the lint actually fires — closing the "vacuous pass" class the old awk `vv_matrix_gate`
 //! fell into. Zero dependencies (std only); cross-platform (no grep/awk/sed divergence).
 //!
-//! The lints ported here are text/structure checks. `no_float` is a *token* scan only — a
-//! float can still enter as a literal (`1.5`) with no `f32`/`f64` token, which needs a
-//! type-aware (dylint) lint; see `docs/engineering-log.md`.
+//! The lints here are text/structure checks. Invariant 1 (no floats in certified paths) is
+//! **not** among them — it is enforced solely by the type-aware `no_float` dylint lint
+//! (`lints/no_float/`), which catches float literals *and* `f32`/`f64` types with none of a
+//! text scan's comment/string false positives; see `docs/engineering-log.md`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -70,21 +71,6 @@ fn collect_ext(root: &Path, dir: &Path, ext: &str, out: &mut Vec<SrcFile>) {
 // Matching helpers
 // ---------------------------------------------------------------------------------------
 
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// Does `line` contain `needle` bounded by non-word characters on both sides (`\bneedle\b`)?
-fn contains_word(line: &str, needle: &str) -> bool {
-    let (b, n) = (line.as_bytes(), needle.as_bytes());
-    line.match_indices(needle).any(|(i, _)| {
-        let left_ok = i == 0 || !is_word_byte(b[i - 1]);
-        let right = i + n.len();
-        let right_ok = right >= b.len() || !is_word_byte(b[right]);
-        left_ok && right_ok
-    })
-}
-
 /// Is `line` a Rust doc-comment (`///` or `//!`, after leading whitespace)?
 fn is_doc_comment(line: &str) -> bool {
     let t = line.trim_start();
@@ -94,31 +80,6 @@ fn is_doc_comment(line: &str) -> bool {
 // ---------------------------------------------------------------------------------------
 // The checks
 // ---------------------------------------------------------------------------------------
-
-/// **no-float-certified** (invariant 1): no `f32`/`f64` token in the certified paths
-/// (`lattice`, `certify-core`, `arrange2d`'s predicate path — `testgen.rs` excepted). A
-/// *token* scan; float literals need the dylint lint (see module docs).
-fn no_float(files: &[SrcFile]) -> Vec<Finding> {
-    let mut out = Vec::new();
-    for f in files {
-        let certified = f.rel.starts_with("crates/lattice/src/")
-            || f.rel.starts_with("crates/certify-core/src/")
-            || f.rel.starts_with("crates/arrange2d/src/");
-        if !certified || f.rel.ends_with("/testgen.rs") {
-            continue;
-        }
-        for (i, line) in f.text.lines().enumerate() {
-            if contains_word(line, "f32") || contains_word(line, "f64") {
-                out.push(Finding {
-                    rel: f.rel.clone(),
-                    line: i + 1,
-                    msg: "float in a certified path".into(),
-                });
-            }
-        }
-    }
-    out
-}
 
 /// **tuple-predicate** (spec §8.2 / glossary): the adjective "proportional" is banned in
 /// doc-comments — predicates on multi-component objects name the tuple.
@@ -272,7 +233,6 @@ fn run_lint() -> bool {
         }
     };
 
-    report("no-float-certified", no_float(&crate_rs));
     report("tuple-predicate", tuple_predicate(&crate_rs));
     report(":= census", census(&crate_rs));
     report("vv-matrix gate", vv_matrix(&matrix));
@@ -359,20 +319,6 @@ mod tests {
             rel: rel.into(),
             text: text.into(),
         }
-    }
-
-    #[test]
-    fn no_float_fires_on_certified_and_ignores_boundaries() {
-        // bad: an f64 token in a certified path
-        let bad = vec![file("crates/lattice/src/x.rs", "let a: f64 = 0;")];
-        assert_eq!(no_float(&bad).len(), 1);
-        // clean: word-boundary false friends + a non-certified crate + testgen exception
-        let clean = vec![
-            file("crates/lattice/src/x.rs", "let xf64y = 1; // f6412 fine"),
-            file("crates/geom/src/x.rs", "let a: f64 = 0;"), // geom not scanned
-            file("crates/lattice/src/testgen.rs", "let a: f64 = 0;"), // excepted
-        ];
-        assert!(no_float(&clean).is_empty());
     }
 
     #[test]

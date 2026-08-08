@@ -1,14 +1,14 @@
 error: floating-point literal in a certified path
-  --> $DIR/lattice.rs:4:14
+  --> $DIR/lattice.rs:10:14
    |
-LL |     let _x = 1.5; // ~ NO_FLOAT: a float literal, invisible to the `f32`/`f64` token scan
+LL |     let _x = 1.5;
    |              ^^^
    |
    = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
    = note: `#[deny(no_float)]` on by default
 
 error: floating-point literal in a certified path
-  --> $DIR/lattice.rs:5:14
+  --> $DIR/lattice.rs:11:14
    |
 LL |     let _y = 2.0 + 3.0;
    |              ^^^
@@ -16,12 +16,60 @@ LL |     let _y = 2.0 + 3.0;
    = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
 
 error: floating-point literal in a certified path
-  --> $DIR/lattice.rs:5:20
+  --> $DIR/lattice.rs:11:20
    |
 LL |     let _y = 2.0 + 3.0;
    |                    ^^^
    |
    = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
 
-error: aborting due to 3 previous errors
+error: floating-point type in a certified path
+  --> $DIR/lattice.rs:15:11
+   |
+LL | fn sig(w: f64) -> f64 {
+   |           ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: floating-point type in a certified path
+  --> $DIR/lattice.rs:15:19
+   |
+LL | fn sig(w: f64) -> f64 {
+   |                   ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: floating-point type in a certified path
+  --> $DIR/lattice.rs:21:8
+   |
+LL |     x: f32,
+   |        ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: floating-point type in a certified path
+  --> $DIR/lattice.rs:25:21
+   |
+LL | fn generic() -> Vec<f64> {
+   |                     ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: floating-point type in a certified path
+  --> $DIR/lattice.rs:31:19
+   |
+LL |     let _z = n as f64;
+   |                   ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: floating-point type in a certified path
+  --> $DIR/lattice.rs:37:14
+   |
+LL |     let _e = f64::EPSILON;
+   |              ^^^
+   |
+   = help: certified paths are exact (lattice numbers); floats live behind the `diagnostics` feature
+
+error: aborting due to 9 previous errors
 
