@@ -1420,9 +1420,27 @@ stays **data**; the new solid geometry lives only in `export`, consuming charts 
 / `ValidFreeBoundary` / `FreeBoundaryFault`, `brep_freeboundary_from_closure`) is documented usage-first
 under `-D missing_docs`, each slice's status set as it lands.
 
-**Status: D4.3.0 met** on `d4.3`. D4.3.0 authored this section, the `vv-matrix.md` free-boundary/anchor
-row, and the engineering-log disposition (the `Chart::surface`-scalar-μ composition gap → the σ-band form;
-the DEV / M-E transcendental deferral). D4.3a + D4.3b **todo**, executed per-phase with a pause after each.
+**Status: D4.3.0 + D4.3a + D4.3b met** on `d4.3` — the exact-over-anchor closed solid is delivered.
+D4.3.0 authored this section, the `vv-matrix.md` free-boundary/anchor row, and the engineering-log
+disposition (the `Chart::surface`-scalar-μ composition gap → the σ-band form; the DEV / M-E
+transcendental deferral). **D4.3a** delivers the checker: `certify_core::free_boundary` certifies the
+exact-ANCHOR obligation set for an authored σ-band boundary — positive width (`reg_q`), boundary
+regularity of each lifted μ-rail (`edge_reg`), σ̂-monotonicity (`reg_q`), plus the `EmptySupport` /
+`SpanMismatch` guards — as `Verified(ValidFreeBoundary)` / `Refuted(FreeBoundaryFault)`, composing the
+reused (already-proven) positivity foundations so a forged Sturm chain is rejected there (7 unit +
+doctest; pure, `no_std`, panic-free). **D4.3b** delivers the solid: `export::brep_build::brep_freeboundary_from_closure`
+generalizes the slab (constant μ → authored `RatFunc` splines via `Vec3Rat::scale`; the reduced μ-bases
+share one denominator, so all four σ-rails do — and every side face is an exact `RationalPatch`, the
+curved-in-σ boundary defeating the slab's straight `LinearExtrusion` w-sheets) plus the `free_boundary_cert`
+geometry→certificate searcher. Over `one_joint()`'s flank A with a **genuinely-varying** tapered band
+(`μ⁻(σ) = −1 + σ`, `μ⁺(σ) = 1 − σ`): the searcher's cert is `Verified` by the D4.3a checker, the emitted
+solid bridges `to_shell_certificate → closed_shell == Verified(ClosedShell{8,12,6})` (and `valid_closed_solid`),
+and the OCCT oracle *corroborates* (`brepcheck_valid`, `free_edges == 0`, `nonmanifold_edges == 0`). Earned,
+not oracle — the first certified closed solid over a real material outline rather than a box. Full gate green
+(real exit codes): fmt, nextest ws 389/389, export/step 39/39, workspace doctests, clippy `-D warnings`
+(+ `-p export --features step`), `-D missing_docs` (`certify-core`/`export`), `xtask lint`, `thumbv7em`
+`no_std`. **Deferred:** general `(σ(t), μ(t))` outlines (need a composition primitive) and the transcendental
+ANCHOR tier (**DEV / M-E**).
 
 ---
 

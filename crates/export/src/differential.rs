@@ -41,7 +41,9 @@ use closure::valid::{CapWitness, ClosureTreatment, ClosureValid, closure_valid};
 use fixtures::closure_joint::{ledge_d24, miter_cap, one_joint, treatment, treatment_miter};
 use lattice::Backend;
 
-use crate::brep_build::{brep_from_closure, brep_slab_from_closure};
+use crate::brep_build::{
+    brep_freeboundary_from_closure, brep_from_closure, brep_slab_from_closure,
+};
 use crate::shell::shell_from_closure;
 use crate::step::{ShellAudit, audit_brep, audit_shell};
 
@@ -309,6 +311,86 @@ fn the_flank_slab_is_a_certified_closed_solid() {
     assert_eq!(
         audit.free_edges, 0,
         "OCC finds no free edge — the slab is watertight: {audit:?}"
+    );
+    assert_eq!(
+        audit.nonmanifold_edges, 0,
+        "OCC finds no non-manifold edge: {audit:?}"
+    );
+}
+
+/// **The free-boundary certified closed solid (Milestone D slice D4.3).** The single-flank
+/// slab over an *authored substrate free boundary* — the tapered σ-band `μ⁻(σ) = −1 + σ`,
+/// `μ⁺(σ) = 1 − σ`, not the rectangular support box. Certified closed **internally** by
+/// `closed_shell` (conjoined with the joint's `CLOSURE_VALID` via `valid_closed_solid`), and
+/// the OCCT oracle *corroborates* the emitted geometry — now **four** exact rational-patch
+/// sides (the boundary curves in σ, so even the `w = const` sheets are rational, not the
+/// slab's straight extrusions) — reporting no free edge, no non-manifold edge, a valid shell.
+/// Closedness is **earned** by the internal checker, never delegated to the kernel. This is
+/// the first certified closed solid over a real material outline rather than a box.
+#[test]
+fn the_free_boundary_solid_is_a_certified_closed_solid() {
+    use lattice::{Poly, Rat, RatFunc};
+
+    let poly = |cs: &[i128]| {
+        Poly::<lattice::Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+    };
+    let joint = one_joint();
+    let d24 = ledge_d24();
+    let t = treatment(&d24);
+    // The joint closes (CLOSURE_VALID) — the leftmost conjunct of the atlas gate.
+    let _valid = expect_valid(&joint, &t);
+
+    // The authored free boundary: a tapered μ-band, genuinely varying in σ.
+    let mu_lo = RatFunc::from_poly(poly(&[-1, 1]));
+    let mu_hi = RatFunc::from_poly(poly(&[1, -1]));
+    let solid = brep_freeboundary_from_closure(&joint, &t, &mu_lo, &mu_hi);
+
+    // — Internal certificate: closed_shell over the free-boundary solid's combinatorics —
+    let cert = solid.to_shell_certificate();
+    let shell = closed_shell(
+        cert.n_verts,
+        &cert.edge_start,
+        &cert.edge_end,
+        &cert.wire_edge,
+        &cert.wire_reversed,
+        &cert.face_start,
+    );
+    assert_eq!(
+        shell,
+        Verdict::Verified(ClosedShell {
+            verts: 8,
+            edges: 12,
+            faces: 6
+        }),
+        "closed_shell certifies the free-boundary solid a closed oriented 2-manifold"
+    );
+
+    // The atlas gate: the joint closes AND the assembled shell is closed.
+    let solid_closure: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
+        Verdict::Verified(SolidClosure {
+            joints_certified: 1,
+        });
+    assert_eq!(
+        valid_closed_solid(&solid_closure, &shell),
+        Verdict::Verified(ClosedSolid {
+            joints_certified: 1,
+            verts: 8,
+            edges: 12,
+            faces: 6
+        }),
+        "valid_closed_solid conjoins the joint closure with whole-solid closedness"
+    );
+
+    // — OCCT oracle corroborates the geometry (compared, never trusted as the certificate) —
+    let audit = audit_brep(&solid).expect("OCC audits the exact free-boundary solid");
+    assert!(
+        audit.brepcheck_valid,
+        "OCC accepts the exact free-boundary solid (incl. the four rational-patch sides): {audit:?}"
+    );
+    assert_eq!(audit.faces, 6, "six faces: {audit:?}");
+    assert_eq!(
+        audit.free_edges, 0,
+        "OCC finds no free edge — the free-boundary solid is watertight: {audit:?}"
     );
     assert_eq!(
         audit.nonmanifold_edges, 0,
