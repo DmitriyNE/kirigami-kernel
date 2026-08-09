@@ -1002,6 +1002,101 @@ watertight `V_∂`-guided seam remains slice 3 (below).
 
 ---
 
+### Milestone D (slice 3) acceptance criteria (exact ruled-surface STEP emission — certified-seam, honest-open)
+
+*Authored before implementation, per the rule above.* Slice 3 delivers the **M8 STEP body as exact
+rational surfaces**, not triangles. `spec §10:464` mandates it — "face surfaces exact; … sidewalls
+exactly ruled …; closure patches … as rational patches with IDEALIZED flags; … no kernel CSG" — and
+`§11:470` makes discrete meshes a **non-peer** export. Today's only export path is the triangle soup
+(`shell.rs` samples `chart.surface` on a σ-grid at fixed `w`, fan-triangulates the D24 licensing
+square; `occt_shim.cc` sews planar triangle-polygons by float tolerance). That soup is a **stopgap**,
+and it is what manufactured slice 1's "2:1 overhang": sampling the *untrimmed* `μ∈[−1,1]` rectangle
+never applies the certified plane trim, so the band is unavoidably open. **This supersedes the
+slice-2 deferral's "indexed-shell / vertex-welding" framing** (`:984`) — the watertight seam done
+right is two exact ruled faces sharing an exact **edge**, watertight by construction, not vertices
+merged by tolerance.
+
+The exact object already exists internally: `Chart::surface(μ,w) = c(σ)+μ·r(σ)+w·n(σ)` is a
+`Vec3Rat` — an exact rational ruled surface. The gap is the emission path. The spec's own construction
+dissolves the overhang: emit each flank as an **exact ruled face trimmed by the exact bisector plane
+Π** — "STEP receives the flank face trimmed by the exact plane — a planar trim of a ruled face,
+kernel-native, no boolean" (`§5.3`). Where the two trims coincide (**MITER-FIT**) they share the cut
+edge; where they don't, the difference is a first-class **exposed planar ledge** (`face_A △ face_B`,
+"a valid boundary step, not a hole" — **LEDGE-DOM**). *The seam SEW certifies is the cut in the cap
+plane Π — not the fold crease, which is internal and coincides only at `w=0`; MITER-FIT is the
+certificate that A's and B's Π-cut lines coincide.*
+
+**Scope: certified-seam, honest-open.** The certificate is **joint-local** — SEW-EDGES/SEW-LINK
+certify only the cap-to-flank and flank-to-flank seam edges and the `V_∂` links; CAP-OUT-LINK
+certifies the cap region. Nothing certifies the substrate's outer boundary: `spec P1:12` makes a
+single joint a slice of an atlas ("joint closures are export-layer solidization, not device
+material"), and the closing sidewalls are "ruled **over anchors**" (`:192`/`:464`) — anchored to the
+flat pattern's outer contour, machinery that does not exist and that `one_joint()` has no contour to
+feed. So slice 3 emits **only the certificate-backed exact faces**, shares Π-seam edges **by
+identity**, and leaves the substrate boundary **honestly open** (free edges there, annotated). No
+fabricated closure face — a forced `closed == true` would be oracle-instead-of-audit.
+
+**Representation: Strategy B** — emit the exact rational-Bézier **boundary curves** and let OCCT build
+the ruled/linear-extrusion surface between them; the watertight object is the shared 1D edge we
+control directly. Exactness through the FFI is a wash against emitting a full rational *patch* (both
+cast to `f64` at the OCCT boundary), so the full-patch path (Strategy A) is the later generalization
+for varying-ruling (cone) flanks. Order: **MITER first** (shared Π-cut edge, empty ledge — the
+smallest watertight-by-construction unit), then **LEDGE** (cap as the exact `v_boundary` arrangement
+face).
+
+- **Exact-curve primitive + B-rep IR — met when:** an always-compiled, float-free
+  `export::bezier` converts a `Vec3Rat`-in-σ into exact rational-Bézier poles + weights
+  (monomial→Bernstein, exact `Rat`/`Surd`), reproducing known control nets exactly; and an
+  `export::brep` exact IR (a shared vertex table, a shared **edge** table with identity = index —
+  `Line` | `RationalBezier` — and faces `Plane` | `LinearExtrusion` carrying a `(edge_id, reversed)`
+  wire) round-trips a hand-built two-face shell. `Surd`/`Rat` only, like `shell.rs`.
+- **MITER exact ruled flanks, shared Π-cut edge — met when:** `brep_from_closure` (`CapWitness::Miter`)
+  builds each flank as an exact ruled face trimmed to Π from the certified cut data (`ruling_cut_ends` /
+  `segment_cut_ends` / `CutEnds`, `PiFrame`, `trim::bisector`, `chart.surface`), with the **single
+  shared** Π-cut edge referenced by both flanks; a new `cxx` surface channel (`occt_write_brep` /
+  `occt_brep_audit`) builds `Geom_BSplineCurve` (rational) / `gp_Lin` edges from a shared vertex+edge
+  table and `Geom_SurfaceOfLinearExtrusion` faces via `BRepBuilderAPI_MakeEdge/MakeWire/MakeFace`,
+  assembled with `BRep_Builder` over the **shared edges** (**no `Sewing`**), reusing the existing
+  `STEPControl_Writer` + `MapShapesAndAncestors` audit; the single exact→`f64` cast lives in
+  `step::brep_to_buffers` (mirroring `record_to_floats`). The oracle then reports the Π-cut seam as a
+  **2-incidence** edge — `nonmanifold_edges == 0`, `brepcheck_valid`, and `free_edges` **strictly
+  lower** than the triangle path — with free edges remaining **only** on the annotated-open substrate
+  boundary.
+- **LEDGE cap as the exact arrangement face — met when:** `brep_from_closure` (`CapWitness::Ledge`)
+  consumes `valid.cap.region().faces[].outer` (exact `SegPiece`s in Π) lifted through the
+  metric-faithful `shell::lift`, builds a planar `gp_Pln` face bounded by those exact edges, and makes
+  each cap-boundary edge coincident with a flank Π-edge the **same** `TopoDS_Edge` (identity); it reads
+  whatever outline the arrangement carries — **not** the D24 licensing square — and keeps the
+  `pinches().is_empty()` gate. The oracle reports flank↔cap seams 2-incidence, `nonmanifold_edges == 0`,
+  `brepcheck_valid`, `free_edges` reduced vs the triangle path; internal `pinches() == 0` corroborates.
+- **Differential flip + mesh retention — met when:** `export::differential` asserts, for the
+  **exact-surface** path, the seam is now watertight (2-incidence at the certified seam) instead of the
+  triangle path's `free_edges > 0`; the triangle path is **kept** as the mesh export (`spec §10` body vs
+  `§11` mesh) with its overhang divergence retained as the mesh diagnostic.
+
+**Generality (hard gate) — met when:** all new machinery (`bezier`, `brep`, the surface FFI,
+`brep_from_closure`) lives **only** in `export`; no certified crate (`certify-core`, `arrange2d`,
+`closure`, `sew`, `geom`) changes, no device constant is added, and **flank type stays data** —
+cylinder-vs-cone follows from `chart` fields (constant vs varying ruling direction), never a Rust
+`match` on type. Consumption is read-only via existing accessors.
+
+**Documentation (a merge gate) — met when:** the new public surface (`bezier`, `brep`, the bridge fns,
+`brep_from_closure`, `write_brep` / `audit_brep`) is documented usage-first with `-W missing_docs = 0`,
+and this section's status is set to "met".
+
+**Deferred (documented, not dropped):** the **certified closed solid** — anchored outer contour →
+ruled sidewalls carrying their own CAP-OUT/SEW-LINK coverage → whole-solid watertightness certified —
+is effectively its own milestone (**atlas assembly**) and is the correct path to a genuinely closed
+solid; the "exact closed slab by-construction" (emitting support-box sidewall/end faces to force
+`closed == true`, real geometry but closedness uncertified away from the joint) is **explicitly
+declined** this slice. Also: Strategy-A full rational *patch* emission (cone / varying-ruling flanks);
+the geometry-derived `SewInput`; the STEP-reloaded round-trip audit variant; petal atlas / multi-joint;
+the petal cone-flank joint (blocked spec §13); `VALID_material` / FRESH / `develop` (→ M-E).
+
+**Status: D3.0 — criteria authored.** Implementation phases D3.1–D3.4 to follow on `milestone-d`.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.
