@@ -39,6 +39,7 @@ pub mod certify1d;
 pub mod gate;
 pub mod miter;
 pub mod sew;
+pub mod shell;
 pub mod wedge;
 
 // Kani bounded-model-checking harnesses for the pure checkers (compiled only under

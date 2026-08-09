@@ -48,7 +48,7 @@
 //! assert_eq!(b.nonmanifold_edges(), 0);
 //! ```
 
-use crate::bezier::RatBezier;
+use crate::bezier::{RatBezier, RatBezierSurface};
 use lattice::{Backend, Bignum, Rat, Surd};
 
 /// One B-rep vertex: an exact `a + b√d` point in 3-space. Rational vertices (the `b = 0`
@@ -94,6 +94,12 @@ pub enum FaceSurface<B: Backend = Bignum> {
         /// The exact rational extrusion direction.
         dir: [Rat<B>; 3],
     },
+    /// An exact rational tensor-product Bézier patch (an OCCT rational
+    /// `Geom_BSplineSurface`), carrying its own control net. The surface a *curved* wall
+    /// needs when no constant-direction extrusion expresses it — e.g. the flank slab's
+    /// `μ = const` wall, ruled along the rotating normal `n(σ)`. The bounding wire trims
+    /// it.
+    RationalPatch(RatBezierSurface<B>),
 }
 
 /// One face of the B-rep: a surface and the boundary wire that trims it (an ordered list
@@ -112,6 +118,29 @@ pub struct Brep<B: Backend = Bignum> {
     verts: Vec<Vertex<B>>,
     edges: Vec<BEdge<B>>,
     faces: Vec<Face<B>>,
+}
+
+/// The flat index-array certificate a [`Brep`] hands to the trusted
+/// `certify_core::shell::closed_shell` checker — the untrusted-searcher → proven-checker
+/// bridge. It carries only combinatorics (no coordinates, no surface types): the vertex
+/// count, the edge endpoint tables, and the face wires in CSR form. Produced by
+/// [`Brep::to_shell_certificate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellCertificate {
+    /// Number of vertices.
+    pub n_verts: usize,
+    /// Per-edge start-vertex ids (parallel to [`edge_end`](Self::edge_end)).
+    pub edge_start: Vec<usize>,
+    /// Per-edge end-vertex ids.
+    pub edge_end: Vec<usize>,
+    /// All face wires' edge ids, concatenated (indexed by [`face_start`](Self::face_start)).
+    pub wire_edge: Vec<usize>,
+    /// Whether each half-edge is traversed reversed, parallel to
+    /// [`wire_edge`](Self::wire_edge).
+    pub wire_reversed: Vec<bool>,
+    /// CSR offsets of length `faces + 1`: face `f`'s wire is
+    /// `wire_edge[face_start[f] .. face_start[f + 1]]`.
+    pub face_start: Vec<usize>,
 }
 
 impl<B: Backend> Brep<B> {
@@ -198,7 +227,7 @@ impl<B: Backend> Brep<B> {
         self.edges.iter().all(|e| e.start < nv && e.end < nv)
             && self.faces.iter().all(|f| {
                 let base_ok = match &f.surface {
-                    FaceSurface::Plane => true,
+                    FaceSurface::Plane | FaceSurface::RationalPatch(_) => true,
                     FaceSurface::LinearExtrusion { base, .. } => *base < ne,
                 };
                 base_ok && f.wire.iter().all(|&(e, _)| e < ne)
@@ -237,6 +266,34 @@ impl<B: Backend> Brep<B> {
             }
         }
         true
+    }
+
+    /// Emit the flat index-array [`ShellCertificate`] for the trusted
+    /// `certify_core::shell::closed_shell` checker: the vertex count, the edge endpoint
+    /// tables, and the face wires in CSR form. This is the one point where the exact B-rep
+    /// hands its *combinatorics* (no coordinates) to the TCB — the searcher/checker split.
+    pub fn to_shell_certificate(&self) -> ShellCertificate {
+        let edge_start = self.edges.iter().map(|e| e.start).collect();
+        let edge_end = self.edges.iter().map(|e| e.end).collect();
+        let mut wire_edge = Vec::new();
+        let mut wire_reversed = Vec::new();
+        let mut face_start = Vec::with_capacity(self.faces.len() + 1);
+        face_start.push(0);
+        for f in &self.faces {
+            for &(eid, reversed) in &f.wire {
+                wire_edge.push(eid);
+                wire_reversed.push(reversed);
+            }
+            face_start.push(wire_edge.len());
+        }
+        ShellCertificate {
+            n_verts: self.verts.len(),
+            edge_start,
+            edge_end,
+            wire_edge,
+            wire_reversed,
+            face_start,
+        }
     }
 }
 

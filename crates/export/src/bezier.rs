@@ -242,6 +242,175 @@ impl<B: Backend> Clone for RatBezier<B> {
     }
 }
 
+/// An exact **tensor-product rational Bézier surface** in homogeneous form — the surface
+/// analogue of [`RatBezier`], the one new *surface* primitive Milestone D slice 4 emits
+/// (spec §10:464, "closure patches … as rational patches"). The control net is
+/// `(udeg + 1) × (vdeg + 1)`, stored row-major (`u` outer, `v` inner): the weighted poles
+/// `wᵢⱼ·bᵢⱼ ∈ ℚ³` and matching weights `wᵢⱼ ∈ ℚ`. The surface is
+///
+/// ```text
+/// S(u, v) = ( Σᵢⱼ (wᵢⱼ·bᵢⱼ) Bᵢ(u) Bⱼ(v) ) / ( Σᵢⱼ wᵢⱼ Bᵢ(u) Bⱼ(v) ),   (u, v) ∈ [0,1]².
+/// ```
+///
+/// [`ruled_from_rails`](Self::ruled_from_rails) builds the bidegree-`(n, 1)` patch that is
+/// the exact **ruled surface between two σ-rails** — the flank slab's curved `μ = const`
+/// wall `base(σ) + w·dir(σ)`, whose two rails (at `w = w₀`, `w = w₁`) share one denominator
+/// in σ, so the projective blend of their homogeneous poles equals the affine blend of the
+/// curves (an exact, not approximate, representation).
+pub struct RatBezierSurface<B: Backend = lattice::Bignum> {
+    /// `(udeg+1)·(vdeg+1)` weighted poles, row-major (`i·(vdeg+1)+j`, `i` over `u`, `j`
+    /// over `v`).
+    wpoles: Vec<[Rat<B>; 3]>,
+    /// The matching weights, same row-major order and length.
+    weights: Vec<Rat<B>>,
+    /// Degree in the `u` (σ) direction.
+    udeg: usize,
+    /// Degree in the `v` (ruling) direction.
+    vdeg: usize,
+}
+
+impl<B: Backend> RatBezierSurface<B> {
+    /// The exact ruled surface between two σ-rails `rail0` (at `v = 0`) and `rail1`
+    /// (at `v = 1`) over `σ ∈ [a, b]`: bidegree `(n, 1)` where `n` is the common σ-degree.
+    ///
+    /// Both rails must share the same denominator polynomial in σ (they do when they are
+    /// `base(σ) + w·dir(σ)` for two values of the scalar `w` — the denominator is
+    /// `w`-independent), so their Bernstein weights coincide and the tensor patch's
+    /// projective blend reproduces the affine ruling `(1−v)·rail0(σ) + v·rail1(σ)` exactly.
+    /// The shared weights are debug-asserted equal.
+    pub fn ruled_from_rails(
+        rail0: &Vec3Rat<B>,
+        rail1: &Vec3Rat<B>,
+        a: &Rat<B>,
+        b: &Rat<B>,
+    ) -> Self {
+        let deg = |p: &Poly<B>| p.degree().unwrap_or(0);
+        let n0 = rail0.num();
+        let n1 = rail1.num();
+        // Common σ-degree across both rails' numerators and the shared denominator.
+        let n = deg(&n0[0])
+            .max(deg(&n0[1]))
+            .max(deg(&n0[2]))
+            .max(deg(&n1[0]))
+            .max(deg(&n1[1]))
+            .max(deg(&n1[2]))
+            .max(deg(rail0.den()))
+            .max(deg(rail1.den()));
+        let w0 = poly_to_bernstein(rail0.den(), a, b, n);
+        let w1 = poly_to_bernstein(rail1.den(), a, b, n);
+        debug_assert!(
+            w0 == w1,
+            "ruled_from_rails: the two rails must share a denominator (w-independent)"
+        );
+        let bern = |num: &[Poly<B>; 3]| {
+            [
+                poly_to_bernstein(&num[0], a, b, n),
+                poly_to_bernstein(&num[1], a, b, n),
+                poly_to_bernstein(&num[2], a, b, n),
+            ]
+        };
+        let r0 = bern(n0);
+        let r1 = bern(n1);
+        let mut wpoles = Vec::with_capacity((n + 1) * 2);
+        let mut weights = Vec::with_capacity((n + 1) * 2);
+        for i in 0..=n {
+            // v = 0 row: rail0. v = 1 row: rail1. Shared weight w0[i].
+            wpoles.push([r0[0][i].clone(), r0[1][i].clone(), r0[2][i].clone()]);
+            weights.push(w0[i].clone());
+            wpoles.push([r1[0][i].clone(), r1[1][i].clone(), r1[2][i].clone()]);
+            weights.push(w0[i].clone());
+        }
+        RatBezierSurface {
+            wpoles,
+            weights,
+            udeg: n,
+            vdeg: 1,
+        }
+    }
+
+    /// Degree in the `u` (σ) direction.
+    pub fn udeg(&self) -> usize {
+        self.udeg
+    }
+    /// Degree in the `v` (ruling) direction.
+    pub fn vdeg(&self) -> usize {
+        self.vdeg
+    }
+    /// The weighted poles `wᵢⱼ·bᵢⱼ`, row-major (`i·(vdeg+1)+j`).
+    pub fn weighted_poles(&self) -> &[[Rat<B>; 3]] {
+        &self.wpoles
+    }
+    /// The weights `wᵢⱼ`, row-major (`i·(vdeg+1)+j`).
+    pub fn weights(&self) -> &[Rat<B>] {
+        &self.weights
+    }
+
+    /// Evaluate the surface at `(u, v) ∈ [0,1]²` (the *Bézier* parameters). Returns `None`
+    /// where the weight denominator vanishes. Exact over ℚ.
+    pub fn eval(&self, u: &Rat<B>, v: &Rat<B>) -> Option<[Rat<B>; 3]> {
+        let bu = bernstein_basis(self.udeg, u);
+        let bv = bernstein_basis(self.vdeg, v);
+        let nv = self.vdeg + 1;
+        let mut num = [
+            Rat::<B>::from_i128(0),
+            Rat::<B>::from_i128(0),
+            Rat::<B>::from_i128(0),
+        ];
+        let mut den = Rat::<B>::from_i128(0);
+        for (i, bui) in bu.iter().enumerate() {
+            for (j, bvj) in bv.iter().enumerate() {
+                let basis = bui.mul(bvj);
+                let idx = i * nv + j;
+                den = den.add(&self.weights[idx].mul(&basis));
+                for (k, nk) in num.iter_mut().enumerate() {
+                    *nk = nk.add(&self.wpoles[idx][k].mul(&basis));
+                }
+            }
+        }
+        if den.is_zero() {
+            return None;
+        }
+        Some([num[0].div(&den), num[1].div(&den), num[2].div(&den)])
+    }
+}
+
+/// The degree-`n` Bernstein basis `Bᵢⁿ(t) = C(n,i) tⁱ (1−t)ⁿ⁻ⁱ` at `t`, as `n + 1` exact
+/// [`Rat`]s. Shared by [`RatBezier::eval`] and [`RatBezierSurface::eval`].
+fn bernstein_basis<B: Backend>(n: usize, t: &Rat<B>) -> Vec<Rat<B>> {
+    let binom = binomials::<B>(n);
+    let one_minus_t = Rat::<B>::from_i128(1).sub(t);
+    let mut t_pow = vec![Rat::<B>::from_i128(1); n + 1];
+    let mut s_pow = vec![Rat::<B>::from_i128(1); n + 1];
+    for i in 1..=n {
+        t_pow[i] = t_pow[i - 1].mul(t);
+        s_pow[i] = s_pow[i - 1].mul(&one_minus_t);
+    }
+    (0..=n)
+        .map(|i| binom[n][i].mul(&t_pow[i]).mul(&s_pow[n - i]))
+        .collect()
+}
+
+impl<B: Backend> Clone for RatBezierSurface<B> {
+    fn clone(&self) -> Self {
+        RatBezierSurface {
+            wpoles: self.wpoles.clone(),
+            weights: self.weights.clone(),
+            udeg: self.udeg,
+            vdeg: self.vdeg,
+        }
+    }
+}
+
+impl<B: Backend> core::fmt::Debug for RatBezierSurface<B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "RatBezierSurface(udeg={}, vdeg={}, wpoles={:?}, weights={:?})",
+            self.udeg, self.vdeg, self.wpoles, self.weights
+        )
+    }
+}
+
 impl<B: Backend> core::fmt::Debug for RatBezier<B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
@@ -318,6 +487,42 @@ mod tests {
                 v.eval(&sigma),
                 "curve reproduced at t = {tn}/{td}"
             );
+        }
+    }
+
+    /// The ruled surface between two σ-rails sharing a denominator reproduces the affine
+    /// ruling `(1−v)·rail0(σ) + v·rail1(σ)` exactly — the flank slab's curved μ-wall. The
+    /// two rails `(σ, 1, 0)/(σ²+1)` and `(σ, 1, 1)/(σ²+1)` differ only in z (as `base + w·n`
+    /// would), so the tensor patch's projective blend equals the affine blend at every
+    /// sample.
+    #[test]
+    fn ruled_surface_reproduces_the_affine_ruling() {
+        let den = p(&[1, 0, 1]); // σ² + 1
+        let rail0 = Vec3Rat::new([p(&[0, 1]), p(&[1]), p(&[0])], den.clone());
+        let rail1 = Vec3Rat::new([p(&[0, 1]), p(&[1]), p(&[1])], den);
+        let (a, b) = (Q::from_i128(0), Q::from_i128(2));
+        let surf = RatBezierSurface::ruled_from_rails(&rail0, &rail1, &a, &b);
+        assert_eq!(surf.udeg(), 2);
+        assert_eq!(surf.vdeg(), 1);
+        for (un, ud) in [(0, 1), (1, 3), (1, 2), (1, 1)] {
+            for (vn, vd) in [(0, 1), (1, 4), (1, 2), (1, 1)] {
+                let u = Q::new(un, ud);
+                let v = Q::new(vn, vd);
+                let sigma = a.add(&u.mul(&b.sub(&a)));
+                let r0 = rail0.eval(&sigma).expect("rail0 finite");
+                let r1 = rail1.eval(&sigma).expect("rail1 finite");
+                let one_minus_v = Q::from_i128(1).sub(&v);
+                let expected = [
+                    one_minus_v.mul(&r0[0]).add(&v.mul(&r1[0])),
+                    one_minus_v.mul(&r0[1]).add(&v.mul(&r1[1])),
+                    one_minus_v.mul(&r0[2]).add(&v.mul(&r1[2])),
+                ];
+                assert_eq!(
+                    surf.eval(&u, &v),
+                    Some(expected),
+                    "ruled surface at u={un}/{ud}, v={vn}/{vd}"
+                );
+            }
         }
     }
 
