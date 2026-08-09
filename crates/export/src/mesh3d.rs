@@ -832,4 +832,88 @@ mod tests {
         assert_eq!(svg.matches("<rect").count(), 2, "outer box + certified box");
         assert!(svg.contains("μ ∈") && svg.contains("w ∈"));
     }
+
+    // DEV.1 spike: the certified rational flat-point enclosure (develop::cone) is
+    // corroborated by the independent float diagnostic develop_cone (oracle ∧ audit).
+    // No float enters the certificate; the diagnostic only *checks* it.
+    #[test]
+    fn certified_flat_point_corroborates_develop_cone() {
+        use develop::cone::{ConeDevelopment, DevConfig};
+        use fixtures::devices::cone;
+        use lattice::{Bignum, Rat};
+
+        // A big-magnitude-safe rational→f64: the certified endpoints are exact rationals whose
+        // numerator AND denominator can carry hundreds of digits (naive series composition grows
+        // the digit count — the DEV.2 note in the spike report), so `numer_denom_decimal` +
+        // direct parse would overflow both to ∞ and yield ∞/∞ = NaN. Reduce by leading digits.
+        fn big_rat_to_f64(r: &Rat<Bignum>) -> f64 {
+            fn parts(s: &str) -> (f64, i32) {
+                let neg = s.starts_with('-');
+                let d = s.trim_start_matches('-');
+                let take = d.len().min(15);
+                let head: f64 = d[..take].parse().unwrap_or(0.0);
+                (if neg { -head } else { head }, (d.len() - take) as i32)
+            }
+            let (n, d) = r.numer_denom_decimal();
+            let (nm, ne) = parts(&n);
+            let (dm, de) = parts(&d);
+            (nm / dm) * 10f64.powi(ne - de)
+        }
+
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).expect("device cone is a canonical arctan cone");
+
+        // A fine σ grid over the certified gore [0,1] so the diagnostic's accumulated-acos
+        // angle converges to the true ∫ψ′ = c·arctan σ. Two μ rails at the band edges.
+        let nrows = 2001usize; // σ_i = i/2000; row 0 is σ = 0 (both anchor θ = 0 there)
+        let ncols = 2usize;
+        let mus = [Rat::<Bignum>::from_i128(-1), Rat::new(-1, 2)];
+        let w0 = Rat::from_i128(0);
+        let cols: Vec<_> = mus.iter().map(|m| chart.surface(m, &w0)).collect();
+        let sig = |i: usize| Rat::<Bignum>::new(i as i128, (nrows - 1) as i128);
+
+        let mut positions = Vec::with_capacity(nrows * ncols);
+        for i in 0..nrows {
+            let s = sig(i);
+            for col in &cols {
+                positions.push(vec3_to_f64(&col.eval(&s).unwrap()));
+            }
+        }
+        let flat = develop_cone(&positions, nrows, ncols);
+
+        // Evaluate the certified boxes only where σ = i/2000 reduces to a small denominator
+        // (0, ¼, ½, ¾, 1) — exact arctan of a low-denominator rational is cheap, and the
+        // fine float grid still supplies a well-converged diagnostic angle at those rows.
+        let cfg = DevConfig::<Bignum> { terms: 16, sqrt_eps: Rat::new(1, 100_000_000_000) };
+        let c = 130.0 / 97.0; // 2 sinβ
+        let (mut max_diag, mut max_analytic, mut max_be) = (0.0f64, 0.0f64, 0.0f64);
+        for i in [0usize, 500, 1000, 1500, 2000] {
+            let s = sig(i);
+            let sf = i as f64 / (nrows - 1) as f64;
+            for (j, m) in mus.iter().enumerate() {
+                let bx = dev.point(&s, m, &cfg);
+                let (cx, cy) = bx.center();
+                let (cxf, cyf) = (big_rat_to_f64(&cx), big_rat_to_f64(&cy));
+                // (a) corroboration vs the independent float diagnostic develop_cone
+                let fv = &flat[i * ncols + j];
+                max_diag = max_diag.max(((cxf - fv[0]).powi(2) + (cyf - fv[1]).powi(2)).sqrt());
+                // (b) the certified box is centered on its intended value |μ|ρ·e(c·atan σ)
+                let rho = 144.0 / 97.0 / (1.0 + sf * sf);
+                let mag = rat_to_f64(m).abs() * rho;
+                let psi = c * sf.atan();
+                let (ax, ay) = (mag * psi.cos(), mag * psi.sin());
+                max_analytic = max_analytic.max(((cxf - ax).powi(2) + (cyf - ay).powi(2)).sqrt());
+                max_be = max_be.max(big_rat_to_f64(&bx.backward_error()));
+            }
+        }
+        // The certificate is far tighter than the diagnostic's own discretization error
+        // (measured ~1e-11 at 16 terms — sub-nanometre on a millimetre part).
+        assert!(max_be < 1e-8, "certified backward error {max_be:e} too loose");
+        // The certified center matches its intended analytic value to the f64 readout limit.
+        assert!(max_analytic < 1e-9, "analytic residual {max_analytic:e}");
+        // The independent float diagnostic corroborates within its discretization tolerance.
+        assert!(max_diag < 1e-6, "corroboration residual {max_diag:e}");
+        // Surface the achieved numbers for the spike report.
+        println!("DEV.1 corroboration: max_diag={max_diag:e} max_analytic={max_analytic:e} max_backward_error={max_be:e}");
+    }
 }

@@ -1481,8 +1481,14 @@ enclosure is checked against.
 
 - **DEV.0 — this GO-gate (docs).** This section + the engineering-log DEV thread. No code. Green via
   `xtask lint`.
-- **DEV.1 — the spike (GO / no-go) — met when:** a certified enclosure of the cone's development is
-  produced and validated:
+- **DEV.1 — the spike (GO / no-go) — ✅ MET, decision GO** (`docs/spike-development-report.md`; crate
+  `develop` — `develop::interval` + `develop::cone`; corroboration in
+  `export … certified_flat_point_corroborates_develop_cone`). The cone development reduces to a **single
+  `arctan` of a rational**: `ψ(σ) = 2 sinβ · arctan σ` (verified as an exact polynomial identity), radius
+  `ρ = √(rational)`. Method **(a)** (closed-form arctan + alternating-series rational bounds) selected. On
+  the device cone: certified backward error `≈ 1e-11`, corroborated against `mesh3d::develop_cone` to
+  `≈ 1.5e-8`. Digit-growth in naive series composition is the one engineering wall → fixed-precision
+  outward rounding for DEV.2 (report §5). Met when:
   1. a **certified rational enclosure** `ψ(σ) ∈ [ψ_lo, ψ_hi]` of `ψ(σ)=∫₀^σ chart.psi_prime` with
      rational endpoints and a rational width bound `ε_ψ` (the spike **selects the enclosure method** among:
      (a) closed-form arctan/log with certified rational bounds on those functions — attractive since the
@@ -1522,9 +1528,12 @@ tier stays float-free and untouched.
 the method chosen, the certified `ε_ψ` on the device cone, the float-corroboration numbers, and the GO /
 no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
 
-**Status: DEV.0 met** (this section authored + the engineering-log DEV thread). **DEV.1 (the spike) is the
-next GO-gate** — the immediate actionable when DEV is picked up; DEV.2+ is post-GO. The exact 3D substrate
-(charts, intersections, watertight solids, STEP) that DEV sits on is delivered through M-D.
+**Status: DEV.0 + DEV.1 met — DEV.1 decision GO** (`docs/spike-development-report.md`). The certified
+development is demonstrated on the device cone (`develop` crate): `ψ = 2 sinβ · arctan σ` closed form,
+rigorous rational enclosure, backward error `≈ 1e-11`, float-corroborated to `≈ 1.5e-8`. **DEV.2+ (the
+tier) is post-GO** — first slice: fixed-precision outward rounding (report §5) + the `develop` unroll/fold
+proper. The exact 3D substrate (charts, intersections, watertight solids, STEP) that DEV sits on is
+delivered through M-D.
 
 ---
 
