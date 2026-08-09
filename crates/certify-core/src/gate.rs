@@ -9,6 +9,7 @@
 //! FRESH-promoting certificate *store* lives in the `gate` shell crate (M6.2); this is
 //! only the algebra it evaluates.
 
+use crate::shell::{ClosedShell, ClosedShellFault};
 use crate::verdict::Verdict;
 
 /// The strong-Kleene **conjunction** of a sequence of verdicts.
@@ -187,6 +188,97 @@ fn tag_joint<E, W: Clone>(
     }
 }
 
+/// The evidence a [`Verified`](Verdict::Verified) `valid_closed_solid` carries: the joints
+/// certified plus the assembled shell's element counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClosedSolid {
+    /// Number of joints whose `CLOSURE_VALID(j)` conjunct was verified (from `SolidClosure`).
+    pub joints_certified: usize,
+    /// Vertices of the certified closed shell.
+    pub verts: usize,
+    /// Edges of the certified closed shell.
+    pub edges: usize,
+    /// Faces of the certified closed shell.
+    pub faces: usize,
+}
+
+/// Which conjunct of `valid_closed_solid` refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClosedSolidFault<W> {
+    /// The `VALID_solid-closure` conjunct refused (a joint or the complement), carrying its
+    /// [`SolidClosureFault`].
+    SolidClosure(SolidClosureFault<W>),
+    /// The whole-solid `closed_shell` conjunct refused, carrying its [`ClosedShellFault`].
+    Shell(ClosedShellFault),
+}
+
+/// `valid_closed_solid` — the atlas-assembly gate (Milestone D slice 4): the joints close
+/// **and** the assembled shell is a certified closed 2-manifold. This **extends beyond** the
+/// spec §8.6 formula (`VALID_solid-closure` is joint-local, `spec:439`); the whole-solid
+/// closedness conjunct is the layer the docs pre-name ("ruled sidewalls carrying their own
+/// CAP-OUT/SEW-LINK coverage → whole-solid watertightness certified", `vv-guide.md:1102`) and
+/// the assembly-scale analogue of the `CapOut.lean:25-30` frontier — proven internally by
+/// [`closed_shell`](crate::shell::closed_shell), never delegated to an external kernel.
+///
+/// A strong-Kleene conjunction of the existing [`valid_solid_closure`] verdict (the leftmost
+/// conjunct) and the [`closed_shell`](crate::shell::closed_shell) verdict, preserving both
+/// evidences: [`Verified`](Verdict::Verified) with the combined [`ClosedSolid`], or
+/// [`Refuted`](Verdict::Refuted) naming the first failing conjunct (a `Refuted` conjunct
+/// dominates an `Unresolved` one, per the [`conj`] rule).
+///
+/// # Example
+///
+/// ```
+/// use certify_core::gate::{valid_closed_solid, ClosedSolid, ClosedSolidFault, SolidClosure};
+/// use certify_core::shell::{ClosedShell, ClosedShellFault};
+/// use certify_core::verdict::Verdict;
+///
+/// use certify_core::gate::SolidClosureFault;
+///
+/// // A one-joint slice that closes, whose assembled shell is a certified closed cube.
+/// // (the joint-witness type `&str` fixes the fault channel `W`.)
+/// let solid_closure: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
+///     Verdict::Verified(SolidClosure { joints_certified: 1 });
+/// let shell = Verdict::Verified(ClosedShell { verts: 8, edges: 12, faces: 6 });
+/// assert_eq!(
+///     valid_closed_solid(&solid_closure, &shell),
+///     Verdict::Verified(ClosedSolid { joints_certified: 1, verts: 8, edges: 12, faces: 6 }),
+/// );
+///
+/// // An open shell refuses even when the joints close.
+/// let bad_shell = Verdict::Refuted(ClosedShellFault::EdgeCensus { edge: 3 });
+/// assert_eq!(
+///     valid_closed_solid(&solid_closure, &bad_shell),
+///     Verdict::Refuted(ClosedSolidFault::Shell(ClosedShellFault::EdgeCensus { edge: 3 })),
+/// );
+/// ```
+pub fn valid_closed_solid<W: Clone>(
+    solid_closure: &Verdict<SolidClosure, SolidClosureFault<W>, ()>,
+    shell: &Verdict<ClosedShell, ClosedShellFault, ()>,
+) -> Verdict<ClosedSolid, ClosedSolidFault<W>, ()> {
+    match solid_closure {
+        // The leftmost conjunct: a refutation here dominates whatever the shell says.
+        Verdict::Refuted(f) => Verdict::Refuted(ClosedSolidFault::SolidClosure(f.clone())),
+        // Solid-closure unresolved: a shell refutation still dominates (strong-Kleene);
+        // otherwise the conjunction is unresolved.
+        Verdict::Unresolved(()) => match shell {
+            Verdict::Refuted(sf) => Verdict::Refuted(ClosedSolidFault::Shell(*sf)),
+            _ => Verdict::Unresolved(()),
+        },
+        // Solid-closure holds: the shell verdict carries the conjunction.
+        Verdict::Verified(sc) => match shell {
+            Verdict::Verified(sh) => Verdict::Verified(ClosedSolid {
+                joints_certified: sc.joints_certified,
+                verts: sh.verts,
+                edges: sh.edges,
+                faces: sh.faces,
+            }),
+            Verdict::Refuted(sf) => Verdict::Refuted(ClosedSolidFault::Shell(*sf)),
+            Verdict::Unresolved(()) => Verdict::Unresolved(()),
+        },
+    }
+}
+
 // The doctests on `conj` / `valid_solid_closure` above are the usage examples; these unit
 // tests pin the ordering corners the ★ `gate_conj_sound` harness proves in general.
 #[cfg(test)]
@@ -273,6 +365,54 @@ mod tests {
         assert_eq!(
             valid_solid_closure(&complement, &joints),
             Verdict::Unresolved(()),
+        );
+    }
+
+    #[test]
+    fn closed_solid_conjoins_closure_and_shell() {
+        use crate::shell::{ClosedShell, ClosedShellFault};
+
+        let sc: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
+            Verdict::Verified(SolidClosure { joints_certified: 1 });
+        let sh = Verdict::Verified(ClosedShell {
+            verts: 8,
+            edges: 12,
+            faces: 6,
+        });
+        // Both hold ⇒ the combined evidence.
+        assert_eq!(
+            valid_closed_solid(&sc, &sh),
+            Verdict::Verified(ClosedSolid {
+                joints_certified: 1,
+                verts: 8,
+                edges: 12,
+                faces: 6,
+            }),
+        );
+
+        // A refused solid-closure is the *leftmost* conjunct: it dominates even a refused shell.
+        let sc_bad: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
+            Verdict::Refuted(SolidClosureFault::Closure {
+                joint: 0,
+                witness: "REG-V",
+            });
+        let sh_bad = Verdict::<ClosedShell, ClosedShellFault, ()>::Refuted(
+            ClosedShellFault::VertexLink { vertex: 2 },
+        );
+        assert_eq!(
+            valid_closed_solid(&sc_bad, &sh_bad),
+            Verdict::Refuted(ClosedSolidFault::SolidClosure(SolidClosureFault::Closure {
+                joint: 0,
+                witness: "REG-V",
+            })),
+        );
+
+        // Closure holds but the shell is open ⇒ the shell fault surfaces.
+        assert_eq!(
+            valid_closed_solid(&sc, &sh_bad),
+            Verdict::Refuted(ClosedSolidFault::Shell(ClosedShellFault::VertexLink {
+                vertex: 2
+            })),
         );
     }
 }
