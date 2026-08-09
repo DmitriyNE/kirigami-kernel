@@ -242,7 +242,11 @@ pub fn closed_shell(
     let mut i = 0;
     while i < n_wire {
         let e = wire_edge[i];
-        rev_dart[i] = if wire_reversed[i] { fwd_pos[e] } else { rev_pos[e] };
+        rev_dart[i] = if wire_reversed[i] {
+            fwd_pos[e]
+        } else {
+            rev_pos[e]
+        };
         i += 1;
     }
     // The next half-edge in the same face (cyclic).
@@ -308,7 +312,14 @@ mod tests {
 
     /// A shell certificate as flat arrays: `(n_verts, edge_start, edge_end, wire_edge,
     /// wire_reversed, face_start)`.
-    type ShellArrays = (usize, Vec<usize>, Vec<usize>, Vec<usize>, Vec<bool>, Vec<usize>);
+    type ShellArrays = (
+        usize,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<bool>,
+        Vec<usize>,
+    );
 
     /// A closed, consistently-oriented cube: 8 vertices, 12 edges, 6 quad faces. The
     /// canonical closed 2-manifold the export slab reduces to.
@@ -316,8 +327,12 @@ mod tests {
         // Vertices 0..7: bottom z=0 face 0,1,2,3 (CCW seen from below), top z=1 face 4,5,6,7
         // directly above (4 over 0, 5 over 1, 6 over 2, 7 over 3).
         // Edges: bottom ring 0..3, top ring 4..7, verticals 8..11.
-        let edge_start = vec![0, 1, 2, 3, /* top */ 4, 5, 6, 7, /* vert */ 0, 1, 2, 3];
-        let edge_end = vec![1, 2, 3, 0, /* top */ 5, 6, 7, 4, /* vert */ 4, 5, 6, 7];
+        let edge_start = vec![
+            0, 1, 2, 3, /* top */ 4, 5, 6, 7, /* vert */ 0, 1, 2, 3,
+        ];
+        let edge_end = vec![
+            1, 2, 3, 0, /* top */ 5, 6, 7, 4, /* vert */ 4, 5, 6, 7,
+        ];
         // Each face is a 4-edge wire; build it so every edge is traversed once each way.
         // bottom (0,3,2,1): outward normal −z. top (4,5,6,7): outward +z.
         // sides: (0,1,5,4) (1,2,6,5) (2,3,7,6) (3,0,4,7).
@@ -347,7 +362,14 @@ mod tests {
         wire_edge.extend_from_slice(&[3, 8, 7, 11]);
         wire_reversed.extend_from_slice(&[false, false, true, true]);
         face_start.push(24);
-        (8, edge_start, edge_end, wire_edge, wire_reversed, face_start)
+        (
+            8,
+            edge_start,
+            edge_end,
+            wire_edge,
+            wire_reversed,
+            face_start,
+        )
     }
 
     fn run(

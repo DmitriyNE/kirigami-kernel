@@ -355,7 +355,10 @@ pub fn brep_from_closure<B: Backend>(
 /// assert_eq!(slab.free_edges(), 0);
 /// assert_eq!(slab.nonmanifold_edges(), 0);
 /// ```
-pub fn brep_slab_from_closure<B: Backend>(joint: &Joint<B>, t: &ClosureTreatment<'_, B>) -> Brep<B> {
+pub fn brep_slab_from_closure<B: Backend>(
+    joint: &Joint<B>,
+    t: &ClosureTreatment<'_, B>,
+) -> Brep<B> {
     let mut bld = Builder::new();
     let chart = joint.flank_a().chart();
     let supp = &t.sigma_a;
@@ -363,8 +366,18 @@ pub fn brep_slab_from_closure<B: Backend>(joint: &Joint<B>, t: &ClosureTreatment
     let mus = [t.mu.lo.clone(), t.mu.hi.clone()];
     let ws = [t.w.lo.clone(), t.w.hi.clone()];
 
-    // surface(μ_j, w_k) as a Vec3Rat in σ.
-    let surf = |j: usize, k: usize| chart.surface(&mus[j], &ws[k]);
+    // The exact σ-rail curve at `(μ_j, w_k)` = `base_j + w_k·n`, where `base_j = c + μ_j·r`.
+    // `chart.surface`'s denominator-multiplying `add`s inflate the rational's degree (a
+    // `c + μr + wn` piles up a common factor), which would blow the Bézier/BSpline poles up
+    // to ±∞ after the `f64` cast. Reducing `base` and `n` first keeps the true low degree —
+    // and, since `w` is a scalar, both `w`-rails of a μ-wall keep the shared denominator
+    // `base_j.den · n.den`, exactly the shared-weights condition `ruled_from_rails` needs.
+    let dir = chart.normal().reduce();
+    let base = [
+        chart.surface(&mus[0], &Rat::from_i128(0)).reduce(),
+        chart.surface(&mus[1], &Rat::from_i128(0)).reduce(),
+    ];
+    let surf = |j: usize, k: usize| base[j].add(&dir.scale_rat(&ws[k]));
 
     // The (μ, w) cross-section ring: r0=(μlo,wlo), r1=(μhi,wlo), r2=(μhi,whi), r3=(μlo,whi).
     let ring = [(0usize, 0usize), (1, 0), (1, 1), (0, 1)];

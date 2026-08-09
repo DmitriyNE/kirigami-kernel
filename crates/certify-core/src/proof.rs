@@ -556,7 +556,11 @@ fn ref_tetra_closed(rev: &[bool; 12]) -> bool {
     let fs = [0usize, 3, 6, 9, 12];
     let dend = |i: usize| -> (usize, usize) {
         let e = we[i];
-        if rev[i] { (ee[e], es[e]) } else { (es[e], ee[e]) }
+        if rev[i] {
+            (ee[e], es[e])
+        } else {
+            (es[e], ee[e])
+        }
     };
     let mut ok = true;
     // Per-face wire closure + no immediate backtrack along one edge.

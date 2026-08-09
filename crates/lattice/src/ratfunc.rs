@@ -216,6 +216,45 @@ impl<B: Backend> Vec3Rat<B> {
         self.num.iter().all(Poly::is_zero)
     }
 
+    /// A canonical, lower-degree representative: the three numerators and the shared
+    /// denominator all divided by their common gcd, with the denominator's leading
+    /// coefficient made positive. Value-preserving (like [`RatFunc::reduce`]), and the
+    /// **common-denominator form is retained** — so a `c + μr + wn` built by
+    /// denominator-multiplying [`add`](Self::add)s collapses back to its true degree
+    /// (essential before a floating-point / Bézier conversion, where the inflated common
+    /// factor would otherwise blow up the coefficients).
+    pub fn reduce(&self) -> Self {
+        if self.is_zero() {
+            return self.clone();
+        }
+        // gcd of the nonzero numerators, then with the denominator.
+        let mut g: Option<Poly<B>> = None;
+        for p in &self.num {
+            if !p.is_zero() {
+                g = Some(match g {
+                    Some(acc) => acc.gcd(p),
+                    None => p.clone(),
+                });
+            }
+        }
+        let g = match g {
+            Some(acc) => acc.gcd(&self.den),
+            None => return self.clone(),
+        };
+        let mut num = [
+            self.num[0].divrem(&g).0,
+            self.num[1].divrem(&g).0,
+            self.num[2].divrem(&g).0,
+        ];
+        let mut den = self.den.divrem(&g).0;
+        // Canonical sign: denominator leads positive.
+        if den.leading().map(Rat::sign) == Some(-1) {
+            num = [num[0].neg(), num[1].neg(), num[2].neg()];
+            den = den.neg();
+        }
+        Vec3Rat::new(num, den)
+    }
+
     /// `self + o`, over the shared denominator `self.den · o.den`.
     pub fn add(&self, o: &Self) -> Self {
         let den = self.den.mul(&o.den);
@@ -431,6 +470,23 @@ mod tests {
         let rg = g.reduce();
         assert_eq!(rg.den().leading().map(Rat::sign), Some(1));
         assert_eq!(&rg, &g);
+    }
+
+    #[test]
+    fn vec3_reduce_cancels_the_common_factor() {
+        // (x³+x, x²+1, 0) / (x²+1)²  =  (x(x²+1), (x²+1), 0)/(x²+1)²  reduces to
+        // (x, 1, 0)/(x²+1), keeping the shared-denominator form and the value.
+        let v = Vec3Rat::new(
+            [p(&[0, 1, 0, 1]), p(&[1, 0, 1]), p(&[0])],
+            p(&[1, 0, 2, 0, 1]), // (x²+1)²
+        );
+        let r = v.reduce();
+        assert_eq!(
+            r.den(),
+            &p(&[1, 0, 1]),
+            "the common (x²+1) factor is cancelled"
+        );
+        assert_eq!(&r, &v, "value preserved");
     }
 
     #[test]

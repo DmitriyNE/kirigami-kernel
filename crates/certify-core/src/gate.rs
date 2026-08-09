@@ -373,7 +373,9 @@ mod tests {
         use crate::shell::{ClosedShell, ClosedShellFault};
 
         let sc: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
-            Verdict::Verified(SolidClosure { joints_certified: 1 });
+            Verdict::Verified(SolidClosure {
+                joints_certified: 1,
+            });
         let sh = Verdict::Verified(ClosedShell {
             verts: 8,
             edges: 12,
@@ -396,9 +398,10 @@ mod tests {
                 joint: 0,
                 witness: "REG-V",
             });
-        let sh_bad = Verdict::<ClosedShell, ClosedShellFault, ()>::Refuted(
-            ClosedShellFault::VertexLink { vertex: 2 },
-        );
+        let sh_bad =
+            Verdict::<ClosedShell, ClosedShellFault, ()>::Refuted(ClosedShellFault::VertexLink {
+                vertex: 2,
+            });
         assert_eq!(
             valid_closed_solid(&sc_bad, &sh_bad),
             Verdict::Refuted(ClosedSolidFault::SolidClosure(SolidClosureFault::Closure {

@@ -278,7 +278,12 @@ impl<B: Backend> RatBezierSurface<B> {
     /// `w`-independent), so their Bernstein weights coincide and the tensor patch's
     /// projective blend reproduces the affine ruling `(1−v)·rail0(σ) + v·rail1(σ)` exactly.
     /// The shared weights are debug-asserted equal.
-    pub fn ruled_from_rails(rail0: &Vec3Rat<B>, rail1: &Vec3Rat<B>, a: &Rat<B>, b: &Rat<B>) -> Self {
+    pub fn ruled_from_rails(
+        rail0: &Vec3Rat<B>,
+        rail1: &Vec3Rat<B>,
+        a: &Rat<B>,
+        b: &Rat<B>,
+    ) -> Self {
         let deg = |p: &Poly<B>| p.degree().unwrap_or(0);
         let n0 = rail0.num();
         let n1 = rail1.num();

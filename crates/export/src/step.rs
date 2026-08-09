@@ -68,6 +68,7 @@ mod ffi {
             beziers: &[f64],
             faces: &[f64],
             wires: &[f64],
+            patches: &[f64],
         ) -> String;
 
         /// Assemble the same shell as [`occt_write_brep`] (no STEP write) and return
@@ -78,12 +79,14 @@ mod ffi {
         /// **oracle**: compared against the internal verdict, never the certificate.
         /// Callers should use [`audit_brep`], which does the cast and parses the
         /// summary into a [`ShellAudit`]; this raw binding takes floats directly.
+        #[allow(clippy::too_many_arguments)]
         fn occt_brep_audit(
             verts: &[f64],
             edges: &[f64],
             beziers: &[f64],
             faces: &[f64],
             wires: &[f64],
+            patches: &[f64],
         ) -> String;
     }
 }
@@ -186,13 +189,19 @@ pub struct BrepBuffers {
     /// 4 `f64` per rational-Bézier control point: weighted pole `wx, wy, wz` and
     /// weight `w` (homogeneous form; the affine pole is `(wx, wy, wz) / w`).
     pub beziers: Vec<f64>,
-    /// 7 `f64` per face: `surf_kind, base_eid, dir_x, dir_y, dir_z, wire_off,
-    /// wire_len` (`surf_kind` 0 = `Plane`, 1 = `LinearExtrusion`; the bounding wire
-    /// is `wire_len` half-edges from half-edge index `wire_off` in
-    /// [`wires`](Self::wires)).
+    /// 7 `f64` per face: `surf_kind, a, b, c, d, wire_off, wire_len`. `surf_kind` 0 =
+    /// `Plane` (`a..d` unused); 1 = `LinearExtrusion` (`a` = base edge id, `(b, c, d)` =
+    /// ruling direction); 2 = `RationalPatch` (`a` = control-point index into
+    /// [`patches`](Self::patches), `b` = u-degree, `c` = v-degree, `d` unused). The
+    /// bounding wire is `wire_len` half-edges from half-edge index `wire_off` in
+    /// [`wires`](Self::wires).
     pub faces: Vec<f64>,
     /// 2 `f64` per half-edge: `edge_id, reversed` (`reversed` 0 or 1).
     pub wires: Vec<f64>,
+    /// 4 `f64` per rational-patch control point: weighted pole `wx, wy, wz` and weight
+    /// `w` (homogeneous form). A `surf_kind == 2` face's `(udeg+1)·(vdeg+1)` control
+    /// points are row-major (`u` outer, `v` inner) starting at its control-point index.
+    pub patches: Vec<f64>,
 }
 
 /// Flatten an exact [`Brep`] into the five [`BrepBuffers`] the surface writer
@@ -238,6 +247,7 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
 
     let mut faces = Vec::with_capacity(b.faces().len() * 7);
     let mut wires: Vec<f64> = Vec::new();
+    let mut patches: Vec<f64> = Vec::new();
     for f in b.faces() {
         let wire_off = wires.len() / 2; // half-edge index, not f64 offset
         for &(eid, reversed) in &f.wire {
@@ -267,6 +277,26 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
                     f.wire.len() as f64,
                 ]);
             }
+            FaceSurface::RationalPatch(patch) => {
+                let patch_off = patches.len() / 4; // control-point index, not f64 offset
+                let wp = patch.weighted_poles();
+                let w = patch.weights();
+                for (pole, weight) in wp.iter().zip(w) {
+                    patches.push(rat_to_f64(&pole[0]));
+                    patches.push(rat_to_f64(&pole[1]));
+                    patches.push(rat_to_f64(&pole[2]));
+                    patches.push(rat_to_f64(weight));
+                }
+                faces.extend_from_slice(&[
+                    2.0,
+                    patch_off as f64,
+                    patch.udeg() as f64,
+                    patch.vdeg() as f64,
+                    0.0,
+                    wire_off as f64,
+                    f.wire.len() as f64,
+                ]);
+            }
         }
     }
 
@@ -276,6 +306,7 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
         beziers,
         faces,
         wires,
+        patches,
     }
 }
 
@@ -312,6 +343,7 @@ pub fn write_brep<B: Backend>(path: &str, b: &Brep<B>) -> String {
         &bufs.beziers,
         &bufs.faces,
         &bufs.wires,
+        &bufs.patches,
     )
 }
 
@@ -355,6 +387,7 @@ pub fn audit_brep<B: Backend>(b: &Brep<B>) -> Result<ShellAudit, String> {
         &bufs.beziers,
         &bufs.faces,
         &bufs.wires,
+        &bufs.patches,
     ))
 }
 

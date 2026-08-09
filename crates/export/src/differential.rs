@@ -34,12 +34,14 @@
 //! geometry-decoupled) `SewInput` — reports a manifold closure throughout.
 
 use certify_core::Verdict;
+use certify_core::gate::{ClosedSolid, SolidClosure, SolidClosureFault, valid_closed_solid};
+use certify_core::shell::{ClosedShell, closed_shell};
 use closure::Joint;
 use closure::valid::{CapWitness, ClosureTreatment, ClosureValid, closure_valid};
 use fixtures::closure_joint::{ledge_d24, miter_cap, one_joint, treatment, treatment_miter};
 use lattice::Backend;
 
-use crate::brep_build::brep_from_closure;
+use crate::brep_build::{brep_from_closure, brep_slab_from_closure};
 use crate::shell::shell_from_closure;
 use crate::step::{ShellAudit, audit_brep, audit_shell};
 
@@ -241,5 +243,75 @@ fn miter_oracle_agrees_and_documents_the_overhang() {
     assert_eq!(
         internal.cap_boundary, 0,
         "miter: no separate cap face, so no CAP-OUT V_∂: {internal:?}"
+    );
+}
+
+/// **The certified closed solid (Milestone D slice 4 — atlas assembly).** The single-flank
+/// slab is certified closed *internally*: `closed_shell` verifies its combinatorics are a
+/// closed oriented 2-manifold, and `valid_closed_solid` conjoins that with the joint's
+/// CLOSURE_VALID. The OCCT oracle then *corroborates* the emitted geometry — including the
+/// two rational-patch μ-walls — reporting no free edge, no non-manifold edge, and a valid
+/// shell. Closedness is **earned** by the internal checker, never delegated to the kernel
+/// ("oracle ∧ audit, never oracle-instead"). This is the first genuinely closed solid.
+#[test]
+fn the_flank_slab_is_a_certified_closed_solid() {
+    let joint = one_joint();
+    let d24 = ledge_d24();
+    let t = treatment(&d24);
+    // The joint closes (CLOSURE_VALID) — the leftmost conjunct of the atlas gate.
+    let _valid = expect_valid(&joint, &t);
+
+    let slab = brep_slab_from_closure(&joint, &t);
+
+    // — Internal certificate: closed_shell over the slab's combinatorics —
+    let cert = slab.to_shell_certificate();
+    let shell = closed_shell(
+        cert.n_verts,
+        &cert.edge_start,
+        &cert.edge_end,
+        &cert.wire_edge,
+        &cert.wire_reversed,
+        &cert.face_start,
+    );
+    assert_eq!(
+        shell,
+        Verdict::Verified(ClosedShell {
+            verts: 8,
+            edges: 12,
+            faces: 6
+        }),
+        "closed_shell certifies the slab a closed oriented 2-manifold"
+    );
+
+    // The atlas gate: the joint closes AND the assembled shell is closed.
+    let solid_closure: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
+        Verdict::Verified(SolidClosure {
+            joints_certified: 1,
+        });
+    assert_eq!(
+        valid_closed_solid(&solid_closure, &shell),
+        Verdict::Verified(ClosedSolid {
+            joints_certified: 1,
+            verts: 8,
+            edges: 12,
+            faces: 6
+        }),
+        "valid_closed_solid conjoins the joint closure with whole-solid closedness"
+    );
+
+    // — OCCT oracle corroborates the geometry (compared, never trusted as the certificate) —
+    let audit = audit_brep(&slab).expect("OCC audits the exact slab");
+    assert!(
+        audit.brepcheck_valid,
+        "OCC accepts the exact slab (incl. the rational-patch μ-walls): {audit:?}"
+    );
+    assert_eq!(audit.faces, 6, "six faces: {audit:?}");
+    assert_eq!(
+        audit.free_edges, 0,
+        "OCC finds no free edge — the slab is watertight: {audit:?}"
+    );
+    assert_eq!(
+        audit.nonmanifold_edges, 0,
+        "OCC finds no non-manifold edge: {audit:?}"
     );
 }

@@ -16,6 +16,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <Bnd_Box.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierSurface.hxx>
 #include <Geom_Curve.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_SurfaceOfLinearExtrusion.hxx>
@@ -26,7 +27,9 @@
 #include <ShapeFix_Face.hxx>
 #include <TColStd_Array1OfInteger.hxx>
 #include <TColStd_Array1OfReal.hxx>
+#include <TColStd_Array2OfReal.hxx>
 #include <TColgp_Array1OfPnt.hxx>
+#include <TColgp_Array2OfPnt.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
 #include <TopoDS.hxx>
@@ -153,6 +156,7 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
                                      rust::Slice<const double> beziers,
                                      rust::Slice<const double> faces,
                                      rust::Slice<const double> wires,
+                                     rust::Slice<const double> patches,
                                      std::size_t& out_faces, std::string& err) {
   out_faces = 0;
 
@@ -272,7 +276,7 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
         return TopoDS_Shape();
       }
       face = mf.Face();
-    } else {
+    } else if (surf_kind == 1) {
       // Ruled face: the base edge's curve swept along `dir`
       // (Geom_SurfaceOfLinearExtrusion), trimmed by the wire.
       if (base_eid < 0 || static_cast<std::size_t>(base_eid) >= ne) {
@@ -314,6 +318,57 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
       fix.Perform();
       fix.FixOrientation();
       face = fix.Face();
+    } else {
+      // Rational Geom_BSplineSurface (patch): the exact curved wall. Its control net is
+      // `base_eid` = the control-point start index, `dx` = u-degree, `dy` = v-degree; the
+      // (udeg+1)*(vdeg+1) control points are row-major (u outer, v inner) in `patches`.
+      const int patch_off = base_eid;
+      const int udeg = static_cast<int>(dx);
+      const int vdeg = static_cast<int>(dy);
+      if (udeg < 1 || vdeg < 1 || patch_off < 0) {
+        err = "patch degree/offset out of bounds";
+        return TopoDS_Shape();
+      }
+      const int nu = udeg + 1;
+      const int nv = vdeg + 1;
+      const int ncp = nu * nv;
+      if (static_cast<std::size_t>(4 * (patch_off + ncp)) > patches.size()) {
+        err = "patch control-point range out of bounds";
+        return TopoDS_Shape();
+      }
+      TColgp_Array2OfPnt poles(1, nu, 1, nv);
+      TColStd_Array2OfReal weights(1, nu, 1, nv);
+      for (int i = 0; i < nu; ++i) {
+        for (int j = 0; j < nv; ++j) {
+          const int cp = patch_off + i * nv + j;
+          const double wx = patches[4 * cp + 0];
+          const double wy = patches[4 * cp + 1];
+          const double wz = patches[4 * cp + 2];
+          const double w = patches[4 * cp + 3];
+          if (w == 0.0) {
+            err = "patch control point has zero weight";
+            return TopoDS_Shape();
+          }
+          poles(i + 1, j + 1) = gp_Pnt(wx / w, wy / w, wz / w);
+          weights(i + 1, j + 1) = w;
+        }
+      }
+      // A single-span bidegree (udeg, vdeg) rational Bézier patch — no knots to author, the
+      // surface analogue of the rational-Bézier edge above. Degree is inferred as
+      // NbPoles − 1 in each direction.
+      Handle(Geom_BezierSurface) surf = new Geom_BezierSurface(poles, weights);
+      BRepBuilderAPI_MakeFace mf(surf, wire, /*Inside=*/Standard_True);
+      if (!mf.IsDone()) {
+        err = "MakeFace(rational patch) failed";
+        return TopoDS_Shape();
+      }
+      // Heal pcurves onto the patch and orient the wire, as in the extrusion case (the
+      // wire's four edges are the patch's iso-curve boundaries, so pcurves exist).
+      ShapeFix_Face fix(mf.Face());
+      fix.FixOrientationMode() = 1;
+      fix.Perform();
+      fix.FixOrientation();
+      face = fix.Face();
     }
     builder.Add(shell, face);
     ++added;
@@ -331,7 +386,8 @@ rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
-                             rust::Slice<const double> wires) {
+                             rust::Slice<const double> wires,
+                             rust::Slice<const double> patches) {
   std::string p(path);
   try {
     if (verts.size() % 3 != 0) return rust::String("error: verts not a multiple of 3");
@@ -339,11 +395,12 @@ rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
     if (beziers.size() % 4 != 0) return rust::String("error: beziers not a multiple of 4");
     if (faces.size() % 7 != 0) return rust::String("error: faces not a multiple of 7");
     if (wires.size() % 2 != 0) return rust::String("error: wires not a multiple of 2");
+    if (patches.size() % 4 != 0) return rust::String("error: patches not a multiple of 4");
 
     std::size_t nfaces = 0;
     std::string err;
     TopoDS_Shape shell =
-        build_brep_shape(verts, edges, beziers, faces, wires, nfaces, err);
+        build_brep_shape(verts, edges, beziers, faces, wires, patches, nfaces, err);
     if (shell.IsNull()) return rust::String(std::string("error: ") + err);
 
     STEPControl_Writer writer;
@@ -373,18 +430,20 @@ rust::String occt_brep_audit(rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
-                             rust::Slice<const double> wires) {
+                             rust::Slice<const double> wires,
+                             rust::Slice<const double> patches) {
   try {
     if (verts.size() % 3 != 0) return rust::String("error: verts not a multiple of 3");
     if (edges.size() % 5 != 0) return rust::String("error: edges not a multiple of 5");
     if (beziers.size() % 4 != 0) return rust::String("error: beziers not a multiple of 4");
     if (faces.size() % 7 != 0) return rust::String("error: faces not a multiple of 7");
     if (wires.size() % 2 != 0) return rust::String("error: wires not a multiple of 2");
+    if (patches.size() % 4 != 0) return rust::String("error: patches not a multiple of 4");
 
     std::size_t nfaces = 0;
     std::string err;
     TopoDS_Shape shell =
-        build_brep_shape(verts, edges, beziers, faces, wires, nfaces, err);
+        build_brep_shape(verts, edges, beziers, faces, wires, patches, nfaces, err);
     if (shell.IsNull()) return rust::String(std::string("error: ") + err);
 
     // Edge → incident-face count, exactly as `occt_shell_audit` reads it: a

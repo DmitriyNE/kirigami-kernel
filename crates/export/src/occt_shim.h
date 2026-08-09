@@ -45,7 +45,7 @@ rust::String occt_shell_audit(rust::Slice<const double> tris);
 // "ok" on a clean write-then-reload round-trip whose reload passes BRepCheck, else
 // "error: <what>". A write-then-reload check, NOT the external-kernel audit.
 //
-// Five flat `double` buffers carry the IR (all indices are element indices, not
+// Six flat `double` buffers carry the IR (all indices are element indices, not
 // double offsets):
 //   verts   — 3 per vertex: x, y, z.
 //   edges   — 5 per edge: start_vid, end_vid, kind, bez_off, bez_deg.
@@ -54,17 +54,23 @@ rust::String occt_shell_audit(rust::Slice<const double> tris);
 //             `bez_off` in `beziers`.
 //   beziers — 4 per rational-Bézier control point: weighted pole wx, wy, wz, and
 //             weight w (the homogeneous form; affine pole is (wx,wy,wz)/w).
-//   faces   — 7 per face: surf_kind, base_eid, dir_x, dir_y, dir_z, wire_off,
-//             wire_len. surf_kind 0 = Plane (base/dir ignored); 1 =
-//             Geom_SurfaceOfLinearExtrusion of edge `base_eid`'s curve along
-//             (dir_x,dir_y,dir_z). The bounding wire is `wire_len` half-edges
-//             starting at half-edge index `wire_off` in `wires`.
+//   faces   — 7 per face: surf_kind, a, b, c, d, wire_off, wire_len.
+//             surf_kind 0 = Plane (a..d ignored); 1 =
+//             Geom_SurfaceOfLinearExtrusion of edge a's curve along (b,c,d);
+//             2 = rational Geom_BSplineSurface (patch) whose (b+1)*(c+1) control
+//             points start at control-point index a in `patches`, with u-degree b
+//             and v-degree c (d ignored). The bounding wire is `wire_len`
+//             half-edges starting at half-edge index `wire_off` in `wires`.
 //   wires   — 2 per half-edge: edge_id, reversed (0 or 1).
+//   patches — 4 per rational-patch control point: weighted pole wx, wy, wz, and
+//             weight w (homogeneous). A patch face's control points are row-major
+//             (u outer, v inner) starting at its control-point index.
 rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
-                             rust::Slice<const double> wires);
+                             rust::Slice<const double> wires,
+                             rust::Slice<const double> patches);
 
 // M-D slice-3 surface audit (differential ORACLE): assemble the SAME shell
 // `occt_write_brep` emits (shared builder, no STEP write) and report OCCT's own
@@ -79,6 +85,7 @@ rust::String occt_brep_audit(rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
-                             rust::Slice<const double> wires);
+                             rust::Slice<const double> wires,
+                             rust::Slice<const double> patches);
 
 }  // namespace kirigami
