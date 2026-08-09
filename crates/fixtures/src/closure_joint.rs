@@ -120,7 +120,8 @@ fn mu() -> MuRange<Bignum> {
 /// The physical **90° cylinder self-fold**: flank A = [`cylinder_a`] (crease σ_a = 0, normal ẑ),
 /// flank B = [`cylinder_b`] (crease σ_b = 1, normal −ŷ), s_J = +1 ⇒ b_J = (0, 1, 1). Both crease
 /// neutral edges lie on the shared line `L = {(x, 0, 1)}`, so the flanks abut with no gap. Flank
-/// A's retained support is σ ∈ [0, 1/8], flank B's is σ ∈ [7/8, 1] — each abutting its crease.
+/// A's retained support is σ ∈ [−1/8, 0], flank B's is σ ∈ [1, 9/8] — each abutting its crease on
+/// the side where the `w = 0` neutral sheet stays on the *retained* side of Π (see [`boxes`]).
 /// The input joint for the one-joint closure.
 pub fn one_joint() -> Joint<Bignum> {
     Joint::new(
@@ -235,9 +236,16 @@ fn sew_ok() -> SewInput<Bignum> {
 }
 
 /// The regularity + trim boxes shared by both cap treatments of the [`one_joint`] fold,
-/// tuned to the physical charts: `w ∈ [1, 2]`, and each flank's σ-support shrunk to abut its
-/// crease (`σ_a ∈ [0, 1/8]`, `σ_b ∈ [7/8, 1]`) — the range over which TRIM-LOCAL stays cleared
-/// for the true-cylinder pedal (the wider C-milestone boxes go negative here).
+/// tuned to the physical charts: `w ∈ [1, 2]` (the retention *window* — the certified normal-offset
+/// band, not the emitted face extent), and each flank's σ-support abutting its crease on the side
+/// where the `w = 0` neutral sheet is on the *retained* side of Π (`σ_a ∈ [−1/8, 0]`,
+/// `σ_b ∈ [1, 9/8]`). This is the deciding constraint: the crease `(σ = σ*, w = 0)` sits exactly on
+/// Π (`G_i = 0`), and `g0(σ) = (pedal − x₀)·b_J = −2σ(1 + σ)/(1 + σ²)` for flank A is `≥ 0` only for
+/// `σ ≤ 0` — so on the `[−1/8, 0]` side the neutral sheet stays retained (`G_A ≥ 0`, touching Π only
+/// at the crease), and the exact STEP emission can carry the crease line `L` as a boundary edge
+/// **shared by both flanks** without any face crossing Π. On the mirror side `σ ∈ [0, 1/8]` the
+/// neutral sheet dips to the *deleted* side (`g0 < 0`), which forced the earlier `w`-floor up to 1
+/// and left the flanks disjoint over the whole certified region (see `docs/engineering-log.md`).
 fn boxes() -> (
     MuRange<Bignum>,
     Interval<Bignum>,
@@ -247,8 +255,8 @@ fn boxes() -> (
     (
         mu(),
         iv((1, 1), (2, 1)),
-        iv((0, 1), (1, 8)),
-        iv((7, 8), (1, 1)),
+        iv((-1, 8), (0, 1)),
+        iv((1, 1), (9, 8)),
     )
 }
 
@@ -376,8 +384,8 @@ mod tests {
         }
 
         // Parallel rulings: flank A's ruling stays along x̂ (y = z = 0) with nonzero x across
-        // its retained support — no apex convergence.
-        for s in [q(0), Rat::new(1, 8)] {
+        // its retained support σ ∈ [−1/8, 0] — no apex convergence.
+        for s in [q(0), Rat::new(-1, 8)] {
             let r = a.ruling().eval(&s).unwrap();
             assert_ne!(r[0], q(0), "ruling has a nonzero x component");
             assert_eq!(r[1], q(0), "ruling y = 0 (∥ x̂)");
