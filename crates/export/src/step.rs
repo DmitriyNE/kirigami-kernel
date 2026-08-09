@@ -17,7 +17,8 @@
 //! assert_eq!(status, "ok"); // wrote a unit box and reloaded it through BRepCheck
 //! ```
 
-use crate::approx::surd_to_f64;
+use crate::approx::{rat_to_f64, surd_to_f64};
+use crate::brep::{Brep, EdgeGeom, FaceSurface};
 use crate::shell::ShellRecord;
 use lattice::Backend;
 
@@ -51,6 +52,39 @@ mod ffi {
         /// which does the exact→`f64` cast and parses the summary into a typed
         /// [`ShellAudit`]; this raw binding takes floats directly.
         fn occt_shell_audit(tris: &[f64]) -> String;
+
+        /// Assemble an exact B-rep (shared vertex + edge tables, faces on exact
+        /// surfaces) into a `TopoDS_Shell` with edges shared **by identity** (no
+        /// float-tolerance sewing), write it to `path` as a STEP file, read it back,
+        /// and run `BRepCheck_Analyzer` on the reload. Returns `"ok"` on a clean
+        /// write-then-reload round-trip, else `"error: <what>"`. The five flat
+        /// buffers are the [`BrepBuffers`] layout. Callers should use [`write_brep`],
+        /// which does the exact→`f64` cast; this raw binding takes floats directly.
+        #[allow(clippy::too_many_arguments)]
+        fn occt_write_brep(
+            path: &str,
+            verts: &[f64],
+            edges: &[f64],
+            beziers: &[f64],
+            faces: &[f64],
+            wires: &[f64],
+        ) -> String;
+
+        /// Assemble the same shell as [`occt_write_brep`] (no STEP write) and return
+        /// OCCT's own topology facts as the `key=val` summary
+        /// (`faces=… edges=… free=… nonmanifold=… closed=<0|1> brepcheck=<0|1>`), or
+        /// `"error: <what>"`. A Π-seam shared by two faces by identity is one edge of
+        /// incidence 2 — neither free nor non-manifold. The Milestone-D differential
+        /// **oracle**: compared against the internal verdict, never the certificate.
+        /// Callers should use [`audit_brep`], which does the cast and parses the
+        /// summary into a [`ShellAudit`]; this raw binding takes floats directly.
+        fn occt_brep_audit(
+            verts: &[f64],
+            edges: &[f64],
+            beziers: &[f64],
+            faces: &[f64],
+            wires: &[f64],
+        ) -> String;
     }
 }
 
@@ -133,6 +167,195 @@ pub struct ShellAudit {
 /// ```
 pub fn audit_shell<B: Backend>(rec: &ShellRecord<B>) -> Result<ShellAudit, String> {
     parse_shell_audit(&ffi::occt_shell_audit(&record_to_floats(rec)))
+}
+
+/// The five flat `f64` buffers that carry an exact [`Brep`] across the FFI boundary
+/// — the surface-tier analogue of [`record_to_floats`]'s single triangle buffer.
+/// All indices inside the buffers are *element* indices (vertex/edge/control-point/
+/// half-edge), not `f64` offsets. This is the single point where the exact B-rep
+/// becomes floating-point, at the last moment before OCCT; the layout is documented
+/// on [`ffi::occt_write_brep`] and mirrored on the C++ side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrepBuffers {
+    /// 3 `f64` per vertex: `x, y, z`.
+    pub verts: Vec<f64>,
+    /// 5 `f64` per edge: `start_vid, end_vid, kind, bez_off, bez_deg` (`kind` 0 =
+    /// `Line`, 1 = `RationalBezier`; the Bézier's control points start at
+    /// control-point index `bez_off` in [`beziers`](Self::beziers)).
+    pub edges: Vec<f64>,
+    /// 4 `f64` per rational-Bézier control point: weighted pole `wx, wy, wz` and
+    /// weight `w` (homogeneous form; the affine pole is `(wx, wy, wz) / w`).
+    pub beziers: Vec<f64>,
+    /// 7 `f64` per face: `surf_kind, base_eid, dir_x, dir_y, dir_z, wire_off,
+    /// wire_len` (`surf_kind` 0 = `Plane`, 1 = `LinearExtrusion`; the bounding wire
+    /// is `wire_len` half-edges from half-edge index `wire_off` in
+    /// [`wires`](Self::wires)).
+    pub faces: Vec<f64>,
+    /// 2 `f64` per half-edge: `edge_id, reversed` (`reversed` 0 or 1).
+    pub wires: Vec<f64>,
+}
+
+/// Flatten an exact [`Brep`] into the five [`BrepBuffers`] the surface writer
+/// consumes, casting each exact `Surd` vertex and each `Rat` Bézier pole / weight /
+/// extrusion direction through the quarantined [`approx`](crate::approx) bridge.
+/// This is the single exact→`f64` cast for the surface path (mirroring
+/// [`record_to_floats`] for the mesh path).
+pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
+    let mut verts = Vec::with_capacity(b.verts().len() * 3);
+    for v in b.verts() {
+        for coord in v {
+            verts.push(surd_to_f64(coord));
+        }
+    }
+
+    let mut edges = Vec::with_capacity(b.edges().len() * 5);
+    let mut beziers: Vec<f64> = Vec::new();
+    for e in b.edges() {
+        match &e.geom {
+            EdgeGeom::Line => {
+                edges.extend_from_slice(&[e.start as f64, e.end as f64, 0.0, 0.0, 0.0]);
+            }
+            EdgeGeom::RationalBezier(bez) => {
+                let off = beziers.len() / 4; // control-point index, not f64 offset
+                edges.extend_from_slice(&[
+                    e.start as f64,
+                    e.end as f64,
+                    1.0,
+                    off as f64,
+                    bez.degree() as f64,
+                ]);
+                let wp = bez.weighted_poles();
+                let w = bez.weights();
+                for (pole, weight) in wp.iter().zip(w) {
+                    beziers.push(rat_to_f64(&pole[0]));
+                    beziers.push(rat_to_f64(&pole[1]));
+                    beziers.push(rat_to_f64(&pole[2]));
+                    beziers.push(rat_to_f64(weight));
+                }
+            }
+        }
+    }
+
+    let mut faces = Vec::with_capacity(b.faces().len() * 7);
+    let mut wires: Vec<f64> = Vec::new();
+    for f in b.faces() {
+        let wire_off = wires.len() / 2; // half-edge index, not f64 offset
+        for &(eid, reversed) in &f.wire {
+            wires.push(eid as f64);
+            wires.push(if reversed { 1.0 } else { 0.0 });
+        }
+        match &f.surface {
+            FaceSurface::Plane => {
+                faces.extend_from_slice(&[
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    wire_off as f64,
+                    f.wire.len() as f64,
+                ]);
+            }
+            FaceSurface::LinearExtrusion { base, dir } => {
+                faces.extend_from_slice(&[
+                    1.0,
+                    *base as f64,
+                    rat_to_f64(&dir[0]),
+                    rat_to_f64(&dir[1]),
+                    rat_to_f64(&dir[2]),
+                    wire_off as f64,
+                    f.wire.len() as f64,
+                ]);
+            }
+        }
+    }
+
+    BrepBuffers {
+        verts,
+        edges,
+        beziers,
+        faces,
+        wires,
+    }
+}
+
+/// Write an exact [`Brep`] to `path` as a STEP file (through the OCCT
+/// `STEPControl_Writer`), the edges shared **by identity** — no float-tolerance
+/// sewing — then read it back and validate the reload with `BRepCheck_Analyzer`.
+/// Returns `"ok"` on a clean write-then-reload round-trip, or `"error: <what>"`.
+/// The exact→`f64` cast happens here, once, via [`brep_to_buffers`]. A
+/// write-then-reload check, **not** the external-kernel audit.
+///
+/// # Example (requires `--features step` and a writable path)
+///
+/// ```no_run
+/// use export::brep::{Brep, EdgeGeom};
+/// use lattice::{Bignum, Rat, Surd};
+///
+/// let r = |v: i128| Surd::<Bignum>::from_rat(Rat::from_i128(v));
+/// let mut b = Brep::<Bignum>::new();
+/// let v0 = b.add_vertex([r(0), r(0), r(0)]);
+/// let v1 = b.add_vertex([r(1), r(0), r(0)]);
+/// let v2 = b.add_vertex([r(0), r(1), r(0)]);
+/// let e0 = b.add_edge(v0, v1, EdgeGeom::Line);
+/// let e1 = b.add_edge(v1, v2, EdgeGeom::Line);
+/// let e2 = b.add_edge(v2, v0, EdgeGeom::Line);
+/// b.add_plane(vec![(e0, false), (e1, false), (e2, false)]);
+/// assert_eq!(export::step::write_brep("/tmp/kirigami-tri.step", &b), "ok");
+/// ```
+pub fn write_brep<B: Backend>(path: &str, b: &Brep<B>) -> String {
+    let bufs = brep_to_buffers(b);
+    ffi::occt_write_brep(
+        path,
+        &bufs.verts,
+        &bufs.edges,
+        &bufs.beziers,
+        &bufs.faces,
+        &bufs.wires,
+    )
+}
+
+/// Assemble an exact [`Brep`] into an OCCT shell in memory (no STEP write) and
+/// return its [`ShellAudit`] facts — the Milestone-D external-kernel **differential
+/// oracle** for the surface path. The result is *compared* against the internal
+/// SEW-LINK / CAP-OUT verdict, never used as the certificate. A Π-seam shared by
+/// two faces by identity is reported as one edge of incidence 2 — so it counts
+/// toward neither `free_edges` nor `nonmanifold_edges`. The exact→`f64` cast
+/// happens once, via [`brep_to_buffers`]. Returns `Err` with the shim's
+/// `"error: <what>"` message on a malformed buffer or an OCCT failure.
+///
+/// # Example (requires `--features step`)
+///
+/// ```no_run
+/// use export::brep::{Brep, EdgeGeom};
+/// use lattice::{Bignum, Rat, Surd};
+///
+/// let r = |v: i128| Surd::<Bignum>::from_rat(Rat::from_i128(v));
+/// let mut b = Brep::<Bignum>::new();
+/// // Two triangles sharing the diagonal seam edge by identity.
+/// let v0 = b.add_vertex([r(0), r(0), r(0)]);
+/// let v1 = b.add_vertex([r(1), r(0), r(0)]);
+/// let v2 = b.add_vertex([r(0), r(1), r(0)]);
+/// let v3 = b.add_vertex([r(1), r(1), r(0)]);
+/// let seam = b.add_edge(v1, v2, EdgeGeom::Line);
+/// let a0 = b.add_edge(v0, v1, EdgeGeom::Line);
+/// let a1 = b.add_edge(v2, v0, EdgeGeom::Line);
+/// let b0 = b.add_edge(v1, v3, EdgeGeom::Line);
+/// let b1 = b.add_edge(v3, v2, EdgeGeom::Line);
+/// b.add_plane(vec![(a0, false), (seam, false), (a1, false)]);
+/// b.add_plane(vec![(b0, false), (b1, false), (seam, true)]);
+/// let audit = export::step::audit_brep(&b).expect("OCC audits the brep");
+/// assert_eq!(audit.nonmanifold_edges, 0); // the seam is a manifold 2-incidence edge
+/// ```
+pub fn audit_brep<B: Backend>(b: &Brep<B>) -> Result<ShellAudit, String> {
+    let bufs = brep_to_buffers(b);
+    parse_shell_audit(&ffi::occt_brep_audit(
+        &bufs.verts,
+        &bufs.edges,
+        &bufs.beziers,
+        &bufs.faces,
+        &bufs.wires,
+    ))
 }
 
 /// Parse the shim's one-line `key=val` audit summary into a [`ShellAudit`]. An
@@ -308,6 +531,133 @@ mod tests {
             audit.brepcheck_valid,
             "OCCT accepts each planar face of the sewn shell: {audit:?}"
         );
+    }
+
+    /// D3.2a GATE — the watertight-by-identity mechanism through OCCT. A hand-built
+    /// two-face B-rep (a unit square split into two triangles across the diagonal),
+    /// the diagonal shared **by edge identity**, assembles with `BRep_Builder` (no
+    /// sewing) into a shell whose audit shows the seam as a single 2-incidence edge:
+    /// `edges=5`, `free=4`, `nonmanifold=0`, and `brepcheck` valid — so the one
+    /// non-free, non-manifold edge is incident to exactly two faces. This is the
+    /// external-kernel confirmation of `brep.rs`'s pure-combinatorial incidence.
+    #[test]
+    fn occt_brep_audits_two_faces_sharing_a_seam_by_identity() {
+        use crate::brep::{Brep, EdgeGeom};
+        use lattice::{Bignum, Rat, Surd};
+
+        let r = |v: i128| Surd::<Bignum>::from_rat(Rat::from_i128(v));
+        let mut b = Brep::<Bignum>::new();
+        let v0 = b.add_vertex([r(0), r(0), r(0)]);
+        let v1 = b.add_vertex([r(1), r(0), r(0)]);
+        let v2 = b.add_vertex([r(0), r(1), r(0)]);
+        let v3 = b.add_vertex([r(1), r(1), r(0)]);
+        let seam = b.add_edge(v1, v2, EdgeGeom::Line);
+        let a0 = b.add_edge(v0, v1, EdgeGeom::Line);
+        let a1 = b.add_edge(v2, v0, EdgeGeom::Line);
+        let b0 = b.add_edge(v1, v3, EdgeGeom::Line);
+        let b1 = b.add_edge(v3, v2, EdgeGeom::Line);
+        b.add_plane(vec![(a0, false), (seam, false), (a1, false)]);
+        b.add_plane(vec![(b0, false), (b1, false), (seam, true)]);
+
+        let audit = super::audit_brep(&b).expect("OCC audits the hand-built brep");
+        assert_eq!(audit.faces, 2, "two faces: {audit:?}");
+        assert_eq!(
+            audit.edges, 5,
+            "five distinct edges (the seam is shared): {audit:?}"
+        );
+        assert_eq!(
+            audit.free_edges, 4,
+            "the four outer edges are open: {audit:?}"
+        );
+        assert_eq!(
+            audit.nonmanifold_edges, 0,
+            "no non-manifold edge: {audit:?}"
+        );
+        assert!(audit.brepcheck_valid, "OCCT accepts the shell: {audit:?}");
+        // The one edge that is neither free nor non-manifold is the shared seam,
+        // incident to exactly two faces — watertight by identity, no sewing.
+        assert_eq!(
+            audit.edges - audit.free_edges - audit.nonmanifold_edges,
+            1,
+            "exactly one 2-incidence (shared) edge — the seam: {audit:?}"
+        );
+    }
+
+    /// Geom_BSplineCurve linkage: a planar face with one **rational-Bézier** edge (a
+    /// quadratic rational arc, weights (1,2,1)) plus two straight sides writes a STEP
+    /// file that reloads clean through BRepCheck. Proves the rational-curve edge
+    /// builder (`Geom_BSplineCurve` + `BRepBuilderAPI_MakeEdge(curve, …)`) links and
+    /// round-trips.
+    #[test]
+    fn occt_writes_a_brep_with_a_rational_bezier_edge() {
+        use crate::bezier::RatBezier;
+        use crate::brep::{Brep, EdgeGeom};
+        use lattice::{Bignum, Rat, Surd};
+
+        let q = |v: i128| Rat::<Bignum>::from_i128(v);
+        let r = |v: i128| Surd::<Bignum>::from_rat(Rat::from_i128(v));
+        // Rational quadratic in z=0 from (0,0,0) to (1,1,0); affine poles
+        // (0,0,0),(1,0,0),(1,1,0), weights (1,2,1) — weighted poles below.
+        let bez = RatBezier::new(
+            vec![[q(0), q(0), q(0)], [q(2), q(0), q(0)], [q(1), q(1), q(0)]],
+            vec![q(1), q(2), q(1)],
+        );
+
+        let mut b = Brep::<Bignum>::new();
+        let v0 = b.add_vertex([r(0), r(0), r(0)]);
+        let v1 = b.add_vertex([r(1), r(1), r(0)]);
+        let v2 = b.add_vertex([r(0), r(1), r(0)]);
+        let arc = b.add_edge(v0, v1, EdgeGeom::RationalBezier(bez));
+        let e1 = b.add_edge(v1, v2, EdgeGeom::Line);
+        let e2 = b.add_edge(v2, v0, EdgeGeom::Line);
+        b.add_plane(vec![(arc, false), (e1, false), (e2, false)]);
+
+        let mut path = std::env::temp_dir();
+        path.push("kirigami-brep-bezier.step");
+        let p = path.to_str().expect("utf-8 temp path");
+        assert_eq!(super::write_brep(p, &b), "ok");
+        assert!(
+            std::fs::read_to_string(p)
+                .expect("step file readable")
+                .starts_with("ISO-10303-21"),
+            "not a STEP part-21 file",
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// Geom_SurfaceOfLinearExtrusion linkage: a single **ruled** face — a base line
+    /// swept along +z, trimmed by its four-edge wire — writes a STEP file that
+    /// reloads clean through BRepCheck. Proves the extrusion-surface face builder
+    /// (`Geom_SurfaceOfLinearExtrusion` + `MakeFace` + `ShapeFix_Face` pcurve
+    /// healing) links and produces a valid face.
+    #[test]
+    fn occt_writes_a_ruled_extrusion_face() {
+        use crate::brep::{Brep, EdgeGeom, FaceSurface};
+        use lattice::{Bignum, Rat, Surd};
+
+        let r = |v: i128| Surd::<Bignum>::from_rat(Rat::from_i128(v));
+        let mut b = Brep::<Bignum>::new();
+        let v0 = b.add_vertex([r(0), r(0), r(0)]);
+        let v1 = b.add_vertex([r(1), r(0), r(0)]);
+        let v2 = b.add_vertex([r(1), r(0), r(1)]);
+        let v3 = b.add_vertex([r(0), r(0), r(1)]);
+        let base = b.add_edge(v0, v1, EdgeGeom::Line);
+        let side1 = b.add_edge(v1, v2, EdgeGeom::Line);
+        let top = b.add_edge(v2, v3, EdgeGeom::Line);
+        let side2 = b.add_edge(v3, v0, EdgeGeom::Line);
+        b.add_face(
+            FaceSurface::LinearExtrusion {
+                base,
+                dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
+            },
+            vec![(base, false), (side1, false), (top, false), (side2, false)],
+        );
+
+        let mut path = std::env::temp_dir();
+        path.push("kirigami-brep-ruled.step");
+        let p = path.to_str().expect("utf-8 temp path");
+        assert_eq!(super::write_brep(p, &b), "ok");
+        let _ = std::fs::remove_file(p);
     }
 
     /// The `key=val` summary parser round-trips a well-formed line and rejects a
