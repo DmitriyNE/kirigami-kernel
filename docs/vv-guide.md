@@ -1188,11 +1188,15 @@ single-run test; a vertex-pinched pseudomanifold passes 1–3, fails 4). Checks 
   than a symmetric demo fixture that dodges it, the machinery the closure genuinely needs — the
   curved Π-cut miter — becomes its own milestone (**Curved MITER-FIT**, below), per the standing
   "build the incomplete machinery, don't manufacture demo geometry" directive.
-- **D4.3 — substrate contour + anchors — met when:** a standalone closed-contour type (a closed D24
-  loop of `Line`/`Arc` edges, independent of a joint's A/B/Crease scheme) and **anchor** function
-  objects (`spec §4.6`: rational spline `â(t)` lifting an authored flat curve to chart coords) carry
-  the ANCHOR certificate (`spec:372`), and sidewalls are ruled **over the authored contour**
-  (`spec:194` exact-over-anchor), not just the support box.
+- **D4.3 — substrate free boundary + anchors — met when:** the hardcoded **rectangular** slab footprint
+  is replaced by an **authored substrate free boundary** — the σ-band-with-rational-μ-splines form
+  (`spec §3.4:151`: `μ⁻(σ), μ⁺(σ)` over `[σ_lo, σ_hi]`) — carrying the **exact** part of the ANCHOR
+  certificate (`spec:372`: positive width + boundary regularity + σ̂-monotonicity, all Sturm), with the
+  sidewalls ruled **over the authored boundary** (`spec:194` exact-over-anchor), not just the support box.
+  **Scope split with the user (see the dedicated section below):** Stage 1 is this exact-over-anchor
+  closed solid; the *transcendental* part of ANCHOR (the backward-error bound `sup|D(â)−g| ≤ ε` via the
+  development map `D = γ + μ̂·ρ·e(ψ)`, and the DRC) is a **separate milestone (DEV / M-E)**, deferred.
+  Detailed criteria + slice arc: **"Milestone D (slice D4.3) acceptance criteria"** below.
 - **D4.4 — multi-joint / atlas container — met when:** an `Atlas`/`Device` type feeds the
   `valid_solid_closure` fold over **>1** joint (the fold already supports it, `gate.rs:142`), with
   cross-joint seams, assembling a multi-joint certified closed solid.
@@ -1341,6 +1345,84 @@ and adversarial cone (the `TransverseBranch` refinement) — each validated. **C
 divisibility certificate) is non-gating research, deferred. The adversarial *pair*'s `Chart`-inverse derivation
 (two different-apex cones over a shared conic *as charts*) is a documented follow-up; the certificate is validated
 on the genuine conic cut-family geometry, and the single-cone searcher on a real `Chart`.
+
+---
+
+### Milestone D (slice D4.3) acceptance criteria (authored free boundary + anchors → exact-over-anchor closed solid)
+
+*Authored before implementation.* D4.1 delivered the first certified closed solid, but its footprint is
+the **hardcoded support box** (`σ-support × μ-range × w-range`, `brep_slab_from_closure`) — a rectangle,
+not a real material outline. D4.2 (a two-flank solid) was fixture-obstructed and detoured into the
+now-merged Curved MITER-FIT. D4.3 resumes the device thread: replace the rectangular footprint with an
+**authored substrate free boundary**, so a solid closes over a genuine material outline — the atlas's
+missing input (`one_joint()` "had no contour to feed").
+
+**Scope decision (locked with the user): Stage 1 = the exact-over-anchor solid; the transcendental tier
+is a separate milestone.** The spec's ANCHOR certificate (`spec:372`, "ANCHOR after DEV" `spec:402`) has
+an **exact** part — regularity `|â′|² ≥ m`, σ̂-monotonicity (both Sturm) — and a **transcendental** part:
+the backward-error bound `sup|D(â) − g| ≤ ε` via the development map `D = γ + μ̂·ρ·e(ψ)` (Tier-C `{ψ,γ,D}`,
+`ψ = ∫ψ′` → arctan/log, `γ = ∫e(ψ)` a nested transcendental, `ρ = |n′|` a radical). Certifying that bound
+needs a whole new rigorous-transcendental-enclosure tier — the **DEV / M-E milestone**, not a slice.
+Per `spec:194` **exact-over-anchor**: everything downstream of the boundary `â` is *exact and mutually
+incident* (top/bottom/sidewall are exact images of the one `â`, zero registration) — exactly the
+shared-exact-edge incidence a closed solid needs (`spec:192`, "solid boundaries consume incidence, not
+distance"). So the closed **solid** is fully tractable in exact ℚ; only *fidelity to an authored flat
+drawing* needs DEV, and that is deferred.
+
+**The tractable form (avoids the missing composition primitive).** The spec's substrate free boundary
+(`spec §3.4:151`) is a **σ-band with rational μ-boundary splines** `μ⁻(σ), μ⁺(σ)` over `[σ_lo, σ_hi]` —
+*not* an arbitrary `(σ(t), μ(t))` outline. In that form every boundary rail is `c(σ) + μ±(σ)·r(σ) + w·n(σ)`,
+all functions of the **same** σ, so lifting is `Vec3Rat::scale` by a `RatFunc` — the direct generalization
+of `brep_slab`'s constant-μ `scale_rat`, **no polynomial-composition primitive** (the repo lacks one;
+`Chart::surface(μ, w)` takes a *scalar* μ). General `(σ(t), μ(t))` outlines (needing composition + an
+N-edge cap subdivision) are the follow-on, alongside DEV.
+
+**Two doctrines govern (unchanged).** *Incidence, not proximity* (`spec:192`): faces meet along a shared
+exact edge id, never a float tolerance. *Earned, not oracle* (`spec:332`): closedness is proven internally
+by `closed_shell`; OCCT only corroborates.
+
+- **D4.3.0 — docs/criteria (this section).** vv-guide D4.3 acceptance criteria (the exact-over-anchor
+  scope, the free-boundary form, the DEV deferral); the `vv-matrix.md` free-boundary/anchor row; the
+  engineering-log disposition (the composition gap + the DEV/M-E deferral). Green via `cargo xtask lint`.
+- **D4.3a — the free-boundary / anchor checker (`certify-core`, TCB) — met when:** a new
+  `certify_core::free_boundary` module certifies an authored free boundary is a valid solid footprint,
+  **composing the reused `certify1d` positivity foundations** (the `slab_s0` / `trim_local` mold — a bundle
+  of `RegCert`/`EdgeRegCert`, each with searcher-supplied Sturm chains the checker re-verifies): (1)
+  **positive width** `μ⁺(σ) − μ⁻(σ) ≥ m > 0` on the span (a `reg_q` instance); (2) **boundary regularity**
+  `|â′|² ≥ m` for each lifted μ-rail (an `edge_reg` instance on the rail's squared speed); (3)
+  **σ̂-monotonicity** `σ̂′ ≥ m > 0` (a `reg_q` instance on the anchor's σ-projection derivative — the
+  composition-free slice of the general-`(σ(t),μ(t))` obligation, trivially `σ̂ = σ` for the σ-graph but
+  implemented + refuted on a fold-back anchor so the check is real). Verdict
+  `Verified(ValidFreeBoundary)` / `Refuted(FreeBoundaryFault::{EmptySupport, CrossedBounds, NonRegular,
+  NonMonotone})`; pure, `no_std`, panic-free. Unit tests: a valid μ-band accepts; a crossed band
+  (`μ⁺ ≤ μ⁻`), a non-regular (cusp/stall) rail, a fold-back anchor, and an empty support each refute; a
+  forged Sturm chain is rejected (inherited from `reg_q`). `certify-core` still builds `thumbv7em`
+  `no_std`. This is the **exact** part of `spec:372` ANCHOR; the transcendental `sup|D(â)−g| ≤ ε` + DRC
+  are **out of scope** (DEV / M-E).
+- **D4.3b — the free-boundary closed solid (`export`) + a fixture — met when:** a new
+  `export::brep_build::brep_freeboundary_from_closure` generalizes `brep_slab_from_closure` — the same
+  8-vertex / 12-edge / 6-face topology (so `closed_shell` applies unchanged), with the constant μ replaced
+  by authored splines `μ⁻(σ), μ⁺(σ)`: μ-rails `c.add(&r.scale(&μ±)).add(&n.scale_rat(&w)).reduce()`
+  (`Vec3Rat::scale` by the `RatFunc` boundary — the one line changed vs the slab's `scale_rat`; the
+  bases reduced once so all four rails keep a shared denominator, the `ruled_from_rails` precondition);
+  2 `Plane` σ-caps + 2 `RationalPatch` w-sheets + 2 `RationalPatch` μ-walls, shared edges by identity via
+  the existing `Builder`; a fixture (`one_joint()`'s flank A with a **genuinely-varying** authored μ-band,
+  e.g. a tapered band) bridges `Brep::to_shell_certificate → closed_shell == Verified(ClosedShell{8,12,6})`
+  **and** the `export::differential` OCCT oracle corroborates (`brepcheck_valid`, `free_edges == 0`,
+  `nonmanifold_edges == 0`). The D4.3a checker verifies that fixture's free boundary (`Verified`).
+
+**Generality (hard gate) — met when:** the TCB edit is purely **additive** (a new `certify-core`
+`free_boundary` module + the composed `reg_q`/`edge_reg` reuse — no edit to `certify1d`, `arrange.rs`,
+`sew.rs`, `shell.rs`, `closed_shell`, or `closure/src/valid.rs`); no device constant is added; flank type
+stays **data**; the new solid geometry lives only in `export`, consuming charts read-only.
+
+**Documentation (a merge gate) — met when:** the new public surface (`free_boundary` / `FreeBoundaryCert`
+/ `ValidFreeBoundary` / `FreeBoundaryFault`, `brep_freeboundary_from_closure`) is documented usage-first
+under `-D missing_docs`, each slice's status set as it lands.
+
+**Status: D4.3.0 met** on `d4.3`. D4.3.0 authored this section, the `vv-matrix.md` free-boundary/anchor
+row, and the engineering-log disposition (the `Chart::surface`-scalar-μ composition gap → the σ-band form;
+the DEV / M-E transcendental deferral). D4.3a + D4.3b **todo**, executed per-phase with a pause after each.
 
 ---
 
