@@ -397,3 +397,89 @@ fn the_free_boundary_solid_is_a_certified_closed_solid() {
         "OCC finds no non-manifold edge: {audit:?}"
     );
 }
+
+/// **The device cone as a certified closed solid — the machinery generalizes past the
+/// cylinder.** A frustum band (gore) of the exact 42° rational device cone
+/// (`fixtures::devices::cone()`, `n·ẑ ≡ 65/97`, apex at the origin) over an authored slanted
+/// boundary `μ⁻(σ) = 1`, `μ⁺(σ) = 2 + σ` — a genuinely different chart than the cylinder slab
+/// (converging rulings ⇒ higher-degree rational patches). (1) the D4.3a `free_boundary` checker
+/// certifies the authored boundary valid; (2) `closed_shell` certifies the 8/12/6 solid a
+/// closed oriented 2-manifold; (3) the OCCT oracle corroborates the (higher-degree) geometry
+/// (`brepcheck_valid`, `free_edges == 0`, `nonmanifold_edges == 0`). Exact throughout — the
+/// cone chart's splines and the boundary are the *hand-authored* stand-in for the DEV layer;
+/// everything downstream is exact ruled geometry.
+#[test]
+fn the_cone_frustum_band_is_a_certified_closed_solid() {
+    use crate::brep_build::{FreeBoundaryMargins, brep_freeboundary, free_boundary_cert};
+    use certify_core::free_boundary::free_boundary;
+    use lattice::{Interval, Poly, Rat, RatFunc};
+
+    let poly = |cs: &[i128]| {
+        Poly::<lattice::Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+    };
+    let chart = fixtures::devices::cone();
+    let sigma = Interval {
+        lo: Rat::from_i128(0),
+        hi: Rat::from_i128(1),
+    };
+    let w = Interval {
+        lo: Rat::from_i128(0),
+        hi: Rat::new(1, 4),
+    };
+    let mu_lo = RatFunc::from_poly(poly(&[1])); // inner edge (μ ≡ 1)
+    let mu_hi = RatFunc::from_poly(poly(&[2, 1])); // outer edge μ = 2 + σ (authored slant)
+
+    // (1) The authored free boundary is certified valid (positive width, regular rails, monotone).
+    let fbc = free_boundary_cert(
+        &chart,
+        &mu_lo,
+        &mu_hi,
+        &sigma,
+        &RatFunc::one(), // σ-graph: σ̂ = σ ⇒ σ̂′ = 1
+        &FreeBoundaryMargins {
+            width: Rat::new(1, 2), // width 1 + σ ∈ [1, 2]
+            reg: Rat::new(1, 10),  // |â′|² comfortably above 1/10 across the gore
+            mono: Rat::new(1, 2),
+        },
+    );
+    assert!(
+        matches!(free_boundary(&fbc), Verdict::Verified(_)),
+        "the cone gore's authored boundary is a valid free boundary"
+    );
+
+    // (2) closed_shell certifies the assembled solid a closed oriented 2-manifold.
+    let solid = brep_freeboundary(&chart, &sigma, &w, &mu_lo, &mu_hi);
+    let cert = solid.to_shell_certificate();
+    assert_eq!(
+        closed_shell(
+            cert.n_verts,
+            &cert.edge_start,
+            &cert.edge_end,
+            &cert.wire_edge,
+            &cert.wire_reversed,
+            &cert.face_start,
+        ),
+        Verdict::Verified(ClosedShell {
+            verts: 8,
+            edges: 12,
+            faces: 6
+        }),
+        "closed_shell certifies the cone frustum band closed"
+    );
+
+    // (3) OCCT corroborates the higher-degree cone geometry.
+    let audit = audit_brep(&solid).expect("OCC audits the exact cone frustum band");
+    assert!(
+        audit.brepcheck_valid,
+        "OCC accepts the exact cone frustum band: {audit:?}"
+    );
+    assert_eq!(audit.faces, 6, "six faces: {audit:?}");
+    assert_eq!(
+        audit.free_edges, 0,
+        "OCC finds no free edge — the cone band is watertight: {audit:?}"
+    );
+    assert_eq!(
+        audit.nonmanifold_edges, 0,
+        "OCC finds no non-manifold edge: {audit:?}"
+    );
+}

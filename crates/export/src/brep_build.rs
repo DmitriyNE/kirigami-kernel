@@ -484,44 +484,46 @@ pub fn brep_slab_from_closure<B: Backend>(
 /// - the two **w = const** sheets and the two **μ = const** walls are
 ///   [`RationalPatch`](FaceSurface::RationalPatch)es ruled between adjacent σ-rails.
 ///
-/// `chart` is flank A; `sigma`/`w` come from the certified treatment (`t.sigma_a` support and
-/// `t.w` window); `mu_lo`/`mu_hi` are the authored boundary splines. No cap witness is
-/// consumed — closedness is certified by `closed_shell`, not the joint-local certificate; the
-/// authored boundary's own validity is the [`free_boundary`](certify_core::free_boundary)
-/// obligation set (build its certificate with [`free_boundary_cert`]). Exact throughout (every
-/// vertex a [`Surd`], every pole/weight a [`Rat`]); the exact→`f64` cast lives in the STEP bridge.
+/// Works for **any** developable [`Chart`] — a joint's cylinder flank, a rational cone, etc. —
+/// over the σ-support `sigma`, thickness window `w`, and authored boundary splines
+/// `mu_lo`/`mu_hi`. (For a certified one-joint closure, [`brep_freeboundary_from_closure`]
+/// supplies flank A's chart and the treatment's boxes.) No cap witness is consumed — closedness
+/// is certified by `closed_shell`, not a joint-local certificate; the authored boundary's own
+/// validity is the [`free_boundary`](certify_core::free_boundary) obligation set (build its
+/// certificate with [`free_boundary_cert`]). Exact throughout (every vertex a [`Surd`], every
+/// pole/weight a [`Rat`]); the exact→`f64` cast lives in the STEP bridge.
 ///
 /// # Example
 ///
 /// ```
-/// use export::brep_build::brep_freeboundary_from_closure;
-/// use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
-/// use lattice::{Bignum, Poly, Rat, RatFunc};
+/// use export::brep_build::brep_freeboundary;
+/// use fixtures::closure_joint::one_joint;
+/// use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
 ///
 /// let joint = one_joint();
-/// let d24 = ledge_d24();
-/// let t = treatment(&d24);
 /// let poly = |cs: &[i128]| Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
-/// // A tapered authored band: μ⁻(σ) = −1 + σ, μ⁺(σ) = 1 − σ (width 2 − 2σ, genuinely varying).
+/// let sigma = Interval { lo: Rat::new(-1, 8), hi: Rat::from_i128(0) };
+/// let w = Interval { lo: Rat::from_i128(1), hi: Rat::from_i128(2) };
+/// // A tapered authored band: μ⁻(σ) = −1 + σ, μ⁺(σ) = 1 − σ (genuinely varying in σ).
 /// let mu_lo = RatFunc::from_poly(poly(&[-1, 1]));
 /// let mu_hi = RatFunc::from_poly(poly(&[1, -1]));
-/// let solid = brep_freeboundary_from_closure(&joint, &t, &mu_lo, &mu_hi);
+/// let solid = brep_freeboundary(joint.flank_a().chart(), &sigma, &w, &mu_lo, &mu_hi);
 /// assert_eq!(solid.verts().len(), 8);
 /// assert_eq!(solid.faces().len(), 6);
 /// assert_eq!(solid.free_edges(), 0); // a closed slab has no free edge
 /// assert_eq!(solid.nonmanifold_edges(), 0);
 /// ```
-pub fn brep_freeboundary_from_closure<B: Backend>(
-    joint: &Joint<B>,
-    t: &ClosureTreatment<'_, B>,
+pub fn brep_freeboundary<B: Backend>(
+    chart: &Chart<B>,
+    sigma: &Interval<B>,
+    w: &Interval<B>,
     mu_lo: &RatFunc<B>,
     mu_hi: &RatFunc<B>,
 ) -> Brep<B> {
     let mut bld = Builder::new();
-    let chart = joint.flank_a().chart();
-    let supp = &t.sigma_a;
+    let supp = sigma;
     let sigmas = [supp.lo.clone(), supp.hi.clone()];
-    let ws = [t.w.lo.clone(), t.w.hi.clone()];
+    let ws = [w.lo.clone(), w.hi.clone()];
 
     // The chart fields, reduced once (like the slab's `base`/`dir`): `c + μ±(σ)·r` for the two
     // authored boundary splines — `Vec3Rat::scale` by the `RatFunc` μ±, the generalization of
@@ -610,6 +612,17 @@ pub fn brep_freeboundary_from_closure<B: Backend>(
     }
 
     bld.into_brep()
+}
+
+/// [`brep_freeboundary`] specialized to a certified one-joint closure: flank A's chart over the
+/// treatment's σ-support (`t.sigma_a`) and thickness window (`t.w`) — the D4.3b fixture path.
+pub fn brep_freeboundary_from_closure<B: Backend>(
+    joint: &Joint<B>,
+    t: &ClosureTreatment<'_, B>,
+    mu_lo: &RatFunc<B>,
+    mu_hi: &RatFunc<B>,
+) -> Brep<B> {
+    brep_freeboundary(joint.flank_a().chart(), &t.sigma_a, &t.w, mu_lo, mu_hi)
 }
 
 /// The three searcher-proposed positivity margins for [`free_boundary_cert`]. Each is
@@ -926,6 +939,83 @@ mod tests {
         );
 
         // The trusted checker certifies the combinatorics as a closed oriented 2-manifold.
+        let sc = solid.to_shell_certificate();
+        assert_eq!(
+            closed_shell(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: 8,
+                edges: 12,
+                faces: 6
+            }),
+        );
+    }
+
+    /// The device **cone** as a certified closed solid — the free-boundary machinery generalizes
+    /// from the cylinder to a converging-ruling cone (higher-degree rational patches). Over the
+    /// exact 42° device cone (`fixtures::devices::cone()`) with an authored slanted boundary
+    /// `μ⁻ = 1`, `μ⁺ = 2 + σ`: the authored boundary certifies (D4.3a) and `closed_shell`
+    /// certifies the 8/12/6 solid closed. OCCT corroborates the geometry in `crate::differential`.
+    #[test]
+    fn the_cone_frustum_band_is_a_certified_closed_2_manifold() {
+        use certify_core::free_boundary::free_boundary;
+        use certify_core::shell::{ClosedShell, closed_shell};
+        use fixtures::devices::cone;
+        use lattice::Poly;
+
+        let poly = |cs: &[i128]| {
+            Poly::<lattice::Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+        };
+        let chart = cone();
+        let sigma = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 4),
+        };
+        let mu_lo = RatFunc::from_poly(poly(&[1]));
+        let mu_hi = RatFunc::from_poly(poly(&[2, 1]));
+
+        // The authored boundary on the cone is certified valid (exact-ANCHOR obligation set).
+        let fbc = free_boundary_cert(
+            &chart,
+            &mu_lo,
+            &mu_hi,
+            &sigma,
+            &RatFunc::one(),
+            &FreeBoundaryMargins {
+                width: Rat::new(1, 2),
+                reg: Rat::new(1, 10),
+                mono: Rat::new(1, 2),
+            },
+        );
+        assert!(
+            matches!(free_boundary(&fbc), Verdict::Verified(_)),
+            "the cone gore's authored boundary certifies"
+        );
+
+        let solid = brep_freeboundary(&chart, &sigma, &w, &mu_lo, &mu_hi);
+        assert_eq!(solid.verts().len(), 8);
+        assert_eq!(solid.faces().len(), 6);
+        assert_eq!(solid.free_edges(), 0, "a closed cone band has no free edge");
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        assert_eq!(
+            solid
+                .faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count(),
+            4,
+            "all four cone-band side faces are exact rational patches"
+        );
         let sc = solid.to_shell_certificate();
         assert_eq!(
             closed_shell(
