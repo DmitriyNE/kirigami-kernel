@@ -1294,9 +1294,22 @@ export/OCCT are **not** touched in CM.1.
 **Documentation (a merge gate) — met when:** the new public surface is documented usage-first under
 `-D missing_docs`, each slice's status set as it lands.
 
-**Status: CM.0 met** on `curved-miter-fit`. CM.0 authored this section + the `vv-matrix.md`
-transverse-MITER-FIT row + the engineering-log D4.2-obstruction finding and disposition. CM.1–CM.5
-**todo**, executed per-slice with a pause after each.
+**Status: CM.0 + CM.1 met** on `curved-miter-fit`. CM.0 authored this section + the `vv-matrix.md`
+row + the engineering-log D4.2-obstruction finding. **CM.1 delivers the transverse-rational
+certificate:** `lattice::Biv` (a bivariate polynomial over ℚ — the first consumer of the
+`resultant_bivariate` `Vec<Poly>` convention) + `certify_core::miter::miter_fit_transverse`, which
+forms the correspondence `R(σ_A,σ_B)` from `ℓ_A = ℓ_B` (the checker builds it, never trusting a
+supplied `R`), certifies the **carrier** and **extent** identities by the exact bivariate cofactor
+equality `X == R·Q`, checks `ℓ_i` strict monotonicity by Sturm, and mints `ε_φ` from the two slope
+signs via the Kani-proven `eps_from_slopes` — all **additive** beside the untouched degree-1
+`miter_fit`. A reflection-symmetric *genuinely-rational* pair (`ℓ_i = 2σ/(1+σ)`) certifies; the
+curvature-order (planar-vs-cylindrical), extent-counterexample (`[0,1]` vs `[0,1+σ(1−σ)]`),
+parallel-regime, and wrong-cofactor cases are refuted (6 unit + doctest, plus `Biv` 4 unit + doctest).
+**Earned, no OCCT:** the certificate is an exact bivariate polynomial identity; its
+resultant⇔common-root soundness is cited/Lean (CM.5, where `verify_common_factor_sound` is already
+axiom-clean). Full gate green (nextest ws 375/375, export/step 37/37 + doctests, `-D missing_docs`,
+`xtask lint`, no_std thumbv7em, the new Kani harness). CM.2–CM.5 **todo**, executed per-slice with a
+pause after each.
 
 ---
 
