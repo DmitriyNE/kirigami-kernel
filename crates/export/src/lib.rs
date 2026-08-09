@@ -17,6 +17,15 @@
 /// closure) — always compiled and float-free; the geometry the STEP writer consumes.
 pub mod shell;
 
+/// Exact monomial→Bernstein conversion of σ-parametric rational geometry into rational
+/// Bézier carriers — always compiled and float-free; the curve primitive slice 3 emits.
+pub mod bezier;
+
+/// The exact boundary-representation IR (shared vertex/edge tables, faces referencing
+/// edges by identity) — always compiled and float-free; the ruled-surface geometry the
+/// STEP surface bridge consumes.
+pub mod brep;
+
 /// Exact→`f64` approximation for diagnostics rendering and the STEP writer — the
 /// single, quarantined bridge from the certified-exact number types to display floats.
 #[cfg(any(feature = "diagnostics", feature = "step"))]
