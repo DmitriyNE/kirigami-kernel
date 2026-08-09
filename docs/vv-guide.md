@@ -1118,6 +1118,101 @@ fold crease `M` is watertight-by-identity; the substrate outer boundary stays op
 uncertified) and the exact LEDGE cap is deferred to the `V_∂` real-cut slice. A genuinely closed solid
 is atlas assembly (Deferred, above).
 
+### Milestone D (slice 4) acceptance criteria (atlas assembly → the certified closed solid)
+
+*Authored before implementation, per the rule above.* Slice 4 builds the **atlas-assembly** layer
+slice 3 deferred: it turns whole-solid closedness from an **oracle verdict into an earned
+certificate**. Today closedness is decided only by OpenCASCADE `BRepCheck` — an *oracle, not the
+certificate* (`spec:332` "oracle ∧ audit, never oracle-instead"; §8.2 above). The spec has **no
+predicate certifying whole-solid closedness**: `VALID_solid-closure` (`spec:439`) is only
+`VALID_complement ∧ ⋀_j CLOSURE_VALID(j)`, a conjunction of *joint-local* facts. The docs pre-name
+the missing layer ("ruled sidewalls carrying their own CAP-OUT/SEW-LINK coverage → whole-solid
+watertightness certified", above) but flag it unbuilt. Slice 4's spine is a **new proven checker in
+`certify-core`** — the assembly-scale analogue of the frontier theorem in `CapOut.lean:25-30`
+("CAP-OUT-LINK at every vertex ⇒ 2-manifold-with-boundary").
+
+**Two doctrines govern (unchanged, load-bearing).** *Incidence, not proximity* (`spec:192`, "solid
+boundaries consume incidence… proximity is never attachment"): faces meet along a **shared exact edge
+id**, never a float tolerance (the `brep` IR's watertight-by-identity property). *Earned, not oracle*
+(`spec:332`): a forced `closed == true` is illegitimate; closedness is proven **internally** by the
+checker, and OCCT only **corroborates** (differential oracle).
+
+**Single-flank first (the geometry forces it).** M-D D.1 *proves* the two flanks' crease coincides
+**only at the neutral surface `w = 0`** (a shared-crease dihedral is impossible with constant-h charts
+off `w = 0`; the "2:1 overhang" is the residue). So a **two-flank** watertight slab is genuinely
+obstructed — the outer (`w = t`) crease rulings diverge, and gluing the two boxes yields a non-manifold
+edge, not a closed solid — while a **single-flank** closed slab (a bent box: top `w = 0` + bottom
+`w = t` + four ruled sidewalls) **is** an exact, genuine closed 2-manifold. The honest *first* certified
+closed solid is therefore the single-flank slab; the two-flank union confronts the `w=0`-only
+obstruction as its own phase (D4.2). The slab's footprint is the **support box** (σ-support × μ-range ×
+`w ∈ [0,t]`), a legitimate free-boundary contour (`spec:151`, "free boundary covers material with
+rational conservative margin") — so the first closed solid needs **no** authored-flat-content / anchor
+/ multi-joint machinery (those enter at D4.3/D4.4). The "exact closed slab by-construction" M-D
+*declined* (closedness uncertified away from the joint) becomes legitimate here precisely because D4.1
+now supplies the missing certificate.
+
+The certificate itself: a shell is a combinatorial 2-complex `(V, E, F)` (edges = endpoint-vertex-id
+pairs, faces = closed wires of half-edges `(edge_id, reversed)`). It is a **closed oriented
+2-manifold** iff (1) all ids in range; (2) every wire closes end→start (the certify-core analogue of
+`Brep::wire_is_closed`); (3) **∂² = 0** — every edge used exactly twice, once forward once reversed
+(no free ⇒ closed; no ≥3 ⇒ manifold edges; opposite orientation ⇒ orientable); and (4) every
+**vertex link is a single cycle** — the incident darts, walked by the rotation-system permutation
+(face-corner successor ∘ edge involution), form one orbit (the 3-D analogue of `classify_link`'s
+single-run test; a vertex-pinched pseudomanifold passes 1–3, fails 4). Checks 1–4 are pure, total,
+`no_std`, panic-free, index-arrays-only — the `arrange.rs` mold.
+
+- **D4.1 — closed-shell certificate + the certified single-flank closed slab — met when:** a new
+  `certify_core::shell::closed_shell(...) → Verdict<ClosedShell, ClosedShellFault, ()>` implements
+  checks 1–4 over flat index arrays (no coordinates), accepts a hand-built cube/tetrahedron, and
+  refutes an open box, a 3-incidence (non-manifold) edge, a flipped-orientation edge, and a **vertex
+  pinch** (two tetrahedra glued at one vertex — the case that passes ∂²=0 yet fails the vertex link,
+  the test that earns check 4); a `closed_shell_sound` Kani harness proves acceptance **iff** an
+  independent reference closed-2-manifold predicate holds over **bounded** shells (mold of
+  `link_ok_iff_no_pinch` / `occupancy_row_sound`; the unbounded proof is D4.6, a tracked Lean
+  frontier — *not* claimed here, exactly as `link_iso_ok` ships Kani-N=4); an **additive**
+  `certify_core::gate::valid_closed_solid` conjoins the existing `valid_solid_closure` verdict with
+  `closed_shell` over the assembled shell (`valid_solid_closure` itself untouched); `export` emits one
+  flank as a closed slab (`brep_slab_from_closure`: top + bottom ruled sheets + four `LinearExtrusion`
+  sidewalls over the support box, sharing edges by identity → 8 verts / 12 edges / 6 faces) with a
+  `Brep::to_shell_certificate` bridge to the index arrays; and the end-to-end test asserts the slab
+  bridges to `Verified(ClosedShell)` **and** the OCCT oracle *corroborates* (`closed == true`,
+  `brepcheck_valid`, `free_edges == 0`, `nonmanifold == 0`). The existing honest-open flank-sheet body
+  + §11 mesh tests are unchanged (a distinct representation).
+- **D4.2 — two-flank joint closed solid — met when:** the two flank slabs are unioned watertight and
+  the union certifies as `ClosedShell`, *or* the `w=0`-only crease obstruction is recorded as an
+  honest documented blocker (the through-thickness miter Π-cut is the curved `w_trim(σ)` cut, likely
+  gated on curve-carrier / `AlgReal` support, or a symmetric-fold sub-fixture).
+- **D4.3 — substrate contour + anchors — met when:** a standalone closed-contour type (a closed D24
+  loop of `Line`/`Arc` edges, independent of a joint's A/B/Crease scheme) and **anchor** function
+  objects (`spec §4.6`: rational spline `â(t)` lifting an authored flat curve to chart coords) carry
+  the ANCHOR certificate (`spec:372`), and sidewalls are ruled **over the authored contour**
+  (`spec:194` exact-over-anchor), not just the support box.
+- **D4.4 — multi-joint / atlas container — met when:** an `Atlas`/`Device` type feeds the
+  `valid_solid_closure` fold over **>1** joint (the fold already supports it, `gate.rs:142`), with
+  cross-joint seams, assembling a multi-joint certified closed solid.
+- **D4.5 — sew sidewall coverage — met when:** `certify_core::sew` `EdgeProvenance` and
+  `FaceGermSpecies` gain an **additive** sidewall/wall species + provenance + count (re-proven), so
+  each sidewall seam carries its own SEW-EDGES/SEW-LINK coverage — deepening the per-seam certificate
+  beyond D4.1's combinatorial whole-shell one.
+- **D4.6 — Lean closed-2-manifold theorem (frontier, non-gating):** the unbounded "∂²=0 ∧
+  vertex-link single-cycle ⇒ closed 2-manifold" proof (the `CapOut.lean:25-30` assembly analogue).
+  Research, like the existing deep-theorem attempts; does not gate the milestone.
+
+**Generality (hard gate) — met when:** the TCB edit is purely **additive** (a new `certify-core`
+`shell` module + a new Kani harness + an additive `valid_closed_solid`); the existing proven checkers
+`arrange.rs` / `sew.rs` / `boolean.rs` and `closure/src/valid.rs` are **not** modified in D4.1 (D4.5
+touches `sew.rs` additively, later); no device constant is added; flank type stays **data**; and the
+slab geometry lives only in `export`, consuming charts read-only.
+
+**Documentation (a merge gate) — met when:** the new public surface (`closed_shell` / `ClosedShell` /
+`ClosedShellFault`, `valid_closed_solid` / `ClosedSolid`, `brep_slab_from_closure`,
+`Brep::to_shell_certificate`) is documented usage-first with `-D missing_docs`, and each phase's
+status is set as it lands.
+
+**Status: D4.0 met** (this section + the `vv-matrix.md` closed-shell row + the engineering-log
+disposition authored); D4.1–D4.6 **todo**, executed per-phase on `milestone-d-atlas` with a pause
+after each.
+
 ---
 
 ## 9. Sequencing
