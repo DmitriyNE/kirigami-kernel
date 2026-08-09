@@ -11,10 +11,13 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <Bnd_Box.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_SurfaceOfLinearExtrusion.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <STEPControl_Reader.hxx>
@@ -39,6 +42,7 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
+#include <cmath>
 #include <exception>
 #include <string>
 #include <vector>
@@ -283,16 +287,32 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
       }
       Handle(Geom_SurfaceOfLinearExtrusion) surf =
           new Geom_SurfaceOfLinearExtrusion(base, gp_Dir(dx, dy, dz));
-      BRepBuilderAPI_MakeFace mf(surf, wire, /*Inside=*/Standard_True);
+      // A linear-extrusion surface is unbounded along the ruling (v) direction, so
+      // "the region inside the wire" — and hence the wire's orientation — is
+      // ill-defined on it (BRepCheck would report BadOrientationOfSubshape). Trim
+      // it to a finite box: u follows the base curve's own range, and v (signed
+      // distance along the unit ruling from the base) is bounded by the wire's 3D
+      // bounding-box diagonal — a generous finite window that still contains it.
+      Bnd_Box bb;
+      BRepBndLib::Add(wire, bb);
+      Standard_Real vspan = bb.IsVoid() ? 1.0 : std::sqrt(bb.SquareExtent());
+      if (vspan <= 0.0) vspan = 1.0;
+      Handle(Geom_RectangularTrimmedSurface) trimmed =
+          new Geom_RectangularTrimmedSurface(surf, f0, l0, -vspan, vspan);
+      BRepBuilderAPI_MakeFace mf(trimmed, wire, /*Inside=*/Standard_True);
       if (!mf.IsDone()) {
-        err = "MakeFace(extrusion) failed";
+        err = "MakeFace(trimmed extrusion) failed";
         return TopoDS_Shape();
       }
-      // The wire edges carry no pcurves on the extrusion surface; heal them so the
-      // face is BRepCheck-valid, without disturbing edge identity (ShapeFix adds
-      // pcurve representations to the existing edges, it does not rebuild them).
+      // Heal pcurves onto the trimmed surface and orient the wire so the face is
+      // BRepCheck-valid, without disturbing edge identity (ShapeFix adds pcurve
+      // representations to the existing edges, it does not rebuild them). The
+      // orientation fix is forced on: on a ruled surface MakeFace's default
+      // inference can leave the wire reversed (BadOrientationOfSubshape).
       ShapeFix_Face fix(mf.Face());
+      fix.FixOrientationMode() = 1;
       fix.Perform();
+      fix.FixOrientation();
       face = fix.Face();
     }
     builder.Add(shell, face);

@@ -583,6 +583,59 @@ mod tests {
         );
     }
 
+    /// D3.2 GATE — the certified MITER closure through OCCT. [`brep_from_closure`]
+    /// emits the two flank `w = 0` ruled sheets (`Geom_SurfaceOfLinearExtrusion` over
+    /// rational-Bézier rails) sharing the fold crease middle `M` **by identity**. OCCT's
+    /// audit must confirm what `brep.rs` computes combinatorially: two faces, no
+    /// non-manifold edge, `brepcheck` valid, and exactly one 2-incidence edge (the shared
+    /// `M`). And it must beat the mesh path: the exact shell's `free_edges` is **strictly
+    /// lower** than `shell_from_closure`'s triangle soup — the crease is a shared edge, no
+    /// longer two coincident-but-separate free boundaries.
+    #[test]
+    fn occt_audits_the_miter_brep_sharing_the_crease() {
+        use crate::brep_build::brep_from_closure;
+        use closure::valid::closure_valid;
+        use fixtures::closure_joint::{miter_cap, one_joint, treatment_miter};
+
+        let joint = one_joint();
+        let cap = miter_cap();
+        let t = treatment_miter(&cap);
+        let valid = match closure_valid(&joint, &t) {
+            certify_core::Verdict::Verified(v) => v,
+            _ => panic!("the miter fold is CLOSURE_VALID"),
+        };
+
+        let brep = brep_from_closure(&joint, &t, &valid);
+        let audit = super::audit_brep(&brep).expect("OCC audits the miter brep");
+        assert_eq!(audit.faces, 2, "two flank sheets: {audit:?}");
+        assert_eq!(
+            audit.nonmanifold_edges, 0,
+            "no non-manifold edge: {audit:?}"
+        );
+        assert!(
+            audit.brepcheck_valid,
+            "OCCT accepts each ruled face: {audit:?}"
+        );
+        // Exactly one edge is neither free nor non-manifold: the shared crease middle M,
+        // incident to both flanks by identity — watertight-by-construction, no sewing.
+        assert_eq!(
+            audit.edges - audit.free_edges - audit.nonmanifold_edges,
+            1,
+            "exactly one 2-incidence (shared) edge — the crease middle M: {audit:?}"
+        );
+
+        // The exact-surface path shares the crease; the mesh path leaves it open. So the
+        // ruled shell's free-edge count is strictly below the triangle soup's.
+        let shell = crate::shell::shell_from_closure(&joint, &t, &valid);
+        let mesh = super::audit_shell(&shell).expect("OCC audits the mesh shell");
+        assert!(
+            audit.free_edges < mesh.free_edges,
+            "exact shell {} free edges < mesh {} — the crease is now shared, not open",
+            audit.free_edges,
+            mesh.free_edges
+        );
+    }
+
     /// Geom_BSplineCurve linkage: a planar face with one **rational-Bézier** edge (a
     /// quadratic rational arc, weights (1,2,1)) plus two straight sides writes a STEP
     /// file that reloads clean through BRepCheck. Proves the rational-curve edge

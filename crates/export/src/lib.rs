@@ -26,6 +26,11 @@ pub mod bezier;
 /// STEP surface bridge consumes.
 pub mod brep;
 
+/// Reconstruct the exact [`brep::Brep`] of a certified one-joint closure — the two flank
+/// `w = 0` ruled sheets sharing the fold crease by identity (certified-seam, honest-open).
+/// Always compiled and float-free; the geometry the STEP surface bridge emits.
+pub mod brep_build;
+
 /// Exact→`f64` approximation for diagnostics rendering and the STEP writer — the
 /// single, quarantined bridge from the certified-exact number types to display floats.
 #[cfg(any(feature = "diagnostics", feature = "step"))]
