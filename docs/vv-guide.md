@@ -1333,8 +1333,14 @@ has `R = 2(σ_A−2σ_B)(σ_A+2σ_B)`, the full `R ∤ X` (CM.1's full-`R` check
 branch `R_φ = σ_A−2σ_B` certifies (`Verified`). **Honest scope:** the adversarial cut families are built from the
 conic tangent-line geometry directly; the searcher-from-`Chart` link for the adversarial *pair* is unbuilt (the
 arbitrary-apex-cone chart inverse problem), though the single-cone searcher is validated separately. Full gate green
-(nextest ws 381/381, export/step 37/37 + doctests, `-D missing_docs`, `xtask lint`, no_std thumbv7em). Only CM.5
-(Lean frontier, non-gating) **todo**.
+(nextest ws 381/381, export/step 37/37 + doctests, `-D missing_docs`, `xtask lint`, no_std thumbv7em).
+
+**The transverse-MITER-FIT milestone is complete** on `curved-miter-fit` (CM.0–CM.4 met): the certificate
+covers all three regimes — cylinder (degree-1 `miter_fit`), symmetric cone (full-`R` `miter_fit_transverse`),
+and adversarial cone (the `TransverseBranch` refinement) — each validated. **CM.5** (the Lean lemmas behind the
+divisibility certificate) is non-gating research, deferred. The adversarial *pair*'s `Chart`-inverse derivation
+(two different-apex cones over a shared conic *as charts*) is a documented follow-up; the certificate is validated
+on the genuine conic cut-family geometry, and the single-cone searcher on a real `Chart`.
 
 ---
 
