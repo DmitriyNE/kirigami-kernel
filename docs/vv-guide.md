@@ -1321,9 +1321,20 @@ refuses, and the clean-miter path uses straight rulings, not conic carriers; gen
 deferred conic-arrangement L3, orthogonal here). **CM.3 wires `AlgReal` downstream for the first time:**
 `AlgReal::sign_of` / `AlgReal::count_roots_upto` (a polynomial's sign at, and root count up to, an
 algebraic σ) + `certify_core::miter::strictly_monotone_upto_alg` (the transverse monotonicity certificate
-over an algebraic cut-face σ-bound — the cone case). Full gate green (nextest ws 378/378, export/step
-37/37 + doctests, `-D missing_docs`, `xtask lint`, no_std thumbv7em, Kani). CM.4 (cone searcher + fixture)
-and CM.5 (Lean frontier) **todo**, executed per-slice with a pause after each.
+over an algebraic cut-face σ-bound — the cone case). Full gate green. **CM.4 delivers the searcher + the
+branch-aware refinement, validated on the adversarial two-cone miter:** `closure::miter::transverse_cut_family`
+projects a flank's cut-ruling family into Π (`P = c−(g0/g_w)·n`, `D = r−(g_mu/g_w)·n`, both rational in σ); and
+because a cone's `ℓ` is degree-2 the correspondence `R` factors, so `certify_core::miter` gains a
+`TransverseBranch` (`R_φ` + cofactor) — the checker verifies `R_φ·C == R` (by multiplication), `R_φ`
+single-valued (deg-1 in σ_B), `R_φ` vanishing at the `ε_φ`-paired support corners (rejecting the spurious
+branch), then `X == R_φ·Q` — plus `lattice::Biv::div_exact` (the searcher's cofactor tool). The **adversarial**
+fixture (two cones over a shared base conic from different apexes — unit-circle tangent families `t=σ` vs `t=2σ`)
+has `R = 2(σ_A−2σ_B)(σ_A+2σ_B)`, the full `R ∤ X` (CM.1's full-`R` check refuses, `CarrierMismatch`), and the
+branch `R_φ = σ_A−2σ_B` certifies (`Verified`). **Honest scope:** the adversarial cut families are built from the
+conic tangent-line geometry directly; the searcher-from-`Chart` link for the adversarial *pair* is unbuilt (the
+arbitrary-apex-cone chart inverse problem), though the single-cone searcher is validated separately. Full gate green
+(nextest ws 381/381, export/step 37/37 + doctests, `-D missing_docs`, `xtask lint`, no_std thumbv7em). Only CM.5
+(Lean frontier, non-gating) **todo**.
 
 ---
 

@@ -133,6 +133,54 @@ impl<B: Backend> Biv<B> {
         }
         acc
     }
+
+    /// **Exact division** treating both operands as polynomials in `x` (the `σ_A` variable)
+    /// with `Poly`-in-`y` (`σ_B`) coefficients: returns the quotient `q` with `self == d·q`
+    /// when the division is exact, else `None`. Each `x`-step reduces the leading `x`-coefficient
+    /// by an exact [`Poly`] division in `y` (a non-exact coefficient step, or a nonzero final
+    /// remainder, ⇒ `None`). This is the searcher's tool for forming the cofactors `X / R_φ` and
+    /// `R / R_φ` that the branch-aware MITER-FIT checker then verifies by *multiplication* (the
+    /// checker never divides).
+    pub fn div_exact(&self, d: &Self) -> Option<Self> {
+        if d.is_zero() {
+            return None;
+        }
+        if self.is_zero() {
+            return Some(Self::zero());
+        }
+        let dn = d.rows.len(); // divisor x-degree + 1
+        let dlead = d.rows.last()?; // leading x-coefficient (Poly in y), nonzero by canonical form
+        let mut rem = self.rows.clone();
+        let mut quot: Vec<Poly<B>> = (0..self.rows.len().saturating_sub(dn) + 1)
+            .map(|_| Poly::zero())
+            .collect();
+        loop {
+            while rem.last().is_some_and(|p| p.is_zero()) {
+                rem.pop();
+            }
+            if rem.len() < dn {
+                break;
+            }
+            let rlead = match rem.last() {
+                Some(p) => p,
+                None => break,
+            };
+            let (qc, qr) = rlead.divrem(dlead); // Poly division in y
+            if !qr.is_zero() {
+                return None; // leading coefficient does not divide exactly
+            }
+            let shift = rem.len() - dn;
+            // rem -= (qc·x^shift)·d
+            for (i, dc) in d.rows.iter().enumerate() {
+                rem[shift + i] = rem[shift + i].sub(&qc.mul(dc));
+            }
+            quot[shift] = qc;
+        }
+        if rem.iter().any(|p| !p.is_zero()) {
+            return None; // nonzero remainder ⇒ not exact
+        }
+        Some(Self::from_rows(quot))
+    }
 }
 
 impl<B: Backend> Clone for Biv<B> {
@@ -214,5 +262,25 @@ mod tests {
         let b = x().sub(&y().mul(&y()));
         assert_eq!(a.add(&b).sub(&b), a);
         assert!(a.sub(&a).is_zero());
+    }
+
+    #[test]
+    fn div_exact_factors_and_refuses() {
+        // (x − y)(x + y) = x² − y²: divides both ways.
+        let r = x().sub(&y());
+        let s = x().add(&y());
+        let prod = r.mul(&s);
+        assert_eq!(prod.div_exact(&r), Some(s.clone()));
+        assert_eq!(prod.div_exact(&s), Some(r.clone()));
+        // A quotient that is a pure-y polynomial: y·(x + y) / (x + y) = y.
+        let yb = y();
+        assert_eq!(yb.mul(&s).div_exact(&s), Some(yb.clone()));
+        // Non-exact (x² − y² is not divisible by x − 2y, since (2y)² − y² = 3y² ≠ 0).
+        let x_minus_2y = x().sub(&y().mul(&Biv::from_x_poly(&p(&[2]))));
+        assert_eq!(prod.div_exact(&x_minus_2y), None);
+        assert_eq!(x().div_exact(&s), None); // x is not divisible by x + y
+        // Zero handling.
+        assert_eq!(prod.div_exact(&Biv::zero()), None);
+        assert_eq!(Biv::<Bignum>::zero().div_exact(&r), Some(Biv::zero()));
     }
 }
