@@ -9,15 +9,29 @@
 //! oracle-instead-of-audit" (`docs/vv-guide.md:854-859`; spec "no kernel CSG").
 //! Mirrors `difftest`'s CGAL harness (`crates/difftest/src/differential.rs`).
 //!
-//! **The documented divergence (slice 1's overhang, now an asserted fact):** the
-//! shell is sampled at the offset band `w = t.w.lo = 1`, but the crease coincides
-//! only at the neutral surface `w = 0`, and slice 1's 2:1 ruling-speed overhang
-//! (`docs/vv-guide.md:921-933`) leaves the two flank crease edges collinear on
-//! `L = {(x,0,1)}` but of *different extent*. So OCCT sees the exported band as an
-//! **open** shell (`free_edges > 0`, `closed == false`) while the internal
-//! certificate — which closes the abstract joint via SEW-LINK over the (currently
-//! hand-authored, geometry-decoupled) `SewInput` — reports a manifold closure. The
-//! geometry-changing watertight `V_∂` seam that would close this gap is **slice 3**.
+//! **Two emission paths, two readings (slice 3).** We audit both representations
+//! the certified closure can produce and compare each against the internal verdict:
+//!
+//! - The **exact §10 body** ([`brep_from_closure`] → [`audit_brep`]): the two flank
+//!   `w = 0` ruled sheets sharing the fold crease middle `M` **by identity**. Here the
+//!   crease is genuinely reconciled — OCCT reports `M` as a single **2-incidence** edge
+//!   (neither free nor non-manifold), the certified-seam outcome this slice delivers.
+//!   The body is still *honestly open* elsewhere (the uncertified substrate boundary and
+//!   the 2:1 overhang tips remain free edges; the LEDGE cap is deferred to the `V_∂`
+//!   real-cut slice), so it is not a closed solid — the watertight claim is narrowly the
+//!   certified crease seam, not the whole shell.
+//! - The **§11 mesh** ([`shell_from_closure`] → [`audit_shell`]): the triangle soup
+//!   sampled at the offset band `w = t.w.lo = 1`. The crease coincides only at the
+//!   neutral surface `w = 0`, and slice 1's 2:1 ruling-speed overhang
+//!   (`docs/vv-guide.md:921-933`) leaves the two flank crease edges collinear on
+//!   `L = {(x,0,1)}` but of *different extent* and, being sampled, two coincident-but-
+//!   separate boundaries. So OCCT sees the mesh crease as **open** (`free_edges > 0`,
+//!   `closed == false`) — the documented divergence, asserted not hidden.
+//!
+//! The exact path's free-edge count is **strictly below** the mesh path's: the crease
+//! is one shared edge there, no longer two open boundaries. The internal certificate —
+//! which closes the abstract joint via SEW-LINK over the (currently hand-authored,
+//! geometry-decoupled) `SewInput` — reports a manifold closure throughout.
 
 use certify_core::Verdict;
 use closure::Joint;
@@ -25,8 +39,9 @@ use closure::valid::{CapWitness, ClosureTreatment, ClosureValid, closure_valid};
 use fixtures::closure_joint::{ledge_d24, miter_cap, one_joint, treatment, treatment_miter};
 use lattice::Backend;
 
+use crate::brep_build::brep_from_closure;
 use crate::shell::shell_from_closure;
-use crate::step::{ShellAudit, audit_shell};
+use crate::step::{ShellAudit, audit_brep, audit_shell};
 
 /// The internal certificate's own reading of the sewn shell, distilled from the
 /// certified artifacts — the side the OCC oracle is compared against.
@@ -80,35 +95,51 @@ fn expect_valid<B: Backend>(joint: &Joint<B>, t: &ClosureTreatment<'_, B>) -> Cl
     }
 }
 
-/// The shared oracle-vs-internal comparison: the agreement conjuncts (where both
-/// kernels speak to the same fact they must agree) and the documented overhang
-/// divergence (OCC open while the internal certificate is manifold).
-fn assert_oracle_vs_internal(occ: &ShellAudit, internal: &InternalVerdict, branch: &str) {
-    // — Agreement —
+/// The shared oracle-vs-internal comparison across **both** emission paths: the
+/// agreement conjuncts (where the kernels speak to the same fact they must agree),
+/// the **exact §10 body**'s certified crease seam (watertight `M`, a 2-incidence
+/// edge), and the **§11 mesh**'s documented overhang divergence (OCC open while the
+/// internal certificate is manifold). `exact` is [`audit_brep`]'s reading of the
+/// ruled-flank B-rep; `mesh` is [`audit_shell`]'s reading of the triangle soup.
+fn assert_oracle_vs_internal(
+    exact: &ShellAudit,
+    mesh: &ShellAudit,
+    internal: &InternalVerdict,
+    branch: &str,
+) {
+    // — Agreement (both paths, both kernels) —
     assert!(
         internal.manifold,
         "{branch}: the internal certificate closes (CLOSURE_VALID)"
     );
     assert!(
-        occ.brepcheck_valid,
-        "{branch}: OCC accepts every emitted face (BRepCheck): {occ:?}"
+        exact.brepcheck_valid,
+        "{branch}: OCC accepts the exact ruled body (BRepCheck): {exact:?}"
     );
-    // Neither kernel sees a non-manifold locus: the internal CAP-OUT reports no
-    // pinch, and OCC finds no edge shared by ≥3 faces.
+    assert!(
+        mesh.brepcheck_valid,
+        "{branch}: OCC accepts every mesh face (BRepCheck): {mesh:?}"
+    );
+    // Neither kernel sees a non-manifold locus on either path: the internal CAP-OUT
+    // reports no pinch, and OCC finds no edge shared by ≥3 faces.
     assert_eq!(
         internal.cap_pinches, 0,
         "{branch}: internal CAP-OUT reports no pinch: {internal:?}"
     );
     assert_eq!(
-        occ.nonmanifold_edges, 0,
-        "{branch}: OCC finds no ≥3-incidence (non-manifold) edge: {occ:?}"
+        exact.nonmanifold_edges, 0,
+        "{branch}: OCC finds no ≥3-incidence edge in the exact body: {exact:?}"
+    );
+    assert_eq!(
+        mesh.nonmanifold_edges, 0,
+        "{branch}: OCC finds no ≥3-incidence edge in the mesh: {mesh:?}"
     );
 
     // The certificate's declared sew incidences (`t.sew.counts`/`links`) are consumed
-    // here read-only. In slice 2 they are hand-authored and DECOUPLED from the emitted
-    // triangle soup — deriving `SewInput` from emitted geometry is slice 3. So we assert
-    // only that the certificate declares a non-trivial closure: at least one seam
-    // incidence and one boundary-vertex link.
+    // here read-only. They are hand-authored and DECOUPLED from the emitted geometry
+    // (deriving `SewInput` from emitted geometry is a later slice). So we assert only
+    // that the certificate declares a non-trivial closure: at least one seam incidence
+    // and one boundary-vertex link.
     assert!(
         internal.cap_to_flank + internal.flank_to_flank > 0,
         "{branch}: the SewInput declares ≥1 seam incidence: {internal:?}"
@@ -118,24 +149,53 @@ fn assert_oracle_vs_internal(occ: &ShellAudit, internal: &InternalVerdict, branc
         "{branch}: the SewInput declares ≥1 boundary-vertex link: {internal:?}"
     );
 
-    // — Documented divergence (the slice-1 overhang, asserted not hidden) —
-    // OCC sees the exported band's crease as open; the internal certificate closes
-    // the abstract joint at w=0 via the (decoupled) SewInput. The watertight V_∂
-    // seam that would reconcile these is slice 3.
+    // — Exact §10 body: the certified crease seam is watertight (slice 3) —
+    // The two flanks share the fold crease middle M by identity, so OCC sees exactly
+    // one edge that is neither free nor non-manifold: M, incident to both flanks. This
+    // is the certified-seam outcome — narrowly the crease, not the whole shell (the
+    // body stays honestly open elsewhere, below).
+    assert_eq!(
+        exact.edges - exact.free_edges - exact.nonmanifold_edges,
+        1,
+        "{branch}: the exact body has exactly one 2-incidence edge — the shared crease M: {exact:?}"
+    );
+    // Honest-open, not closed: the uncertified substrate boundary + overhang tips
+    // remain free (the LEDGE cap is deferred to the V_∂ real-cut slice), so the exact
+    // body is not a closed solid — only the crease seam is reconciled.
     assert!(
-        occ.free_edges > 0,
-        "{branch}: OCC sees the band open along the crease (2:1 overhang, w=1≠0): {occ:?}"
+        exact.free_edges > 0 && !exact.closed,
+        "{branch}: the exact body is honestly open away from the certified seam: {exact:?}"
+    );
+
+    // — §11 mesh: the documented overhang divergence (asserted, not hidden) —
+    // OCC sees the sampled band's crease as open (two coincident-but-separate free
+    // boundaries at w=1≠0, of different extent); the internal certificate closes the
+    // abstract joint at w=0 via the (decoupled) SewInput.
+    assert!(
+        mesh.free_edges > 0,
+        "{branch}: OCC sees the mesh band open along the crease (2:1 overhang, w=1≠0): {mesh:?}"
     );
     assert!(
-        !occ.closed,
-        "{branch}: OCC reports the exported band non-closed while the internal \
-         certificate is manifold — the documented seam gap (→ slice 3): {occ:?}"
+        !mesh.closed,
+        "{branch}: OCC reports the mesh band non-closed while the internal certificate \
+         is manifold — the documented seam gap: {mesh:?}"
+    );
+
+    // The exact path reconciles the crease the mesh path leaves open: its free-edge
+    // count is strictly lower — the crease is one shared edge, not two open boundaries.
+    assert!(
+        exact.free_edges < mesh.free_edges,
+        "{branch}: exact body {} free edges < mesh {} — the crease is now shared, not open",
+        exact.free_edges,
+        mesh.free_edges
     );
 }
 
-/// **LEDGE** branch: the physical fold with a spanning cap face. The OCC oracle
-/// agrees on validity/manifoldness and documents the overhang; the internal
-/// CAP-OUT reports a real, pinch-free `V_∂`.
+/// **LEDGE** branch: the physical fold whose cap is deferred to the `V_∂` real-cut
+/// slice (Option B — the exact body is the two flanks, like MITER). The OCC oracle
+/// agrees on validity/manifoldness, sees the exact crease seam as watertight, and
+/// documents the mesh overhang; the internal CAP-OUT still reports a real, pinch-free
+/// `V_∂` (the abstract cap the mesh path triangulates).
 #[test]
 fn ledge_oracle_agrees_and_documents_the_overhang() {
     let joint = one_joint();
@@ -146,10 +206,12 @@ fn ledge_oracle_agrees_and_documents_the_overhang() {
         matches!(valid.cap, CapWitness::Ledge(_)),
         "the ledge treatment certifies via the LEDGE cap branch"
     );
-    let shell = shell_from_closure(&joint, &t, &valid);
-    let occ = audit_shell(&shell).expect("OCC audits the ledge shell");
+    let exact = audit_brep(&brep_from_closure(&joint, &t, &valid))
+        .expect("OCC audits the exact ledge body");
+    let mesh =
+        audit_shell(&shell_from_closure(&joint, &t, &valid)).expect("OCC audits the ledge mesh");
     let internal = internal_verdict(&valid, &t);
-    assert_oracle_vs_internal(&occ, &internal, "ledge");
+    assert_oracle_vs_internal(&exact, &mesh, &internal, "ledge");
     assert!(
         internal.cap_boundary > 0,
         "ledge: CAP-OUT V_∂ is non-empty (a real cap boundary): {internal:?}"
@@ -157,8 +219,9 @@ fn ledge_oracle_agrees_and_documents_the_overhang() {
 }
 
 /// **MITER** branch: the same fold with a clean mitered corner (no separate cap
-/// face). The OCC oracle agrees on validity/manifoldness and documents the same
-/// overhang; there is no cap face, so no CAP-OUT `V_∂`.
+/// face). The OCC oracle agrees on validity/manifoldness, sees the exact crease seam
+/// as watertight, and documents the same mesh overhang; there is no cap face, so no
+/// CAP-OUT `V_∂`.
 #[test]
 fn miter_oracle_agrees_and_documents_the_overhang() {
     let joint = one_joint();
@@ -169,10 +232,12 @@ fn miter_oracle_agrees_and_documents_the_overhang() {
         matches!(valid.cap, CapWitness::Miter(_)),
         "the miter treatment certifies via the MITER cap branch"
     );
-    let shell = shell_from_closure(&joint, &t, &valid);
-    let occ = audit_shell(&shell).expect("OCC audits the miter shell");
+    let exact = audit_brep(&brep_from_closure(&joint, &t, &valid))
+        .expect("OCC audits the exact miter body");
+    let mesh =
+        audit_shell(&shell_from_closure(&joint, &t, &valid)).expect("OCC audits the miter mesh");
     let internal = internal_verdict(&valid, &t);
-    assert_oracle_vs_internal(&occ, &internal, "miter");
+    assert_oracle_vs_internal(&exact, &mesh, &internal, "miter");
     assert_eq!(
         internal.cap_boundary, 0,
         "miter: no separate cap face, so no CAP-OUT V_∂: {internal:?}"

@@ -1076,10 +1076,18 @@ face).
   slice**; the cap survives only in the `§11` mesh (triangle) path. The oracle then reports the LEDGE
   body identically to MITER: **two** faces, one 2-incidence crease edge, `nonmanifold_edges == 0`,
   `brepcheck_valid`, and the file reloads. (See `docs/engineering-log.md` Findings for the three-way box.)
-- **Differential flip + mesh retention — met when:** `export::differential` asserts, for the
-  **exact-surface** path, the seam is now watertight (2-incidence at the certified seam) instead of the
-  triangle path's `free_edges > 0`; the triangle path is **kept** as the mesh export (`spec §10` body vs
-  `§11` mesh) with its overhang divergence retained as the mesh diagnostic.
+- **Differential flip + STEP-body routing + mesh retention — met when:** `export::differential` audits
+  **both** representations of each certified witness and compares each against the internal verdict: the
+  **exact §10 body** (`brep_from_closure` → `audit_brep`) shows the certified crease seam `M` as a single
+  **2-incidence** edge (watertight-by-identity) with `nonmanifold_edges == 0` and `brepcheck_valid`,
+  while the **§11 mesh** (`shell_from_closure` → `audit_shell`) keeps the documented overhang divergence
+  (`free_edges > 0`, `closed == false`) — and the exact body's `free_edges` is **strictly below** the
+  mesh's (the crease is one shared edge, not two open boundaries). The watertight claim is **narrowly the
+  crease seam**: under Option B there is no exact cap seam (deferred), so both witnesses assert the same
+  crease-`M` seam and the exact body stays *honestly open* elsewhere (uncertified substrate boundary +
+  overhang tips remain free — not a closed solid). The end-to-end corpus routes the **STEP body through
+  `brep`** (`write_brep`, the §10 solid body) while **keeping** `write_shell` as the §11 mesh diagnostic;
+  both reload clean through `BRepCheck` for each witness.
 
 **Generality (hard gate) — met when:** all new machinery (`bezier`, `brep`, the surface FFI,
 `brep_from_closure`) lives **only** in `export`; no certified crate (`certify-core`, `arrange2d`,
@@ -1100,10 +1108,15 @@ declined** this slice. Also: Strategy-A full rational *patch* emission (cone / v
 the geometry-derived `SewInput`; the STEP-reloaded round-trip audit variant; petal atlas / multi-joint;
 the petal cone-flank joint (blocked spec §13); `VALID_material` / FRESH / `develop` (→ M-E).
 
-**Status: D3.0–D3.3 met** on `milestone-d`. D3.1 (exact-curve primitive + B-rep IR), D3.2 (MITER
-exact ruled flanks sharing the Π-cut seam + the surface FFI), and D3.3 (LEDGE exact body = the
-certified flanks, exact cap deferred to the `V_∂` real-cut slice) are implemented and gate-green. D3.4
-(differential-harness flip + route the STEP body through `brep` + final doc merge-gate) to follow.
+**Status: met** on `milestone-d` (slice 3 complete). D3.1 (exact-curve primitive + B-rep IR), D3.2
+(MITER exact ruled flanks sharing the crease seam + the surface FFI), D3.3 (LEDGE exact body = the
+certified flanks, exact cap deferred to the `V_∂` real-cut slice), and D3.4 (differential harness
+auditing both paths — watertight crease seam on the exact body, retained overhang on the mesh — with
+the STEP body routed through `brep` and the mesh kept as the §11 diagnostic) are implemented and
+gate-green. **Scope honestly recorded:** the exact body is *certified-seam, honest-open* — only the
+fold crease `M` is watertight-by-identity; the substrate outer boundary stays open (atlas-level,
+uncertified) and the exact LEDGE cap is deferred to the `V_∂` real-cut slice. A genuinely closed solid
+is atlas assembly (Deferred, above).
 
 ---
 

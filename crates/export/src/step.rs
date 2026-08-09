@@ -413,15 +413,22 @@ mod tests {
     }
 
     /// Drive one certified treatment of the physical [`one_joint`] fold end to end and
-    /// assert it reaches a reloadable STEP file: `closure_valid` → **Verified**, the gate
+    /// assert it reaches reloadable STEP files: `closure_valid` → **Verified**, the gate
     /// evaluates `VALID_solid-closure` over its stored certificate → **Verified**
-    /// (`T = Rat`, stamped with the real REG-V margin), and the reconstructed shell writes
-    /// a `.step` that re-reads clean through `BRepCheck_Analyzer`. `filename` keeps the two
-    /// cap branches' scratch files distinct.
+    /// (`T = Rat`, stamped with the real REG-V margin), and **both** exported
+    /// representations re-read clean through `BRepCheck_Analyzer`:
+    ///
+    /// - the **exact §10 body** ([`brep_from_closure`](crate::brep_build::brep_from_closure)
+    ///   → [`write_brep`]) — the two flank `w = 0` ruled sheets sharing the fold crease by
+    ///   identity, the spec §10 solid body;
+    /// - the **§11 mesh** ([`shell_from_closure`](crate::shell::shell_from_closure) →
+    ///   [`write_shell`]) — the triangle soup, kept as the discrete-net diagnostic.
+    ///
+    /// `stem` keeps the two cap branches' scratch files distinct.
     fn assert_one_joint_treatment_reloads(
         joint: &closure::Joint<lattice::Bignum>,
         t: &closure::valid::ClosureTreatment<'_, lattice::Bignum>,
-        filename: &str,
+        stem: &str,
     ) -> closure::valid::CapWitness<lattice::Bignum> {
         use certify_core::Verdict;
         use closure::valid::closure_valid;
@@ -452,20 +459,34 @@ mod tests {
             "VALID_solid-closure must pass"
         );
 
-        // The reconstructed shell writes a STEP file that reloads through BRepCheck.
-        let shell = crate::shell::shell_from_closure(joint, t, &valid);
-        assert!(!shell.is_empty());
-        let mut path = std::env::temp_dir();
-        path.push(filename);
-        let p = path.to_str().expect("utf-8 temp path");
-        assert_eq!(super::write_shell(p, &shell), "ok");
-        assert!(
+        let is_step = |p: &str| {
             std::fs::read_to_string(p)
                 .expect("step file readable")
-                .starts_with("ISO-10303-21"),
-            "not a STEP part-21 file",
+                .starts_with("ISO-10303-21")
+        };
+        let scratch = |suffix: &str, write: &dyn Fn(&str) -> String| {
+            let mut path = std::env::temp_dir();
+            path.push(format!("{stem}-{suffix}.step"));
+            let p = path.to_str().expect("utf-8 temp path");
+            assert_eq!(write(p), "ok", "{suffix} body writes + reloads");
+            assert!(is_step(p), "{suffix} body is not a STEP part-21 file");
+            let _ = std::fs::remove_file(p);
+        };
+
+        // §10 exact body: the two flank ruled sheets sharing the crease by identity.
+        let brep = crate::brep_build::brep_from_closure(joint, t, &valid);
+        assert_eq!(
+            brep.faces().len(),
+            2,
+            "the exact §10 body is the two flanks"
         );
-        let _ = std::fs::remove_file(p);
+        scratch("brep", &|p| super::write_brep(p, &brep));
+
+        // §11 mesh: the triangle soup, kept as the discrete-net diagnostic.
+        let shell = crate::shell::shell_from_closure(joint, t, &valid);
+        assert!(!shell.is_empty());
+        scratch("mesh", &|p| super::write_shell(p, &shell));
+
         valid.cap
     }
 
