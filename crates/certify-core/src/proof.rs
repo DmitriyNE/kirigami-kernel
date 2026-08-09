@@ -8,6 +8,7 @@ use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
 use crate::gate::conj;
 use crate::miter::{Occupancy, OrderSign, eps_from_cmp};
 use crate::sew::occupancy_row;
+use crate::shell::closed_shell;
 use crate::verdict::Verdict;
 
 // Soundness of the ★ CLIP-σ signed disjunction (spec §8.5). `clip_sigma` ranges the
@@ -531,4 +532,108 @@ fn gate_conj_sound() {
     if let Verdict::Unresolved(m) = r {
         assert!(m == first_unresolved as i32);
     }
+}
+
+// Soundness of the ★ closed-shell 2-manifold checker (spec §8; Milestone D slice 4 — atlas
+// assembly). `closed_shell` decides whether a shell's combinatorics form a closed oriented
+// 2-manifold (the boundary of a solid): every wire closed, every edge used once forward and
+// once reversed (∂² = 0), and every vertex link a single cycle. These harnesses prove, over
+// bounded fixed topologies with symbolic orientation, that it accepts exactly the genuinely-
+// closed shells and never a vertex pinch. The unbounded theorem (∂² = 0 ∧ single-cycle links
+// ⇒ closed 2-manifold) is the tracked Lean frontier (`CapOut.lean:25-30` assembly analogue),
+// not claimed here. Vecs are sized concretely (topology is fixed); only the orientation bits
+// are symbolic, so the unwind bounds the fixed-length scans.
+
+/// Independent reference for "the tetrahedron with these orientation bits is a closed
+/// oriented 2-manifold": recompute wire closure (no backtracking) and the once-forward /
+/// once-reversed edge census by a per-edge scan — a different code path from the checker's
+/// position-paired census. For the tetrahedron, closure ∧ census ⇔ closed 2-manifold (every
+/// vertex link is then automatically a single 3-cycle), so this is the full reference.
+fn ref_tetra_closed(rev: &[bool; 12]) -> bool {
+    let es = [0usize, 1, 2, 0, 1, 2];
+    let ee = [1usize, 2, 0, 3, 3, 3];
+    let we = [2usize, 1, 0, 0, 4, 3, 3, 5, 2, 1, 5, 4];
+    let fs = [0usize, 3, 6, 9, 12];
+    let dend = |i: usize| -> (usize, usize) {
+        let e = we[i];
+        if rev[i] { (ee[e], es[e]) } else { (es[e], ee[e]) }
+    };
+    let mut ok = true;
+    // Per-face wire closure + no immediate backtrack along one edge.
+    let mut f = 0;
+    while f < 4 {
+        let lo = fs[f];
+        let hi = fs[f + 1];
+        let mut k = lo;
+        while k < hi {
+            let next = if k + 1 < hi { k + 1 } else { lo };
+            let (_, t) = dend(k);
+            let (s, _) = dend(next);
+            if t != s || we[k] == we[next] {
+                ok = false;
+            }
+            k += 1;
+        }
+        f += 1;
+    }
+    // Per-edge census: exactly one forward and one reversed use.
+    let mut e = 0;
+    while e < 6 {
+        let mut fc = 0;
+        let mut rc = 0;
+        let mut i = 0;
+        while i < 12 {
+            if we[i] == e {
+                if rev[i] {
+                    rc += 1;
+                } else {
+                    fc += 1;
+                }
+            }
+            i += 1;
+        }
+        if fc != 1 || rc != 1 {
+            ok = false;
+        }
+        e += 1;
+    }
+    ok
+}
+
+#[kani::proof]
+#[kani::unwind(15)]
+fn closed_shell_sound() {
+    // Fixed tetrahedron topology; only the 12 orientation bits are symbolic.
+    let rev: [bool; 12] = kani::any();
+    let es = [0usize, 1, 2, 0, 1, 2];
+    let ee = [1usize, 2, 0, 3, 3, 3];
+    let we = [2usize, 1, 0, 0, 4, 3, 3, 5, 2, 1, 5, 4];
+    let fs = [0usize, 3, 6, 9, 12];
+    let accepted = matches!(
+        closed_shell(4, &es, &ee, &we, &rev, &fs),
+        Verdict::Verified(_)
+    );
+    // The checker accepts the tetrahedron iff the independent closure+census reference does —
+    // so checks 1–3 are sound and, on the accept side, check 4 never spuriously rejects.
+    assert!(accepted == ref_tetra_closed(&rev));
+}
+
+#[kani::proof]
+#[kani::unwind(10)]
+fn closed_shell_never_accepts_a_vertex_pinch() {
+    // Two minimal closed surfaces (each a "bigon sphere": two vertices joined by two edges,
+    // bounding two bigon faces) sharing only vertex 0. Sphere A on {0,1} (edges 0,1), sphere
+    // B on {0,2} (edges 2,3). Each sphere alone can be closed, but the union pinches at
+    // vertex 0 — the darts of A and B never share an `around`-orbit — so no orientation
+    // should make the checker accept it. This is the check-4 (vertex-link) refutation.
+    let rev: [bool; 8] = kani::any();
+    let es = [0usize, 0, 0, 0];
+    let ee = [1usize, 1, 2, 2];
+    // Sphere A faces (e0 fwd, e1 rev)(e1 fwd, e0 rev); sphere B faces (e2 fwd, e3 rev)(e3 fwd, e2 rev).
+    let we = [0usize, 1, 1, 0, 2, 3, 3, 2];
+    let fs = [0usize, 2, 4, 6, 8];
+    assert!(!matches!(
+        closed_shell(3, &es, &ee, &we, &rev, &fs),
+        Verdict::Verified(_)
+    ));
 }
