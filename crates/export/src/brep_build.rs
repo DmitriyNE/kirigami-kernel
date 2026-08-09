@@ -49,7 +49,7 @@
 //! assert_eq!(brep.nonmanifold_edges(), 0);
 //! ```
 
-use crate::bezier::RatBezier;
+use crate::bezier::{RatBezier, RatBezierSurface};
 use crate::brep::{Brep, EdgeGeom, FaceSurface, HalfEdge};
 use closure::valid::{CapWitness, ClosureTreatment, ClosureValid};
 use closure::{Joint, MuRange};
@@ -316,6 +316,138 @@ pub fn brep_from_closure<B: Backend>(
     bld.into_brep()
 }
 
+/// Assemble the exact [`Brep`] of a **single flank as a closed slab** — the first certified
+/// closed solid (Milestone D slice 4, atlas assembly). The slab is the flank's support box
+/// `σ ∈ t.sigma_a × μ ∈ [t.mu.lo, t.mu.hi] × w ∈ [t.w.lo, t.w.hi]` bounded by six exact
+/// faces meeting along shared edges **by identity** — a topological box (8 vertices, 12
+/// edges, 6 faces) whose combinatorics [`Brep::to_shell_certificate`] hands to
+/// `certify_core::shell::closed_shell`, and whose geometry the OCCT oracle corroborates.
+///
+/// The six faces reduce to three exact surface kinds (each exact for a cylinder flank):
+/// - the two **σ = const** end caps are [`Plane`](FaceSurface::Plane) — at fixed σ the map
+///   `c + μr + wn` is affine in `(μ, w)`;
+/// - the two **w = const** sheets are [`LinearExtrusion`](FaceSurface::LinearExtrusion) of a
+///   σ-rail along the (constant-direction) ruling `r ∥ x̂`;
+/// - the two **μ = const** walls are [`RationalPatch`](FaceSurface::RationalPatch)es —
+///   `base(σ) + w·dir(σ)` ruled along the *rotating* normal `n(σ)`, which no
+///   constant-direction extrusion expresses; the exact rational tensor patch does
+///   ([`RatBezierSurface::ruled_from_rails`], the two σ-rails share a denominator so the
+///   patch reproduces the affine ruling exactly).
+///
+/// Uses flank A. No cap witness is consumed — closedness is certified by `closed_shell`, not
+/// the joint-local closure certificate. The result is exact (every vertex a [`Surd`], every
+/// pole/weight a [`Rat`](lattice::Rat)); the exact→`f64` cast lives in the STEP bridge.
+///
+/// # Example
+///
+/// ```
+/// use export::brep_build::brep_slab_from_closure;
+/// use fixtures::closure_joint::{one_joint, treatment, ledge_d24};
+///
+/// let joint = one_joint();
+/// let d24 = ledge_d24();
+/// let t = treatment(&d24);
+/// let slab = brep_slab_from_closure(&joint, &t);
+/// assert_eq!(slab.verts().len(), 8);
+/// assert_eq!(slab.faces().len(), 6);
+/// // Every edge is shared by exactly two faces — a closed box, no free edge.
+/// assert_eq!(slab.edge_incidence().iter().filter(|&&c| c == 2).count(), 12);
+/// assert_eq!(slab.free_edges(), 0);
+/// assert_eq!(slab.nonmanifold_edges(), 0);
+/// ```
+pub fn brep_slab_from_closure<B: Backend>(joint: &Joint<B>, t: &ClosureTreatment<'_, B>) -> Brep<B> {
+    let mut bld = Builder::new();
+    let chart = joint.flank_a().chart();
+    let supp = &t.sigma_a;
+    let sigmas = [supp.lo.clone(), supp.hi.clone()];
+    let mus = [t.mu.lo.clone(), t.mu.hi.clone()];
+    let ws = [t.w.lo.clone(), t.w.hi.clone()];
+
+    // surface(μ_j, w_k) as a Vec3Rat in σ.
+    let surf = |j: usize, k: usize| chart.surface(&mus[j], &ws[k]);
+
+    // The (μ, w) cross-section ring: r0=(μlo,wlo), r1=(μhi,wlo), r2=(μhi,whi), r3=(μlo,whi).
+    let ring = [(0usize, 0usize), (1, 0), (1, 1), (0, 1)];
+
+    // 8 corner vertices: a[m] at σ = σlo, b[m] at σ = σhi, over ring corner m (deduped).
+    let mut a = [0usize; 4];
+    let mut b = [0usize; 4];
+    for (m, &(j, k)) in ring.iter().enumerate() {
+        let s = surf(j, k);
+        a[m] = bld.vertex(&s.eval(&sigmas[0]).expect("slab corner (σlo) finite"));
+        b[m] = bld.vertex(&s.eval(&sigmas[1]).expect("slab corner (σhi) finite"));
+    }
+
+    // 12 edges: the two straight cross-section rings (σlo, σhi) and the four curved σ-rails.
+    let mut ring_a = [0usize; 4];
+    let mut ring_b = [0usize; 4];
+    let mut rails = [0usize; 4];
+    for m in 0..4 {
+        let n = (m + 1) % 4;
+        ring_a[m] = bld.brep.add_edge(a[m], a[n], EdgeGeom::Line);
+        ring_b[m] = bld.brep.add_edge(b[m], b[n], EdgeGeom::Line);
+        let (j, k) = ring[m];
+        rails[m] = bld.add_rail(&surf(j, k), supp);
+    }
+
+    // The constant ruling direction (cylinder rulings ∥ x̂) for the w-sheet extrusions.
+    let dir = chart
+        .ruling()
+        .eval(&sigmas[0])
+        .expect("ruling direction finite");
+
+    // σ = σlo end cap (planar), wound A0→A3→A2→A1 (outward, matching the cube orientation).
+    let cap_lo = vec![
+        bld.directed(ring_a[3], a[0], a[3]),
+        bld.directed(ring_a[2], a[3], a[2]),
+        bld.directed(ring_a[1], a[2], a[1]),
+        bld.directed(ring_a[0], a[1], a[0]),
+    ];
+    bld.brep.add_plane(cap_lo);
+
+    // σ = σhi end cap (planar), wound B0→B1→B2→B3.
+    let cap_hi = vec![
+        bld.directed(ring_b[0], b[0], b[1]),
+        bld.directed(ring_b[1], b[1], b[2]),
+        bld.directed(ring_b[2], b[2], b[3]),
+        bld.directed(ring_b[3], b[3], b[0]),
+    ];
+    bld.brep.add_plane(cap_hi);
+
+    // The four side faces: A_m → A_{m+1} → B_{m+1} → B_m, sharing the rings and rails by
+    // identity. Even m = w = const sheets (LinearExtrusion); odd m = μ = const walls
+    // (RationalPatch ruled between the two σ-rails at w = wlo, whi).
+    for m in 0..4 {
+        let n = (m + 1) % 4;
+        let wire = vec![
+            bld.directed(ring_a[m], a[m], a[n]),
+            bld.directed(rails[n], a[n], b[n]),
+            bld.directed(ring_b[m], b[n], b[m]),
+            bld.directed(rails[m], b[m], a[m]),
+        ];
+        let surface = if m % 2 == 0 {
+            // w = const sheet: extrude this side's low σ-rail along the ruling.
+            FaceSurface::LinearExtrusion {
+                base: rails[m],
+                dir: dir.clone(),
+            }
+        } else {
+            // μ = const wall: exact rational patch ruled between the (μ, wlo) and (μ, whi)
+            // σ-rails. Ring corner m is (j, k=?) — the μ index j is shared across w here.
+            let (j, _) = ring[m];
+            FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(
+                &surf(j, 0),
+                &surf(j, 1),
+                &sigmas[0],
+                &sigmas[1],
+            ))
+        };
+        bld.brep.add_face(surface, wire);
+    }
+
+    bld.into_brep()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +567,59 @@ mod tests {
             b.faces().len(),
             miter_brep().faces().len(),
             "same body as MITER"
+        );
+    }
+
+    /// The single-flank slab is a **certified closed 2-manifold**: a topological box (8
+    /// vertices, 12 edges, 6 faces) with every edge shared by exactly two faces, and its
+    /// combinatorics pass the trusted `certify_core::shell::closed_shell` checker. This is
+    /// the first certified closed solid — proven here without OCCT (the differential oracle
+    /// corroborates it separately, `crate::differential`).
+    #[test]
+    fn the_flank_slab_is_a_certified_closed_2_manifold() {
+        use certify_core::shell::{ClosedShell, closed_shell};
+
+        let joint = one_joint();
+        let d24 = ledge_d24();
+        let t = treatment(&d24);
+        let slab = brep_slab_from_closure(&joint, &t);
+
+        assert_eq!(slab.verts().len(), 8, "8 box corners");
+        assert_eq!(slab.edges().len(), 12, "12 box edges");
+        assert_eq!(slab.faces().len(), 6, "6 box faces");
+        assert!(slab.indices_in_range());
+        for f in 0..slab.faces().len() {
+            assert!(slab.wire_is_closed(f), "slab face {f} wire closes");
+        }
+        assert_eq!(slab.free_edges(), 0, "a closed slab has no free edge");
+        assert_eq!(slab.nonmanifold_edges(), 0, "no non-manifold edge");
+
+        // Two of the six faces are the curved μ-walls (exact rational patches).
+        assert_eq!(
+            slab.faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count(),
+            2,
+            "the two μ = const walls are exact rational patches"
+        );
+
+        // The trusted checker certifies the combinatorics as a closed oriented 2-manifold.
+        let cert = slab.to_shell_certificate();
+        assert_eq!(
+            closed_shell(
+                cert.n_verts,
+                &cert.edge_start,
+                &cert.edge_end,
+                &cert.wire_edge,
+                &cert.wire_reversed,
+                &cert.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: 8,
+                edges: 12,
+                faces: 6
+            }),
         );
     }
 }
