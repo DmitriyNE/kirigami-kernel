@@ -462,6 +462,15 @@ fine — this is a log, not a schema.
 
 ## Deferred (by milestone)
 
+- **STEP export of a *certified-closed* body as a `CLOSED_SHELL` / `MANIFOLD_SOLID_BREP`.** D4.1's
+  `write_brep` emits the closed slab as a surface model with an `OPEN_SHELL` (the C++ builder never
+  stamps the `TopoDS_Shell` `Closed` flag), even though `closed_shell` certifies it closed and OCCT
+  agrees `free_edges == 0`. Since the certificate is the authority, a caller holding
+  `Verified(ClosedShell)` may legitimately stamp `shell.Closed(true)` + wrap in a solid so the STEP
+  declares it closed — gated on that certificate so honest-open MITER/LEDGE bodies stay `OPEN_SHELL`.
+  Do this the next time STEP emission is touched, not as its own slice.
+  *2026-08-09 · deferred (next STEP-emission pass) · `crates/export/src/{occt_shim.cc,step.rs}`*
+
 - **The planar-span representation (`n′ ≡ 0`) — a `PlanarChart` / relaxed `Chart` with its own
   pedal/ruling calculus.** A `geom`/M1-adjacent feature; unblocks the *genuine* §13 planar-hub petal disk
   (the closure slice uses the cylinder as the representable line-carrier stand-in meanwhile). See the
