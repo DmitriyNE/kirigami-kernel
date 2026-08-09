@@ -1,6 +1,6 @@
 # Kirigami kernel — Implementation Plan v1
 
-Target: a certified-exact implementation of spec v0.24 (+ the pending-v0.25 profile notes). Companion to `spec/flex-substrate-rep-spec-v0.24-full.md`; the spec wins on any conflict. This document is a plan, not a contract — it states module boundaries, dependency order, milestone slices, and the testing doctrine, with honest risk flags.
+Target: a certified-exact implementation of spec v0.24 (+ the pending-v0.25 profile notes). Companion to `spec/flex-substrate-rep-spec-v0.24-full.md`; the spec wins on any conflict. This document is a plan, not a contract — it states module boundaries, dependency order, milestone slices, and the testing doctrine, with honest risk flags. **The product it serves — the bidirectional multilayer flex-PCB transform (develop 3D→flat, fold flat→3D) — is stated in §6; read it first for the "why."**
 
 ## 0. Ground rules inherited from the review
 
@@ -52,7 +52,7 @@ The certificate store (append-only, provenance-linked, FRESH promotion), CLOSURE
 
 **D — The device (M6 + M8 + atlas assembly).** Full cone + lap seam + petal atlas; VALID_solid-closure end-to-end; STEP loaded into OpenCascade with its checker as the external audit. Exit: the lens-assembly flex model as a certified solid.
 
-**E — Material grade (M7).** Development, content, calibration, fab exports; VALID_material. This is where the eleven closure-era riders finally sweep the cold layers — expect findings, and an adversarial review pass.
+**E — Material grade (M7).** Development, content, calibration, fab exports; VALID_material. This is where the eleven closure-era riders finally sweep the cold layers — expect findings, and an adversarial review pass. **Note: "Development" here is not a rider — it is the certified flat↔3D map that *both* product directions pivot on (§6). Treat it as a primary thread, not orthogonal cleanup.**
 
 Sequencing note: A and B are independent (parallelizable); C needs both; D needs C; E is orthogonal after B and can interleave.
 
@@ -82,3 +82,43 @@ The checker/searcher split exists precisely so this ordering does not gate throu
 2. M0: pick the bigint backend by benchmark (Sturm on degree-12 over 256-bit rationals as the yardstick), land Sturm + resultants + comparison with separation.
 3. M3a–3b behind it immediately — decomposition + event spine — since every arrangement test needs them.
 4. Wire the CGAL difftest harness early (a tiny C++ shim, JSON in/out) so M3 grows against the oracle from the start.
+
+## 6. Product directions (the driving requirement)
+
+The kernel exists to transform **multilayer flex PCBs** in two directions. Everything above is in
+service of these; keeping them explicit stops "development" from being read as a mere material-grade
+rider (§2 E) when it is in fact **half the product**.
+
+- **① Develop (3D → flat) — generate the flat PCB outline.** `generating shape ∩ 3D geometry →
+  boundary curve on the surface → pull back to chart (σ,μ) → unroll to flat`. The PCB outline is
+  *produced* by intersecting the generating (developable) shape with 3D geometry (a mating part,
+  keepout, bounding solid), then developed to the flat, manufacturable pattern.
+- **② Fold (flat → 3D) — fold flat ECAD into 3D.** `flat ECAD (outline + traces + layer stackup) →
+  chart (σ,μ) → 3D folded solid`. The flat outline is the *input* (from ECAD); folding maps it to 3D.
+
+**Mapping onto the machinery (the exact-vs-transcendental split):**
+
+- **3D side = the exact wheelhouse, largely built (Milestones A–D).** The chart `C(σ,μ,w)=c+μr+wn`,
+  curved intersections (`resultant`/`resultant_bivariate`/`AlgReal` — the Curved MITER-FIT machinery;
+  `arrange2d`; CLIP trim-plane ∩ chart), closures/miters, exact watertight ruled B-reps +
+  `certify_core::shell::closed_shell` + the OCCT oracle + STEP. ②'s *emit* side is what M-D delivers
+  (the free-boundary closed solid, `export::brep_build::brep_freeboundary`, over any developable
+  chart); ①'s **outline is a 3D-intersection result**, landing squarely in the arrangement/resultant
+  substrate. Exact and certified.
+- **Flat ↔ 3D development = the shared KEYSTONE both directions pivot on** — the `develop` crate /
+  Milestone E. ① needs `(σ,μ)→flat` (unroll); ② needs `flat→(σ,μ)` (fold). It is **transcendental**
+  (`∫ψ′`→arctan/log; the isometric unrolling), and it is the ANCHOR backward-error bound (`spec:372`,
+  `spec:402`) plus its inverse. Today it exists **only as a float diagnostic** (`export::mesh3d`, the
+  flat↔rolled morph); the product needs it **certified** (rigorous exact enclosure with a fab-grade
+  backward-error bound). This is the DEV frontier — *not* a fidelity nicety, but the half of the
+  product that turns exact 3D geometry into (and out of) manufacturable flat ECAD.
+- **Multilayer = the `w` thickness dimension**, native to the chart: layers sit at distinct
+  `w`-offsets around the neutral surface `w=0` (M-D solids already span a `w`-band with top/bottom
+  faces). Real flex adds per-layer trace geometry + neutral-axis / registration accounting on top,
+  but the thickness structure is not bolted on.
+
+**Consequence for sequencing.** §2's "E is orthogonal after B" understates it: certified development
+(the `develop` crate) is a *primary* product thread, co-equal with the atlas assembly (D), because
+neither product direction ships without it. When re-weighting the roadmap, treat **DEV (certified
+development)** and the **exact-intersection → outline** path (direction ①) as first-class, not tail
+deferrals.
