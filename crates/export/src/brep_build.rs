@@ -51,10 +51,13 @@
 
 use crate::bezier::{RatBezier, RatBezierSurface};
 use crate::brep::{Brep, EdgeGeom, FaceSurface, HalfEdge};
+use certify_core::MarginSq;
+use certify_core::certify1d::{EdgeRegCert, RegCert};
+use certify_core::free_boundary::FreeBoundaryCert;
 use closure::valid::{CapWitness, ClosureTreatment, ClosureValid};
 use closure::{Joint, MuRange};
 use geom::chart::Chart;
-use lattice::{Backend, Interval, Rat, Surd, Vec3Rat};
+use lattice::{Backend, Interval, Rat, RatFunc, SturmChain, Surd, Vec3Rat};
 
 /// The crease edge two flanks share: the overlap sub-segment `M` (its edge id and the two
 /// endpoint vertex ids), computed as the intersection of the two flanks' crease rulings.
@@ -461,6 +464,223 @@ pub fn brep_slab_from_closure<B: Backend>(
     bld.into_brep()
 }
 
+/// Assemble the exact [`Brep`] of a **single flank as a closed slab over an authored
+/// substrate free boundary** — the D4.3 generalization of [`brep_slab_from_closure`] from a
+/// rectangular support box to a σ-band bounded by authored rational μ-splines `μ⁻(σ), μ⁺(σ)`
+/// (spec §3.4:151; the exact-over-anchor footprint, `spec:194`).
+///
+/// Identical 8-vertex / 12-edge / 6-face box topology to the slab (so
+/// [`closed_shell`](certify_core::shell::closed_shell) applies unchanged), with the slab's
+/// *constant* μ-bounds replaced by the σ-varying boundary splines: each μ-rail is
+/// `c(σ) + μ±(σ)·r(σ) + w·n(σ)` — [`Vec3Rat::scale`] by the [`RatFunc`] boundary (the one
+/// operation that changes vs the slab's scalar `scale_rat`). The pedal, ruling, and normal
+/// are reduced once so both μ-bases collapse to one shared denominator, and every σ-rail is
+/// then `base + w·n` — so all four rails keep that shared denominator, the exact-ruling
+/// precondition [`RatBezierSurface::ruled_from_rails`] needs. Because the boundary now curves
+/// in σ, **all four** side faces are exact rational patches (not the slab's two
+/// `LinearExtrusion` w-sheets):
+/// - the two **σ = const** end caps stay [`Plane`](FaceSurface::Plane) (at fixed σ the map
+///   `c + μr + wn` is affine in `(μ, w)`);
+/// - the two **w = const** sheets and the two **μ = const** walls are
+///   [`RationalPatch`](FaceSurface::RationalPatch)es ruled between adjacent σ-rails.
+///
+/// `chart` is flank A; `sigma`/`w` come from the certified treatment (`t.sigma_a` support and
+/// `t.w` window); `mu_lo`/`mu_hi` are the authored boundary splines. No cap witness is
+/// consumed — closedness is certified by `closed_shell`, not the joint-local certificate; the
+/// authored boundary's own validity is the [`free_boundary`](certify_core::free_boundary)
+/// obligation set (build its certificate with [`free_boundary_cert`]). Exact throughout (every
+/// vertex a [`Surd`], every pole/weight a [`Rat`]); the exact→`f64` cast lives in the STEP bridge.
+///
+/// # Example
+///
+/// ```
+/// use export::brep_build::brep_freeboundary_from_closure;
+/// use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
+/// use lattice::{Bignum, Poly, Rat, RatFunc};
+///
+/// let joint = one_joint();
+/// let d24 = ledge_d24();
+/// let t = treatment(&d24);
+/// let poly = |cs: &[i128]| Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+/// // A tapered authored band: μ⁻(σ) = −1 + σ, μ⁺(σ) = 1 − σ (width 2 − 2σ, genuinely varying).
+/// let mu_lo = RatFunc::from_poly(poly(&[-1, 1]));
+/// let mu_hi = RatFunc::from_poly(poly(&[1, -1]));
+/// let solid = brep_freeboundary_from_closure(&joint, &t, &mu_lo, &mu_hi);
+/// assert_eq!(solid.verts().len(), 8);
+/// assert_eq!(solid.faces().len(), 6);
+/// assert_eq!(solid.free_edges(), 0); // a closed slab has no free edge
+/// assert_eq!(solid.nonmanifold_edges(), 0);
+/// ```
+pub fn brep_freeboundary_from_closure<B: Backend>(
+    joint: &Joint<B>,
+    t: &ClosureTreatment<'_, B>,
+    mu_lo: &RatFunc<B>,
+    mu_hi: &RatFunc<B>,
+) -> Brep<B> {
+    let mut bld = Builder::new();
+    let chart = joint.flank_a().chart();
+    let supp = &t.sigma_a;
+    let sigmas = [supp.lo.clone(), supp.hi.clone()];
+    let ws = [t.w.lo.clone(), t.w.hi.clone()];
+
+    // The chart fields, reduced once (like the slab's `base`/`dir`): `c + μ±(σ)·r` for the two
+    // authored boundary splines — `Vec3Rat::scale` by the `RatFunc` μ±, the generalization of
+    // the slab's scalar `scale_rat`. Reducing pedal/ruling/normal first keeps the true low
+    // degree AND collapses both μ-bases to one shared denominator, so — since `n·w` is added
+    // via `scale_rat` (denominator-preserving) — all four σ-rails share `base.den · n.den`,
+    // exactly the shared-weights condition `ruled_from_rails` needs.
+    let c = chart.pedal().reduce();
+    let r = chart.ruling().reduce();
+    let n = chart.normal().reduce();
+    let bases = [
+        c.add(&r.scale(mu_lo)).reduce(),
+        c.add(&r.scale(mu_hi)).reduce(),
+    ];
+    let surf = |j: usize, k: usize| bases[j].add(&n.scale_rat(&ws[k]));
+
+    // The (μ-side, w) cross-section ring: r0=(μ⁻,wlo), r1=(μ⁺,wlo), r2=(μ⁺,whi), r3=(μ⁻,whi).
+    let ring = [(0usize, 0usize), (1, 0), (1, 1), (0, 1)];
+
+    // 8 corner vertices: a[m] at σ = σlo, b[m] at σ = σhi, over ring corner m (deduped).
+    let mut a = [0usize; 4];
+    let mut b = [0usize; 4];
+    for (m, &(j, k)) in ring.iter().enumerate() {
+        let s = surf(j, k);
+        a[m] = bld.vertex(
+            &s.eval(&sigmas[0])
+                .expect("free-boundary corner (σlo) finite"),
+        );
+        b[m] = bld.vertex(
+            &s.eval(&sigmas[1])
+                .expect("free-boundary corner (σhi) finite"),
+        );
+    }
+
+    // 12 edges: the two straight cross-section rings (σlo, σhi) and the four curved σ-rails.
+    let mut ring_a = [0usize; 4];
+    let mut ring_b = [0usize; 4];
+    let mut rails = [0usize; 4];
+    for m in 0..4 {
+        let mp = (m + 1) % 4;
+        ring_a[m] = bld.brep.add_edge(a[m], a[mp], EdgeGeom::Line);
+        ring_b[m] = bld.brep.add_edge(b[m], b[mp], EdgeGeom::Line);
+        let (j, k) = ring[m];
+        rails[m] = bld.add_rail(&surf(j, k), supp);
+    }
+
+    // σ = σlo end cap (planar), wound A0→A3→A2→A1 (outward, matching the cube orientation).
+    let cap_lo = vec![
+        bld.directed(ring_a[3], a[0], a[3]),
+        bld.directed(ring_a[2], a[3], a[2]),
+        bld.directed(ring_a[1], a[2], a[1]),
+        bld.directed(ring_a[0], a[1], a[0]),
+    ];
+    bld.brep.add_plane(cap_lo);
+
+    // σ = σhi end cap (planar), wound B0→B1→B2→B3.
+    let cap_hi = vec![
+        bld.directed(ring_b[0], b[0], b[1]),
+        bld.directed(ring_b[1], b[1], b[2]),
+        bld.directed(ring_b[2], b[2], b[3]),
+        bld.directed(ring_b[3], b[3], b[0]),
+    ];
+    bld.brep.add_plane(cap_hi);
+
+    // The four side faces: A_m → A_{m+1} → B_{m+1} → B_m, sharing rings and rails by identity.
+    // Every side is now an exact rational patch ruled between its two adjacent σ-rails — the
+    // authored boundary curves in σ, so even the w = const sheets are no longer straight
+    // extrusions (the slab's cylinder-only case). Ring corners m and m+1 supply the rails.
+    for m in 0..4 {
+        let mp = (m + 1) % 4;
+        let wire = vec![
+            bld.directed(ring_a[m], a[m], a[mp]),
+            bld.directed(rails[mp], a[mp], b[mp]),
+            bld.directed(ring_b[m], b[mp], b[m]),
+            bld.directed(rails[m], b[m], a[m]),
+        ];
+        let (jm, km) = ring[m];
+        let (jn, kn) = ring[mp];
+        let surface = FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(
+            &surf(jm, km),
+            &surf(jn, kn),
+            &sigmas[0],
+            &sigmas[1],
+        ));
+        bld.brep.add_face(surface, wire);
+    }
+
+    bld.into_brep()
+}
+
+/// The three searcher-proposed positivity margins for [`free_boundary_cert`]. Each is
+/// verified by the checker (the searcher only proposes), so each must be strictly below the
+/// true infimum of its quantity on the span, or [`free_boundary`](certify_core::free_boundary)
+/// refutes it.
+pub struct FreeBoundaryMargins<B: Backend> {
+    /// Positive-width margin: `μ⁺(σ) − μ⁻(σ) ≥ width`.
+    pub width: Rat<B>,
+    /// Boundary-regularity margin (both rails): `|â′|² ≥ reg`.
+    pub reg: Rat<B>,
+    /// σ̂-monotonicity margin: `σ̂′ ≥ mono`.
+    pub mono: Rat<B>,
+}
+
+/// Build the [`FreeBoundaryCert`] for an authored σ-band boundary `μ⁻(σ), μ⁺(σ)` lifted into
+/// `chart` — the geometry→certificate **searcher** that ties
+/// [`brep_freeboundary_from_closure`]'s solid to the trusted
+/// [`free_boundary`](certify_core::free_boundary) checker (D4.3a). Untrusted: it forms the
+/// exact obligation polynomials and their Sturm chains, which the checker re-verifies.
+///
+/// It clears the three exact-ANCHOR obligations to `RegCert`/`EdgeRegCert` form:
+/// - **width** `μ⁺ − μ⁻ = num/den ≥ margins.width` (the reduced difference RatFunc);
+/// - **boundary regularity** `|â′|² ≥ margins.reg` for each μ-rail (`|·|²` of the reduced
+///   rail `c + μ±·r`'s derivative);
+/// - **σ̂-monotonicity** `σ̂′ = num/den ≥ margins.mono` (the caller-supplied σ-projection
+///   derivative `sigma_dot` — [`RatFunc::one`] for the σ-graph).
+pub fn free_boundary_cert<B: Backend>(
+    chart: &Chart<B>,
+    mu_lo: &RatFunc<B>,
+    mu_hi: &RatFunc<B>,
+    sigma: &Interval<B>,
+    sigma_dot: &RatFunc<B>,
+    margins: &FreeBoundaryMargins<B>,
+) -> FreeBoundaryCert<B> {
+    // A REG-Q positivity cert `num/den ≥ m` with honest Sturm chains (den + residual).
+    let reg = |rf: &RatFunc<B>, m: &Rat<B>| {
+        let rf = rf.reduce();
+        let (num, den) = (rf.num().clone(), rf.den().clone());
+        let res = num.sub(&den.scale(m));
+        RegCert {
+            den_chain: SturmChain::new(&den),
+            res_chain: SturmChain::new(&res),
+            num,
+            den,
+            m: MarginSq(m.clone()),
+            span: sigma.clone(),
+        }
+    };
+    // The lifted μ-rail `c + μ·r` (at w = 0) and its squared speed `|â′|²`.
+    let speed_sq = |mu: &RatFunc<B>| {
+        let base = chart.pedal().add(&chart.ruling().scale(mu)).reduce();
+        let d = base.derivative();
+        d.dot(&d)
+    };
+
+    FreeBoundaryCert {
+        span: sigma.clone(),
+        width: reg(&mu_hi.sub(mu_lo), &margins.width),
+        reg_lo: EdgeRegCert {
+            speed_sq: reg(&speed_sq(mu_lo), &margins.reg),
+            failure: None,
+        },
+        reg_hi: EdgeRegCert {
+            speed_sq: reg(&speed_sq(mu_hi), &margins.reg),
+            failure: None,
+        },
+        monotone: reg(sigma_dot, &margins.mono),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,6 +847,94 @@ mod tests {
                 &cert.wire_edge,
                 &cert.wire_reversed,
                 &cert.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: 8,
+                edges: 12,
+                faces: 6
+            }),
+        );
+    }
+
+    /// The **free-boundary** single-flank slab (D4.3) is a certified closed 2-manifold over an
+    /// *authored* σ-band — not the rectangular support box. Over flank A with the tapered band
+    /// `μ⁻(σ) = −1 + σ`, `μ⁺(σ) = 1 − σ`: (1) the authored boundary is itself certified valid by
+    /// the trusted `free_boundary` checker (D4.3a — positive width, regular rails, monotone),
+    /// via the `free_boundary_cert` searcher; (2) the emitted solid is the same 8/12/6 box
+    /// topology as the slab, but with **four** exact rational-patch sides (the boundary curves in
+    /// σ), and its combinatorics pass `closed_shell`. Earned internally; OCCT corroborates in
+    /// `crate::differential`.
+    #[test]
+    fn the_free_boundary_slab_is_a_certified_closed_2_manifold() {
+        use certify_core::free_boundary::free_boundary;
+        use certify_core::shell::{ClosedShell, closed_shell};
+        use lattice::Poly;
+
+        let poly = |cs: &[i128]| {
+            Poly::<lattice::Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+        };
+        let joint = one_joint();
+        let d24 = ledge_d24();
+        let t = treatment(&d24);
+        // Authored tapered band: μ⁻ = −1 + σ, μ⁺ = 1 − σ (width 2 − 2σ, genuinely varying in σ).
+        let mu_lo = RatFunc::from_poly(poly(&[-1, 1]));
+        let mu_hi = RatFunc::from_poly(poly(&[1, -1]));
+
+        // (1) The authored free boundary is certified valid (the exact-ANCHOR obligation set).
+        let cert = free_boundary_cert(
+            joint.flank_a().chart(),
+            &mu_lo,
+            &mu_hi,
+            &t.sigma_a,
+            &RatFunc::one(), // σ-graph: σ̂ = σ ⇒ σ̂′ = 1
+            &FreeBoundaryMargins {
+                width: Rat::from_i128(1), // true width ∈ [2, 9/4] on [−1/8, 0]
+                reg: Rat::new(1, 100),    // true |â′|² ≈ 8
+                mono: Rat::new(1, 2),     // σ̂′ ≡ 1
+            },
+        );
+        assert!(
+            matches!(free_boundary(&cert), Verdict::Verified(_)),
+            "the authored μ-band is a valid free boundary (positive width, regular rails, monotone)"
+        );
+
+        // (2) The emitted solid is a certified closed box over that boundary.
+        let solid = brep_freeboundary_from_closure(&joint, &t, &mu_lo, &mu_hi);
+        assert_eq!(solid.verts().len(), 8, "8 box corners");
+        assert_eq!(solid.edges().len(), 12, "12 box edges");
+        assert_eq!(solid.faces().len(), 6, "6 box faces");
+        assert!(solid.indices_in_range());
+        for f in 0..solid.faces().len() {
+            assert!(
+                solid.wire_is_closed(f),
+                "free-boundary face {f} wire closes"
+            );
+        }
+        assert_eq!(solid.free_edges(), 0, "a closed slab has no free edge");
+        assert_eq!(solid.nonmanifold_edges(), 0, "no non-manifold edge");
+
+        // All four side faces are exact rational patches (the curved-in-σ boundary makes even
+        // the w = const sheets rational, vs the slab's two straight `LinearExtrusion` sheets).
+        assert_eq!(
+            solid
+                .faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count(),
+            4,
+            "all four side faces are exact rational patches"
+        );
+
+        // The trusted checker certifies the combinatorics as a closed oriented 2-manifold.
+        let sc = solid.to_shell_certificate();
+        assert_eq!(
+            closed_shell(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.face_start,
             ),
             Verdict::Verified(ClosedShell {
                 verts: 8,
