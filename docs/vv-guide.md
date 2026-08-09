@@ -1273,13 +1273,22 @@ is insufficient* for the extents: the spec's stored counterexample `F_B ∩ L_σ
   a wrong cofactor; a Kani harness proves the cofactor-identity check sound over bounded-degree
   polynomials; `resultant` / `resultant_bivariate` / `verify_common_factor` are wired downstream for the
   first time; `certify-core` stays `no_std`.
-- **CM.2 — conic carriers — met when:** `certify_core::cap_in::Carrier` gains a `Conic{a,b,c,d,e,f}`
-  variant with its exact `carrier_residual` (`a·x² + b·xy + c·y² + d·x + e·y + f ≡ 0`), so a cone-flank's
-  conic cut image passes CAP-IN-D24 (the LEDGE-branch companion) instead of falsely failing `OffCarrier`;
-  additive, existing line/circle behaviour unchanged.
-- **CM.3 — `AlgReal` wiring — met when:** the correspondence's irrational fixed points / monotonicity
-  events / extent-match σ are handled through `lattice::AlgReal` (its first downstream use), folding into
-  CM.1's `ε_φ` mint where an endpoint is irrational.
+- **CM.2 — conic carriers — SKIPPED (unsound as framed; deferred to the conic-*arrangement* L3).**
+  Investigation found the premise wrong: `Carrier` is consumed **only** by CAP-IN-D24 → the LEDGE
+  arrangement, and the clean-miter path (CM.1) uses straight rulings `F_i = P_i + μ·D_i`, not conic
+  carriers. A conic is **not** D24 content (D24 = lines + circular arcs, spec §6); CAP-IN-D24 refusing it
+  is *correct* — "the cone is **correctly turned away**" (`cap_in.rs:19`; "falsely, not vacuously" = a
+  genuine-false predicate, not an erroneous refusal). The `closure::ledge` bridge already declines even a
+  **Circle** (`Carrier::Circle → UnsupportedCarrier`), and `arrange2d` has no conic-curve arrangement — so
+  a `Conic` that *passed* CAP-IN-D24 would license non-D24 content into a line/circle-only engine
+  (unsound). Genuine conic support is the deferred conic-**arrangement** L3 (spec §484), the LEDGE branch,
+  orthogonal to this milestone's clean-miter thrust.
+- **CM.3 — `AlgReal` wiring — met when:** `lattice::AlgReal` is used downstream for the first time —
+  `AlgReal::sign_of` (the sign of a polynomial at an algebraic number) + `AlgReal::count_roots_upto` (its
+  distinct-root count in `(lo, α]`) certify a σ-rational gauge at an **algebraic** σ-event, and
+  `certify_core::miter::strictly_monotone_upto_alg` uses them to certify a cut-face's `ℓ_i` strictly
+  monotone up to an algebraic cut-exit σ (the cone case — `(−3+√17)/4` and the like). The transverse
+  identities are support-independent, so only the monotonicity domain reaches for `AlgReal`.
 - **CM.4 — closure searcher + minimal cone-flank sub-fixture — met when:** an untrusted `closure`-side
   constructor assembles the transverse MITER-FIT inputs (`ℓ_i`, `D_i`, `R`, the cofactors) from a
   cone-flank joint, and a minimal cone-pair sub-fixture certifies end-to-end through the curved MITER-FIT.
@@ -1307,9 +1316,14 @@ curvature-order (planar-vs-cylindrical), extent-counterexample (`[0,1]` vs `[0,1
 parallel-regime, and wrong-cofactor cases are refuted (6 unit + doctest, plus `Biv` 4 unit + doctest).
 **Earned, no OCCT:** the certificate is an exact bivariate polynomial identity; its
 resultant⇔common-root soundness is cited/Lean (CM.5, where `verify_common_factor_sound` is already
-axiom-clean). Full gate green (nextest ws 375/375, export/step 37/37 + doctests, `-D missing_docs`,
-`xtask lint`, no_std thumbv7em, the new Kani harness). CM.2–CM.5 **todo**, executed per-slice with a
-pause after each.
+axiom-clean). **CM.2 SKIPPED** (unsound as framed — a conic is non-D24 content CAP-IN-D24 correctly
+refuses, and the clean-miter path uses straight rulings, not conic carriers; genuine conic support is the
+deferred conic-arrangement L3, orthogonal here). **CM.3 wires `AlgReal` downstream for the first time:**
+`AlgReal::sign_of` / `AlgReal::count_roots_upto` (a polynomial's sign at, and root count up to, an
+algebraic σ) + `certify_core::miter::strictly_monotone_upto_alg` (the transverse monotonicity certificate
+over an algebraic cut-face σ-bound — the cone case). Full gate green (nextest ws 378/378, export/step
+37/37 + doctests, `-D missing_docs`, `xtask lint`, no_std thumbv7em, Kani). CM.4 (cone searcher + fixture)
+and CM.5 (Lean frontier) **todo**, executed per-slice with a pause after each.
 
 ---
 

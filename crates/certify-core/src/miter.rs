@@ -34,7 +34,7 @@
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use lattice::{Backend, Bignum, Biv, Interval, Poly, Rat, RatFunc, SturmChain};
+use lattice::{AlgReal, Backend, Bignum, Biv, Interval, Poly, Rat, RatFunc, SturmChain};
 
 use crate::certify1d::{EdgeReg, EdgeRegCert, edge_reg};
 use crate::margin::MarginSq;
@@ -786,6 +786,48 @@ fn monotone_slope_sign<B: Backend>(ell: &RatFunc<B>, lo: &Rat<B>, hi: &Rat<B>) -
     Some(s_lo)
 }
 
+/// The constant slope sign of `ell` on `[lo, α]` — `lo` rational, `α` an **algebraic** upper
+/// bound with `lo < α` — if `ell` is strictly monotone there: its slope numerator is nonzero
+/// at `lo` and has no root in `(lo, α]` (counted exactly via [`AlgReal::count_roots_upto`]).
+/// `None` if `ell` stalls. The algebraic-support analogue of [`monotone_slope_sign`] — the
+/// transverse miter's monotonicity certificate for a **cone** flank whose cut-face σ-range
+/// ends at an algebraic event (e.g. the cut-exit σ where the cut curve leaves a rational box
+/// face). This is the first downstream use of `lattice::AlgReal`; the transverse identities
+/// themselves are support-independent, so only the monotonicity domain reaches for it.
+///
+/// ```
+/// use certify_core::miter::strictly_monotone_upto_alg;
+/// use lattice::{AlgReal, Bignum, Poly, Rat, RatFunc};
+/// use core::cmp::Ordering;
+///
+/// let p = |cs: &[i128]| Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+/// // α = √2, the positive root of x² − 2.
+/// let sqrt2 = AlgReal::isolate_roots(&p(&[-2, 0, 1]))
+///     .into_iter()
+///     .find(|r| r.cmp_rat(&Rat::from_i128(0)) == Ordering::Greater)
+///     .expect("√2");
+/// // ℓ = σ² is strictly increasing on [1, √2] (slope 2σ > 0 there).
+/// let ell = RatFunc::<Bignum>::new(p(&[0, 0, 1]), p(&[1]));
+/// assert_eq!(strictly_monotone_upto_alg(&ell, &Rat::from_i128(1), &sqrt2), Some(1));
+/// // but it stalls at σ = 0, so it is not strictly monotone on [0, √2].
+/// assert_eq!(strictly_monotone_upto_alg(&ell, &Rat::from_i128(0), &sqrt2), None);
+/// ```
+pub fn strictly_monotone_upto_alg<B: Backend>(
+    ell: &RatFunc<B>,
+    lo: &Rat<B>,
+    hi: &AlgReal<B>,
+) -> Option<i8> {
+    let n = slope_num(ell);
+    let s_lo = n.eval(lo).sign();
+    if s_lo == 0 {
+        return None; // `lo` is stationary (or ℓ′ ≡ 0)
+    }
+    if hi.count_roots_upto(&n, lo) != 0 {
+        return None; // a stationary point in `(lo, α]` — not strictly monotone
+    }
+    Some(s_lo)
+}
+
 /// Transverse-rational MITER-FIT (spec §5.3): certify that two flanks' rationally-ruled cut
 /// faces **coincide** in Π along the correspondence `φ_J`, and mint the order sign `ε_φ`.
 ///
@@ -1286,5 +1328,31 @@ mod tests {
                 minted: OrderSign::Preserving
             })
         ));
+    }
+
+    /// The transverse monotonicity certificate generalizes to an **algebraic** support bound
+    /// (the cone case) via `lattice::AlgReal` — `α = √2` here stands in for a cut-exit σ.
+    #[test]
+    fn transverse_monotonicity_over_an_algebraic_support_bound() {
+        // α = √2, the positive root of x² − 2.
+        let sqrt2 = AlgReal::isolate_roots(&pol(&[-2, 0, 1]))
+            .into_iter()
+            .find(|r| r.cmp_rat(&Q::from_i128(0)) == Ordering::Greater)
+            .expect("√2");
+        let ell_sq = rf(&[0, 0, 1], &[1]); // ℓ = σ²
+        // strictly increasing on [1, √2]; stalls at σ = 0 on [0, √2].
+        assert_eq!(
+            strictly_monotone_upto_alg(&ell_sq, &Q::from_i128(1), &sqrt2),
+            Some(1)
+        );
+        assert_eq!(
+            strictly_monotone_upto_alg(&ell_sq, &Q::from_i128(0), &sqrt2),
+            None
+        );
+        // ℓ = σ² − 2σ stalls at σ = 1 ∈ (0, √2] — caught inside the support.
+        assert_eq!(
+            strictly_monotone_upto_alg(&rf(&[0, -2, 1], &[1]), &Q::from_i128(0), &sqrt2),
+            None
+        );
     }
 }
