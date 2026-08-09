@@ -636,6 +636,63 @@ mod tests {
         );
     }
 
+    /// D3.3 GATE — the certified LEDGE closure through OCCT. Its exact §10 body is the
+    /// **same two flank sheets** as MITER: the only available LEDGE cap outline is the
+    /// CAP-IN-D24 licensing square (a placeholder, not the real projected cut), whose crease
+    /// edge overlaps the A+B seam `M`, so no certificate backs a flank↔cap seam. Rather than
+    /// fabricate one — which OCCT would only accept as a disconnected shell (`BRepCheck`
+    /// rejects a shell with an unconnected face) — the exact body emits the certified flanks
+    /// and defers the exact cap to the `V_∂` real-cut slice (see `docs/vv-guide.md §8`). So
+    /// OCCT must accept the two-face shell just as for MITER: two faces, `brepcheck` valid,
+    /// no non-manifold edge, one 2-incidence crease edge, and the file reloads.
+    #[test]
+    fn occt_audits_the_ledge_exact_flank_body() {
+        use crate::brep_build::brep_from_closure;
+        use closure::valid::closure_valid;
+        use fixtures::closure_joint::{ledge_d24, one_joint, treatment};
+
+        let joint = one_joint();
+        let d24 = ledge_d24();
+        let t = treatment(&d24);
+        let valid = match closure_valid(&joint, &t) {
+            certify_core::Verdict::Verified(v) => v,
+            _ => panic!("the ledge fold is CLOSURE_VALID"),
+        };
+
+        let brep = brep_from_closure(&joint, &t, &valid);
+        let audit = super::audit_brep(&brep).expect("OCC audits the ledge brep");
+        assert_eq!(
+            audit.faces, 2,
+            "two flank sheets, no exact cap (deferred to V_∂): {audit:?}"
+        );
+        assert_eq!(
+            audit.nonmanifold_edges, 0,
+            "no non-manifold edge: {audit:?}"
+        );
+        assert!(
+            audit.brepcheck_valid,
+            "OCCT accepts the connected two-flank shell: {audit:?}"
+        );
+        assert_eq!(
+            audit.edges - audit.free_edges - audit.nonmanifold_edges,
+            1,
+            "exactly one 2-incidence edge — the shared crease middle M: {audit:?}"
+        );
+
+        // The exact shell writes a STEP file that reloads.
+        let mut path = std::env::temp_dir();
+        path.push("kirigami-ledge-brep.step");
+        let p = path.to_str().expect("utf-8 temp path");
+        assert_eq!(super::write_brep(p, &brep), "ok");
+        assert!(
+            std::fs::read_to_string(p)
+                .expect("step file readable")
+                .starts_with("ISO-10303-21"),
+            "not a STEP part-21 file",
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
     /// Geom_BSplineCurve linkage: a planar face with one **rational-Bézier** edge (a
     /// quadratic rational arc, weights (1,2,1)) plus two straight sides writes a STEP
     /// file that reloads clean through BRepCheck. Proves the rational-curve edge

@@ -251,11 +251,14 @@ fn min_x<B: Backend>(a: &[Rat<B>; 3], b: &[Rat<B>; 3]) -> [Rat<B>; 3] {
 /// that overlap is left as an honestly-open free tip (the certified-seam / honest-open
 /// export).
 ///
-/// The cap witness selects the corner treatment. On the **MITER** branch
-/// ([`CapWitness::Miter`]) the flanks meet directly along `M`, so no separate cap face is
-/// emitted — the shell is the two flank sheets. The **LEDGE** branch's exact arrangement
-/// cap face (sharing the flank Π-edges by identity) is a later slice; until then the
-/// ledge treatment yields the same two flank sheets.
+/// The exact §10 body is the two flank sheets for **both** cap witnesses. On the
+/// **MITER** branch ([`CapWitness::Miter`]) the flanks meet directly along `M`, so there
+/// is no separate cap. On the **LEDGE** branch ([`CapWitness::Ledge`]) the only available
+/// cap outline is the CAP-IN-D24 *licensing square* — a placeholder, not the real
+/// projected cut — whose crease edge overlaps `M`, so no certificate backs a flank↔cap
+/// seam; rather than fabricate one, the exact body emits only the certified flanks and
+/// defers the exact cap face to the `V_∂` real-cut slice. (The `§11` mesh path, in
+/// [`crate::shell`], still triangulates the placeholder cap for visualization.)
 ///
 /// The result is exact: every vertex is a [`Surd`] (rational here), and no float is
 /// produced — the exact→`f64` cast lives in the [`step`](crate::step) bridge.
@@ -298,8 +301,14 @@ pub fn brep_from_closure<B: Backend>(
     bld.add_flank(ca, &t.sigma_a, sa, mu, &w, &shared, false);
     bld.add_flank(cb, &t.sigma_b, sb, mu, &w, &shared, true);
 
-    // The cap witness: MITER meets directly along M (no cap face); LEDGE's exact cap
-    // face is a later slice (the flank sheets are the same either way).
+    // Neither cap witness adds a face to the exact §10 body: MITER meets directly along M,
+    // and the LEDGE cap is *not* emitted as an exact face here. The only geometry available
+    // for a LEDGE cap is the CAP-IN-D24 *licensing square* — a placeholder outline, not the
+    // real projected cut — and its crease edge overlaps the already-shared middle M, so no
+    // certificate backs a flank↔cap seam. Rather than fabricate one (an ad-hoc face that
+    // OCCT could only accept as a disconnected shell), we export what is certified — the two
+    // flank sheets — and defer the exact cap to the `V_∂` real-cut slice, where the cap edge
+    // genuinely lands on a flank edge and can be sewn watertight. See `docs/vv-guide.md §8`.
     match &valid.cap {
         CapWitness::Miter(_) | CapWitness::Ledge(_) => {}
     }
@@ -312,7 +321,7 @@ mod tests {
     use super::*;
     use certify_core::Verdict;
     use closure::valid::closure_valid;
-    use fixtures::closure_joint::{miter_cap, one_joint, treatment_miter};
+    use fixtures::closure_joint::{ledge_d24, miter_cap, one_joint, treatment, treatment_miter};
 
     fn miter_brep() -> Brep<lattice::Bignum> {
         let joint = one_joint();
@@ -374,5 +383,58 @@ mod tests {
         let one = |v: i128| Surd::from_rat(Rat::<lattice::Bignum>::from_i128(v));
         assert_eq!(pt(e.start), [one(-1), one(0), one(1)]);
         assert_eq!(pt(e.end), [one(1), one(0), one(1)]);
+    }
+
+    fn ledge_brep() -> Brep<lattice::Bignum> {
+        let joint = one_joint();
+        let d24 = ledge_d24();
+        let t = treatment(&d24);
+        let valid = match closure_valid(&joint, &t) {
+            Verdict::Verified(v) => v,
+            other => panic!(
+                "the ledge fold is CLOSURE_VALID: {}",
+                matches!(other, Verdict::Verified(_))
+            ),
+        };
+        brep_from_closure(&joint, &t, &valid)
+    }
+
+    /// The LEDGE exact §10 body is the **same two certified flank sheets** as MITER — no
+    /// cap face. The only available LEDGE cap outline is the CAP-IN-D24 licensing square (a
+    /// placeholder, not the real projected cut), whose crease edge overlaps `M`, so no
+    /// certificate backs a flank↔cap seam; the exact cap is deferred to the `V_∂` real-cut
+    /// slice rather than fabricated. The cap still appears (as two triangles) in the `§11`
+    /// mesh path, [`crate::shell`].
+    #[test]
+    fn ledge_exact_body_is_the_certified_flanks_no_cap() {
+        let b = ledge_brep();
+        assert_eq!(
+            b.faces().len(),
+            2,
+            "two flank sheets, no exact cap face (deferred to the V_∂ real-cut slice)"
+        );
+        assert!(b.indices_in_range());
+        for f in 0..b.faces().len() {
+            assert!(b.wire_is_closed(f), "flank wire {f} closes");
+        }
+        assert!(
+            b.faces()
+                .iter()
+                .all(|f| matches!(f.surface, FaceSurface::LinearExtrusion { .. })),
+            "both faces are ruled flank sheets"
+        );
+        // Structurally identical to the MITER body: one shared crease edge, manifold.
+        let inc = b.edge_incidence();
+        assert_eq!(
+            inc.iter().filter(|&&c| c == 2).count(),
+            1,
+            "exactly one shared (2-incidence) edge — the crease middle M"
+        );
+        assert_eq!(b.nonmanifold_edges(), 0, "no non-manifold edge");
+        assert_eq!(
+            b.faces().len(),
+            miter_brep().faces().len(),
+            "same body as MITER"
+        );
     }
 }

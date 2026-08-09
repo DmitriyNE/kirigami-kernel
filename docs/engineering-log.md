@@ -321,6 +321,28 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The three-way `BRepCheck` box: for the one-joint fixture an exact LEDGE cap face cannot join a valid
+  shell — so we don't emit one (M-D D3.3, Option B).** The exact §10 LEDGE body ships only the two
+  certified flank sheets (identical to MITER) and emits **no exact cap face**; the cap survives only in
+  the §11 mesh path. Why: the sole cap outline `export` has is the CAP-IN-D24 **licensing square** — a
+  placeholder, not the real `V_∂`-projected cut — and for this fixture its crease edge coincides with
+  the certified A+B miter seam `M` (the crease line `L`). A cap face can therefore meet the flanks only
+  along `L`, and every way of expressing that in OCCT was empirically pinned to a dead end with minimal
+  diagnostic breps (OCCT 7.9.3, `BRepCheck_Analyzer`): **(1)** share the crease **edge** → `M` becomes
+  3-incident → **non-manifold**; **(2)** share only the crease **vertex** → a cone-point junction →
+  `BRepCheck`-invalid; **(3)** share **nothing** inside one shell → disconnected shell →
+  `BRepCheck`-invalid (`BRepCheck_NotConnected`). So a single 3-face shell for this fixture *cannot* be
+  `brepcheck_valid` — a topological fact, not a bug. The certificate (`CLOSURE_VALID`:
+  SEW-EDGES/SEW-LINK/CAP-OUT-LINK) proves seam-local, honest-open facts, **not** a valid
+  closed/connected solid; the friction surfaces in `export` because that is where the abstract
+  certificate becomes concrete OCCT-checked coordinates, and there is genuinely no certificate-backed
+  flank↔cap seam to emit while the cap is the placeholder square. *Decision (with the user):* export
+  whatever geometry is certificate-backed rather than fabricate a seam to get a good-looking STEP
+  ("oracle ∧ audit, never oracle-instead"); the exact cap is **deferred to the `V_∂` real-cut slice**,
+  which projects the true cut and gives a seam identity can share. The prior-session plan to emit a
+  "vertex-shared exact planar cap" is retracted (outcome 2 above). *2026-08-09 · decided ·
+  `crates/export/src/brep_build.rs`, `docs/vv-guide.md §8`*
+
 - **Mesh LEDGE cap fanned unordered `face.outer` edges → degenerate cap, hidden by a false-green.**
   `shell::cap_tris` fanned `edge_start` of each `CapOut::region().faces[].outer` edge, assuming the
   boundary arrived loop-ordered head-to-tail. The arrangement (`arrange2d`) stores those edges

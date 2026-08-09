@@ -1062,13 +1062,20 @@ face).
   **2-incidence** edge — `nonmanifold_edges == 0`, `brepcheck_valid`, and `free_edges` **strictly
   lower** than the triangle path — with free edges remaining **only** on the annotated-open substrate
   boundary.
-- **LEDGE cap as the exact arrangement face — met when:** `brep_from_closure` (`CapWitness::Ledge`)
-  consumes `valid.cap.region().faces[].outer` (exact `SegPiece`s in Π) lifted through the
-  metric-faithful `shell::lift`, builds a planar `gp_Pln` face bounded by those exact edges, and makes
-  each cap-boundary edge coincident with a flank Π-edge the **same** `TopoDS_Edge` (identity); it reads
-  whatever outline the arrangement carries — **not** the D24 licensing square — and keeps the
-  `pinches().is_empty()` gate. The oracle reports flank↔cap seams 2-incidence, `nonmanifold_edges == 0`,
-  `brepcheck_valid`, `free_edges` reduced vs the triangle path; internal `pinches() == 0` corroborates.
+- **LEDGE exact body = the certified flanks; exact cap deferred — met when:** `brep_from_closure`
+  (`CapWitness::Ledge`) emits the **same two flank sheets** as the MITER arm and **no exact cap face**.
+  *Reframe (locked with the user):* the only LEDGE cap outline available to `export` is the CAP-IN-D24
+  **licensing square** — a placeholder, not the real `V_∂`-projected cut — and its crease edge overlaps
+  the certified A+B seam `M`, so no certificate backs a flank↔cap seam. Emitting a cap face anyway is a
+  three-way dead end proven against OCCT for this fixture: sharing the crease **edge** makes `M`
+  3-incident → **non-manifold**; sharing only the crease **vertex** is a cone-point junction →
+  `BRepCheck`-invalid; sharing **nothing** in one shell is a disconnected shell → `BRepCheck`-invalid
+  (`BRepCheck_NotConnected`). So a single 3-face shell for this fixture *cannot* be `brepcheck_valid` —
+  a topological fact, not a bug. Rather than fabricate a seam (oracle-instead-of-audit), the exact body
+  emits only certificate-backed geometry (the flanks) and **defers the exact cap to the `V_∂` real-cut
+  slice**; the cap survives only in the `§11` mesh (triangle) path. The oracle then reports the LEDGE
+  body identically to MITER: **two** faces, one 2-incidence crease edge, `nonmanifold_edges == 0`,
+  `brepcheck_valid`, and the file reloads. (See `docs/engineering-log.md` Findings for the three-way box.)
 - **Differential flip + mesh retention — met when:** `export::differential` asserts, for the
   **exact-surface** path, the seam is now watertight (2-incidence at the certified seam) instead of the
   triangle path's `free_edges > 0`; the triangle path is **kept** as the mesh export (`spec §10` body vs
@@ -1093,7 +1100,10 @@ declined** this slice. Also: Strategy-A full rational *patch* emission (cone / v
 the geometry-derived `SewInput`; the STEP-reloaded round-trip audit variant; petal atlas / multi-joint;
 the petal cone-flank joint (blocked spec §13); `VALID_material` / FRESH / `develop` (→ M-E).
 
-**Status: D3.0 — criteria authored.** Implementation phases D3.1–D3.4 to follow on `milestone-d`.
+**Status: D3.0–D3.3 met** on `milestone-d`. D3.1 (exact-curve primitive + B-rep IR), D3.2 (MITER
+exact ruled flanks sharing the Π-cut seam + the surface FFI), and D3.3 (LEDGE exact body = the
+certified flanks, exact cap deferred to the `V_∂` real-cut slice) are implemented and gate-green. D3.4
+(differential-harness flip + route the STEP body through `brep` + final doc merge-gate) to follow.
 
 ---
 
