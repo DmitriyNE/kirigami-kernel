@@ -1209,9 +1209,24 @@ slab geometry lives only in `export`, consuming charts read-only.
 `Brep::to_shell_certificate`) is documented usage-first with `-D missing_docs`, and each phase's
 status is set as it lands.
 
-**Status: D4.0 met** (this section + the `vv-matrix.md` closed-shell row + the engineering-log
-disposition authored); D4.1–D4.6 **todo**, executed per-phase on `milestone-d-atlas` with a pause
-after each.
+**Status: D4.0 + D4.1 met** on `milestone-d-atlas`. D4.0 authored this section + the `vv-matrix.md`
+closed-shell row + the engineering-log disposition. **D4.1 delivers the first certified closed
+solid:** `certify_core::shell::closed_shell` (the closed-oriented-2-manifold checker: shape → wires →
+∂²=0 oriented edge census → vertex-link single-cycle) is Kani-proven (`closed_shell_sound` over the
+tetrahedron's 2¹² orientations, `closed_shell_never_accepts_a_vertex_pinch`); the additive
+`valid_closed_solid` gate conjoins it with the joint's `CLOSURE_VALID`; `export::brep_slab_from_closure`
+emits the single flank as an exact closed slab (2 `Plane` σ-caps, 2 `LinearExtrusion` w-sheets, 2
+`RationalPatch` μ-walls — the walls ruled along the rotating normal, emitted as rational
+`Geom_BezierSurface` patches via the new `patches` FFI buffer), and `Brep::to_shell_certificate`
+bridges its combinatorics to the checker. The e2e
+`export::differential::the_flank_slab_is_a_certified_closed_solid` shows the slab is
+`Verified(ClosedSolid)` internally **and** the OCCT oracle corroborates (`brepcheck_valid`,
+`free_edges == 0`, `nonmanifold_edges == 0`). Two engineering notes recorded (see engineering-log): the
+`Vec3Rat` degree must be **reduced** before the Bézier cast (`chart.surface`'s denominator-multiplying
+adds inflate a μ-wall to degree ~18 → ±∞ poles → OCCT crash; reduced ~4), and the patch is a
+`Geom_BezierSurface` (single-span, no knots) because `Geom_BSplineSurface` segfaulted. **Scope honestly
+recorded:** this is the *single-flank* closed solid; the two-flank watertight union (the `w=0`-only
+crease obstruction) is D4.2. D4.2–D4.6 **todo**, executed per-phase with a pause after each.
 
 ---
 
