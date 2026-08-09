@@ -1444,6 +1444,90 @@ ANCHOR tier (**DEV / M-E**).
 
 ---
 
+### Milestone E (DEV) acceptance criteria (certified development — the flat↔3D layer; **spike-first, GO-gated**)
+
+*Authored before implementation.* DEV is the certified **flat↔3D development** map — the layer that
+unrolls a 3D developable to its flat pattern and folds a flat pattern back to 3D. Per
+`docs/implementation-plan-v1.md §6` it is **half the product**, not a fidelity rider: product direction
+① (develop 3D→flat — generate the flat PCB outline) *unrolls* with it, and ② (fold flat ECAD→3D) *folds*
+with it. Today it exists only as a **float diagnostic** (`export::mesh3d::develop_cone`, the flat↔rolled
+Three.js morph); the product needs it **certified** — an exact rational error enclosure with a fab-grade
+backward-error bound. This is a genuinely new tier (rigorous transcendental enclosure), so — like the M0
+extraction spike (§7) — **it opens with a scoped spike that GO/no-go's the whole tier before we commit.**
+
+**Why "exactness" is a representation property, not a shape property (the honest frame).** The kernel is
+*exact arithmetic over rational inputs, where transcendental inputs are rational approximations whose
+error DEV certifies.* The "42° cone" is already the rational quaternion `q=(9,4,4σ,9σ)` (`n·ẑ≡65/97`, an
+approximation); the μ-boundaries are hand-picked; everything downstream is exact. The transcendental
+surface the product actually needs — the **angular closure / full 2π wrap** (a finite rational σ sweeps a
+*bounded* azimuth `< 2π`, so a single rational chart is a **gore**, never a closed cone), the **seam**
+(the overlap at that closure), general placements at arbitrary angles, and flat-authored ECAD outlines —
+all live in the *approximated-input* regime. DEV is the machinery that turns those approximations into
+**certified** ones (a bounded backward error), and owns the closure/seam a rational chart cannot name.
+
+**The transcendental core, isolated (why the cone is the right spike target).** The development map is
+`D = γ + μ̂·ρ·e(ψ)`, `e(ψ)=(cos ψ, sin ψ)` (spec §3.2 / `spec:372`). For a **cone** (`h≡0` ⇒ pedal
+`c≡0`, apex→flat origin) it collapses to a **polar map** `D = μ̂·ρ·e(ψ)`:
+- **radius** `ρ = |n′| = √(normal_deriv_sq)` — a **surd** (√ of a rational), *already* representable by
+  `lattice::Surd` (`a+b√d`); no new arithmetic;
+- **angle** `ψ(σ) = ∫₀^σ ψ′` where `ψ′ = chart.psi_prime = det(n,n′,n″)/|n′|²` is a **rational function**
+  of σ — so `ψ` is an **arctan/log of rationals** (the integral of a rational is elementary). **This is
+  the sole genuinely-new transcendental**, and it is the arctan-class angular coordinate — nothing worse.
+
+So DEV is *not* "certify arbitrary transcendentals": it is "certify `∫(rational)` = an arctan/log, with a
+rational error bound," radius already handled. `export::mesh3d::develop_cone` (radius = apex distance,
+angle = accumulated `acos` of successive unit rulings) is the **float ground-truth** the certified
+enclosure is checked against.
+
+- **DEV.0 — this GO-gate (docs).** This section + the engineering-log DEV thread. No code. Green via
+  `xtask lint`.
+- **DEV.1 — the spike (GO / no-go) — met when:** a certified enclosure of the cone's development is
+  produced and validated:
+  1. a **certified rational enclosure** `ψ(σ) ∈ [ψ_lo, ψ_hi]` of `ψ(σ)=∫₀^σ chart.psi_prime` with
+     rational endpoints and a rational width bound `ε_ψ` (the spike **selects the enclosure method** among:
+     (a) closed-form arctan/log with certified rational bounds on those functions — attractive since the
+     integrand is rational; (b) verified interval integration; (c) Taylor models — and records the choice
+     + why, mold of the §7 spike report);
+  2. combined with the exact surd radius `ρ·μ̂`, a **certified flat point** for a cone-gore sample that
+     encloses `mesh3d::develop_cone`'s float value (agreement within `ε`), across the gore — the
+     oracle∧audit check (float diagnostic *corroborates* the certified enclosure, never defines it);
+  3. the **backward-error scaffold**: `sup|D(â)−g| ≤ ε` stated as a checker over the enclosure, and the
+     **DRC** `ε < clearance/2` (`spec:402`) as its gate — verdict-typed (`Verified(ε)` /
+     `Unresolved(width)`), never a float compared with a float;
+  4. the **seam / closure** identified as the acceptance case: the spike states precisely how the
+     bounded-azimuth gore relates to the 2π closure and where the seam's certified angular position lives
+     (even if closing the full cone is a post-GO deliverable), so the "cone with a seam" is scoped, not
+     hand-waved.
+  **GO** = a converging, verdict-typed enclosure with a fab-plausible `ε_ψ` on the device cone. **No-go**
+  = the enclosure doesn't converge / the method is intractable → record the wall and the alternative
+  (the honest §7-spike outcome), *before* the tier is built.
+- **DEV.2+ — the tier (post-GO, sketched, not authored here):** a `develop` crate carrying **unroll**
+  `(σ,μ)→flat` (①) and **fold** `flat→(σ,μ)` (②); general charts (`γ = ∫e(ψ)` the nested directrix
+  integral — harder than the cone's `γ≡0`); the **angular closure + seam** (multi-gore / limit, the 2π
+  wrap); the ANCHOR backward-error certificate + DRC wired into `certify_core`; and the two product
+  pipelines end-to-end (intersect→outline→unroll; ECAD→fold→solid). Each its own slice with its own
+  criteria, authored when DEV.1 GOes.
+
+**Doctrine.** No float in a certificate: the enclosure's endpoints and `ε` are **rationals** (interval
+arithmetic over ℚ), the float `develop_cone` only corroborates. Exact-over-rational-inputs: DEV certifies
+the *approximation* error of transcendental inputs (angles, wraps, placements), it does not pretend they
+are algebraic. Oracle ∧ audit: the diagnostic development is the oracle, the enclosure is the audit.
+
+**Generality (hard gate).** DEV.1 is **additive** — a new spike crate/module (or a `develop`-crate spike)
++ its enclosure primitive; it does not touch `certify-core`'s existing checkers, `arrange2d`, `closure`,
+or the exact `export` path. The transcendental enclosure lives behind its own boundary; the pure exact
+tier stays float-free and untouched.
+
+**Documentation (a merge gate).** The spike ships a short **report** (like `docs/spike-*-report.md`) —
+the method chosen, the certified `ε_ψ` on the device cone, the float-corroboration numbers, and the GO /
+no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
+
+**Status: DEV.0 met** (this section authored + the engineering-log DEV thread). **DEV.1 (the spike) is the
+next GO-gate** — the immediate actionable when DEV is picked up; DEV.2+ is post-GO. The exact 3D substrate
+(charts, intersections, watertight solids, STEP) that DEV sits on is delivered through M-D.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.
