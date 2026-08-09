@@ -321,6 +321,23 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Mesh LEDGE cap fanned unordered `face.outer` edges → degenerate cap, hidden by a false-green.**
+  `shell::cap_tris` fanned `edge_start` of each `CapOut::region().faces[].outer` edge, assuming the
+  boundary arrived loop-ordered head-to-tail. The arrangement (`arrange2d`) stores those edges
+  **unordered** and with mixed orientation: the D24 cap square arrives as four segments whose starts
+  are (2,0), (0,2), (0,0), (0,0). Fanning the starts alone dropped the (2,2) corner and doubled (0,0),
+  so the cap covered only its lower-left half-triangle plus one zero-area triangle — which OCCT's
+  BRepCheck rejects (`brepcheck_valid=false`). Fixed by `shell::ordered_ring`, which walks the edges
+  through their shared endpoints (matching either orientation) into the true corner loop before
+  `cap_tris` fans it. The bug was **latent, not a D3.2b regression** (the same degenerate triangle
+  reproduces on the pre-flip fixture). *Process finding:* it went uncaught because the `--features
+  step` leg — `occt_audits_the_one_joint_shell`, `one_joint_ledge_writes_a_reloadable_step_shell`,
+  `differential::ledge_oracle`, all of which assert `brepcheck_valid` — was **never run with a real
+  exit code** when M-D.2 and D3.2a were called green (a "step 28/28"-style claim that had not actually
+  executed). Carried forward as a standing-gate requirement for all remaining D3.x phases: the
+  `--features step` nextest leg must be in every green check with `${PIPESTATUS[0]}` verified.
+  *2026-08-09 · resolved · `crates/export/src/shell.rs` (`ordered_ring`; commit `8ee76a4`)*
+
 - **OCCT STEP-export shim de-risk (thin-M6 GO/NO-GO) — GO.** The `export` crate's off-by-default
   `step` feature builds a `cxx` shim to OpenCASCADE's `STEPControl_Writer`; the M6.0 smoke writes a
   unit box, reads it back, and `BRepCheck`s the reload — green under `nix develop` (OCCT 7.9.3, 350
