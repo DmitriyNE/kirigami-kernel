@@ -34,7 +34,7 @@
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use lattice::{Backend, Bignum, Interval, Poly, Rat, SturmChain};
+use lattice::{AlgReal, Backend, Bignum, Biv, Interval, Poly, Rat, RatFunc, SturmChain};
 
 use crate::certify1d::{EdgeReg, EdgeRegCert, edge_reg};
 use crate::margin::MarginSq;
@@ -636,6 +636,349 @@ pub fn degree1_edge_reg_cert<B: Backend>(
     }
 }
 
+// ============================================================================
+// Transverse-rational MITER-FIT — the curved `φ_J` correspondence (spec §5.3)
+// ============================================================================
+//
+// The conic / cone-flank pass the degree-1 [`miter_fit`] defers (module header): where
+// CLIP-W holds each cut face is ruled in Π, `F_i(σ,μ) = P_i(σ) + μ·D_i(σ)`, and the two
+// rulings meet the crease line `L` at a **genuinely rational** `ℓ_i(σ)`. Two rulings
+// *correspond* when `ℓ_A(σ_A) = ℓ_B(σ_B)`; the correspondence `φ_J` is implicit as the
+// bivariate `R(σ_A,σ_B) = 0`. On `{R=0}` position identity is free (paired rulings share
+// their L-point), so the clean-miter conditions are the **carrier identity** `D_A ∥ D_B`
+// and the **extent identities** `E_{A,±} = E_{B,π(±)}`, each vanishing on `{R=0}` — certified
+// by an **exact cofactor** `X == R·Q` (`X = R·Q ⇒ X ≡ 0 on {R=0}`, an exact implication;
+// the resultant⇔common-root theorem is the trusted foundation, cited/Lean, out of Kani per
+// vv-guide §5). Watertightness does not hinge on this (a non-coincident cut is a valid
+// exposed LEDGE, spec §5.3) — it is the disjoint clean-miter alternative to the LEDGE branch.
+
+/// Mint the order sign `ε_φ` of a transverse correspondence from the two flanks'
+/// crease-line-coordinate **slope signs** `sa = sign(ℓ_A′)`, `sb = sign(ℓ_B′)` on their
+/// supports. `φ_J` tracks `σ_B` so that `ℓ_B(σ_B) = ℓ_A(σ_A)`, so it preserves order iff
+/// `ℓ_A` and `ℓ_B` run the **same** direction. `None` if either slope is zero (a
+/// non-monotone `ℓ_i` — the parallel regime, routed to LEDGE). Backend-free and `const` so
+/// the ★ soundness property runs on `i128` under Kani (`eps_from_slopes_is_slope_agreement`),
+/// the transverse analogue of [`eps_from_cmp`].
+pub const fn eps_from_slopes(sa: i8, sb: i8) -> Option<OrderSign> {
+    if sa == 0 || sb == 0 {
+        None
+    } else if (sa > 0) == (sb > 0) {
+        Some(OrderSign::Preserving)
+    } else {
+        Some(OrderSign::Reversing)
+    }
+}
+
+/// The **relevant-branch refinement** of the correspondence (spec §5.3, the per-CLIP-DOM-cell
+/// identities). When `ℓ_i` is degree ≥ 2 (a cone — rotating rulings), the full correspondence
+/// `R` **factors** into the real branch (the monotone `φ_J` over the support) and spurious
+/// branches (a shared crease-line point reached by *different* rulings). The searcher supplies
+/// the real branch `r_phi` and a cofactor `r_cofactor` witnessing `R = r_phi · r_cofactor`; the
+/// checker then discharges the carrier/extent identities on `{r_phi = 0}` instead of the full
+/// `{R = 0}`. The cylinder (affine `ℓ`, `R` irreducible) needs no branch — pass `None`.
+#[derive(Clone, Debug)]
+pub struct TransverseBranch<B: Backend = Bignum> {
+    /// The relevant correspondence branch `R_φ` (single-valued over the support: degree 1 in σ_B).
+    pub r_phi: Biv<B>,
+    /// The cofactor `C` witnessing `R = R_φ · C` (verified by exact multiplication, not division).
+    pub r_cofactor: Biv<B>,
+}
+
+/// A transverse-rational MITER-FIT certificate (spec §5.3): the two flanks' cut rulings in
+/// Π with genuinely-rational crease-line coordinates `ℓ_i(σ)`, their ruling directions
+/// `D_i(σ)` (cleared to polynomial components, since parallelism is scale-invariant), the
+/// cut-segment extent endpoints `E_{i,±}(σ)` (a coordinate along the shared line), the
+/// endpoint permutation `π`, the supports, and the searcher-supplied **cofactors** the
+/// checker multiplies against the correspondence (its relevant branch, if it factors) to
+/// discharge the identities.
+pub struct TransverseMiterFitCert<B: Backend = Bignum> {
+    /// Flank A's crease-line coordinate `ℓ_A(σ_A)`.
+    pub ell_a: RatFunc<B>,
+    /// Flank B's crease-line coordinate `ℓ_B(σ_B)`.
+    pub ell_b: RatFunc<B>,
+    /// Flank A's cut-ruling direction `D_A(σ_A)` in Π `(dx, dy)`, cleared to polynomials.
+    pub dir_a: [Poly<B>; 2],
+    /// Flank B's cut-ruling direction `D_B(σ_B)`.
+    pub dir_b: [Poly<B>; 2],
+    /// Flank A's cut-segment extent endpoints `E_{A,−}, E_{A,+}` along the shared line.
+    pub ext_a: [RatFunc<B>; 2],
+    /// Flank B's extent endpoints `E_{B,−}, E_{B,+}`.
+    pub ext_b: [RatFunc<B>; 2],
+    /// The endpoint permutation `π`: `false` ⇒ `(−↔−, +↔+)`, `true` ⇒ `(−↔+, +↔−)`.
+    pub perm: bool,
+    /// Flank A's σ-support.
+    pub sigma_a: Interval<B>,
+    /// Flank B's σ-support.
+    pub sigma_b: Interval<B>,
+    /// The carrier cofactor `Q_c`: the checker requires `X_carrier == R·Q_c`.
+    pub carrier_cofactor: Biv<B>,
+    /// The two extent cofactors, in `(−, +)` order (matched to B by `perm`).
+    pub extent_cofactors: [Biv<B>; 2],
+    /// The searcher's claimed order sign `ε_φ`.
+    pub claimed: OrderSign,
+    /// The relevant-branch refinement when the correspondence factors (a cone); `None` uses
+    /// the full `R` (the cylinder / irreducible case).
+    pub branch: Option<TransverseBranch<B>>,
+}
+
+/// The evidence a [`miter_fit_transverse`] `Verified` carries: the geometry-minted order
+/// sign `ε_φ` and the endpoint permutation `π` the extents were matched under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransverseMiterFit {
+    /// The order sign of `φ_J`, minted from the two `ℓ_i` slope signs.
+    pub eps_phi: OrderSign,
+    /// The endpoint permutation the extent identities were discharged under.
+    pub perm: bool,
+}
+
+/// Why transverse MITER-FIT refused — the miter is not a clean coincident cut, so the
+/// closure falls back to LEDGE (or the input is malformed). Located by flank / endpoint
+/// index only (the offending geometry is in the [`TransverseMiterFitCert`] the caller holds),
+/// so this carries no backend-typed payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransverseMiterFault {
+    /// A cut edge has an empty or reversed support (`σ_lo ≥ σ_hi`).
+    EmptySupport {
+        /// `false` for flank A, `true` for flank B.
+        flank_b: bool,
+    },
+    /// `ℓ_i(σ) = e_i(σ)·m̂` is not strictly monotone on the support (its derivative has a
+    /// zero or a sign change there) — a constant `ℓ_i` is the *parallel regime* (cut lines
+    /// `∥ L`), out of the transverse slice; routed to LEDGE (spec §5.3).
+    NonMonotone {
+        /// `false` for flank A, `true` for flank B.
+        flank_b: bool,
+    },
+    /// `ℓ_A` and `ℓ_B` are the same function of independent variables (`R ≡ 0`) — there is
+    /// no transverse pairing to condition identities on.
+    DegenerateCorrespondence,
+    /// The supplied branch is not a factor of the correspondence: `R_φ · C ≠ R`.
+    BranchNotAFactor,
+    /// The supplied branch is not single-valued over the support (not degree 1 in σ_B), so it
+    /// is not a `φ_J` graph.
+    BranchNotSingleValued,
+    /// The supplied branch does not connect the σ-supports at the `ε_φ`-paired corners — it is
+    /// a spurious branch, not the fold's `φ_J`.
+    BranchMissesSupport,
+    /// The carrier identity fails: `D_A × D_B` does not vanish on `{R=0}` (the supplied
+    /// cofactor does not reproduce it) — the two rulings are not the same line, so no clean
+    /// miter (curvature-order disagreement; planar-vs-cylindrical lands here).
+    CarrierMismatch,
+    /// An extent identity fails: `E_{A,±} = E_{B,π(±)}` does not hold on `{R=0}` — the
+    /// segments differ though the carriers coincide (discrete event agreement is not segment
+    /// coincidence, spec §5.3). Reports the endpoint index (`0 = −`, `1 = +`).
+    ExtentMismatch {
+        /// The offending extent endpoint index.
+        at: usize,
+    },
+    /// The geometry-minted `ε_φ` disagrees with the searcher's claimed order sign.
+    OrderMismatch {
+        /// The order sign the geometry witnesses.
+        minted: OrderSign,
+    },
+}
+
+/// The numerator of `a(σ_A) − b(σ_B)` as a [`Biv`] over `(σ_A, σ_B) = (x, y)`:
+/// `num_a(x)·den_b(y) − num_b(y)·den_a(x)`. It is zero exactly where `a(σ_A) = b(σ_B)`
+/// (denominators nonzero) — the correspondence `R` when `a, b = ℓ_A, ℓ_B`, and the
+/// per-endpoint extent residual otherwise.
+fn cross_ratfunc<B: Backend>(a: &RatFunc<B>, b: &RatFunc<B>) -> Biv<B> {
+    Biv::from_x_poly(a.num())
+        .mul(&Biv::from_y_poly(b.den()))
+        .sub(&Biv::from_y_poly(b.num()).mul(&Biv::from_x_poly(a.den())))
+}
+
+/// The numerator of `ℓ′ = (num′·den − num·den′)/den²` — its sign is `ℓ`'s slope sign
+/// (`den² > 0`), zero exactly where `ℓ` is stationary.
+fn slope_num<B: Backend>(ell: &RatFunc<B>) -> Poly<B> {
+    ell.num()
+        .derivative()
+        .mul(ell.den())
+        .sub(&ell.num().mul(&ell.den().derivative()))
+}
+
+/// The constant slope sign of `ell` on `[lo, hi]` if it is **strictly monotone** there:
+/// `ℓ′`'s numerator has no root in `(lo, hi]` (Sturm) and is nonzero at `lo`, so its sign
+/// is constant across the closed support. `None` if `ell` stalls (a stationary point or a
+/// sign change) — the non-transverse / parallel regime.
+fn monotone_slope_sign<B: Backend>(ell: &RatFunc<B>, lo: &Rat<B>, hi: &Rat<B>) -> Option<i8> {
+    let n = slope_num(ell);
+    let s_lo = n.eval(lo).sign();
+    if s_lo == 0 {
+        return None; // `lo` is stationary (or `ℓ′ ≡ 0`)
+    }
+    if SturmChain::new(&n).count_in(lo, hi) != 0 {
+        return None; // a stationary point in `(lo, hi]` — not strictly monotone
+    }
+    Some(s_lo)
+}
+
+/// The constant slope sign of `ell` on `[lo, α]` — `lo` rational, `α` an **algebraic** upper
+/// bound with `lo < α` — if `ell` is strictly monotone there: its slope numerator is nonzero
+/// at `lo` and has no root in `(lo, α]` (counted exactly via [`AlgReal::count_roots_upto`]).
+/// `None` if `ell` stalls. The algebraic-support analogue of [`monotone_slope_sign`] — the
+/// transverse miter's monotonicity certificate for a **cone** flank whose cut-face σ-range
+/// ends at an algebraic event (e.g. the cut-exit σ where the cut curve leaves a rational box
+/// face). This is the first downstream use of `lattice::AlgReal`; the transverse identities
+/// themselves are support-independent, so only the monotonicity domain reaches for it.
+///
+/// ```
+/// use certify_core::miter::strictly_monotone_upto_alg;
+/// use lattice::{AlgReal, Bignum, Poly, Rat, RatFunc};
+/// use core::cmp::Ordering;
+///
+/// let p = |cs: &[i128]| Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+/// // α = √2, the positive root of x² − 2.
+/// let sqrt2 = AlgReal::isolate_roots(&p(&[-2, 0, 1]))
+///     .into_iter()
+///     .find(|r| r.cmp_rat(&Rat::from_i128(0)) == Ordering::Greater)
+///     .expect("√2");
+/// // ℓ = σ² is strictly increasing on [1, √2] (slope 2σ > 0 there).
+/// let ell = RatFunc::<Bignum>::new(p(&[0, 0, 1]), p(&[1]));
+/// assert_eq!(strictly_monotone_upto_alg(&ell, &Rat::from_i128(1), &sqrt2), Some(1));
+/// // but it stalls at σ = 0, so it is not strictly monotone on [0, √2].
+/// assert_eq!(strictly_monotone_upto_alg(&ell, &Rat::from_i128(0), &sqrt2), None);
+/// ```
+pub fn strictly_monotone_upto_alg<B: Backend>(
+    ell: &RatFunc<B>,
+    lo: &Rat<B>,
+    hi: &AlgReal<B>,
+) -> Option<i8> {
+    let n = slope_num(ell);
+    let s_lo = n.eval(lo).sign();
+    if s_lo == 0 {
+        return None; // `lo` is stationary (or ℓ′ ≡ 0)
+    }
+    if hi.count_roots_upto(&n, lo) != 0 {
+        return None; // a stationary point in `(lo, α]` — not strictly monotone
+    }
+    Some(s_lo)
+}
+
+/// Transverse-rational MITER-FIT (spec §5.3): certify that two flanks' rationally-ruled cut
+/// faces **coincide** in Π along the correspondence `φ_J`, and mint the order sign `ε_φ`.
+///
+/// The checks, short-circuiting to the first fault:
+/// 1. **finite supports** — `σ_lo < σ_hi` on both flanks.
+/// 2. **`ℓ_i` monotone** — each crease-line coordinate is strictly monotone on its support
+///    (Sturm on `ℓ_i′`'s numerator); a constant `ℓ_i` is the parallel regime → LEDGE.
+/// 3. **correspondence** — form `R(σ_A,σ_B)` from `ℓ_A = ℓ_B` (the checker builds it, never
+///    trusting a supplied `R`); `R ≡ 0` is [`DegenerateCorrespondence`](TransverseMiterFault::DegenerateCorrespondence).
+/// 4. **carrier identity** — `X_carrier = (D_A × D_B)` vanishes on `{R=0}`, verified as the
+///    exact bivariate equality `X_carrier == R · Q_carrier`.
+/// 5. **extent identities** — for each endpoint, `E_{A,±} = E_{B,π(±)}` on `{R=0}`, the same
+///    `X == R·Q` cofactor pattern.
+/// 6. **`ε_φ`** — minted from the two slope signs ([`eps_from_slopes`]); the searcher's
+///    [`claimed`](TransverseMiterFitCert::claimed) sign must match.
+///
+/// Total: `Verified(`[`TransverseMiterFit`]`)` or `Refuted(`[`TransverseMiterFault`]`)`.
+/// Wires `lattice`'s [`Biv`] cofactor algebra (the first downstream use of the bivariate
+/// resultant machinery). **No floating point, no OCCT** — the certificate is an exact
+/// polynomial identity.
+///
+/// ```
+/// use certify_core::miter::{miter_fit_transverse, OrderSign, TransverseMiterFault};
+/// use certify_core::Verdict;
+/// use lattice::{Bignum, Biv, Interval, Poly, Rat, RatFunc};
+///
+/// let p = |cs: &[i128]| Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+/// let rf = |n: &[i128], d: &[i128]| RatFunc::<Bignum>::new(p(n), p(d));
+/// let iv = |lo: i128, hi: i128| Interval { lo: Rat::from_i128(lo), hi: Rat::from_i128(hi) };
+/// // Two flanks whose rulings rotate the *opposite* way at curvature order fail carrier
+/// // identity: D_A = (1, σ), D_B = (1, 2σ) over the correspondence σ_A = σ_B (ℓ_i = σ).
+/// let cert = certify_core::miter::TransverseMiterFitCert {
+///     ell_a: rf(&[0, 1], &[1]), ell_b: rf(&[0, 1], &[1]),
+///     dir_a: [p(&[1]), p(&[0, 1])], dir_b: [p(&[1]), p(&[0, 2])],
+///     ext_a: [rf(&[0, 1], &[1]), rf(&[0, 1], &[1])],
+///     ext_b: [rf(&[0, 1], &[1]), rf(&[0, 1], &[1])],
+///     perm: false, sigma_a: iv(0, 1), sigma_b: iv(0, 1),
+///     carrier_cofactor: Biv::zero(), extent_cofactors: [Biv::zero(), Biv::zero()],
+///     claimed: OrderSign::Preserving, branch: None,
+/// };
+/// assert!(matches!(miter_fit_transverse(&cert), Verdict::Refuted(TransverseMiterFault::CarrierMismatch)));
+/// ```
+pub fn miter_fit_transverse<B: Backend>(
+    cert: &TransverseMiterFitCert<B>,
+) -> Verdict<TransverseMiterFit, TransverseMiterFault, ()> {
+    // (1) finite supports.
+    if cert.sigma_a.lo.cmp(&cert.sigma_a.hi) != Ordering::Less {
+        return Verdict::Refuted(TransverseMiterFault::EmptySupport { flank_b: false });
+    }
+    if cert.sigma_b.lo.cmp(&cert.sigma_b.hi) != Ordering::Less {
+        return Verdict::Refuted(TransverseMiterFault::EmptySupport { flank_b: true });
+    }
+    // (2) ℓ_i strictly monotone (transverse regime; a constant ℓ_i routes to LEDGE).
+    let sa = match monotone_slope_sign(&cert.ell_a, &cert.sigma_a.lo, &cert.sigma_a.hi) {
+        Some(s) => s,
+        None => return Verdict::Refuted(TransverseMiterFault::NonMonotone { flank_b: false }),
+    };
+    let sb = match monotone_slope_sign(&cert.ell_b, &cert.sigma_b.lo, &cert.sigma_b.hi) {
+        Some(s) => s,
+        None => return Verdict::Refuted(TransverseMiterFault::NonMonotone { flank_b: true }),
+    };
+    // (3) the correspondence R = 0 from ℓ_A = ℓ_B (formed here, not trusted from the caller).
+    let r = cross_ratfunc(&cert.ell_a, &cert.ell_b);
+    if r.is_zero() {
+        return Verdict::Refuted(TransverseMiterFault::DegenerateCorrespondence);
+    }
+    // (3.5) relevant branch: for a cone `R` factors, and the identities hold only on the real
+    // branch `R_φ` (the monotone φ_J), not the spurious branches. Verify the searcher's `R_φ`
+    // is a genuine factor (`R_φ·C == R`, by multiplication — the checker never divides), is
+    // single-valued over the support (degree 1 in σ_B), and connects the supports at the
+    // `ε_φ`-paired corners (which rejects the spurious branch); then discharge on `{R_φ = 0}`.
+    let r_eff = match &cert.branch {
+        None => r.clone(),
+        Some(br) => {
+            if br.r_phi.mul(&br.r_cofactor) != r {
+                return Verdict::Refuted(TransverseMiterFault::BranchNotAFactor);
+            }
+            if br.r_phi.rows().iter().filter_map(|p| p.degree()).max() != Some(1) {
+                return Verdict::Refuted(TransverseMiterFault::BranchNotSingleValued);
+            }
+            let (b_lo, b_hi) = match cert.claimed {
+                OrderSign::Preserving => (&cert.sigma_b.lo, &cert.sigma_b.hi),
+                OrderSign::Reversing => (&cert.sigma_b.hi, &cert.sigma_b.lo),
+            };
+            if !br.r_phi.eval(&cert.sigma_a.lo, b_lo).is_zero()
+                || !br.r_phi.eval(&cert.sigma_a.hi, b_hi).is_zero()
+            {
+                return Verdict::Refuted(TransverseMiterFault::BranchMissesSupport);
+            }
+            br.r_phi.clone()
+        }
+    };
+    // (4) carrier identity: X_carrier = D_A × D_B == R_eff · Q_carrier.
+    let x_carrier = Biv::from_x_poly(&cert.dir_a[0])
+        .mul(&Biv::from_y_poly(&cert.dir_b[1]))
+        .sub(&Biv::from_x_poly(&cert.dir_a[1]).mul(&Biv::from_y_poly(&cert.dir_b[0])));
+    if x_carrier != r_eff.mul(&cert.carrier_cofactor) {
+        return Verdict::Refuted(TransverseMiterFault::CarrierMismatch);
+    }
+    // (5) extent identities: E_{A,±}(σ_A) = E_{B,π(±)}(σ_B) on {R_eff = 0}.
+    let mut k = 0;
+    while k < 2 {
+        let pk = if cert.perm { 1 - k } else { k };
+        let x_ext = cross_ratfunc(&cert.ext_a[k], &cert.ext_b[pk]);
+        if x_ext != r_eff.mul(&cert.extent_cofactors[k]) {
+            return Verdict::Refuted(TransverseMiterFault::ExtentMismatch { at: k });
+        }
+        k += 1;
+    }
+    // (6) ε_φ from the two slope signs; the searcher's claim must match.
+    let minted = match eps_from_slopes(sa, sb) {
+        Some(s) => s,
+        // Unreachable — sa, sb are nonzero (checked at (2)) — but reported, not panicked.
+        None => return Verdict::Refuted(TransverseMiterFault::NonMonotone { flank_b: false }),
+    };
+    if minted != cert.claimed {
+        return Verdict::Refuted(TransverseMiterFault::OrderMismatch { minted });
+    }
+    Verdict::Verified(TransverseMiterFit {
+        eps_phi: minted,
+        perm: cert.perm,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +1201,292 @@ mod tests {
         assert!(matches!(
             miter_out(&MiterOutCert { ledger, edge_regs }),
             Verdict::Refuted(MiterOutFault::EdgeReg { .. })
+        ));
+    }
+
+    // ---- transverse-rational MITER-FIT ------------------------------------
+
+    fn pol(cs: &[i128]) -> Poly<Bignum> {
+        Poly::from_coeffs(cs.iter().map(|&c| Q::from_i128(c)).collect())
+    }
+    fn rf(num: &[i128], den: &[i128]) -> RatFunc<Bignum> {
+        RatFunc::new(pol(num), pol(den))
+    }
+    fn iv(lo: i128, hi: i128) -> Interval<Bignum> {
+        Interval {
+            lo: Q::from_i128(lo),
+            hi: Q::from_i128(hi),
+        }
+    }
+    /// A constant `Biv` cofactor `n/d`.
+    fn bconst(n: i128, d: i128) -> Biv<Bignum> {
+        Biv::from_x_poly(&Poly::constant(Q::new(n, d)))
+    }
+
+    /// A reflection-symmetric pair of **genuinely rational** flanks certifies as a clean
+    /// transverse miter: `ℓ_i = 2σ/(1+σ)` (rational, monotone) ⇒ `R = 2(σ_A − σ_B)`; the
+    /// carrier `D_i = (1, σ)` and the extents coincide on the correspondence via exact
+    /// cofactors. This is the case the degree-1 `miter_fit` cannot represent (its `CutEnds`
+    /// are affine), so it exercises the new resultant-conditioned path.
+    #[test]
+    fn a_symmetric_rational_pair_is_a_clean_transverse_miter() {
+        let ell = || rf(&[0, 2], &[1, 1]); // 2σ/(1+σ)
+        let cert = TransverseMiterFitCert {
+            ell_a: ell(),
+            ell_b: ell(),
+            dir_a: [pol(&[1]), pol(&[0, 1])], // (1, σ)
+            dir_b: [pol(&[1]), pol(&[0, 1])],
+            ext_a: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])], // σ, σ+1
+            ext_b: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            perm: false,
+            sigma_a: iv(0, 1),
+            sigma_b: iv(0, 1),
+            // R = 2(x−y); X_carrier = y−x = R·(−1/2); X_ext = x−y = R·(1/2).
+            carrier_cofactor: bconst(-1, 2),
+            extent_cofactors: [bconst(1, 2), bconst(1, 2)],
+            claimed: OrderSign::Preserving,
+            branch: None,
+        };
+        match miter_fit_transverse(&cert) {
+            Verdict::Verified(fit) => {
+                assert_eq!(fit.eps_phi, OrderSign::Preserving);
+                assert!(!fit.perm);
+            }
+            other => panic!("the symmetric rational miter must fit: {other:?}"),
+        }
+    }
+
+    /// Two flanks whose rulings rotate at different curvature order fail the carrier
+    /// identity: `D_A = (1, σ)` vs `D_B = (1, 2σ)` agree to first order but not on `{R=0}`
+    /// (`X_carrier = 2y − x`, nonzero at `x = y ≠ 0`), so no cofactor reproduces it —
+    /// planar-vs-cylindrical routes to LEDGE.
+    #[test]
+    fn a_curvature_order_mismatch_fails_the_carrier_identity() {
+        let cert = TransverseMiterFitCert {
+            ell_a: rf(&[0, 1], &[1]),
+            ell_b: rf(&[0, 1], &[1]),
+            dir_a: [pol(&[1]), pol(&[0, 1])], // (1, σ)
+            dir_b: [pol(&[1]), pol(&[0, 2])], // (1, 2σ)
+            ext_a: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            ext_b: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            perm: false,
+            sigma_a: iv(0, 1),
+            sigma_b: iv(0, 1),
+            carrier_cofactor: Biv::zero(), // no cofactor can work
+            extent_cofactors: [bconst(1, 1), bconst(1, 1)],
+            claimed: OrderSign::Preserving,
+            branch: None,
+        };
+        assert!(matches!(
+            miter_fit_transverse(&cert),
+            Verdict::Refuted(TransverseMiterFault::CarrierMismatch)
+        ));
+    }
+
+    /// The spec's stored extent counterexample: identical carriers and matching endpoint
+    /// **events** do not prove segment coincidence. `E_{A,+} = 1` vs `E_{B,+} = 1 + σ(1−σ)`
+    /// agree only at `σ ∈ {0, 1}` (the events), not on all of `{R=0}` — so the extent
+    /// residual `y² − y` is not divisible by `R = x − y` and MITER-FIT refuses.
+    #[test]
+    fn matching_events_do_not_prove_segment_coincidence() {
+        let cert = TransverseMiterFitCert {
+            ell_a: rf(&[0, 1], &[1]),
+            ell_b: rf(&[0, 1], &[1]),
+            dir_a: [pol(&[1]), pol(&[0])], // (1, 0) — constant parallel carrier
+            dir_b: [pol(&[1]), pol(&[0])],
+            ext_a: [rf(&[0, 1], &[1]), rf(&[1], &[1])], // σ, 1
+            ext_b: [rf(&[0, 1], &[1]), rf(&[1, 1, -1], &[1])], // σ, 1 + σ − σ²
+            perm: false,
+            sigma_a: iv(0, 1),
+            sigma_b: iv(0, 1),
+            carrier_cofactor: Biv::zero(), // X_carrier = 0 = R·0
+            extent_cofactors: [bconst(1, 1), Biv::zero()],
+            claimed: OrderSign::Preserving,
+            branch: None,
+        };
+        assert!(matches!(
+            miter_fit_transverse(&cert),
+            Verdict::Refuted(TransverseMiterFault::ExtentMismatch { at: 1 })
+        ));
+    }
+
+    /// A wrong carrier cofactor is caught by the exact bivariate equality (the clean-miter
+    /// setup of the first test, but with `Q_carrier` replaced by zero).
+    #[test]
+    fn a_wrong_cofactor_is_refused() {
+        let ell = || rf(&[0, 2], &[1, 1]);
+        let cert = TransverseMiterFitCert {
+            ell_a: ell(),
+            ell_b: ell(),
+            dir_a: [pol(&[1]), pol(&[0, 1])],
+            dir_b: [pol(&[1]), pol(&[0, 1])],
+            ext_a: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            ext_b: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            perm: false,
+            sigma_a: iv(0, 1),
+            sigma_b: iv(0, 1),
+            carrier_cofactor: Biv::zero(), // should be −1/2
+            extent_cofactors: [bconst(1, 2), bconst(1, 2)],
+            claimed: OrderSign::Preserving,
+            branch: None,
+        };
+        assert!(matches!(
+            miter_fit_transverse(&cert),
+            Verdict::Refuted(TransverseMiterFault::CarrierMismatch)
+        ));
+    }
+
+    /// A constant `ℓ_i` (zero slope) is the parallel regime — out of the transverse slice,
+    /// routed to LEDGE via `NonMonotone`.
+    #[test]
+    fn a_constant_crease_coordinate_is_the_parallel_regime() {
+        let cert = TransverseMiterFitCert {
+            ell_a: rf(&[5], &[1]), // constant 5 — stationary
+            ell_b: rf(&[0, 1], &[1]),
+            dir_a: [pol(&[1]), pol(&[0, 1])],
+            dir_b: [pol(&[1]), pol(&[0, 1])],
+            ext_a: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            ext_b: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            perm: false,
+            sigma_a: iv(0, 1),
+            sigma_b: iv(0, 1),
+            carrier_cofactor: Biv::zero(),
+            extent_cofactors: [Biv::zero(), Biv::zero()],
+            claimed: OrderSign::Preserving,
+            branch: None,
+        };
+        assert!(matches!(
+            miter_fit_transverse(&cert),
+            Verdict::Refuted(TransverseMiterFault::NonMonotone { flank_b: false })
+        ));
+    }
+
+    /// The searcher's claimed order sign is checked against the geometry-minted one: the
+    /// clean-miter pair mints `Preserving`, so a claimed `Reversing` is refused.
+    #[test]
+    fn a_wrong_claimed_order_sign_is_refused() {
+        let ell = || rf(&[0, 2], &[1, 1]);
+        let cert = TransverseMiterFitCert {
+            ell_a: ell(),
+            ell_b: ell(),
+            dir_a: [pol(&[1]), pol(&[0, 1])],
+            dir_b: [pol(&[1]), pol(&[0, 1])],
+            ext_a: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            ext_b: [rf(&[0, 1], &[1]), rf(&[1, 1], &[1])],
+            perm: false,
+            sigma_a: iv(0, 1),
+            sigma_b: iv(0, 1),
+            carrier_cofactor: bconst(-1, 2),
+            extent_cofactors: [bconst(1, 2), bconst(1, 2)],
+            claimed: OrderSign::Reversing, // geometry mints Preserving
+            branch: None,
+        };
+        assert!(matches!(
+            miter_fit_transverse(&cert),
+            Verdict::Refuted(TransverseMiterFault::OrderMismatch {
+                minted: OrderSign::Preserving
+            })
+        ));
+    }
+
+    /// The transverse monotonicity certificate generalizes to an **algebraic** support bound
+    /// (the cone case) via `lattice::AlgReal` — `α = √2` here stands in for a cut-exit σ.
+    #[test]
+    fn transverse_monotonicity_over_an_algebraic_support_bound() {
+        // α = √2, the positive root of x² − 2.
+        let sqrt2 = AlgReal::isolate_roots(&pol(&[-2, 0, 1]))
+            .into_iter()
+            .find(|r| r.cmp_rat(&Q::from_i128(0)) == Ordering::Greater)
+            .expect("√2");
+        let ell_sq = rf(&[0, 0, 1], &[1]); // ℓ = σ²
+        // strictly increasing on [1, √2]; stalls at σ = 0 on [0, √2].
+        assert_eq!(
+            strictly_monotone_upto_alg(&ell_sq, &Q::from_i128(1), &sqrt2),
+            Some(1)
+        );
+        assert_eq!(
+            strictly_monotone_upto_alg(&ell_sq, &Q::from_i128(0), &sqrt2),
+            None
+        );
+        // ℓ = σ² − 2σ stalls at σ = 1 ∈ (0, √2] — caught inside the support.
+        assert_eq!(
+            strictly_monotone_upto_alg(&rf(&[0, -2, 1], &[1]), &Q::from_i128(0), &sqrt2),
+            None
+        );
+    }
+
+    /// The **adversarial** two-cone miter — the configuration the branch-refinement exists
+    /// for. Two cones over the same base conic (the unit circle) from *different* apexes are
+    /// the tangent-line cut families at `t = σ` and `t = 2σ`:
+    /// `ℓ_A = (1+σ²)/(1−σ²)`, `ℓ_B = (1+4σ²)/(1−4σ²)`, `D_A = (2σ, σ²−1)`, `D_B = (4σ, 4σ²−1)`.
+    /// `ℓ` is degree-2 rational, so `R = 2(σ_A−2σ_B)(σ_A+2σ_B)` **factors**; the carrier `X`
+    /// vanishes on the real branch `σ_A = 2σ_B` (same tangent) but **not** on the spurious
+    /// `σ_A = −2σ_B` (the *other* tangent through the shared L-point). So the **full `R` does
+    /// not divide `X`** — CM.1's full-`R` check refuses — while the branch `R_φ = σ_A − 2σ_B`
+    /// does, and the branch-aware certificate accepts it.
+    #[test]
+    fn a_two_cone_adversarial_miter_certifies_via_the_branch() {
+        let ell_a = rf(&[1, 0, 1], &[1, 0, -1]);
+        let ell_b = rf(&[1, 0, 4], &[1, 0, -4]);
+        let dir_a = [pol(&[0, 2]), pol(&[-1, 0, 1])];
+        let dir_b = [pol(&[0, 4]), pol(&[-1, 0, 4])];
+        // Extents chosen to match on the branch: E_A(σ) = σ, E_B(σ) = 2σ (equal on σ_A = 2σ_B).
+        let ext_a = [rf(&[0, 1], &[1]), rf(&[0, 1], &[1])];
+        let ext_b = [rf(&[0, 2], &[1]), rf(&[0, 2], &[1])];
+
+        let bx = |p: &Poly<Bignum>| Biv::from_x_poly(p);
+        let by = |p: &Poly<Bignum>| Biv::from_y_poly(p);
+        let r_full = bx(ell_a.num())
+            .mul(&by(ell_b.den()))
+            .sub(&by(ell_b.num()).mul(&bx(ell_a.den())));
+        let r_phi = bx(&pol(&[0, 1])).sub(&by(&pol(&[0, 2]))); // σ_A − 2σ_B (the real branch)
+        let r_cofactor = r_full.div_exact(&r_phi).expect("R_φ | R_full");
+        let x_carrier = bx(&dir_a[0])
+            .mul(&by(&dir_b[1]))
+            .sub(&bx(&dir_a[1]).mul(&by(&dir_b[0])));
+        // The crux: the full R does NOT divide X (the spurious branch breaks the carrier),
+        // but the real branch R_φ does.
+        assert!(
+            x_carrier.div_exact(&r_full).is_none(),
+            "the full R does not divide X (carrier fails on the spurious branch)"
+        );
+        let q_carrier = x_carrier.div_exact(&r_phi).expect("R_φ | X_carrier");
+        let one = Biv::from_x_poly(&pol(&[1])); // X_ext = σ_A − 2σ_B = R_φ ⇒ Q_ext = 1
+
+        // Support σ_a = 2·σ_b (Preserving), inside the poles (|σ_b| < 1/2, |σ_a| < 1).
+        let make = |branch| TransverseMiterFitCert {
+            ell_a: ell_a.clone(),
+            ell_b: ell_b.clone(),
+            dir_a: [dir_a[0].clone(), dir_a[1].clone()],
+            dir_b: [dir_b[0].clone(), dir_b[1].clone()],
+            ext_a: [ext_a[0].clone(), ext_a[1].clone()],
+            ext_b: [ext_b[0].clone(), ext_b[1].clone()],
+            perm: false,
+            sigma_a: Interval {
+                lo: Q::new(1, 2),
+                hi: Q::new(3, 4),
+            },
+            sigma_b: Interval {
+                lo: Q::new(1, 4),
+                hi: Q::new(3, 8),
+            },
+            carrier_cofactor: q_carrier.clone(),
+            extent_cofactors: [one.clone(), one.clone()],
+            claimed: OrderSign::Preserving,
+            branch,
+        };
+        // With the relevant branch, the cone miter certifies.
+        match miter_fit_transverse(&make(Some(TransverseBranch {
+            r_phi: r_phi.clone(),
+            r_cofactor,
+        }))) {
+            Verdict::Verified(fit) => assert_eq!(fit.eps_phi, OrderSign::Preserving),
+            other => panic!("the branch-aware cone miter must fit: {other:?}"),
+        }
+        // Without it (full R), the R_φ-cofactor cannot satisfy X == R_full·Q ⇒ refused.
+        assert!(matches!(
+            miter_fit_transverse(&make(None)),
+            Verdict::Refuted(TransverseMiterFault::CarrierMismatch)
         ));
     }
 }

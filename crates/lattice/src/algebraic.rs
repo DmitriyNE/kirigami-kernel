@@ -496,6 +496,62 @@ impl<B: Backend> AlgReal<B> {
             b.refine();
         }
     }
+
+    /// Whether `self` (the algebraic `α`) is a root of `p`: a common factor of `p` and the
+    /// defining polynomial has its (unique) root in the isolating interval. Exact.
+    fn is_root_of(&self, p: &Poly<B>) -> bool {
+        if p.is_zero() {
+            return true;
+        }
+        if self.iv.lo.cmp(&self.iv.hi) == Ordering::Equal {
+            return p.eval(&self.iv.lo).is_zero(); // a rational point α = iv.lo
+        }
+        let g = self.poly.gcd(p);
+        g.degree().is_some_and(|d| d >= 1)
+            && SturmChain::new(&g).count_in(&self.iv.lo, &self.iv.hi) >= 1
+    }
+
+    /// The sign of `p(α)` — `−1`, `0`, or `1` — where `α` is this algebraic number. The
+    /// first downstream consumer of an algebraic number: evaluating a σ-rational gauge's
+    /// sign at an algebraic σ-event (e.g. a cone flank's cut-face range boundary). Exact —
+    /// `0` iff `α` is a root of `p`, else the constant sign of `p` on an isolating interval
+    /// refined free of `p`'s other roots.
+    pub fn sign_of(&self, p: &Poly<B>) -> i8 {
+        if self.is_root_of(p) {
+            return 0;
+        }
+        let mut a = self.clone();
+        // Refine (iv.lo, iv.hi] ∋ α until `p` has no root there; then `p`'s constant sign on
+        // it is its value at the rational upper endpoint. Terminates: `α` is not a `p`-root,
+        // so some neighbourhood of `α` is `p`-root-free and the interval shrinks into it.
+        while SturmChain::new(p).count_in(&a.iv.lo, &a.iv.hi) != 0 {
+            a.refine();
+        }
+        p.eval(&a.iv.hi).sign()
+    }
+
+    /// The number of distinct real roots of `p` in the half-open `(lo, α]` (`lo` rational,
+    /// `α` this algebraic number). Exact — Sturm counting below a refined isolating interval,
+    /// plus `α` itself when it is a root of `p`. `0` for the empty range `α ≤ lo`.
+    pub fn count_roots_upto(&self, p: &Poly<B>, lo: &Rat<B>) -> u32 {
+        if p.is_zero() || self.cmp_rat(lo) != Ordering::Greater {
+            return 0;
+        }
+        if self.iv.lo.cmp(&self.iv.hi) == Ordering::Equal {
+            // α is the rational point iv.lo; `(lo, α]` roots are a plain Sturm count (the
+            // half-open upper endpoint includes α when it is itself a root).
+            return SturmChain::new(p).count_in(lo, &self.iv.lo);
+        }
+        let expected = u32::from(self.is_root_of(p));
+        let mut a = self.clone();
+        // Refine until the isolating interval holds exactly `expected` roots of `p` (only α
+        // when α is a root, else none) — every other `p`-root leaves the shrinking interval.
+        while SturmChain::new(p).count_in(&a.iv.lo, &a.iv.hi) != expected {
+            a.refine();
+        }
+        // Roots in `(lo, a.iv.lo]` are all `< α`; add α itself when it is a root of `p`.
+        SturmChain::new(p).count_in(lo, &a.iv.lo) + expected
+    }
 }
 
 fn max<'a, B: Backend>(x: &'a Rat<B>, y: &'a Rat<B>) -> &'a Rat<B> {
@@ -668,6 +724,40 @@ mod tests {
         assert_eq!(cbrt2.cmp_rat(&Q::from_i128(2)), Ordering::Less);
         assert_eq!(cbrt2.cmp_rat(&Q::new(63, 50)), Ordering::Less); // 1.26 > 1.259...
         let _ = a;
+    }
+
+    #[test]
+    fn algreal_sign_of_a_polynomial() {
+        let pol = |cs: &[i128]| {
+            Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Q::from_i128(c)).collect())
+        };
+        let sqrt2 = surd(0, 1, 2).to_algreal(); // ≈ 1.414
+        assert_eq!(sqrt2.sign_of(&pol(&[0, 1])), 1); // x     at √2 > 0
+        assert_eq!(sqrt2.sign_of(&pol(&[-1, 1])), 1); // x−1  at √2 ≈ 0.41 > 0
+        assert_eq!(sqrt2.sign_of(&pol(&[-2, 1])), -1); // x−2 at √2 ≈ −0.59 < 0
+        assert_eq!(sqrt2.sign_of(&pol(&[-2, 0, 1])), 0); // x²−2 at √2 = 0 (α is a root)
+        // A rational α = 3/2 through the point-interval path.
+        let three_halves = AlgReal::from_rat(&Q::new(3, 2));
+        assert_eq!(three_halves.sign_of(&pol(&[-1, 1])), 1); // 3/2 − 1 > 0
+        assert_eq!(three_halves.sign_of(&pol(&[-3, 2])), 0); // 2x − 3 = 0 at 3/2
+    }
+
+    #[test]
+    fn algreal_count_roots_upto() {
+        let pol = |cs: &[i128]| {
+            Poly::<Bignum>::from_coeffs(cs.iter().map(|&c| Q::from_i128(c)).collect())
+        };
+        let sqrt2 = surd(0, 1, 2).to_algreal(); // ≈ 1.414
+        // p = x(x−1)(x−3): roots 0, 1, 3. In (−1, √2]: {0, 1} (3 is above √2).
+        let p = pol(&[0, 1]).mul(&pol(&[-1, 1])).mul(&pol(&[-3, 1]));
+        assert_eq!(sqrt2.count_roots_upto(&p, &Q::from_i128(-1)), 2);
+        assert_eq!(sqrt2.count_roots_upto(&p, &Q::new(1, 2)), 1); // (1/2, √2] → {1}
+        // A root AT α: x² − 2 has √2 in (0, √2] — counted via the closed upper endpoint.
+        assert_eq!(
+            sqrt2.count_roots_upto(&pol(&[-2, 0, 1]), &Q::from_i128(0)),
+            1
+        );
+        assert_eq!(sqrt2.count_roots_upto(&p, &Q::from_i128(2)), 0); // empty: α ≤ lo
     }
 
     // Differential oracle: compare two surds by refining rational √-bounds, and

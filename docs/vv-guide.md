@@ -1181,7 +1181,13 @@ single-run test; a vertex-pinched pseudomanifold passes 1–3, fails 4). Checks 
 - **D4.2 — two-flank joint closed solid — met when:** the two flank slabs are unioned watertight and
   the union certifies as `ClosedShell`, *or* the `w=0`-only crease obstruction is recorded as an
   honest documented blocker (the through-thickness miter Π-cut is the curved `w_trim(σ)` cut, likely
-  gated on curve-carrier / `AlgReal` support, or a symmetric-fold sub-fixture).
+  gated on curve-carrier / `AlgReal` support, or a symmetric-fold sub-fixture). **Disposition
+  (investigated):** the honest-blocker branch is confirmed — `one_joint()` is *fixture-obstructed*
+  from closing (the 2:1 ruling-speed overhang needs the irrational station `σ = √2 − 1`, and a single
+  joint's substrate boundary is honestly open), a property of the geometry, not a code gap. Rather
+  than a symmetric demo fixture that dodges it, the machinery the closure genuinely needs — the
+  curved Π-cut miter — becomes its own milestone (**Curved MITER-FIT**, below), per the standing
+  "build the incomplete machinery, don't manufacture demo geometry" directive.
 - **D4.3 — substrate contour + anchors — met when:** a standalone closed-contour type (a closed D24
   loop of `Line`/`Arc` edges, independent of a joint's A/B/Crease scheme) and **anchor** function
   objects (`spec §4.6`: rational spline `â(t)` lifting an authored flat curve to chart coords) carry
@@ -1227,6 +1233,114 @@ adds inflate a μ-wall to degree ~18 → ±∞ poles → OCCT crash; reduced ~4)
 `Geom_BezierSurface` (single-span, no knots) because `Geom_BSplineSurface` segfaulted. **Scope honestly
 recorded:** this is the *single-flank* closed solid; the two-flank watertight union (the `w=0`-only
 crease obstruction) is D4.2. D4.2–D4.6 **todo**, executed per-phase with a pause after each.
+
+---
+
+### Curved MITER-FIT acceptance criteria (the transverse-rational `φ_J` correspondence — L3 activation)
+
+*Authored before implementation.* D4.2's investigation established that `one_joint()` **cannot** close
+into a two-flank solid — the 2:1 ruling-speed overhang leaves free tips (equalizing needs the irrational
+station `σ = √2 − 1`) and a single joint's substrate boundary is honestly open — a **fixture
+obstruction, not a code gap**. Rather than manufacture a symmetric demo fixture that dodges it, this
+milestone builds the deferred certificate machinery the closure genuinely needs: **curved MITER-FIT**,
+the *transverse-rational* regime where two flanks' cut rulings are **rationally** (not affinely)
+parametrized and their coincidence in the bisector plane Π is certified through the correspondence
+`R(σ_A, σ_B) = 0` (`spec §5.3`; the pass `certify-core/src/miter.rs:31-32` and
+`docs/closure-scoping.md:52-54` defer). It is the **first downstream wiring** of `lattice`'s
+built-but-unused `resultant` / `resultant_bivariate` (and, in later slices, `AlgReal` and conic
+carriers). Today's degree-1 `miter_fit` handles only the transverse-*affine* case (straight `CutEnds`).
+
+**Earned, not oracle (OCCT never enters).** The certificate is a **resultant-conditioned divisibility
+identity** — exact, float-free. On the correspondence `{R = 0}` (paired rulings share their crease-line
+point, so *position identity is free*) the remaining clean-miter condition is **carrier identity
+`D_A ∥ D_B`**, together with the extents `E_{A,±} = E_{B,π(±)}`, each vanishing on `{R = 0}` — certified
+by an **exact cofactor** `X == R·Q` (the searcher supplies `Q`; the checker multiplies and compares).
+`X = R·Q ⇒ X ≡ 0 on {R = 0}` is an exact implication; the only trusted lemma is resultant⇔common-root
+(cited/Lean, **out of Kani** per §5 — `verify_common_factor` is "exactly the spec's resultant-conditioned
+A-identity"). Watertightness does **not** hinge on MITER-FIT (`spec §5.3`: `trimmed-A ⊂ {b_J ≥ 0}`,
+`trimmed-B ⊂ {b_J ≤ 0}` meet only in Π; a non-coincident cut is a valid exposed **ledge** → LEDGE-DOM) —
+so this is the *clean-miter* certificate, the disjoint alternative to the LEDGE branch. *Event agreement
+is insufficient* for the extents: the spec's stored counterexample `F_B ∩ L_σ = [0, 1+σ(1−σ)]` against
+`F_A ∩ L_σ = [0, 1]` shares endpoints yet differs, so the condition must be an on-variety identity.
+
+- **CM.1 — the transverse-rational MITER-FIT certificate — met when:** an **additive**
+  `certify_core::miter::miter_fit_transverse(...)` (beside the untouched degree-1 `miter_fit`) takes
+  rational cut rulings `F_i(σ,μ) = P_i(σ) + μ·D_i(σ)`, forms the correspondence `R(σ_A,σ_B)` from
+  `ℓ_A = ℓ_B`, and certifies **carrier identity** (`X_carrier = (D_A × D_B) == R·Q_carrier`, exact) and
+  **extent identities** (`E_{A,±} = E_{B,π(±)}` on `{R = 0}`, same cofactor pattern), plus `ℓ_i`
+  monotonicity (Sturm) and the `ε_φ` order sign; it accepts a reflection-symmetric cone pair and refutes
+  a planar-vs-cylindrical pair (fails at curvature order), the spec's stored extent counterexample, and
+  a wrong cofactor; a Kani harness proves the cofactor-identity check sound over bounded-degree
+  polynomials; `resultant` / `resultant_bivariate` / `verify_common_factor` are wired downstream for the
+  first time; `certify-core` stays `no_std`.
+- **CM.2 — conic carriers — SKIPPED (unsound as framed; deferred to the conic-*arrangement* L3).**
+  Investigation found the premise wrong: `Carrier` is consumed **only** by CAP-IN-D24 → the LEDGE
+  arrangement, and the clean-miter path (CM.1) uses straight rulings `F_i = P_i + μ·D_i`, not conic
+  carriers. A conic is **not** D24 content (D24 = lines + circular arcs, spec §6); CAP-IN-D24 refusing it
+  is *correct* — "the cone is **correctly turned away**" (`cap_in.rs:19`; "falsely, not vacuously" = a
+  genuine-false predicate, not an erroneous refusal). The `closure::ledge` bridge already declines even a
+  **Circle** (`Carrier::Circle → UnsupportedCarrier`), and `arrange2d` has no conic-curve arrangement — so
+  a `Conic` that *passed* CAP-IN-D24 would license non-D24 content into a line/circle-only engine
+  (unsound). Genuine conic support is the deferred conic-**arrangement** L3 (spec §484), the LEDGE branch,
+  orthogonal to this milestone's clean-miter thrust.
+- **CM.3 — `AlgReal` wiring — met when:** `lattice::AlgReal` is used downstream for the first time —
+  `AlgReal::sign_of` (the sign of a polynomial at an algebraic number) + `AlgReal::count_roots_upto` (its
+  distinct-root count in `(lo, α]`) certify a σ-rational gauge at an **algebraic** σ-event, and
+  `certify_core::miter::strictly_monotone_upto_alg` uses them to certify a cut-face's `ℓ_i` strictly
+  monotone up to an algebraic cut-exit σ (the cone case — `(−3+√17)/4` and the like). The transverse
+  identities are support-independent, so only the monotonicity domain reaches for `AlgReal`.
+- **CM.4 — closure searcher + minimal cone-flank sub-fixture — met when:** an untrusted `closure`-side
+  constructor assembles the transverse MITER-FIT inputs (`ℓ_i`, `D_i`, `R`, the cofactors) from a
+  cone-flank joint, and a minimal cone-pair sub-fixture certifies end-to-end through the curved MITER-FIT.
+- **CM.5 — Lean frontier (non-gating):** the resultant⇔common-root and "divisibility ⇒ vanishes on
+  `{R = 0}`" lemmas in Lean (the trusted foundation CM.1 cites). Research; does not gate.
+
+**Generality (hard gate) — met when:** CM.1's TCB edit is purely **additive** (a new
+`miter_fit_transverse` + types + harness beside the untouched degree-1 `miter_fit`); no device constant
+is added; flank type stays **data**; `arrange2d` / `sew` / `boolean.rs` / `closure/src/valid.rs` and any
+export/OCCT are **not** touched in CM.1.
+
+**Documentation (a merge gate) — met when:** the new public surface is documented usage-first under
+`-D missing_docs`, each slice's status set as it lands.
+
+**Status: CM.0 + CM.1 met** on `curved-miter-fit`. CM.0 authored this section + the `vv-matrix.md`
+row + the engineering-log D4.2-obstruction finding. **CM.1 delivers the transverse-rational
+certificate:** `lattice::Biv` (a bivariate polynomial over ℚ — the first consumer of the
+`resultant_bivariate` `Vec<Poly>` convention) + `certify_core::miter::miter_fit_transverse`, which
+forms the correspondence `R(σ_A,σ_B)` from `ℓ_A = ℓ_B` (the checker builds it, never trusting a
+supplied `R`), certifies the **carrier** and **extent** identities by the exact bivariate cofactor
+equality `X == R·Q`, checks `ℓ_i` strict monotonicity by Sturm, and mints `ε_φ` from the two slope
+signs via the Kani-proven `eps_from_slopes` — all **additive** beside the untouched degree-1
+`miter_fit`. A reflection-symmetric *genuinely-rational* pair (`ℓ_i = 2σ/(1+σ)`) certifies; the
+curvature-order (planar-vs-cylindrical), extent-counterexample (`[0,1]` vs `[0,1+σ(1−σ)]`),
+parallel-regime, and wrong-cofactor cases are refuted (6 unit + doctest, plus `Biv` 4 unit + doctest).
+**Earned, no OCCT:** the certificate is an exact bivariate polynomial identity; its
+resultant⇔common-root soundness is cited/Lean (CM.5, where `verify_common_factor_sound` is already
+axiom-clean). **CM.2 SKIPPED** (unsound as framed — a conic is non-D24 content CAP-IN-D24 correctly
+refuses, and the clean-miter path uses straight rulings, not conic carriers; genuine conic support is the
+deferred conic-arrangement L3, orthogonal here). **CM.3 wires `AlgReal` downstream for the first time:**
+`AlgReal::sign_of` / `AlgReal::count_roots_upto` (a polynomial's sign at, and root count up to, an
+algebraic σ) + `certify_core::miter::strictly_monotone_upto_alg` (the transverse monotonicity certificate
+over an algebraic cut-face σ-bound — the cone case). Full gate green. **CM.4 delivers the searcher + the
+branch-aware refinement, validated on the adversarial two-cone miter:** `closure::miter::transverse_cut_family`
+projects a flank's cut-ruling family into Π (`P = c−(g0/g_w)·n`, `D = r−(g_mu/g_w)·n`, both rational in σ); and
+because a cone's `ℓ` is degree-2 the correspondence `R` factors, so `certify_core::miter` gains a
+`TransverseBranch` (`R_φ` + cofactor) — the checker verifies `R_φ·C == R` (by multiplication), `R_φ`
+single-valued (deg-1 in σ_B), `R_φ` vanishing at the `ε_φ`-paired support corners (rejecting the spurious
+branch), then `X == R_φ·Q` — plus `lattice::Biv::div_exact` (the searcher's cofactor tool). The **adversarial**
+fixture (two cones over a shared base conic from different apexes — unit-circle tangent families `t=σ` vs `t=2σ`)
+has `R = 2(σ_A−2σ_B)(σ_A+2σ_B)`, the full `R ∤ X` (CM.1's full-`R` check refuses, `CarrierMismatch`), and the
+branch `R_φ = σ_A−2σ_B` certifies (`Verified`). **Honest scope:** the adversarial cut families are built from the
+conic tangent-line geometry directly; the searcher-from-`Chart` link for the adversarial *pair* is unbuilt (the
+arbitrary-apex-cone chart inverse problem), though the single-cone searcher is validated separately. Full gate green
+(nextest ws 381/381, export/step 37/37 + doctests, `-D missing_docs`, `xtask lint`, no_std thumbv7em).
+
+**The transverse-MITER-FIT milestone is complete** on `curved-miter-fit` (CM.0–CM.4 met): the certificate
+covers all three regimes — cylinder (degree-1 `miter_fit`), symmetric cone (full-`R` `miter_fit_transverse`),
+and adversarial cone (the `TransverseBranch` refinement) — each validated. **CM.5** (the Lean lemmas behind the
+divisibility certificate) is non-gating research, deferred. The adversarial *pair*'s `Chart`-inverse derivation
+(two different-apex cones over a shared conic *as charts*) is a documented follow-up; the certificate is validated
+on the genuine conic cut-family geometry, and the single-cone searcher on a real `Chart`.
 
 ---
 

@@ -6,7 +6,7 @@ use crate::arrange::{LinkClass, cocycle_ok, link_iso_ok, link_ok, v_boundary};
 use crate::cap_in::edge_hands_off;
 use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
 use crate::gate::conj;
-use crate::miter::{Occupancy, OrderSign, eps_from_cmp};
+use crate::miter::{Occupancy, OrderSign, eps_from_cmp, eps_from_slopes};
 use crate::sew::occupancy_row;
 use crate::shell::closed_shell;
 use crate::verdict::Verdict;
@@ -335,6 +335,29 @@ fn eps_phi_is_endpoint_order() {
     // origin) even here, where the endpoints are strictly ordered; the endpoint mint never does.
     // Abstention (`None`) happens *only* on coincident images.
     assert!(sign.is_some() == (lo != hi));
+}
+
+// ★ `eps_from_slopes` — the *transverse* `ε_φ` mint (CM.1, curved MITER-FIT). `φ_J` tracks
+// `σ_B` so that `ℓ_B(σ_B) = ℓ_A(σ_A)`, so it preserves order iff the two crease-line
+// coordinates run the same direction — the mint reads that off the two slope signs
+// `sign(ℓ_i′)`. This proves it **total** and correct by cases over every sign pair, the
+// transverse analogue of `eps_phi_is_endpoint_order`. The polynomial cofactor-identity
+// soundness (`X = R·Q ⇒ X ≡ 0 on {R=0}`) is the resultant⇔common-root theorem — cited/Lean
+// (`Resultant.lean`'s `verify_common_factor_sound`), out of Kani scope per vv-guide §5.
+#[kani::proof]
+fn eps_from_slopes_is_slope_agreement() {
+    let sa: i8 = kani::any();
+    let sb: i8 = kani::any();
+    kani::assume(sa >= -1 && sa <= 1 && sb >= -1 && sb <= 1);
+
+    match eps_from_slopes(sa, sb) {
+        Some(OrderSign::Preserving) => assert!(sa != 0 && sa == sb),
+        Some(OrderSign::Reversing) => assert!(sa != 0 && sb != 0 && sa == -sb),
+        None => assert!(sa == 0 || sb == 0),
+    }
+    // Total + definite: two nonzero slopes always mint a sign; a zero slope always abstains
+    // (the parallel regime, `ℓ_i` stationary, routed to LEDGE).
+    assert!(eps_from_slopes(sa, sb).is_some() == (sa != 0 && sb != 0));
 }
 
 // Soundness of the CAP-IN-D24 cycle-closure + flank-correspondence census (spec §8.5), as

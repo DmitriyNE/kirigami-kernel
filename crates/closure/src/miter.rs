@@ -24,9 +24,63 @@ use certify_core::miter::{
     OrderSign, degree1_edge_reg_cert, miter_edge_ledger, miter_fit, miter_out,
 };
 use geom::chart::Chart;
-use lattice::{Backend, Bignum, Interval, Rat};
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Vec3Rat};
 
-use crate::cap_in::{PiFrame, project_point};
+use crate::cap_in::{PiFrame, project, project_point};
+
+/// A constant [`Vec3Rat`] from a rational 3-vector.
+fn const_vec3<B: Backend>(a: &[Rat<B>; 3]) -> Vec3Rat<B> {
+    Vec3Rat::from_polys([
+        Poly::constant(a[0].clone()),
+        Poly::constant(a[1].clone()),
+        Poly::constant(a[2].clone()),
+    ])
+}
+
+/// The **transverse cut-ruling family** of a flank in the cap plane Π `(b_J, frame)` — the
+/// searcher side of the curved (rotating-ruling) MITER-FIT. At each σ the flank's tangent
+/// plane meets Π in the cut ruling `F(σ, t) = P(σ) + t·D(σ)`, with `P`, `D` rational in σ.
+/// Returns the crease-line coordinate `ℓ(σ)` (the frame-`u` coordinate where the ruling
+/// meets `L = {frame-v = 0}`) and the ruling direction `(dx(σ), dy(σ))` in the frame — all
+/// rational functions of σ. `None` if `g_w = n·b_J ≡ 0` (CLIP-W fails — the cut is not
+/// transverse to the `w`-fibres) or `dy ≡ 0` (the ruling is parallel to `L` — the parallel
+/// regime, out of the transverse slice).
+///
+/// Derivation: `G_i = (C − x₀)·b_J = g0 + μ·g_mu + w·g_w` (affine in `(μ, w)`); solving
+/// `G_i = 0` for `w` gives the cut ruling `P = c − (g0/g_w)·n`, `D = r − (g_mu/g_w)·n`, both
+/// in Π by construction. This is the rotating-ruling analogue of [`ruling_cut_ends`]'s
+/// single degree-1 ruling.
+pub fn transverse_cut_family<B: Backend>(
+    chart: &Chart<B>,
+    b_j: &[Rat<B>; 3],
+    frame: &PiFrame<B>,
+) -> Option<(RatFunc<B>, RatFunc<B>, RatFunc<B>)> {
+    let c = chart.pedal();
+    let r = chart.ruling();
+    let n = chart.normal();
+    let bv = const_vec3(b_j);
+    let uv = const_vec3(&frame.u);
+    let vv = const_vec3(&frame.v);
+    let ov = const_vec3(&frame.origin);
+    let g0 = c.sub(&ov).dot(&bv);
+    let g_mu = r.dot(&bv);
+    let g_w = n.dot(&bv);
+    if g_w.is_zero() {
+        return None;
+    }
+    // P = c − (g0/g_w)·n ; D = r − (g_mu/g_w)·n — the cut ruling, both in Π.
+    let p = c.sub(&n.scale(&g0.div(&g_w)));
+    let dir = r.sub(&n.scale(&g_mu.div(&g_w)));
+    let (px, py) = project(&p, frame);
+    let dx = dir.dot(&uv);
+    let dy = dir.dot(&vv);
+    if dy.is_zero() {
+        return None;
+    }
+    // ℓ = px − py·(dx/dy): the u-coordinate where the ruling crosses L = {v = 0}.
+    let ell = px.sub(&py.mul(&dx).div(&dy));
+    Some((ell, dx, dy))
+}
 
 /// A degree-1 cut edge between two already-projected cap-plane points, over the parameter
 /// support `[sigma_lo, sigma_hi]` — the building block of a polygonal clean-miter cap outline.
@@ -286,6 +340,67 @@ mod tests {
             Verdict::Verified(w) => assert_eq!(w.edge_margins.len(), 4),
             other => panic!("a simple transverse miter cycle must certify: {other:?}"),
         }
+    }
+
+    /// CM.4 geometry: a **cone** (rotating rulings) has a genuinely-rational, **non-affine**
+    /// crease-line coordinate `ℓ(σ)` (here `num` deg 1 / `den` deg 2), so the correspondence
+    /// `R = ℓ_A(σ_A) = ℓ_B(σ_B)` **factors** — `(2, −1)` is an off-diagonal (spurious) solution.
+    /// The decisive fact for the transverse MITER-FIT: the carrier `X = D_A × D_B` vanishes on
+    /// that spurious branch **too** — because two rulings of one cone meeting `L` at a shared
+    /// point pass through {apex, point} and so are the *same line* (shared-apex geometry). So
+    /// the **full `R` divides `X`**, and CM.1's cofactor check certifies the reflection-mate
+    /// cone miter as-is — no branch-refinement needed for it.
+    #[test]
+    fn a_cone_transverse_cut_family_certifies_through_the_full_r() {
+        use lattice::Biv;
+        // A cone (h = 0) with rotating rulings: q = (1, σ, 1, 0).
+        let cone = Chart::new(
+            [poly(&[1]), poly(&[0, 1]), poly(&[1]), poly(&[0])],
+            RatFunc::zero(),
+        );
+        // A transversal bisector plane Π = {x = 1}, frame (u, v) = (ŷ, ẑ), L = {v = 0}.
+        let bj = [q(1), q(0), q(0)];
+        let frame = PiFrame {
+            origin: [q(1), q(0), q(0)],
+            u: [q(0), q(1), q(0)],
+            v: [q(0), q(0), q(1)],
+        };
+        let (ell, dx, dy) = transverse_cut_family(&cone, &bj, &frame).expect("transverse cut");
+        assert_eq!(
+            dx.den(),
+            dy.den(),
+            "the two direction components share a denominator"
+        );
+
+        // ℓ is genuinely rational and NON-affine (reduced num deg 1 / den deg 2) ⇒ R factors.
+        let g = ell.num().gcd(ell.den());
+        let (rn, _) = ell.num().divrem(&g);
+        let (rd, _) = ell.den().divrem(&g);
+        assert_eq!(rn.degree(), Some(1), "ℓ numerator is degree 1");
+        assert_eq!(
+            rd.degree(),
+            Some(2),
+            "ℓ denominator is degree 2 (ℓ non-affine)"
+        );
+
+        // Reflection-mate miter (ℓ_B = ℓ_A, D_B = D_A): the correspondence R and carrier X.
+        let bx = |p: &Poly<Bignum>| Biv::from_x_poly(p);
+        let by = |p: &Poly<Bignum>| Biv::from_y_poly(p);
+        let r_corr = bx(&rn).mul(&by(&rd)).sub(&by(&rn).mul(&bx(&rd)));
+        let x_carrier = bx(dx.num())
+            .mul(&by(dy.num()))
+            .sub(&bx(dy.num()).mul(&by(dx.num())));
+
+        // R factors: (2, −1) is an off-diagonal solution (ℓ(2) = ℓ(−1)), so R ≠ const·(σ_A−σ_B).
+        assert_eq!(r_corr.eval(&q(2), &q(-1)), q(0), "(2,−1) lies on {{R=0}}");
+        // The carrier holds there too (shared-apex ⇒ same line) ⇒ full R divides X.
+        assert_eq!(
+            x_carrier.eval(&q(2), &q(-1)),
+            q(0),
+            "carrier vanishes on the spurious branch ⇒ full-R cofactor check certifies the cone miter"
+        );
+        // And on the diagonal (antisymmetric), as always.
+        assert_eq!(x_carrier.eval(&q(3), &q(3)), q(0));
     }
 
     /// A reversed pairing on one edge (B traces it end-to-start) claimed order-preserving is
