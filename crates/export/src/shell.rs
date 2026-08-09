@@ -186,6 +186,67 @@ fn edge_start<B: Backend>(e: &Edge<B>) -> &Point2<B> {
     }
 }
 
+/// The ending point of a cap-boundary edge (segment or arc).
+fn edge_end<B: Backend>(e: &Edge<B>) -> &Point2<B> {
+    match e {
+        Edge::Seg(s) => &s.end,
+        Edge::Arc(a) => &a.end,
+    }
+}
+
+/// Exact equality of two cap-plane points (`Surd` coordinates compare exactly).
+fn same_point<B: Backend>(a: &Point2<B>, b: &Point2<B>) -> bool {
+    a.x == b.x && a.y == b.y
+}
+
+/// Chain a face's boundary `edges` into a **consistently-ordered** vertex ring.
+///
+/// The arrangement stores each face's `outer` edges as an *unordered, arbitrarily
+/// oriented* set — e.g. the D24 cap square arrives as four segments whose starts are
+/// `(2,0),(0,2),(0,0),(0,0)`, no two consecutive. Walking `edge_start` alone would
+/// drop the `(2,2)` corner and double `(0,0)`, fanning a half-covered cap with a
+/// zero-area triangle. This walks the incidence graph instead: seed with the first
+/// edge oriented start→end, then at each step append the far endpoint of an unused
+/// edge sharing the current tail (matching either orientation), stopping when the ring
+/// closes on its head. The result is the ordered corner loop, ready to fan. A face
+/// whose edges do not chain into a single closed loop yields the partial walk (the fan
+/// then covers what connects) — the certified caps this slice emits are simple loops.
+fn ordered_ring<B: Backend>(edges: &[Edge<B>]) -> Vec<Point2<B>> {
+    if edges.is_empty() {
+        return Vec::new();
+    }
+    let mut used = vec![false; edges.len()];
+    used[0] = true;
+    let mut ring = vec![edge_start(&edges[0]).clone(), edge_end(&edges[0]).clone()];
+    loop {
+        let tail = ring[ring.len() - 1].clone();
+        if same_point(&tail, &ring[0]) {
+            ring.pop(); // the walk returned to its head — drop the duplicate
+            break;
+        }
+        let mut extended = false;
+        for (i, e) in edges.iter().enumerate() {
+            if used[i] {
+                continue;
+            }
+            if same_point(edge_start(e), &tail) {
+                ring.push(edge_end(e).clone());
+            } else if same_point(edge_end(e), &tail) {
+                ring.push(edge_start(e).clone());
+            } else {
+                continue;
+            }
+            used[i] = true;
+            extended = true;
+            break;
+        }
+        if !extended {
+            break; // the edges do not chain into a single closed loop
+        }
+    }
+    ring
+}
+
 /// A [`Surd`] that is in fact rational (`b = 0` or `d = 0`), else `None`. The M4-slice
 /// cap boundary is rational; a genuinely irrational (single-radical) cap coordinate
 /// would need the Surd-arithmetic lift, deferred with the curved-crease atlas.
@@ -225,16 +286,19 @@ fn lift<B: Backend>(pt: &Point2<B>, frame: &PiFrame<B>, s: &Rat<B>) -> Option<Ve
     Some([comp(0), comp(1), comp(2)])
 }
 
-/// Fan-triangulate the cap: each face's outer loop, its edge-start points lifted into
-/// 3-space through `frame`, fanned from the first vertex. A loop that lifts to fewer
-/// than three points (an irrational coordinate this slice cannot represent) is skipped.
+/// Fan-triangulate the cap: each face's boundary chained into an ordered corner loop
+/// (via [`ordered_ring`] — the arrangement does not store `outer` loop-ordered), lifted
+/// into 3-space through `frame`, and fanned from the first corner. A loop that lifts to
+/// fewer than three points (an irrational coordinate this slice cannot represent) is
+/// skipped. Ordering the loop is what keeps the fan faithful: an unordered `edge_start`
+/// walk would drop a corner and emit a degenerate (zero-area) triangle the CAD kernel
+/// then rejects.
 fn cap_tris<B: Backend>(cap: &CapOut<B>, frame: &PiFrame<B>, s: &Rat<B>) -> Vec<Tri<B>> {
     let mut tris = Vec::new();
     for face in &cap.region().faces {
-        let ring: Vec<Vertex<B>> = face
-            .outer
+        let ring: Vec<Vertex<B>> = ordered_ring(&face.outer)
             .iter()
-            .filter_map(|e| lift(edge_start(e), frame, s))
+            .filter_map(|p| lift(p, frame, s))
             .collect();
         for i in 1..ring.len().saturating_sub(1) {
             tris.push(Tri {
@@ -344,6 +408,60 @@ mod tests {
         // 2·FLANK_STEPS per flank + a 4-vertex cap loop fanned into 2 triangles.
         assert_eq!(shell.len(), 4 * FLANK_STEPS + 2);
         assert!(matches!(valid.cap, CapWitness::Ledge(_)));
+    }
+
+    /// [`ordered_ring`] chains the arrangement's *unordered, mixed-orientation* cap
+    /// edges into the full corner loop. The D24 square arrives as four segments whose
+    /// starts are `(2,0),(0,2),(0,0),(0,0)` — walking `edge_start` alone would drop the
+    /// `(2,2)` corner and double `(0,0)`, fanning a half cap plus a zero-area triangle
+    /// (which OCCT's `BRepCheck` rejects). Ordering recovers all four distinct corners.
+    #[test]
+    fn ordered_ring_chains_scrambled_cap_edges_into_the_full_loop() {
+        use geom::content::{CurveId, Line, Orient, SegPiece};
+        let seg = |x0: i128, y0: i128, x1: i128, y1: i128| -> Edge<Bignum> {
+            Edge::Seg(Box::new(SegPiece {
+                line: Line {
+                    a: Rat::from_i128(0),
+                    b: Rat::from_i128(0),
+                    c: Rat::from_i128(0),
+                },
+                start: Point2::from_rat(Rat::from_i128(x0), Rat::from_i128(y0)),
+                end: Point2::from_rat(Rat::from_i128(x1), Rat::from_i128(y1)),
+                orient: Orient::Ccw,
+                source: CurveId(0),
+            }))
+        };
+        // Exactly the D24 square as the arrangement stores `face.outer`.
+        let edges = vec![
+            seg(2, 0, 2, 2),
+            seg(0, 2, 2, 2),
+            seg(0, 0, 0, 2),
+            seg(0, 0, 2, 0),
+        ];
+        let ring = ordered_ring(&edges);
+        assert_eq!(
+            ring.len(),
+            4,
+            "the square has four distinct corners: {ring:?}"
+        );
+        // Every corner appears exactly once — in particular the `(2,2)` an unordered
+        // start-walk would have dropped, and no doubled `(0,0)`.
+        for corner in [(0, 0), (2, 0), (2, 2), (0, 2)] {
+            let p = Point2::from_rat(Rat::from_i128(corner.0), Rat::from_i128(corner.1));
+            assert_eq!(
+                ring.iter().filter(|q| **q == p).count(),
+                1,
+                "corner {corner:?} appears exactly once: {ring:?}"
+            );
+        }
+        // Consecutive corners (cyclically) are distinct — no zero-area fan triangle.
+        for i in 0..ring.len() {
+            assert_ne!(
+                ring[i],
+                ring[(i + 1) % ring.len()],
+                "adjacent corners differ"
+            );
+        }
     }
 
     /// The cap lift is **metric-faithful** (D.2): the unit cap square lifts to a unit

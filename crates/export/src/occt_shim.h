@@ -37,4 +37,48 @@ rust::String occt_write_shell(rust::Str path, rust::Slice<const double> tris);
 // trusted as the certificate ("oracle ∧ audit, never oracle-instead-of-audit").
 rust::String occt_shell_audit(rust::Slice<const double> tris);
 
+// M-D slice-3 surface writer: assemble an exact B-rep — a shared vertex table, a
+// shared edge table (each edge built ONCE and referenced by both incident faces,
+// so watertightness is by *identity*, not float-tolerance sewing), and faces on
+// exact surfaces — into a `TopoDS_Shell`, write it to `path` as a STEP file, then
+// read it back and run a `BRepCheck_Analyzer` validity pass on the reload. Returns
+// "ok" on a clean write-then-reload round-trip whose reload passes BRepCheck, else
+// "error: <what>". A write-then-reload check, NOT the external-kernel audit.
+//
+// Five flat `double` buffers carry the IR (all indices are element indices, not
+// double offsets):
+//   verts   — 3 per vertex: x, y, z.
+//   edges   — 5 per edge: start_vid, end_vid, kind, bez_off, bez_deg.
+//             kind 0 = straight Line (bez_* ignored); kind 1 = rational Bézier,
+//             whose `bez_deg + 1` control points start at control-point index
+//             `bez_off` in `beziers`.
+//   beziers — 4 per rational-Bézier control point: weighted pole wx, wy, wz, and
+//             weight w (the homogeneous form; affine pole is (wx,wy,wz)/w).
+//   faces   — 7 per face: surf_kind, base_eid, dir_x, dir_y, dir_z, wire_off,
+//             wire_len. surf_kind 0 = Plane (base/dir ignored); 1 =
+//             Geom_SurfaceOfLinearExtrusion of edge `base_eid`'s curve along
+//             (dir_x,dir_y,dir_z). The bounding wire is `wire_len` half-edges
+//             starting at half-edge index `wire_off` in `wires`.
+//   wires   — 2 per half-edge: edge_id, reversed (0 or 1).
+rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
+                             rust::Slice<const double> edges,
+                             rust::Slice<const double> beziers,
+                             rust::Slice<const double> faces,
+                             rust::Slice<const double> wires);
+
+// M-D slice-3 surface audit (differential ORACLE): assemble the SAME shell
+// `occt_write_brep` emits (shared builder, no STEP write) and report OCCT's own
+// topology facts as the one-line `key=val` summary `occt_shell_audit` uses
+// (`faces=… edges=… free=… nonmanifold=… closed=<0|1> brepcheck=<0|1>`), or
+// "error: <what>". `free` counts edges incident to exactly one face, `nonmanifold`
+// edges incident to >=3 faces; a Π-seam shared by two faces *by identity* shows up
+// as neither (incidence 2). These facts are COMPARED against the internal
+// SEW-LINK / CAP-OUT verdict, never trusted as the certificate. Buffer layout is
+// identical to `occt_write_brep`.
+rust::String occt_brep_audit(rust::Slice<const double> verts,
+                             rust::Slice<const double> edges,
+                             rust::Slice<const double> beziers,
+                             rust::Slice<const double> faces,
+                             rust::Slice<const double> wires);
+
 }  // namespace kirigami
