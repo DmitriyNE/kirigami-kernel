@@ -200,6 +200,8 @@ pub struct ClosedSolid {
     pub edges: usize,
     /// Faces of the certified closed shell.
     pub faces: usize,
+    /// Boundary loops of the certified closed shell (`≥ faces`; the excess counts holes).
+    pub loops: usize,
 }
 
 /// Which conjunct of `valid_closed_solid` refused.
@@ -239,10 +241,10 @@ pub enum ClosedSolidFault<W> {
 /// // (the joint-witness type `&str` fixes the fault channel `W`.)
 /// let solid_closure: Verdict<SolidClosure, SolidClosureFault<&str>, ()> =
 ///     Verdict::Verified(SolidClosure { joints_certified: 1 });
-/// let shell = Verdict::Verified(ClosedShell { verts: 8, edges: 12, faces: 6 });
+/// let shell = Verdict::Verified(ClosedShell { verts: 8, edges: 12, faces: 6, loops: 6 });
 /// assert_eq!(
 ///     valid_closed_solid(&solid_closure, &shell),
-///     Verdict::Verified(ClosedSolid { joints_certified: 1, verts: 8, edges: 12, faces: 6 }),
+///     Verdict::Verified(ClosedSolid { joints_certified: 1, verts: 8, edges: 12, faces: 6, loops: 6 }),
 /// );
 ///
 /// // An open shell refuses even when the joints close.
@@ -272,6 +274,7 @@ pub fn valid_closed_solid<W: Clone>(
                 verts: sh.verts,
                 edges: sh.edges,
                 faces: sh.faces,
+                loops: sh.loops,
             }),
             Verdict::Refuted(sf) => Verdict::Refuted(ClosedSolidFault::Shell(*sf)),
             Verdict::Unresolved(()) => Verdict::Unresolved(()),
@@ -380,6 +383,7 @@ mod tests {
             verts: 8,
             edges: 12,
             faces: 6,
+            loops: 6,
         });
         // Both hold ⇒ the combined evidence.
         assert_eq!(
@@ -389,6 +393,7 @@ mod tests {
                 verts: 8,
                 edges: 12,
                 faces: 6,
+                loops: 6,
             }),
         );
 

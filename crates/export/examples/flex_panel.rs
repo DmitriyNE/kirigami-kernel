@@ -231,11 +231,14 @@ fn main() {
     }
 }
 
-/// Emit STEP I — the input cone gore as a thin closed solid via [`brep_freeboundary`], which
-/// auto-subdivides σ into positive-weight single-span-Bézier slices (a wide two-sided gore needs
-/// it). Written through the OCCT bridge ([`write_brep`] = write-then-reload-through-BRepCheck),
-/// which prints `ok` or `error: <what>` — a rejection is reported, not hidden. (The solid STEP II
-/// panel with a real through-hole lands in the next commit.)
+/// Emit STEP I — the input cone gore as a thin closed solid via [`brep_freeboundary`] — and STEP II
+/// — the **same slab with a real through-hole** via [`brep_freeboundary_holed`]. Both auto-subdivide
+/// σ into positive-weight single-span-Bézier slices (a wide two-sided gore needs it). STEP II cuts a
+/// rectangular hole authored in the sheet's `(σ, μ)` domain, placed strictly inside one slice via
+/// [`sigma_stations`]; its pierced sheets become annular faces and a tube closes it — a certified
+/// **genus-1** solid, exported through OCCT `MakeFace` inner wires. Written through the OCCT bridge
+/// ([`write_brep`] = write-then-reload-through-BRepCheck), which prints `ok` or `error: <what>` — a
+/// rejection is reported, not hidden.
 #[cfg(feature = "step")]
 fn emit_step(
     chart: &geom::chart::Chart<Bignum>,
@@ -246,19 +249,58 @@ fn emit_step(
     fw_hole: &FoldedWire<Bignum>,
     out_dir: &str,
 ) {
-    use export::brep_build::brep_freeboundary;
+    use export::brep_build::{
+        HoleRect, brep_freeboundary, brep_freeboundary_holed, sigma_stations,
+    };
     use export::step::write_brep;
-    let _ = (fw_outer, fw_hole); // consumed by the solid STEP II (folded holed panel) — next commit
+    // The folded wires are the 3-D preview of the flat pattern + hole (Stage 3); the exact solids
+    // below are reconstructed from the chart in (σ, μ), so the wires are only reported here.
+    let _ = (fw_outer, fw_hole);
 
-    // STEP I — the input cone gore as a thin closed solid (thickness window w ∈ [0, 1/8]).
-    // `brep_freeboundary` auto-subdivides σ so every ruled Bézier patch has positive weights (a
-    // wide two-sided gore needs it), assembling one watertight N-slice solid — no σ=0 special case.
+    // A thin thickness window w ∈ [0, 1/8]; the hole runs through it.
     let w_iv = Interval {
         lo: Rat::from_i128(0),
         hi: Rat::new(1, 8),
     };
+
+    // STEP I — the input cone gore as a thin closed solid. `brep_freeboundary` auto-subdivides σ so
+    // every ruled Bézier patch has positive weights (a wide two-sided gore needs it), assembling one
+    // watertight N-slice solid — no σ=0 special case.
     let solid = brep_freeboundary(chart, span, &w_iv, mu_lo, mu_hi);
     let p1 = format!("{out_dir}/flex_panel_I.step");
     println!("STEP I:     {:<40}   → {p1}", write_brep(&p1, &solid));
-    println!("STEP II:    (solid panel with a real through-hole — next commit)");
+
+    // STEP II — the same slab with a real through-hole. Author a rectangular hole in (σ, μ) placed
+    // strictly inside the central positive-weight slice (its middle third in σ), in the band interior
+    // (μ ∈ [−7/4, −5/4] ⊂ [−2, −1]). The hole is a first-class inner loop, not a σ-artifact.
+    let stations = sigma_stations(chart, span, &w_iv, mu_lo, mu_hi);
+    let n_slices = stations.len() - 1;
+    let k = n_slices / 2; // an interior slice
+    let (a, b) = (&stations[k], &stations[k + 1]);
+    let third = b.sub(a).mul(&Rat::new(1, 3));
+    let hole = HoleRect {
+        sigma: Interval {
+            lo: a.add(&third),
+            hi: b.sub(&third),
+        },
+        mu: Interval {
+            lo: Rat::new(-7, 4),
+            hi: Rat::new(-5, 4),
+        },
+    };
+    match brep_freeboundary_holed(chart, span, &w_iv, mu_lo, mu_hi, &[hole]) {
+        Some(solid2) => {
+            let p2 = format!("{out_dir}/flex_panel_II.step");
+            let genus = (solid2.faces().len(), solid2.free_edges());
+            println!("STEP II:    {:<40}   → {p2}", write_brep(&p2, &solid2));
+            println!(
+                "            (genus-1 through-hole solid: {} faces, {} free edges)",
+                genus.0, genus.1
+            );
+        }
+        None => println!(
+            "STEP II:    refused — the hole does not fit one positive-weight slice \
+             (needs the arrangement partition)"
+        ),
+    }
 }

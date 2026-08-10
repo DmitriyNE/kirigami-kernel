@@ -235,6 +235,46 @@ fine — this is a log, not a schema.
   no_std. *2026-08-11 · **G7 + G9 commit 1**; branch `roadmap-flex-pcb`. Next = **G9 commit 2** — STEP II as a
   real solid slab with a through-hole (grid-minus-cell, disk-faced, closed_shell-certified genus-1).*
 
+- **STEP II done — certified genus-`g` solids via multi-loop faces (the generic through-hole, *not* grid-minus-cell).**
+  The grid-minus-cell fallback was rejected (user, same objection as σ=0): it is a *specific* construction that
+  dodges a real limitation instead of removing it. The generic move is the opposite — make the **TCB certify
+  faces with holes**. Key realization from reading `closed_shell` end-to-end: it is **not fundamentally
+  disk-only**. Checks 3 (`∂²=0` edge census) and 4 (vertex-link single cycle) read only per-*dart* data and are
+  topology-agnostic; the one-loop-per-face restriction lived entirely in check 2's input shape (one CSR wire
+  per face) and in `next_in_face`. So the change is a focused **two-level CSR** (faces → loops → darts):
+  **(A · TCB)** `certify_core::shell::closed_shell_holed(…, loop_start, face_start)` runs check 2 / the check-4
+  rotation **per loop** (`next_in_loop`); census unchanged. `closed_shell` becomes a thin wrapper with the
+  identity face→loop nesting, so **every prior caller/test/Kani harness is untouched verbatim**. `ClosedShell`
+  gains `loops` (`loops − faces` = hole count). Soundness (the argument, since it is a TCB edit): declaring two
+  loops one *annular* face rather than two disks is exactly "replace two disks by a tube" = drill one handle —
+  preserves closed-orientable-manifoldness, only raises genus, and the checks never depended on the loop→face
+  grouping (they read local dart data). Per-face *realizability* is delegated to the OCCT oracle
+  (`brepcheck_valid`) — **the same delegation disk faces already rely on**, not a new trust axis. Two new Kani
+  harnesses, both SUCCESSFUL: `closed_shell_holed_verdict_is_grouping_invariant` (the accept/reject verdict is
+  invariant under regrouping loops into faces — transfers the disk-case soundness to the holed path) and
+  `closed_shell_holed_hides_no_pinch_in_a_multi_loop_face` (a pinch packed into one multi-loop face is still
+  rejected). **(B · emitter)** `Brep::to_shell_certificate` stops excluding holes — emits each face's outer wire
+  + hole wires as loops (a hole-free `Brep` yields the identity nesting, certified as before). **(C ·
+  construction)** `brep_freeboundary_holed(chart, σ, w, μ⁻, μ⁺, holes)` cuts a `HoleRect` authored in the
+  sheet's `(σ,μ)` domain — the intrinsic coords, so the *same* hole describes the flat and folded cuts. The
+  pierced `w=const` sheets become **annular** faces (an inner loop each); a **tube** (two ruled `μ=const` walls,
+  two planar `σ=const` walls) closes it through the thickness; each hole raises the genus by one. The hole must
+  sit strictly inside one positive-weight σ-slice — exposed via `sigma_stations` so a caller can place it — and
+  the builder **refuses (returns `None`)** a hole straddling a slice boundary rather than silently mis-building
+  (the general arrangement partition for wide/straddling holes is the documented, deferred scaling path).
+  `brep_freeboundary` is now a thin `holes=&[]` delegate (no-interface-ossification: one engine + sugar).
+  **(D · STEP II)** the demo's STEP II is a **real genus-1 through-hole solid** (`brep_freeboundary_holed` →
+  OCCT `MakeFace` inner wire, the G6b path): `flex_panel_II.step` writes `ok` (14 faces, 0 free edges).
+  `closed_shell_holed` certifies it internally (`loops = faces + 2`) **and** OCCT corroborates
+  (`brepcheck_valid`, `free_edges==0`, `nonmanifold==0`). Tests: `a_square_slab_with_a_through_hole_is_a_closed_torus`
+  + census/open-loop/wrapper refutations (certify-core), `a_through_hole_slab_is_a_certified_genus_1_solid` +
+  `a_hole_that_does_not_fit_one_slice_is_refused` (export lib),
+  `the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid` (OCCT differential). Full gate green:
+  certify-core 115+17, export 30+8 default / 56+15 step, demo STEP I+II `ok`, 4 Kani harnesses, clippy
+  default+step, fmt, xtask lint, certify-core no_std. *2026-08-11 · **STEP II / genus-`g`**; branch
+  `roadmap-flex-pcb`. Next = general arrangement-driven partition for holes wider than a slice / straddling
+  (deferred); Stage-2 seam.*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).

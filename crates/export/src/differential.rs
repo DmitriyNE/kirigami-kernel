@@ -35,7 +35,7 @@
 
 use certify_core::Verdict;
 use certify_core::gate::{ClosedSolid, SolidClosure, SolidClosureFault, valid_closed_solid};
-use certify_core::shell::{ClosedShell, closed_shell};
+use certify_core::shell::{ClosedShell, closed_shell_holed};
 use closure::Joint;
 use closure::valid::{CapWitness, ClosureTreatment, ClosureValid, closure_valid};
 use fixtures::closure_joint::{ledge_d24, miter_cap, one_joint, treatment, treatment_miter};
@@ -267,12 +267,13 @@ fn the_flank_slab_is_a_certified_closed_solid() {
 
     // — Internal certificate: closed_shell over the slab's combinatorics —
     let cert = slab.to_shell_certificate();
-    let shell = closed_shell(
+    let shell = closed_shell_holed(
         cert.n_verts,
         &cert.edge_start,
         &cert.edge_end,
         &cert.wire_edge,
         &cert.wire_reversed,
+        &cert.loop_start,
         &cert.face_start,
     );
     assert_eq!(
@@ -280,7 +281,8 @@ fn the_flank_slab_is_a_certified_closed_solid() {
         Verdict::Verified(ClosedShell {
             verts: 8,
             edges: 12,
-            faces: 6
+            faces: 6,
+            loops: 6,
         }),
         "closed_shell certifies the slab a closed oriented 2-manifold"
     );
@@ -296,7 +298,8 @@ fn the_flank_slab_is_a_certified_closed_solid() {
             joints_certified: 1,
             verts: 8,
             edges: 12,
-            faces: 6
+            faces: 6,
+            loops: 6,
         }),
         "valid_closed_solid conjoins the joint closure with whole-solid closedness"
     );
@@ -347,12 +350,13 @@ fn the_free_boundary_solid_is_a_certified_closed_solid() {
 
     // — Internal certificate: closed_shell over the free-boundary solid's combinatorics —
     let cert = solid.to_shell_certificate();
-    let shell = closed_shell(
+    let shell = closed_shell_holed(
         cert.n_verts,
         &cert.edge_start,
         &cert.edge_end,
         &cert.wire_edge,
         &cert.wire_reversed,
+        &cert.loop_start,
         &cert.face_start,
     );
     assert_eq!(
@@ -360,7 +364,8 @@ fn the_free_boundary_solid_is_a_certified_closed_solid() {
         Verdict::Verified(ClosedShell {
             verts: 8,
             edges: 12,
-            faces: 6
+            faces: 6,
+            loops: 6,
         }),
         "closed_shell certifies the free-boundary solid a closed oriented 2-manifold"
     );
@@ -376,7 +381,8 @@ fn the_free_boundary_solid_is_a_certified_closed_solid() {
             joints_certified: 1,
             verts: 8,
             edges: 12,
-            faces: 6
+            faces: 6,
+            loops: 6,
         }),
         "valid_closed_solid conjoins the joint closure with whole-solid closedness"
     );
@@ -451,18 +457,20 @@ fn the_cone_frustum_band_is_a_certified_closed_solid() {
     let solid = brep_freeboundary(&chart, &sigma, &w, &mu_lo, &mu_hi);
     let cert = solid.to_shell_certificate();
     assert_eq!(
-        closed_shell(
+        closed_shell_holed(
             cert.n_verts,
             &cert.edge_start,
             &cert.edge_end,
             &cert.wire_edge,
             &cert.wire_reversed,
+            &cert.loop_start,
             &cert.face_start,
         ),
         Verdict::Verified(ClosedShell {
             verts: 8,
             edges: 12,
-            faces: 6
+            faces: 6,
+            loops: 6,
         }),
         "closed_shell certifies the cone frustum band closed"
     );
@@ -704,18 +712,20 @@ fn the_two_sided_cone_gore_is_a_robust_subdivided_solid() {
     assert!(big_n >= 2, "subdivided into N ≥ 2 slices: N = {big_n}");
     let cert = solid.to_shell_certificate();
     assert_eq!(
-        closed_shell(
+        closed_shell_holed(
             cert.n_verts,
             &cert.edge_start,
             &cert.edge_end,
             &cert.wire_edge,
             &cert.wire_reversed,
+            &cert.loop_start,
             &cert.face_start,
         ),
         Verdict::Verified(ClosedShell {
             verts: nv,
             edges: ne,
-            faces: nf
+            faces: nf,
+            loops: nf,
         }),
         "closed_shell certifies the subdivided two-sided cone solid"
     );
@@ -728,5 +738,87 @@ fn the_two_sided_cone_gore_is_a_robust_subdivided_solid() {
     );
     assert_eq!(audit.faces, nf, "{audit:?}");
     assert_eq!(audit.free_edges, 0, "watertight — no free edge: {audit:?}");
+    assert_eq!(audit.nonmanifold_edges, 0, "{audit:?}");
+}
+
+/// STEP II — the same wide two-sided cone gore with a **real through-hole**: a rectangular hole
+/// authored in `(σ, μ)`, placed strictly inside an interior positive-weight slice via
+/// [`sigma_stations`]. The pierced sheets become annular faces (an inner loop each) and a tube
+/// closes the hole through the thickness. This is the generic answer to the STEP-II through-hole:
+/// no σ=0 split, no grid-minus-cell — a first-class inner loop. `closed_shell_holed` certifies the
+/// **genus-1** solid internally (`loops = faces + 2`) and OCCT corroborates it through the `MakeFace`
+/// inner-wire path: `brepcheck_valid`, `free_edges == 0`, `nonmanifold_edges == 0`, no abort.
+#[test]
+fn the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid() {
+    use crate::brep_build::{HoleRect, brep_freeboundary_holed, sigma_stations};
+    use lattice::{Interval, Poly, Rat, RatFunc};
+
+    let muf =
+        |n: i128| RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::from_i128(n)]));
+    let chart = fixtures::devices::cone();
+    let sigma = Interval {
+        lo: Rat::from_i128(-2),
+        hi: Rat::from_i128(2),
+    };
+    let w = Interval {
+        lo: Rat::from_i128(0),
+        hi: Rat::new(1, 8),
+    };
+    let (mu_lo, mu_hi) = (muf(-2), muf(-1));
+
+    // Place the hole in the middle third of an interior slice, in the band interior μ ∈ [−7/4, −5/4].
+    let stations = sigma_stations(&chart, &sigma, &w, &mu_lo, &mu_hi);
+    let k = (stations.len() - 1) / 2;
+    let (a, b) = (&stations[k], &stations[k + 1]);
+    let third = b.sub(a).mul(&Rat::new(1, 3));
+    let hole = HoleRect {
+        sigma: Interval {
+            lo: a.add(&third),
+            hi: b.sub(&third),
+        },
+        mu: Interval {
+            lo: Rat::new(-7, 4),
+            hi: Rat::new(-5, 4),
+        },
+    };
+    let solid = brep_freeboundary_holed(&chart, &sigma, &w, &mu_lo, &mu_hi, &[hole])
+        .expect("the interior hole fits one positive-weight slice");
+
+    let (nv, ne, nf) = (
+        solid.verts().len(),
+        solid.edges().len(),
+        solid.faces().len(),
+    );
+    let cert = solid.to_shell_certificate();
+    assert_eq!(
+        closed_shell_holed(
+            cert.n_verts,
+            &cert.edge_start,
+            &cert.edge_end,
+            &cert.wire_edge,
+            &cert.wire_reversed,
+            &cert.loop_start,
+            &cert.face_start,
+        ),
+        Verdict::Verified(ClosedShell {
+            verts: nv,
+            edges: ne,
+            faces: nf,
+            loops: nf + 2, // one through-hole = an inner loop on each of the two sheets
+        }),
+        "closed_shell_holed certifies the through-hole cone solid a genus-1 closed 2-manifold"
+    );
+
+    // OCCT corroborates the annular (holed) faces + tube through the MakeFace inner-wire path.
+    let audit = audit_brep(&solid).expect("OCC audits the through-hole cone solid");
+    assert!(
+        audit.brepcheck_valid,
+        "OCC accepts the genus-1 through-hole solid: {audit:?}"
+    );
+    assert_eq!(audit.faces, nf, "{audit:?}");
+    assert_eq!(
+        audit.free_edges, 0,
+        "watertight through-hole — no free edge: {audit:?}"
+    );
     assert_eq!(audit.nonmanifold_edges, 0, "{audit:?}");
 }

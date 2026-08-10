@@ -125,10 +125,10 @@ pub struct Brep<B: Backend = Bignum> {
 }
 
 /// The flat index-array certificate a [`Brep`] hands to the trusted
-/// `certify_core::shell::closed_shell` checker — the untrusted-searcher → proven-checker
-/// bridge. It carries only combinatorics (no coordinates, no surface types): the vertex
-/// count, the edge endpoint tables, and the face wires in CSR form. Produced by
-/// [`Brep::to_shell_certificate`].
+/// `certify_core::shell::closed_shell_holed` checker — the untrusted-searcher → proven-checker
+/// bridge. It carries only combinatorics (no coordinates, no surface types): the vertex count,
+/// the edge endpoint tables, and every face's boundary **loops** (outer wire + interior holes)
+/// in a two-level CSR. Produced by [`Brep::to_shell_certificate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCertificate {
     /// Number of vertices.
@@ -137,13 +137,18 @@ pub struct ShellCertificate {
     pub edge_start: Vec<usize>,
     /// Per-edge end-vertex ids.
     pub edge_end: Vec<usize>,
-    /// All face wires' edge ids, concatenated (indexed by [`face_start`](Self::face_start)).
+    /// All loops' edge ids, concatenated (indexed by [`loop_start`](Self::loop_start)).
     pub wire_edge: Vec<usize>,
     /// Whether each half-edge is traversed reversed, parallel to
     /// [`wire_edge`](Self::wire_edge).
     pub wire_reversed: Vec<bool>,
-    /// CSR offsets of length `faces + 1`: face `f`'s wire is
-    /// `wire_edge[face_start[f] .. face_start[f + 1]]`.
+    /// CSR offsets of length `loops + 1`: loop `ℓ`'s half-edges are
+    /// `wire_edge[loop_start[ℓ] .. loop_start[ℓ + 1]]`. A face's outer wire is one loop and each
+    /// of its holes is a further loop.
+    pub loop_start: Vec<usize>,
+    /// CSR offsets of length `faces + 1`, indexing **loops**: face `f` owns loops
+    /// `loop_start[face_start[f] .. face_start[f + 1]]` (outer wire first, then its holes). For a
+    /// hole-free `Brep` this is the identity `0, 1, …, faces` (one loop per face).
     pub face_start: Vec<usize>,
 }
 
@@ -319,27 +324,36 @@ impl<B: Backend> Brep<B> {
     }
 
     /// Emit the flat index-array [`ShellCertificate`] for the trusted
-    /// `certify_core::shell::closed_shell` checker: the vertex count, the edge endpoint
-    /// tables, and the face wires in CSR form. This is the one point where the exact B-rep
-    /// hands its *combinatorics* (no coordinates) to the TCB — the searcher/checker split.
+    /// `certify_core::shell::closed_shell_holed` checker: the vertex count, the edge endpoint
+    /// tables, and every face's boundary **loops** (outer wire + interior holes) in a two-level
+    /// CSR. This is the one point where the exact B-rep hands its *combinatorics* (no
+    /// coordinates) to the TCB — the searcher/checker split.
     ///
-    /// Scope: the certificate covers **outer** wires only. Interior [`holes`](Face::holes) are
-    /// excluded — a face with holes is an honestly *open* sheet (its hole edges are free), not a
-    /// closed solid, so it is outside `closed_shell`'s remit; a hole-free `Brep` (every
-    /// `holes` empty) is certified exactly as before.
+    /// Each face contributes its outer [`wire`](Face::wire) as one loop, then each of its
+    /// [`holes`](Face::holes) as a further loop; `loop_start` bounds the loops and `face_start`
+    /// groups loops into faces. A hole-free `Brep` yields the identity face→loop nesting (one
+    /// loop per face), so a disk-face shell is certified exactly as before — and a closed solid
+    /// with a real through-hole (annular top/bottom faces + a tube) is now certifiable rather
+    /// than being an honestly-open sheet.
     pub fn to_shell_certificate(&self) -> ShellCertificate {
         let edge_start = self.edges.iter().map(|e| e.start).collect();
         let edge_end = self.edges.iter().map(|e| e.end).collect();
         let mut wire_edge = Vec::new();
         let mut wire_reversed = Vec::new();
+        let mut loop_start = Vec::with_capacity(self.faces.len() + 1);
+        loop_start.push(0);
         let mut face_start = Vec::with_capacity(self.faces.len() + 1);
         face_start.push(0);
         for f in &self.faces {
-            for &(eid, reversed) in &f.wire {
-                wire_edge.push(eid);
-                wire_reversed.push(reversed);
+            // Outer wire is loop 0 of the face; each hole wire is a further loop.
+            for loop_ in core::iter::once(&f.wire).chain(f.holes.iter()) {
+                for &(eid, reversed) in loop_ {
+                    wire_edge.push(eid);
+                    wire_reversed.push(reversed);
+                }
+                loop_start.push(wire_edge.len());
             }
-            face_start.push(wire_edge.len());
+            face_start.push(loop_start.len() - 1);
         }
         ShellCertificate {
             n_verts: self.verts.len(),
@@ -347,6 +361,7 @@ impl<B: Backend> Brep<B> {
             edge_end,
             wire_edge,
             wire_reversed,
+            loop_start,
             face_start,
         }
     }
@@ -555,10 +570,11 @@ mod tests {
         assert!(b.faces()[f].holes.is_empty());
     }
 
-    /// The shell certificate covers outer wires only: a holed face's CSR span equals its outer
-    /// wire length (the documented open-sheet scope).
+    /// The shell certificate emits every face's outer wire and each hole as **loops** in a
+    /// two-level CSR: the holed square becomes one face owning two loops (outer + hole), all
+    /// eight half-edges present.
     #[test]
-    fn to_shell_certificate_excludes_holes() {
+    fn to_shell_certificate_includes_holes_as_loops() {
         let mut b = Brep::<Bignum>::new();
         let outer = square_loop(
             &mut b,
@@ -580,8 +596,30 @@ mod tests {
         );
         b.add_face_with_holes(FaceSurface::Plane, outer, vec![hole]);
         let cert = b.to_shell_certificate();
-        // One face, its CSR span = the 4 outer edges (holes excluded).
-        assert_eq!(cert.face_start, vec![0, 4]);
-        assert_eq!(cert.wire_edge.len(), 4);
+        // One face owning two loops (outer, then hole), each 4 half-edges long.
+        assert_eq!(cert.face_start, vec![0, 2], "one face, two loops");
+        assert_eq!(cert.loop_start, vec![0, 4, 8], "outer loop then hole loop");
+        assert_eq!(
+            cert.wire_edge.len(),
+            8,
+            "all outer + hole half-edges emitted"
+        );
+    }
+
+    /// A hole-free `Brep` yields the identity face→loop nesting (one loop per face), so
+    /// `face_start` is `0, 1, …, faces` and `loop_start` is the old per-face wire CSR.
+    #[test]
+    fn to_shell_certificate_is_identity_nesting_when_hole_free() {
+        let mut b = Brep::<Bignum>::new();
+        let v0 = b.add_vertex([r(0), r(0), r(0)]);
+        let v1 = b.add_vertex([r(1), r(0), r(0)]);
+        let v2 = b.add_vertex([r(0), r(1), r(0)]);
+        let e0 = b.add_edge(v0, v1, EdgeGeom::Line);
+        let e1 = b.add_edge(v1, v2, EdgeGeom::Line);
+        let e2 = b.add_edge(v2, v0, EdgeGeom::Line);
+        b.add_plane(vec![(e0, false), (e1, false), (e2, false)]);
+        let cert = b.to_shell_certificate();
+        assert_eq!(cert.face_start, vec![0, 1], "one face owns one loop");
+        assert_eq!(cert.loop_start, vec![0, 3], "the single triangular loop");
     }
 }
