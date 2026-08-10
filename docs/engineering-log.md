@@ -67,9 +67,25 @@ fine — this is a log, not a schema.
   `span < π` precondition now documented in `invert_sigma`; a two-sided domain reaching span π splits at
   σ=0 — future G4). Multi-period soundness sweep (≈[−4π,4π]) + straddle/shifted/large-argument/regression
   tests. Full gate green (nextest ws 441, export 21, develop doctests, clippy `-D warnings`, fmt,
-  `xtask lint`, no_std thumbv7em `lattice`+`certify-core`). *2026-08-10 · roadmap authored (docs-only) +
-  **G1 met** (first Stage-1 slice); branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
-  `crates/develop/src/interval.rs`*
+  `xtask lint`, no_std thumbv7em `lattice`+`certify-core`). **G2 met** — the **cut-curve fit certificate**
+  (turn a cutting *surface* into a certified rational rail `μ̂(σ)`). **G2a** `develop::cut` (pure, no float):
+  a **new sibling checker** `cut_fit` (not an `anchor_dev` reuse — the residual `F(C(σ,μ̂(σ)))` is purely
+  rational in σ, no `cos/sin`), certifying `sup_σ dist(C(σ,μ̂(σ)), {F=0}) ≤ ε` by direct **geometric
+  distance** (plane `|n·C−d|/|n|`; cylinder `|√perp2−R|`, `perp2=|C−p|²−((C−p)·â)²/(â·â)`), DRC
+  `ε<clearance/2`; `CutSurface{Plane,Cylinder}` = the 3-D lift of `cap_in::Carrier`; `plane_cut_rail` = the
+  **exact** offset-plane rail `(d−n·pedal)/(n·ruling)` (verified ε≈0). Founding split: the rail is on the
+  cone *by construction*, so only surface-membership is certified. **G2b** `export::cut_oracle` (behind
+  `diagnostics`): the **float oracle** `fit_cut_rail` proposes a rational fit for the surd cone∩cylinder cut
+  (Chebyshev-node quadratic-branch solve → Vandermonde interpolation → coeffs snapped by the new
+  `approx::f64_to_rat`, the reverse of the exact→f64 bridge); float **proposes**, `cut_fit` **decides**
+  (fail-closed). **FINDING:** the certified `ε` is an interval upper bound, so its refinement handle is
+  **`subdiv`** (as in `anchor_dev`/`unroll`), *not* fit degree — interval-Horner dependency overestimation
+  of a high-degree σ-polynomial rail *grows* with degree, so a higher-degree fit tightens the *true* error
+  but can loosen the *certified* bound; the demo picks a moderate degree + adequate `subdiv`. Full gate green
+  (nextest ws 446, export/diagnostics 47 incl. corroboration, develop+export doctests, clippy `-D warnings`
+  (default + `-p export --features diagnostics`), fmt, `xtask lint`, no_std thumbv7em). *2026-08-10 · roadmap
+  authored (docs-only) + **G1 · G2 met**; branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
+  `crates/develop/src/{interval,cut}.rs`, `crates/export/src/{approx,cut_oracle}.rs`*
 
 - **DEV / M-E = certified development (the flat↔3D layer); the chosen next big bet, opened as a GO-gated spike.** Product-decision (with the user): after M-D's exact 3D closed solids, the next thread is **DEV**, not the D4.4 atlas — because DEV is the product bottleneck (both directions pivot on it) and the highest-risk unknown (retire-highest-risk-first). Reasoning captured in the exchange: "exactness is a representation property, not a shape property" — the closed cone / **seam** / full 2π wrap is *transcendental* (a rational chart sweeps a bounded azimuth `<2π`, so one chart = a gore), so the seam and general shapes are DEV + rational-input approximation, not algebraic intersection. GO-gate criteria authored in `docs/vv-guide.md` (Milestone E (DEV)). **The spike (DEV.1)** = a certified rational enclosure of the cone's development angle `ψ(σ)=∫ψ′` (`ψ′=chart.psi_prime`, rational ⇒ arctan/log; radius `ρ=|n′|` is a surd, already in `lattice::Surd`), checked against the float ground-truth `export::mesh3d::develop_cone`, verdict-typed, with the backward-error `sup|D(â)−g|≤ε` + DRC `ε<clearance/2` scaffold and the seam as the acceptance case; it **selects the enclosure method** (closed-form arctan/log + certified rational bounds ∣ interval integration ∣ Taylor models) and GO/no-go's the tier. Additive (its own spike boundary; the pure exact tier untouched). *2026-08-10 · **DEV.0 + DEV.1 met — decision GO** (`docs/spike-development-report.md`); the cone development reduces to a single `arctan` of a rational (`ψ = 2 sinβ · arctan σ`, verified as an exact polynomial identity), method (a) closed-form arctan + rational alternating-series bounds selected, certified backward error `≈1e-11` corroborated to `≈1.5e-8` — see the DEV.1 finding below · `docs/vv-guide.md` Milestone E (DEV), `docs/implementation-plan-v1.md §6`*
 

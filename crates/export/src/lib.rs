@@ -46,6 +46,12 @@ pub mod svg;
 #[cfg(feature = "diagnostics")]
 pub mod mesh3d;
 
+/// The float **cut-curve oracle** (G2): proposes a rational cut-rail `μ̂(σ)` for a
+/// cone∩surface cut by fitting the algebraic curve. Floats propose; the exact
+/// [`develop::cut::cut_fit`] certificate is the sole arbiter — never a predicate here.
+#[cfg(feature = "diagnostics")]
+pub mod cut_oracle;
+
 /// Real `.step` export via a `cxx` C++ FFI shim to OpenCASCADE's `STEPControl_Writer`.
 /// Behind the off-by-default `step` feature (needs system OCCT; build under `nix develop`).
 #[cfg(feature = "step")]
