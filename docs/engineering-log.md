@@ -147,6 +147,26 @@ fine — this is a log, not a schema.
   fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G4 met**; branch `roadmap-flex-pcb`,
   `crates/develop/src/fold.rs`. The folded outer + hole `FoldedWire`s feed G6 (interior-hole STEP B-rep).*
 
+- **G6a met — exact B-rep faces with interior hole wires (`export::brep` + `brep_build`, pure IR).** First
+  half of the interior-hole STEP milestone (split with the user: **G6a** pure IR now, **G6b** the OCCT bridge
+  next). The exact B-rep `Face` had a single outer `wire` and no holes concept (unlike the 2-D
+  `arrange2d::Face{outer,holes}`); G6a lifts holes into the 3-D IR: `Face` gains `holes: Vec<Vec<HalfEdge>>`,
+  `add_face` delegates to a new `add_face_with_holes` (no caller churn — the 22 `add_face`/`add_plane` sites
+  and the sole `Face{}` literal are source-compatible), `edge_incidence`/`indices_in_range` fold in the hole
+  loops, the wire-closure logic is extracted to `loop_is_closed` with new `hole_is_closed`/`all_loops_closed`,
+  and `to_shell_certificate` is documented **outer-wire only** (a holed face is an honestly *open* sheet — all
+  boundary edges free — outside the `closed_shell` TCB's scope; hole-free breps certify byte-identically, so no
+  `certify_core` change). Builder `brep_build::brep_holed_panel(surface, outer, holes)` assembles one face from
+  polyline (`EdgeGeom::Line`) loops via a private `polyline_loop` — the straight-chord wires a folded
+  `FoldedWire` already is (G7 collapses its `[RatIv;3]` boxes to `[Rat;3]` midpoints; builder stays
+  surface-agnostic, cone panel = `RationalPatch`). Fail-closed stays pure combinatorics + watertight-by-identity
+  (hole shares no edge/vertex with the outer). Tests: holed plane face closes both loops / 8 free edges / 0
+  nonmanifold / disjoint edge ids; broken-hole detected; `add_face` keeps holes empty; cert excludes holes.
+  Full gate green (export 25 + 8 doctests, clippy `-D warnings`, fmt, missing_docs=0, `xtask lint`, no_std
+  thumbv7em). **`step`/OCCT untouched (G6b).** *2026-08-10 · **G6a met**; branch `roadmap-flex-pcb`,
+  `crates/export/src/{brep,brep_build}.rs`. G6b widens the FFI face record to N wires + `occt_shim.cc`
+  `mf.Add(reversed holeWire)` before `ShapeFix_Face` + an OCCT `BRepCheck` differential test under `nix develop`.*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).

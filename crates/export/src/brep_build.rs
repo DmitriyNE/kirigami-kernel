@@ -88,6 +88,57 @@ fn vert<B: Backend>(p: &[Rat<B>; 3]) -> [Surd<B>; 3] {
     ]
 }
 
+/// Build one closed polyline loop of straight [`Line`](EdgeGeom::Line) edges through `pts` (in
+/// order, closing last→first) into `brep`, returning its wire of forward half-edges. Each point
+/// becomes a fresh vertex — a simple polyline loop revisits none, so no dedup is needed.
+fn polyline_loop<B: Backend>(brep: &mut Brep<B>, pts: &[[Rat<B>; 3]]) -> Vec<HalfEdge> {
+    let v: Vec<usize> = pts.iter().map(|p| brep.add_vertex(vert(p))).collect();
+    let n = v.len();
+    (0..n)
+        .map(|i| (brep.add_edge(v[i], v[(i + 1) % n], EdgeGeom::Line), false))
+        .collect()
+}
+
+/// Assemble one exact B-rep face on `surface` whose outer boundary is the polyline `outer` and
+/// which carries one interior hole per loop in `holes` — the straight-chord
+/// ([`Line`](EdgeGeom::Line)) wires of a folded flat pattern (G4's `develop::fold::FoldedWire`
+/// boxes collapsed to their rational midpoints).
+///
+/// Every loop is closed last→first, and the outer and hole loops reference disjoint vertices and
+/// edges, so the result is an honestly *open* holed sheet (all boundary edges free) — the STEP-II
+/// panel. The `surface` is caller-supplied (a cone panel is a
+/// [`RationalPatch`](FaceSurface::RationalPatch) built like [`brep_freeboundary`]'s side faces);
+/// this builder is surface-agnostic. No float enters — points are exact rationals lifted to
+/// [`Surd`].
+///
+/// ```
+/// use export::brep::FaceSurface;
+/// use export::brep_build::brep_holed_panel;
+/// use lattice::{Bignum, Rat};
+///
+/// let q = |n: i128| Rat::<Bignum>::from_i128(n);
+/// let p = |x: i128, y: i128| [q(x), q(y), q(0)];
+/// // A 4×4 plane panel with a 2×2 interior hole.
+/// let outer = [p(0, 0), p(4, 0), p(4, 4), p(0, 4)];
+/// let hole = [p(1, 1), p(3, 1), p(3, 3), p(1, 3)];
+/// let brep = brep_holed_panel(FaceSurface::Plane, &outer, &[&hole]);
+/// assert_eq!(brep.faces()[0].holes.len(), 1);
+/// assert!(brep.all_loops_closed(0));
+/// assert_eq!(brep.free_edges(), 8); // 4 outer + 4 hole, all free (open sheet)
+/// ```
+pub fn brep_holed_panel<B: Backend>(
+    surface: FaceSurface<B>,
+    outer: &[[Rat<B>; 3]],
+    holes: &[&[[Rat<B>; 3]]],
+) -> Brep<B> {
+    let mut brep = Brep::new();
+    let outer_wire = polyline_loop(&mut brep, outer);
+    let hole_wires: Vec<Vec<HalfEdge>> =
+        holes.iter().map(|h| polyline_loop(&mut brep, h)).collect();
+    brep.add_face_with_holes(surface, outer_wire, hole_wires);
+    brep
+}
+
 impl<B: Backend> Builder<B> {
     fn new() -> Self {
         Builder {
