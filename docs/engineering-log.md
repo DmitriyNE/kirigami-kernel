@@ -55,9 +55,21 @@ fine — this is a log, not a schema.
   technique enters at Stage 2:** certified **interval subdivision** for the seam ramp (all prior work is
   closed-form Sturm/resultant/interval-series) — spike/GO-gated. Float stays quarantined (the G2 cut oracle
   lives in `export`, only proposes, never touches a certificate). Sequence: Phase 1 = Stage 1 (start G1,
-  interval-trig range reduction) → Phase 2 DEV.3-β closure → Phase 3 §14 BONDED → beyond. *2026-08-10 ·
-  roadmap authored, docs-only, no slice built; branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
-  `docs/vv-guide.md` Milestone E*
+  interval-trig range reduction) → Phase 2 DEV.3-β closure → Phase 3 §14 BONDED → beyond. **G1 met** —
+  generic **mod-2π range reduction** in `develop::interval`: `cos_on`/`sin_on` now certify **any** real
+  angle (the two-sided/shifted cone gore, `ψ = c·arctan σ` crossing 0), not a fixed window. Decision with
+  the user (over an arbitrary `[−π,π]`/`[−π,3π/2]` window — which would bake in "open gore, centred at 0,
+  sub-π", a goal-specific hack): fully general via reduction, using the `exp(iθ)` symmetries. Point
+  evaluators reduce into `[−π,π]` with a certified integer `k` (`k=0` fast path for `|ψ|<π` — byte-identical
+  to the old `[0,π]` result, so no regression); interval evaluators clamp to the exact `±1` at an enclosed
+  extremum (over-approximated ⇒ always sound since cos,sin ∈ [−1,1]) else the monotone endpoint hull, and
+  `[−1,1]` once θ spans a full period. `fold_point`'s bisection is fixed *for free* within a gore (the
+  `span < π` precondition now documented in `invert_sigma`; a two-sided domain reaching span π splits at
+  σ=0 — future G4). Multi-period soundness sweep (≈[−4π,4π]) + straddle/shifted/large-argument/regression
+  tests. Full gate green (nextest ws 441, export 21, develop doctests, clippy `-D warnings`, fmt,
+  `xtask lint`, no_std thumbv7em `lattice`+`certify-core`). *2026-08-10 · roadmap authored (docs-only) +
+  **G1 met** (first Stage-1 slice); branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
+  `crates/develop/src/interval.rs`*
 
 - **DEV / M-E = certified development (the flat↔3D layer); the chosen next big bet, opened as a GO-gated spike.** Product-decision (with the user): after M-D's exact 3D closed solids, the next thread is **DEV**, not the D4.4 atlas — because DEV is the product bottleneck (both directions pivot on it) and the highest-risk unknown (retire-highest-risk-first). Reasoning captured in the exchange: "exactness is a representation property, not a shape property" — the closed cone / **seam** / full 2π wrap is *transcendental* (a rational chart sweeps a bounded azimuth `<2π`, so one chart = a gore), so the seam and general shapes are DEV + rational-input approximation, not algebraic intersection. GO-gate criteria authored in `docs/vv-guide.md` (Milestone E (DEV)). **The spike (DEV.1)** = a certified rational enclosure of the cone's development angle `ψ(σ)=∫ψ′` (`ψ′=chart.psi_prime`, rational ⇒ arctan/log; radius `ρ=|n′|` is a surd, already in `lattice::Surd`), checked against the float ground-truth `export::mesh3d::develop_cone`, verdict-typed, with the backward-error `sup|D(â)−g|≤ε` + DRC `ε<clearance/2` scaffold and the seam as the acceptance case; it **selects the enclosure method** (closed-form arctan/log + certified rational bounds ∣ interval integration ∣ Taylor models) and GO/no-go's the tier. Additive (its own spike boundary; the pure exact tier untouched). *2026-08-10 · **DEV.0 + DEV.1 met — decision GO** (`docs/spike-development-report.md`); the cone development reduces to a single `arctan` of a rational (`ψ = 2 sinβ · arctan σ`, verified as an exact polynomial identity), method (a) closed-form arctan + rational alternating-series bounds selected, certified backward error `≈1e-11` corroborated to `≈1.5e-8` — see the DEV.1 finding below · `docs/vv-guide.md` Milestone E (DEV), `docs/implementation-plan-v1.md §6`*
 

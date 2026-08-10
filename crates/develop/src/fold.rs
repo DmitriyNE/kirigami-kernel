@@ -74,6 +74,14 @@ fn cross_at<B: Backend>(
 
 /// Recover the σ-enclosure with `ψ(σ) = atan2(y, x)` by monotone bisection on the signed area,
 /// or a [`FoldFault`] if the domain is degenerate or the angle is outside the gore.
+///
+/// Precondition (G1): the sign of `cross = r·sin(θ − ψ(σ))` is faithful to `sign(θ − ψ(σ))` only
+/// while the fold `domain`'s angular span keeps `|θ − ψ(σ)| < π`. `ψ = c·arctan σ` is monotone for
+/// all σ, so any *one-sided* domain (σ all ≥ 0 or all ≤ 0) satisfies this automatically (its span is
+/// `≤ c·π/2 < π`). A *two-sided* domain wide enough to reach span π (device: σ beyond ≈ ±2.3) must be
+/// bisected within one sign of σ — split at σ = 0, chosen by `sign(θ)` — which is the caller's job
+/// (future G4 `fold_outline`). `cos_on`/`sin_on` are now tight for negative ψ, so this bisection is
+/// correct for σ < 0 without change, subject to that span bound.
 fn invert_sigma<B: Backend>(
     dev: &ConeDevelopment<B>,
     x: &Rat<B>,
