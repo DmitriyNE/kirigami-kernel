@@ -214,12 +214,22 @@ pub fn angle_enclosure<B: Backend>(
 /// The tuning budget for a certified development point: `terms` truncates the
 /// `arctan`/`cos`/`sin` series, `sqrt_eps` the radius bisection. Larger budgets
 /// shrink the [`FlatBox`] width (the backward error) toward zero.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DevConfig<B: Backend = Bignum> {
     /// Series-truncation length for the transcendental enclosures.
     pub terms: usize,
     /// Target width for the `√` radius enclosure.
     pub sqrt_eps: Rat<B>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not), like `RatIv`.
+impl<B: Backend> Clone for DevConfig<B> {
+    fn clone(&self) -> Self {
+        DevConfig {
+            terms: self.terms,
+            sqrt_eps: self.sqrt_eps.clone(),
+        }
+    }
 }
 
 impl<B: Backend> DevConfig<B> {
@@ -263,10 +273,20 @@ impl<B: Backend> FlatBox<B> {
 /// Build once with [`ConeDevelopment::new`], then evaluate many [flat
 /// points](ConeDevelopment::point) — `ψ′` and the `reduce()` are computed a single
 /// time.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ConeDevelopment<B: Backend = Bignum> {
     c: Rat<B>,
     rho_sq: RatFunc<B>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not), like `RatIv`.
+impl<B: Backend> Clone for ConeDevelopment<B> {
+    fn clone(&self) -> Self {
+        ConeDevelopment {
+            c: self.c.clone(),
+            rho_sq: self.rho_sq.clone(),
+        }
+    }
 }
 
 impl<B: Backend> ConeDevelopment<B> {

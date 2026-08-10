@@ -1547,6 +1547,13 @@ enclosure is checked against.
     σ-span-mismatched anchor → `SpanMismatch`.
   - **DEV.2d — certified unroll (direction ①)**: develop the free-boundary μ-band
     (`export::brep_build::brep_freeboundary`) to a certified flat outline; corroborate vs `develop_cone`.
+    **MET** — `develop::unroll::unroll_freeboundary` develops the band boundary loop into a flat
+    **polyline** (`FlatOutline`: ordered `FlatBox` vertices) and certifies each **rail edge** within `ε` of
+    the true continuous developed rail via the DEV.2c `anchor_dev` lift bound (the σ-caps are rulings → exact
+    straight radials); whole-outline `ε = max`, DRC-gated. `Verified(FlatOutline)`/`Unresolved(ε)` (refine
+    `segments`)/`Refuted(UnrollFault::{DegenerateSpan,PoleInEval})`. Device-cone fixture: `ε` shrinks with
+    `segments`, generous clearance `Verified`s / tight `Unresolved`s, vertices enclose the development, and
+    the assembled outline corroborates `develop_cone` to `<1e-5` (`export::mesh3d::unroll_outline_corroborates_develop_cone`).
   - **DEV.2e — certified fold-inversion (direction ②, *per-panel*)**: `D⁻¹` flat→`(σ,μ)` enclosure, then
     exact chart eval `C(σ,μ,w)`→3D. **The single-panel isometry only** — multi-panel **creases /
     fold-mates are the atlas** (D4.4) + `closure`/`sew` (spec §5.3 MONO; the reflection mate is already in
@@ -1573,15 +1580,17 @@ the method chosen, the certified `ε_ψ` on the device cone, the float-corrobora
 no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
 
 **Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2a + DEV.2b +
-DEV.2c met; DEV.2d–e planned.** The certified development is demonstrated on the device cone (`develop` crate):
+DEV.2c + DEV.2d met; DEV.2e planned.** The certified development is demonstrated on the device cone (`develop` crate):
 `ψ = 2 sinβ · arctan σ` closed form, rigorous rational enclosure, backward error `≈ 1e-11`,
 float-corroborated to `≈ 1.5e-8`. **DEV.2** broadens to the whole closed-form developable class (cones at
 any placement + cylinders) across the slices above: DEV.2a retired the digit-growth wall (bounded-digit
 outward rounding), DEV.2b generalized the angle (`angle_enclosure`: `∫P/Q` complete-the-square, a
 `Verdict`-shaped arctan/log enclosure certifying cones at *any* placement, not just the canonical
-`c/(1+σ²)` fast path), and DEV.2c built the ANCHOR T-part (`anchor_dev`: the uniform lift bound
-`sup_t|D(â)−g|≤ε` + DRC, composed with the pure `free_boundary` A-part into the full ANCHOR). **DEV.3** owns
-the γ≠0 curved-directrix frontier (interval integration) + the 2π
+`c/(1+σ²)` fast path), DEV.2c built the ANCHOR T-part (`anchor_dev`: the uniform lift bound
+`sup_t|D(â)−g|≤ε` + DRC, composed with the pure `free_boundary` A-part into the full ANCHOR), and DEV.2d
+certified the **unroll** (direction ①: `unroll_freeboundary` develops the free-boundary band to a flat
+polyline `FlatOutline`, each rail edge within `ε` of the true development, corroborated vs `develop_cone`).
+**DEV.3** owns the γ≠0 curved-directrix frontier (interval integration) + the 2π
 closure + the end-to-end pipelines. **Creases / fold-mates / multi-panel assembly are the atlas (D4.4) +
 `closure`/`sew`**, not `develop`. The exact 3D substrate (charts, intersections, watertight solids, STEP)
 that DEV sits on is delivered through M-D.

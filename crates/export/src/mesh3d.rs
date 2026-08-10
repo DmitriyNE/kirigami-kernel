@@ -22,11 +22,14 @@
 //! which for this circular cone is `sin β · Δφ`. The result is an annular sector, not the `(μ,w)`
 //! parameter rectangle. See [`develop_cone`](crate::mesh3d::develop_cone).
 //!
-//! This flat map is **diagnostics only** — it is computed in `f64` and carries no certificate.
-//! An exact cone development is transcendental (`arctan σ` and `sin β` are not algebraic), so a
-//! *certified* development cannot live in the rational kernel; that is future work for the
-//! `develop` layer (M7). What the viewer shows is the numerically-correct unrolling, for
-//! intuition, not a proof.
+//! This flat map ([`develop_cone`](crate::mesh3d::develop_cone)) is **diagnostics only** — it
+//! is computed in `f64` and carries no certificate. The exact cone development is transcendental
+//! (`arctan σ` and `sin β` are not algebraic), but a *certified* development does now exist: the
+//! [`develop`] layer (M7 / Milestone E) encloses it in **rational intervals** — the value is
+//! transcendental, the certificate's endpoints are rational (`develop::cone`, `develop::unroll`).
+//! So this `f64` map is no longer the only unrolling; it is the **oracle** that corroborates the
+//! rational certificate (`certified_flat_point_corroborates_develop_cone`,
+//! `unroll_outline_corroborates_develop_cone`) — the audit, never the proof.
 //!
 //! # Three.js delivery
 //!
@@ -915,6 +918,81 @@ mod tests {
         // Surface the achieved numbers for the spike report.
         println!(
             "DEV corroboration: max_diag={max_diag:e} max_analytic={max_analytic:e} max_backward_error={max_be:e} max_den_digits={max_den_digits}"
+        );
+    }
+
+    // DEV.2d: the certified *unroll* (direction ①). The developed free-boundary outline
+    // (develop::unroll) is corroborated vertex-by-vertex by the independent float diagnostic
+    // develop_cone — the assembled flat pattern matches the oracle, no float in the certificate.
+    #[test]
+    fn unroll_outline_corroborates_develop_cone() {
+        use develop::cone::{ConeDevelopment, DevConfig};
+        use develop::unroll::unroll_freeboundary;
+        use fixtures::devices::cone;
+        use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
+
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        // Tapered band μ⁻ = −1, μ⁺(σ) = −1 + σ over σ ∈ [0, 1].
+        let mu_lo = RatFunc::<Bignum>::from_poly(Poly::constant(Rat::from_i128(-1)));
+        let mu_hi = RatFunc::from_poly(Poly::from_coeffs(vec![
+            Rat::from_i128(-1),
+            Rat::from_i128(1),
+        ]));
+        let w0 = Rat::<Bignum>::from_i128(0);
+
+        // A fine σ grid so develop_cone's accumulated-acos angle converges; the unroll's coarse
+        // stations (σ = k/SEG) land exactly on grid rows i = k·(nrows−1)/SEG.
+        const SEG: usize = 8;
+        let nrows = SEG * 200 + 1; // 1601 rows; (nrows−1)/SEG = 200
+        let sig = |i: usize| Rat::<Bignum>::new(i as i128, (nrows - 1) as i128);
+        let mut positions = Vec::with_capacity(nrows * 2);
+        for i in 0..nrows {
+            let s = sig(i);
+            let mp = mu_hi.eval(&s).unwrap(); // μ⁺(σ_i)
+            positions.push(vec3_to_f64(
+                &chart.surface(&Rat::from_i128(-1), &w0).eval(&s).unwrap(),
+            ));
+            positions.push(vec3_to_f64(&chart.surface(&mp, &w0).eval(&s).unwrap()));
+        }
+        let flat = develop_cone(&positions, nrows, 2);
+
+        let outline = match unroll_freeboundary(
+            &dev,
+            &Interval {
+                lo: Rat::from_i128(0),
+                hi: Rat::from_i128(1),
+            },
+            &mu_lo,
+            &mu_hi,
+            SEG,
+            &DevConfig::tight(),
+            &Rat::from_i128(1000), // generous: we corroborate the vertices, not the DRC here
+        ) {
+            certify_core::Verdict::Verified(o) => o,
+            _ => panic!("the device-cone band must unroll to a certified outline"),
+        };
+        // Outline order: μ⁻ rail σ_lo→σ_hi (SEG+1 verts), then μ⁺ rail σ_hi→σ_lo (SEG+1 verts).
+        assert_eq!(outline.vertices.len(), 2 * (SEG + 1));
+
+        let mut max_diag = 0.0f64;
+        for k in 0..=SEG {
+            let row = k * 200;
+            // μ⁻ vertex k, μ⁺ vertex at the mirrored index in the reversed second rail.
+            let (mlx, mly) = outline.vertices[k].center();
+            let (mhx, mhy) = outline.vertices[(SEG + 1) + (SEG - k)].center();
+            let fm = &flat[row * 2]; // μ⁻ flat position
+            let fp = &flat[row * 2 + 1]; // μ⁺ flat position
+            let d_lo =
+                ((rat_to_f64(&mlx) - fm[0]).powi(2) + (rat_to_f64(&mly) - fm[1]).powi(2)).sqrt();
+            let d_hi =
+                ((rat_to_f64(&mhx) - fp[0]).powi(2) + (rat_to_f64(&mhy) - fp[1]).powi(2)).sqrt();
+            max_diag = max_diag.max(d_lo).max(d_hi);
+        }
+        // The assembled outline agrees with the float diagnostic to its discretization tolerance.
+        assert!(
+            max_diag < 1e-5,
+            "unroll outline corroboration residual {max_diag:e}"
         );
     }
 }
