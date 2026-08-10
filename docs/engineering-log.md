@@ -109,6 +109,26 @@ fine — this is a log, not a schema.
   diagnostics`, fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G3 met**; branch
   `roadmap-flex-pcb`, `crates/develop/src/unroll.rs`*
 
+- **G5 met — arrange2d hole glue (`develop::flat::cut_hole`).** Cut an authored interior hole out of a G3
+  `FlatOutline` via the exact 2-D boolean kernel — the **first** `develop` code to actually wire in `arrange2d`
+  (the dep was declared + charter-named but unused). Adapter `outline_to_edges` reduces each `FlatBox` vertex
+  to its rational `center()` and lifts to `Point2::from_rat` (exact over ℚ — no float; outline stays
+  ε-faithful, the hole is placed exactly on that rational polygon). `cut_hole(outline, hole)` builds outline =
+  operand A (src 0) + hole = operand B (src 1) and runs `ledge_dom_certified(…, BoolOp::Xor)`. **KEY: no
+  `BoolOp::Difference` exists** (only `Xor/And/Or`); for a *strictly-interior* hole `A △ B = A ∖ B`, so `Xor`
+  is the in-tree convention (`fixtures::gallery::square_with_hole`). "Strictly interior" is **not assumed** —
+  the checker certifies the postcondition **one face ∧ one hole ∧ no pinch**, else `Refuted(HoleNotInterior)`
+  (a hole outside/crossing/tangent fails it), fail-closed alongside `DegenerateOutline` and
+  `Boolean(CapOutFault)`. Result `HoledFlat{region, eps, clearance}` carries the outline's ε so the composed
+  guarantee (G3 dev-fidelity ∘ G5 exact-boolean) travels to G6/G7. Tests: synthetic square−square clean cut
+  (1 face/1 hole/4 edges, ε carried), hole-outside refused, degenerate refused, and the **G3→G5 bridge** (a
+  *real* `unroll_freeboundary` band develops to a valid simple arrange2d operand — one hole-free face under a
+  single-operand `Or`). Full gate green (develop 67 + 7 doctests, clippy `-D warnings` default + `-p export
+  --features diagnostics`, fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G5 met**;
+  branch `roadmap-flex-pcb`, `crates/develop/src/flat.rs`. The A2 SVG-with-hole render
+  (`export::svg::region_to_polys`, mirroring `annulus_xor_has_ring_and_hole`) is deferred to the G7 demo
+  driver.*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).

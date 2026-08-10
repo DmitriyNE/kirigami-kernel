@@ -17,6 +17,7 @@
 pub mod anchor;
 pub mod cone;
 pub mod cut;
+pub mod flat;
 pub mod fold;
 pub mod interval;
 pub mod unroll;
