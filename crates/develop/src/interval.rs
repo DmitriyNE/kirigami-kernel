@@ -21,12 +21,29 @@
 
 use lattice::{Backend, Rat};
 
+/// Series-internal rounding budget (DEV.2a): every intermediate enclosure is snapped
+/// *outward* to a denominator dividing `2^ROUND_BITS`, so digit growth is bounded at
+/// any term budget while containment is preserved. `60` gives ~18-digit denominators
+/// and a per-op error `≤ 2^−60 ≈ 8.7e−19` — far below any fab tolerance.
+pub const ROUND_BITS: u32 = 60;
+
 /// A closed rational interval `[lo, hi]` with `lo ≤ hi`, used as a *certified
 /// enclosure*: the true (possibly transcendental) value is proven to lie inside.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RatIv<B: Backend = lattice::Bignum> {
     lo: Rat<B>,
     hi: Rat<B>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend marker types are not) —
+// `Rat<B>` is `Clone` regardless. Mirrors `lattice::Interval`'s manual impl.
+impl<B: Backend> Clone for RatIv<B> {
+    fn clone(&self) -> Self {
+        RatIv {
+            lo: self.lo.clone(),
+            hi: self.hi.clone(),
+        }
+    }
 }
 
 fn min2<B: Backend>(a: Rat<B>, b: Rat<B>) -> Rat<B> {
@@ -127,6 +144,28 @@ impl<B: Backend> RatIv<B> {
         }
         RatIv { lo, hi }
     }
+    /// The smallest interval containing both `self` and `o`.
+    pub fn hull_with(&self, o: &Self) -> Self {
+        RatIv::new(
+            min2(self.lo.clone(), o.lo.clone()),
+            max2(self.hi.clone(), o.hi.clone()),
+        )
+    }
+    /// Widen to `[⌊lo·2^bits⌋/2^bits, ⌈hi·2^bits⌉/2^bits]` — an enclosing interval whose
+    /// endpoints have denominator dividing `2^bits` (`bits` capped at 62). Outward, so
+    /// containment holds; the standard fixed-precision-rounding step that keeps the
+    /// series intermediates bounded-digit.
+    pub fn round_out(&self, bits: u32) -> Self {
+        let scale = Rat::from_i128(1i128 << bits.min(62));
+        RatIv {
+            lo: self.lo.mul(&scale).floor().div(&scale),
+            hi: self.hi.mul(&scale).ceil().div(&scale),
+        }
+    }
+    /// [`round_out`](Self::round_out) at the default [`ROUND_BITS`] budget.
+    pub fn rounded(&self) -> Self {
+        self.round_out(ROUND_BITS)
+    }
 }
 
 // --- arctan --------------------------------------------------------------------------------
@@ -138,17 +177,24 @@ impl<B: Backend> RatIv<B> {
 /// rigorous rational enclosure with width `≤ |t|²ⁿ⁺¹/(2n+1)`.
 fn arctan_small<B: Backend>(t: &Rat<B>, terms: usize) -> RatIv<B> {
     let t2 = t.mul(t);
-    let mut s = Rat::from_i128(0);
-    let mut prev = Rat::from_i128(0);
-    let mut power = t.clone(); // t^{2k+1}, k = 0 → t
+    let zero = RatIv::point(Rat::from_i128(0));
+    let mut s = zero.clone();
+    let mut prev = zero;
+    // The partial sum and the running power `t^{2k+1}` are carried as *intervals*,
+    // rounded outward each step so their denominators stay bounded (DEV.2a). Each
+    // interval still encloses the exact partial sum, so `hull(Sₙ, Sₙ₊₁)` remains a
+    // rigorous alternating-series bracket.
+    let mut power = RatIv::point(t.clone()); // t^{2k+1}, k = 0 → t
     for k in 0..=terms.max(1) {
-        let mag = power.div(&Rat::from_i128((2 * k + 1) as i128));
-        let signed = if k % 2 == 0 { mag } else { mag.neg() };
+        let mut mag = power.scale(&Rat::new(1, (2 * k + 1) as i128)).rounded();
+        if k % 2 == 1 {
+            mag = mag.neg();
+        }
         prev = s.clone();
-        s = s.add(&signed);
-        power = power.mul(&t2);
+        s = s.add(&mag).rounded();
+        power = power.scale(&t2).rounded();
     }
-    RatIv::hull(prev, s) // [S_n, S_{n+1}]
+    prev.hull_with(&s) // [Sₙ, Sₙ₊₁]
 }
 
 /// A certified enclosure of `arctan(x)` for any rational `x`, tight for the
@@ -218,38 +264,44 @@ fn decreasing_from<B: Backend>(p2: &Rat<B>, a: usize, b: usize) -> usize {
 pub fn cos_at<B: Backend>(p: &Rat<B>, terms: usize) -> RatIv<B> {
     let p2 = p.mul(p);
     let n = terms.max(decreasing_from(&p2, 1, 2) + 2);
-    let mut s = Rat::from_i128(0);
-    let mut prev = Rat::from_i128(0);
-    let mut pow = Rat::from_i128(1); // p^{2k}, k = 0 → 1
-    let mut fact = Rat::from_i128(1); // (2k)!
+    let zero = RatIv::point(Rat::from_i128(0));
+    let mut s = zero.clone();
+    let mut prev = zero;
+    let mut pow = RatIv::point(Rat::from_i128(1)); // p^{2k}, k = 0 → 1
+    let mut recip = Rat::from_i128(1); // 1/(2k)!
     for k in 0..=n {
-        let mag = pow.div(&fact);
-        let signed = if k % 2 == 0 { mag } else { mag.neg() };
+        let mut mag = pow.scale(&recip).rounded();
+        if k % 2 == 1 {
+            mag = mag.neg();
+        }
         prev = s.clone();
-        s = s.add(&signed);
-        pow = pow.mul(&p2);
-        fact = fact.mul(&Rat::from_i128(((2 * k + 1) * (2 * k + 2)) as i128));
+        s = s.add(&mag).rounded();
+        pow = pow.scale(&p2).rounded();
+        recip = recip.div(&Rat::from_i128(((2 * k + 1) * (2 * k + 2)) as i128));
     }
-    RatIv::hull(prev, s)
+    prev.hull_with(&s)
 }
 
 /// A certified enclosure of `sin(p)` for `p ≥ 0` via `Σ (−1)ᵏ p²ᵏ⁺¹/(2k+1)!`.
 pub fn sin_at<B: Backend>(p: &Rat<B>, terms: usize) -> RatIv<B> {
     let p2 = p.mul(p);
     let n = terms.max(decreasing_from(&p2, 2, 3) + 2);
-    let mut s = Rat::from_i128(0);
-    let mut prev = Rat::from_i128(0);
-    let mut pow = p.clone(); // p^{2k+1}, k = 0 → p
-    let mut fact = Rat::from_i128(1); // (2k+1)!
+    let zero = RatIv::point(Rat::from_i128(0));
+    let mut s = zero.clone();
+    let mut prev = zero;
+    let mut pow = RatIv::point(p.clone()); // p^{2k+1}, k = 0 → p
+    let mut recip = Rat::from_i128(1); // 1/(2k+1)!
     for k in 0..=n {
-        let mag = pow.div(&fact);
-        let signed = if k % 2 == 0 { mag } else { mag.neg() };
+        let mut mag = pow.scale(&recip).rounded();
+        if k % 2 == 1 {
+            mag = mag.neg();
+        }
         prev = s.clone();
-        s = s.add(&signed);
-        pow = pow.mul(&p2);
-        fact = fact.mul(&Rat::from_i128(((2 * k + 2) * (2 * k + 3)) as i128));
+        s = s.add(&mag).rounded();
+        pow = pow.scale(&p2).rounded();
+        recip = recip.div(&Rat::from_i128(((2 * k + 2) * (2 * k + 3)) as i128));
     }
-    RatIv::hull(prev, s)
+    prev.hull_with(&s)
 }
 
 /// A certified enclosure of `cos(θ)` for an *interval* `θ ⊆ [0, π]`.
@@ -409,6 +461,31 @@ mod tests {
         let iv = RatIv::new(Q::new(150, 100), Q::new(165, 100));
         let s = sin_on::<Bignum>(&iv, 20);
         assert_eq!(*s.hi(), Q::from_i128(1));
+    }
+
+    #[test]
+    fn round_out_widens_to_bounded_denominator() {
+        // A tight interval with an odd (non-dyadic) denominator.
+        let iv = RatIv::new(Q::new(1, 7), Q::new(2, 7));
+        let r = iv.round_out(10); // snap outward to a /2^10 grid
+        assert!(*r.lo() <= *iv.lo() && *r.hi() >= *iv.hi(), "must widen (contain)");
+        // Endpoints now have a denominator dividing 2^10 → at most 4 decimal digits.
+        for endpoint in [r.lo(), r.hi()] {
+            let (_, d) = endpoint.numer_denom_decimal();
+            assert!(d.len() <= 4, "bounded denominator, got {d}");
+        }
+    }
+
+    #[test]
+    fn high_term_budget_stays_bounded_digit() {
+        // DEV.2a: at a large term budget the certified endpoints stay bounded-digit
+        // (denominator divides 2^ROUND_BITS) instead of exploding, and still bracket.
+        let iv = arctan::<Bignum>(&Q::new(1, 2), 200);
+        for endpoint in [iv.lo(), iv.hi()] {
+            let (_, d) = endpoint.numer_denom_decimal();
+            assert!(d.len() < 32, "denominator digit count bounded, got {}", d.len());
+        }
+        assert!(close(&iv, 0.5f64.atan(), 1e-12), "still brackets arctan(1/2)");
     }
 
     #[test]

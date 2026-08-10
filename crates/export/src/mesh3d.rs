@@ -842,24 +842,9 @@ mod tests {
         use fixtures::devices::cone;
         use lattice::{Bignum, Rat};
 
-        // A big-magnitude-safe rational→f64: the certified endpoints are exact rationals whose
-        // numerator AND denominator can carry hundreds of digits (naive series composition grows
-        // the digit count — the DEV.2 note in the spike report), so `numer_denom_decimal` +
-        // direct parse would overflow both to ∞ and yield ∞/∞ = NaN. Reduce by leading digits.
-        fn big_rat_to_f64(r: &Rat<Bignum>) -> f64 {
-            fn parts(s: &str) -> (f64, i32) {
-                let neg = s.starts_with('-');
-                let d = s.trim_start_matches('-');
-                let take = d.len().min(15);
-                let head: f64 = d[..take].parse().unwrap_or(0.0);
-                (if neg { -head } else { head }, (d.len() - take) as i32)
-            }
-            let (n, d) = r.numer_denom_decimal();
-            let (nm, ne) = parts(&n);
-            let (dm, de) = parts(&d);
-            (nm / dm) * 10f64.powi(ne - de)
-        }
-
+        // DEV.2a: with fixed-precision outward rounding the certified endpoints stay
+        // bounded-digit, so the plain `rat_to_f64` (which parses num/den to f64) no
+        // longer overflows to ∞/∞ = NaN — the DEV.1 `big_rat_to_f64` workaround is gone.
         let chart = cone();
         let dev = ConeDevelopment::new(&chart).expect("device cone is a canonical arctan cone");
 
@@ -884,16 +869,18 @@ mod tests {
         // Evaluate the certified boxes only where σ = i/2000 reduces to a small denominator
         // (0, ¼, ½, ¾, 1) — exact arctan of a low-denominator rational is cheap, and the
         // fine float grid still supplies a well-converged diagnostic angle at those rows.
-        let cfg = DevConfig::<Bignum> { terms: 16, sqrt_eps: Rat::new(1, 100_000_000_000) };
+        // A high term budget (40) — with rounding this stays bounded-digit and tight.
+        let cfg = DevConfig::<Bignum> { terms: 40, sqrt_eps: Rat::new(1, 100_000_000_000) };
         let c = 130.0 / 97.0; // 2 sinβ
         let (mut max_diag, mut max_analytic, mut max_be) = (0.0f64, 0.0f64, 0.0f64);
+        let mut max_den_digits = 0usize;
         for i in [0usize, 500, 1000, 1500, 2000] {
             let s = sig(i);
             let sf = i as f64 / (nrows - 1) as f64;
             for (j, m) in mus.iter().enumerate() {
                 let bx = dev.point(&s, m, &cfg);
                 let (cx, cy) = bx.center();
-                let (cxf, cyf) = (big_rat_to_f64(&cx), big_rat_to_f64(&cy));
+                let (cxf, cyf) = (rat_to_f64(&cx), rat_to_f64(&cy));
                 // (a) corroboration vs the independent float diagnostic develop_cone
                 let fv = &flat[i * ncols + j];
                 max_diag = max_diag.max(((cxf - fv[0]).powi(2) + (cyf - fv[1]).powi(2)).sqrt());
@@ -903,17 +890,22 @@ mod tests {
                 let psi = c * sf.atan();
                 let (ax, ay) = (mag * psi.cos(), mag * psi.sin());
                 max_analytic = max_analytic.max(((cxf - ax).powi(2) + (cyf - ay).powi(2)).sqrt());
-                max_be = max_be.max(big_rat_to_f64(&bx.backward_error()));
+                max_be = max_be.max(rat_to_f64(&bx.backward_error()));
+                // (c) DEV.2a: the certified endpoints are bounded-digit (no explosion).
+                max_den_digits = max_den_digits.max(cx.numer_denom_decimal().1.len());
             }
         }
-        // The certificate is far tighter than the diagnostic's own discretization error
-        // (measured ~1e-11 at 16 terms — sub-nanometre on a millimetre part).
+        // The certificate is far tighter than the diagnostic's own discretization error.
         assert!(max_be < 1e-8, "certified backward error {max_be:e} too loose");
         // The certified center matches its intended analytic value to the f64 readout limit.
         assert!(max_analytic < 1e-9, "analytic residual {max_analytic:e}");
         // The independent float diagnostic corroborates within its discretization tolerance.
         assert!(max_diag < 1e-6, "corroboration residual {max_diag:e}");
+        // DEV.2a: bounded-digit at a high (40-term) budget — no digit explosion.
+        assert!(max_den_digits < 40, "endpoint denominator digits bounded, got {max_den_digits}");
         // Surface the achieved numbers for the spike report.
-        println!("DEV.1 corroboration: max_diag={max_diag:e} max_analytic={max_analytic:e} max_backward_error={max_be:e}");
+        println!(
+            "DEV corroboration: max_diag={max_diag:e} max_analytic={max_analytic:e} max_backward_error={max_be:e} max_den_digits={max_den_digits}"
+        );
     }
 }

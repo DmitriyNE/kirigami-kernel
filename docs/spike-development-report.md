@@ -91,7 +91,14 @@ wrap is `σ: −∞→∞ ↔ φ₃D: −π→π` (one 2π turn); the closed con
 **post-GO (DEV.2)** deliverable — but its angular position is already pinned rationally, so "cone with a seam"
 is scoped, not hand-waved.
 
-## 5. The one engineering wall — and its remedy (a DEV.2 build note)
+## 5. The one engineering wall — and its remedy (**resolved in DEV.2a**)
+
+> **Update (DEV.2a, done).** The remedy below is implemented: `lattice::Rat` gained `floor`/`ceil`
+> (panic-free, Kani-covered), and `develop::interval` now carries every series accumulator as an interval
+> rounded *outward* to `2^60` (`RatIv::round_out`). At a 40-term budget the device-cone `FlatBox` endpoints
+> are **≤ 19 digits** (was hundreds–thousands), the backward error is `≈6e-12`, and the corroboration still
+> holds at `1.5e-8` — with the plain `rat_to_f64` (the `big_rat_to_f64` workaround is gone). The rest of this
+> section is the original finding, kept for the record.
 
 **Finding: naive exact-rational composition of the power series blows up the digit count.** The angle argument
 `ψ` is itself a many-digit rational (from the `arctan` series), and feeding it into the `cos`/`sin` series

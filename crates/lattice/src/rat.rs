@@ -343,6 +343,64 @@ impl<B: Backend> Rat<B> {
         }
     }
 
+    /// The greatest integer `≤ self`, as an integer-valued `Rat` (floor, toward −∞).
+    ///
+    /// Panic-free over the full domain: the fast path is `i128::div_euclid` with a
+    /// positive denominator (so never the `MIN/-1` overflow, never division by zero);
+    /// the slow path derives floor from the truncating [`Int::divrem`] by a
+    /// remainder-sign correction. Consumers snap a rational to a bounded denominator
+    /// (directed rounding) without leaving ℚ.
+    ///
+    /// ```
+    /// use lattice::{Bignum, Rat};
+    /// assert_eq!(Rat::<Bignum>::new(-7, 2).floor(), Rat::from_i128(-4)); // ⌊−3.5⌋
+    /// assert_eq!(Rat::<Bignum>::new(7, 2).floor(), Rat::from_i128(3));   // ⌊3.5⌋
+    /// assert_eq!(Rat::<Bignum>::new(4, 2).floor(), Rat::from_i128(2));   // exact
+    /// ```
+    pub fn floor(&self) -> Self {
+        if let Rat(RatRepr::Fast(x)) = self {
+            return Rat::from_i128(x.num.div_euclid(x.den));
+        }
+        let r = to_slow_rat(self);
+        let (q, rem) = B::int_divrem(&B::rat_numer(&r), &B::rat_denom(&r));
+        // divrem truncates toward zero; the denominator is > 0, so a negative remainder
+        // means we rounded up and must step down one to reach the floor.
+        let f = if B::int_sign(&rem) < 0 {
+            B::int_sub(&q, &B::int_one())
+        } else {
+            q
+        };
+        demote_rat::<B>(B::rat_from_ints(f, B::int_one()))
+    }
+
+    /// The least integer `≥ self`, as an integer-valued `Rat` (ceil, toward +∞).
+    ///
+    /// The dual of [`floor`](Self::floor); same panic-freedom argument (the fast-path
+    /// `+ 1` is taken only when the remainder is nonzero, so the floor is strictly below
+    /// `i128::MAX` there).
+    ///
+    /// ```
+    /// use lattice::{Bignum, Rat};
+    /// assert_eq!(Rat::<Bignum>::new(-7, 2).ceil(), Rat::from_i128(-3)); // ⌈−3.5⌉
+    /// assert_eq!(Rat::<Bignum>::new(7, 2).ceil(), Rat::from_i128(4));   // ⌈3.5⌉
+    /// assert_eq!(Rat::<Bignum>::new(4, 2).ceil(), Rat::from_i128(2));   // exact
+    /// ```
+    pub fn ceil(&self) -> Self {
+        if let Rat(RatRepr::Fast(x)) = self {
+            let f = x.num.div_euclid(x.den);
+            let c = if x.num.rem_euclid(x.den) != 0 { f + 1 } else { f };
+            return Rat::from_i128(c);
+        }
+        let r = to_slow_rat(self);
+        let (q, rem) = B::int_divrem(&B::rat_numer(&r), &B::rat_denom(&r));
+        let c = if B::int_sign(&rem) > 0 {
+            B::int_add(&q, &B::int_one())
+        } else {
+            q
+        };
+        demote_rat::<B>(B::rat_from_ints(c, B::int_one()))
+    }
+
     /// The reduced numerator and denominator as base-10 strings — for
     /// **diagnostics rendering only** (the float cast lives in the `export` crate;
     /// the certified tiers stay float-free, spec invariant 1). The denominator is
@@ -598,6 +656,51 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // floor/ceil (fast path): over a dense grid, the defining brackets hold —
+    // floor ≤ r < floor+1, ceil−1 < r ≤ ceil, ceil−floor ∈ {0,1}, and both equal r
+    // exactly when r is an integer.
+    #[test]
+    fn floor_ceil_fast_path_grid() {
+        let one = Rat::<Bignum>::from_i128(1);
+        let g = 30i128;
+        for n in -g..=g {
+            for d in (-g..=g).filter(|d| *d != 0) {
+                let r = Rat::<Bignum>::new(n, d);
+                let f = r.floor();
+                let c = r.ceil();
+                assert!(f <= r && r < f.add(&one), "floor bracket for {n}/{d}");
+                assert!(c >= r && r > c.sub(&one), "ceil bracket for {n}/{d}");
+                let gap = c.sub(&f);
+                assert!(
+                    gap == Rat::from_i128(0) || gap == one,
+                    "ceil−floor ∈ {{0,1}} for {n}/{d}"
+                );
+                if n % d == 0 {
+                    assert_eq!(f, r, "integer floor for {n}/{d}");
+                    assert_eq!(c, r, "integer ceil for {n}/{d}");
+                }
+            }
+        }
+    }
+
+    // floor/ceil (slow/backend tier): forced past i128 by overflowing arithmetic.
+    // An integer value floors/ceils to itself; a non-integer keeps the brackets.
+    #[test]
+    fn floor_ceil_slow_tier() {
+        let one = Rat::<Bignum>::from_i128(1);
+        // MAX + 7 overflows i128 ⇒ the backend (slow) tier; it is an integer.
+        let big = Rat::<Bignum>::from_i128(i128::MAX).add(&Rat::from_i128(7));
+        assert_eq!(big.floor(), big, "integer slow value floors to itself");
+        assert_eq!(big.ceil(), big, "integer slow value ceils to itself");
+        // (MAX + 7)/3 is not an integer — the brackets still hold on the slow path.
+        for r in [big.div(&Rat::from_i128(3)), big.neg().div(&Rat::from_i128(3))] {
+            let f = r.floor();
+            let c = r.ceil();
+            assert!(f <= r && r < f.add(&one));
+            assert!(c >= r && r > c.sub(&one));
         }
     }
 }

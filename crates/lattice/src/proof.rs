@@ -71,6 +71,26 @@ fn cmp_panic_free_full_domain() {
     let _ = small::cmp(&x, &y);
 }
 
+// Mirrors the fast path of `Rat::floor`/`Rat::ceil` (`num.div_euclid(den)`,
+// `num.rem_euclid(den)`, and the `+ 1` ceil step) over the FULL i128 domain with the
+// `SmallRat` invariant `den > 0`. `den > 0` rules out both division-by-zero and the
+// `MIN / -1` overflow, so `div_euclid`/`rem_euclid` are total; the ceil `+ 1` is only
+// reached when `rem != 0` (so the floor is strictly below `i128::MAX` and cannot
+// overflow). Proves panic-/overflow-freedom AND the Euclid identity.
+#[kani::proof]
+fn floor_ceil_fast_path_panic_free_full_domain() {
+    let num: i128 = kani::any();
+    let den: i128 = kani::any();
+    kani::assume(den > 0);
+    let f = num.div_euclid(den); // floor
+    let rem = num.rem_euclid(den); // in [0, den)
+    assert!(rem >= 0 && rem < den);
+    assert!(num == f * den + rem); // Euclid identity (operands stay in range)
+    let c = if rem != 0 { f + 1 } else { f }; // ceil — `+ 1` safe when rem != 0
+    let gap = c - f;
+    assert!(gap == 0 || gap == 1);
+}
+
 // The Sturm sign-variation counter (vv-guide §5; the task-3 spike's function #1).
 // Finite: an exhaustive check that the streaming counter matches an independent
 // compact-then-pairwise reference over every {-1,0,1} sequence, and that the

@@ -143,7 +143,7 @@ impl<B: Backend> ConeDevelopment<B> {
 
     /// A certified enclosure of the flat angle `ψ(σ) = c·arctan(σ)`.
     pub fn angle(&self, sigma: &Rat<B>, terms: usize) -> RatIv<B> {
-        arctan(sigma, terms).scale(&self.c)
+        arctan(sigma, terms).scale(&self.c).rounded()
     }
 
     /// A certified enclosure of the ruling-speed radius `ρ(σ) = |n′(σ)|`.
@@ -163,10 +163,10 @@ impl<B: Backend> ConeDevelopment<B> {
         let psi = self.angle(sigma, cfg.terms);
         let cos = cos_on(&psi, cfg.terms);
         let sin = sin_on(&psi, cfg.terms);
-        let radial = self.radius(sigma, &cfg.sqrt_eps).scale(&abs(mu_hat));
+        let radial = self.radius(sigma, &cfg.sqrt_eps).scale(&abs(mu_hat)).rounded();
         FlatBox {
-            x: radial.mul(&cos),
-            y: radial.mul(&sin),
+            x: radial.mul(&cos).rounded(),
+            y: radial.mul(&sin).rounded(),
         }
     }
 
@@ -178,14 +178,14 @@ impl<B: Backend> ConeDevelopment<B> {
     /// closing the full cone (multi-gore / the σ→∞ limit face) is a post-GO
     /// deliverable.
     pub fn seam_angle(&self, terms: usize) -> RatIv<B> {
-        pi_half(terms).scale(&self.c)
+        pi_half(terms).scale(&self.c).rounded()
     }
 
     /// The full flat sector swept by the closed cone: `ψ` span `= c·π = 2π·sinβ`
     /// (`σ: −∞→∞ ↔ φ₃D: −π→π`, one 2π wrap). For `β ≈ 42°` this is `≈ 240.9°`,
     /// the textbook developed-cone sector.
     pub fn flat_sector(&self, terms: usize) -> RatIv<B> {
-        pi(terms).scale(&self.c)
+        pi(terms).scale(&self.c).rounded()
     }
 }
 
