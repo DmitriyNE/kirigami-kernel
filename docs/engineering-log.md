@@ -167,6 +167,35 @@ fine — this is a log, not a schema.
   `crates/export/src/{brep,brep_build}.rs`. G6b widens the FFI face record to N wires + `occt_shim.cc`
   `mf.Add(reversed holeWire)` before `ShapeFix_Face` + an OCCT `BRepCheck` differential test under `nix develop`.*
 
+- **G6b met — interior-hole STEP B-rep: the OCCT bridge (N-loop faces, `export::step` + `occt_shim`).** Second
+  half of the interior-hole milestone: widen the STEP bridge end-to-end so a G6a holed `Face` emits a
+  `TopoDS_Face` with an outer wire **plus N inner (hole) wires** that round-trips through `BRepCheck_Analyzer`.
+  **Buffer layout (CSR-of-CSR):** `BrepBuffers` gains a `loops` pool (2 f64/loop = `wire_off, wire_len` into
+  `wires`); the 7-f64 face record's last two fields move from `(wire_off, wire_len)` down one indirection to
+  `(loop_off, n_loops)` into `loops` (loop 0 = outer wire, rest = holes). A hole-free face emits exactly one
+  loop ⇒ **byte-identical geometry** to the pre-hole encoding, so the existing 5 differential + step tests
+  re-run through the new path untouched. **C++ shim:** a `build_loop` lambda assembles each loop's wire
+  (shared edges by identity, as before); the surf-kind branches add holes via `mf.Add(holeWire)` before
+  `IsDone`, and `ShapeFix_Face` (`FixOrientationMode=1` + `FixOrientation`) reverses inner wires to proper
+  holes — the extrusion/patch branches already ran that ShapeFix (holes fold in free), the plane branch now
+  runs it **only when holed** (hole-free plane path kept exactly, zero regression). **KEY RESULT (user chose
+  "also attempt curved"): OCCT accepts BOTH the planar AND the curved holed panel.** The planar gate (6×6
+  square, 2×2 hole, both authored CCW so `ShapeFix` genuinely reverses the hole) audits as one face, 8 edges,
+  8 free (open sheet), 0 nonmanifold, `brepcheck_valid`. And the **curved cone `RationalPatch` panel with an
+  off-surface-chord interior hole** — one open `brep_freeboundary` side face (on-surface rail+ruling outer
+  isolates the risk) whose hole corners lie on the device cone but whose edges are straight `Line` chords
+  cutting across it — **also passes `BRepCheck`**: `ShapeFix` projects the chord edges' pcurves onto the cone
+  within tolerance. So STEP-II (the curved holed panel) round-trips at this hole scale with **no new
+  pcurve-edge IR needed**. *Caveat carried to G7:* `ShapeFix` may inflate an edge tolerance to absorb the
+  chord→surface sag (an oracle-side approximation, never the certificate); for a larger/again-curved hole
+  whose sag exceeds tolerance, on-surface (σ,μ)-pcurve hole edges would become necessary — the fold-back hole
+  in G7 is small, so this stays a flagged contingency, not a blocker. Gate green under `nix develop`: export
+  **49 tests + 15 doctests** (`--features step`), clippy `-D warnings` (default **and** `--features step`),
+  fmt, `xtask lint`, no_std thumbv7em; the default build is unaffected (all G6b code is `step`-gated).
+  *2026-08-10 · **G6b met**; branch `roadmap-flex-pcb`, `crates/export/src/{step.rs,occt_shim.cc,occt_shim.h,
+  differential.rs}`. Next = **G7** (demo driver: fold `FoldedWire` → cone `RationalPatch` holed panel via
+  `brep_holed_panel` → STEP II + A2 SVG-with-hole).*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).

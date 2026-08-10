@@ -155,6 +155,7 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
                                      rust::Slice<const double> edges,
                                      rust::Slice<const double> beziers,
                                      rust::Slice<const double> faces,
+                                     rust::Slice<const double> loops,
                                      rust::Slice<const double> wires,
                                      rust::Slice<const double> patches,
                                      std::size_t& out_faces, std::string& err) {
@@ -229,7 +230,37 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
     }
   }
 
-  // Faces — each bounded by a wire of shared edges; assembled into one shell.
+  // Faces — each bounded by an outer wire plus any interior hole wires of shared
+  // edges; assembled into one shell. Build one boundary loop (loop index `li`) into
+  // a wire; reversing shares the same underlying TShape, so identity (and therefore
+  // edge incidence) is preserved across every face meeting on an edge.
+  const std::size_t nl = loops.size() / 2;
+  auto build_loop = [&](std::size_t li, TopoDS_Wire& out) -> bool {
+    const int woff = static_cast<int>(loops[2 * li + 0]);
+    const int wlen = static_cast<int>(loops[2 * li + 1]);
+    if (wlen <= 0 || woff < 0 ||
+        static_cast<std::size_t>(2 * (woff + wlen)) > wires.size()) {
+      err = "face loop wire range out of bounds";
+      return false;
+    }
+    BRepBuilderAPI_MakeWire mw;
+    for (int k = 0; k < wlen; ++k) {
+      const int eid = static_cast<int>(wires[2 * (woff + k) + 0]);
+      const bool rev = wires[2 * (woff + k) + 1] != 0.0;
+      if (eid < 0 || static_cast<std::size_t>(eid) >= ne) {
+        err = "wire references an edge id out of range";
+        return false;
+      }
+      mw.Add(rev ? TopoDS::Edge(E[eid].Reversed()) : E[eid]);
+    }
+    if (!mw.IsDone()) {
+      err = "MakeWire failed (loop edges do not chain)";
+      return false;
+    }
+    out = mw.Wire();
+    return true;
+  };
+
   BRep_Builder builder;
   TopoDS_Shell shell;
   builder.MakeShell(shell);
@@ -241,41 +272,45 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
     const double dx = faces[7 * f + 2];
     const double dy = faces[7 * f + 3];
     const double dz = faces[7 * f + 4];
-    const int woff = static_cast<int>(faces[7 * f + 5]);
-    const int wlen = static_cast<int>(faces[7 * f + 6]);
-    if (wlen <= 0 || woff < 0 ||
-        static_cast<std::size_t>(2 * (woff + wlen)) > wires.size()) {
-      err = "face wire range out of bounds";
+    const int loop_off = static_cast<int>(faces[7 * f + 5]);
+    const int n_loops = static_cast<int>(faces[7 * f + 6]);
+    if (n_loops < 1 || loop_off < 0 ||
+        static_cast<std::size_t>(loop_off + n_loops) > nl) {
+      err = "face loop range out of bounds";
       return TopoDS_Shape();
     }
 
-    BRepBuilderAPI_MakeWire mw;
-    for (int k = 0; k < wlen; ++k) {
-      const int eid = static_cast<int>(wires[2 * (woff + k) + 0]);
-      const bool rev = wires[2 * (woff + k) + 1] != 0.0;
-      if (eid < 0 || static_cast<std::size_t>(eid) >= ne) {
-        err = "wire references an edge id out of range";
-        return TopoDS_Shape();
-      }
-      // Reversing shares the same underlying TShape, so identity (and therefore
-      // edge incidence) is preserved across the two faces meeting on this edge.
-      mw.Add(rev ? TopoDS::Edge(E[eid].Reversed()) : E[eid]);
+    // The outer boundary is loop `loop_off`; any remaining loops are interior holes.
+    TopoDS_Wire wire;
+    if (!build_loop(static_cast<std::size_t>(loop_off), wire)) return TopoDS_Shape();
+    std::vector<TopoDS_Wire> holes;
+    for (int h = 1; h < n_loops; ++h) {
+      TopoDS_Wire hw;
+      if (!build_loop(static_cast<std::size_t>(loop_off + h), hw)) return TopoDS_Shape();
+      holes.push_back(hw);
     }
-    if (!mw.IsDone()) {
-      err = "MakeWire failed (wire edges do not chain)";
-      return TopoDS_Shape();
-    }
-    const TopoDS_Wire wire = mw.Wire();
 
     TopoDS_Face face;
     if (surf_kind == 0) {
       // Planar face — the plane is inferred from the (coplanar-by-construction) wire.
       BRepBuilderAPI_MakeFace mf(wire, /*OnlyPlane=*/Standard_True);
+      for (const TopoDS_Wire& hw : holes) mf.Add(hw);
       if (!mf.IsDone()) {
         err = "MakeFace(plane) failed";
         return TopoDS_Shape();
       }
-      face = mf.Face();
+      if (holes.empty()) {
+        face = mf.Face();
+      } else {
+        // Heal wire orientation so each interior loop becomes a proper hole (our IR
+        // does not guarantee holes are wound opposite the outer wire); the plane's
+        // pcurves are exact, so no projection is involved.
+        ShapeFix_Face fix(mf.Face());
+        fix.FixOrientationMode() = 1;
+        fix.Perform();
+        fix.FixOrientation();
+        face = fix.Face();
+      }
     } else if (surf_kind == 1) {
       // Ruled face: the base edge's curve swept along `dir`
       // (Geom_SurfaceOfLinearExtrusion), trimmed by the wire.
@@ -304,6 +339,7 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
       Handle(Geom_RectangularTrimmedSurface) trimmed =
           new Geom_RectangularTrimmedSurface(surf, f0, l0, -vspan, vspan);
       BRepBuilderAPI_MakeFace mf(trimmed, wire, /*Inside=*/Standard_True);
+      for (const TopoDS_Wire& hw : holes) mf.Add(hw);
       if (!mf.IsDone()) {
         err = "MakeFace(trimmed extrusion) failed";
         return TopoDS_Shape();
@@ -358,6 +394,7 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
       // NbPoles − 1 in each direction.
       Handle(Geom_BezierSurface) surf = new Geom_BezierSurface(poles, weights);
       BRepBuilderAPI_MakeFace mf(surf, wire, /*Inside=*/Standard_True);
+      for (const TopoDS_Wire& hw : holes) mf.Add(hw);
       if (!mf.IsDone()) {
         err = "MakeFace(rational patch) failed";
         return TopoDS_Shape();
@@ -386,6 +423,7 @@ rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
+                             rust::Slice<const double> loops,
                              rust::Slice<const double> wires,
                              rust::Slice<const double> patches) {
   std::string p(path);
@@ -394,13 +432,14 @@ rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
     if (edges.size() % 5 != 0) return rust::String("error: edges not a multiple of 5");
     if (beziers.size() % 4 != 0) return rust::String("error: beziers not a multiple of 4");
     if (faces.size() % 7 != 0) return rust::String("error: faces not a multiple of 7");
+    if (loops.size() % 2 != 0) return rust::String("error: loops not a multiple of 2");
     if (wires.size() % 2 != 0) return rust::String("error: wires not a multiple of 2");
     if (patches.size() % 4 != 0) return rust::String("error: patches not a multiple of 4");
 
     std::size_t nfaces = 0;
     std::string err;
-    TopoDS_Shape shell =
-        build_brep_shape(verts, edges, beziers, faces, wires, patches, nfaces, err);
+    TopoDS_Shape shell = build_brep_shape(verts, edges, beziers, faces, loops, wires,
+                                          patches, nfaces, err);
     if (shell.IsNull()) return rust::String(std::string("error: ") + err);
 
     STEPControl_Writer writer;
@@ -430,6 +469,7 @@ rust::String occt_brep_audit(rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
+                             rust::Slice<const double> loops,
                              rust::Slice<const double> wires,
                              rust::Slice<const double> patches) {
   try {
@@ -437,13 +477,14 @@ rust::String occt_brep_audit(rust::Slice<const double> verts,
     if (edges.size() % 5 != 0) return rust::String("error: edges not a multiple of 5");
     if (beziers.size() % 4 != 0) return rust::String("error: beziers not a multiple of 4");
     if (faces.size() % 7 != 0) return rust::String("error: faces not a multiple of 7");
+    if (loops.size() % 2 != 0) return rust::String("error: loops not a multiple of 2");
     if (wires.size() % 2 != 0) return rust::String("error: wires not a multiple of 2");
     if (patches.size() % 4 != 0) return rust::String("error: patches not a multiple of 4");
 
     std::size_t nfaces = 0;
     std::string err;
-    TopoDS_Shape shell =
-        build_brep_shape(verts, edges, beziers, faces, wires, patches, nfaces, err);
+    TopoDS_Shape shell = build_brep_shape(verts, edges, beziers, faces, loops, wires,
+                                          patches, nfaces, err);
     if (shell.IsNull()) return rust::String(std::string("error: ") + err);
 
     // Edge → incident-face count, exactly as `occt_shell_audit` reads it: a

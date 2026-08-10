@@ -45,7 +45,7 @@ rust::String occt_shell_audit(rust::Slice<const double> tris);
 // "ok" on a clean write-then-reload round-trip whose reload passes BRepCheck, else
 // "error: <what>". A write-then-reload check, NOT the external-kernel audit.
 //
-// Six flat `double` buffers carry the IR (all indices are element indices, not
+// Seven flat `double` buffers carry the IR (all indices are element indices, not
 // double offsets):
 //   verts   — 3 per vertex: x, y, z.
 //   edges   — 5 per edge: start_vid, end_vid, kind, bez_off, bez_deg.
@@ -54,12 +54,15 @@ rust::String occt_shell_audit(rust::Slice<const double> tris);
 //             `bez_off` in `beziers`.
 //   beziers — 4 per rational-Bézier control point: weighted pole wx, wy, wz, and
 //             weight w (the homogeneous form; affine pole is (wx,wy,wz)/w).
-//   faces   — 7 per face: surf_kind, a, b, c, d, wire_off, wire_len.
+//   faces   — 7 per face: surf_kind, a, b, c, d, loop_off, n_loops.
 //             surf_kind 0 = Plane (a..d ignored); 1 =
 //             Geom_SurfaceOfLinearExtrusion of edge a's curve along (b,c,d);
 //             2 = rational Geom_BSplineSurface (patch) whose (b+1)*(c+1) control
 //             points start at control-point index a in `patches`, with u-degree b
-//             and v-degree c (d ignored). The bounding wire is `wire_len`
+//             and v-degree c (d ignored). The face is bounded by `n_loops`
+//             boundary loops starting at loop index `loop_off` in `loops`: the
+//             first is the outer wire, the rest are interior holes.
+//   loops   — 2 per boundary loop: wire_off, wire_len. The loop is `wire_len`
 //             half-edges starting at half-edge index `wire_off` in `wires`.
 //   wires   — 2 per half-edge: edge_id, reversed (0 or 1).
 //   patches — 4 per rational-patch control point: weighted pole wx, wy, wz, and
@@ -69,6 +72,7 @@ rust::String occt_write_brep(rust::Str path, rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
+                             rust::Slice<const double> loops,
                              rust::Slice<const double> wires,
                              rust::Slice<const double> patches);
 
@@ -85,6 +89,7 @@ rust::String occt_brep_audit(rust::Slice<const double> verts,
                              rust::Slice<const double> edges,
                              rust::Slice<const double> beziers,
                              rust::Slice<const double> faces,
+                             rust::Slice<const double> loops,
                              rust::Slice<const double> wires,
                              rust::Slice<const double> patches);
 

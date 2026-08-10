@@ -57,7 +57,7 @@ mod ffi {
         /// surfaces) into a `TopoDS_Shell` with edges shared **by identity** (no
         /// float-tolerance sewing), write it to `path` as a STEP file, read it back,
         /// and run `BRepCheck_Analyzer` on the reload. Returns `"ok"` on a clean
-        /// write-then-reload round-trip, else `"error: <what>"`. The five flat
+        /// write-then-reload round-trip, else `"error: <what>"`. The six flat
         /// buffers are the [`BrepBuffers`] layout. Callers should use [`write_brep`],
         /// which does the exact→`f64` cast; this raw binding takes floats directly.
         #[allow(clippy::too_many_arguments)]
@@ -67,6 +67,7 @@ mod ffi {
             edges: &[f64],
             beziers: &[f64],
             faces: &[f64],
+            loops: &[f64],
             wires: &[f64],
             patches: &[f64],
         ) -> String;
@@ -85,6 +86,7 @@ mod ffi {
             edges: &[f64],
             beziers: &[f64],
             faces: &[f64],
+            loops: &[f64],
             wires: &[f64],
             patches: &[f64],
         ) -> String;
@@ -172,10 +174,10 @@ pub fn audit_shell<B: Backend>(rec: &ShellRecord<B>) -> Result<ShellAudit, Strin
     parse_shell_audit(&ffi::occt_shell_audit(&record_to_floats(rec)))
 }
 
-/// The five flat `f64` buffers that carry an exact [`Brep`] across the FFI boundary
+/// The six flat `f64` buffers that carry an exact [`Brep`] across the FFI boundary
 /// — the surface-tier analogue of [`record_to_floats`]'s single triangle buffer.
 /// All indices inside the buffers are *element* indices (vertex/edge/control-point/
-/// half-edge), not `f64` offsets. This is the single point where the exact B-rep
+/// loop/half-edge), not `f64` offsets. This is the single point where the exact B-rep
 /// becomes floating-point, at the last moment before OCCT; the layout is documented
 /// on [`ffi::occt_write_brep`] and mirrored on the C++ side.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,13 +191,18 @@ pub struct BrepBuffers {
     /// 4 `f64` per rational-Bézier control point: weighted pole `wx, wy, wz` and
     /// weight `w` (homogeneous form; the affine pole is `(wx, wy, wz) / w`).
     pub beziers: Vec<f64>,
-    /// 7 `f64` per face: `surf_kind, a, b, c, d, wire_off, wire_len`. `surf_kind` 0 =
+    /// 7 `f64` per face: `surf_kind, a, b, c, d, loop_off, n_loops`. `surf_kind` 0 =
     /// `Plane` (`a..d` unused); 1 = `LinearExtrusion` (`a` = base edge id, `(b, c, d)` =
     /// ruling direction); 2 = `RationalPatch` (`a` = control-point index into
-    /// [`patches`](Self::patches), `b` = u-degree, `c` = v-degree, `d` unused). The
-    /// bounding wire is `wire_len` half-edges from half-edge index `wire_off` in
-    /// [`wires`](Self::wires).
+    /// [`patches`](Self::patches), `b` = u-degree, `c` = v-degree, `d` unused). The face
+    /// is bounded by `n_loops` boundary loops from loop index `loop_off` in
+    /// [`loops`](Self::loops): the first (`loop_off`) is the outer wire, the rest are
+    /// interior holes.
     pub faces: Vec<f64>,
+    /// 2 `f64` per boundary loop: `wire_off, wire_len` — the loop is `wire_len`
+    /// half-edges from half-edge index `wire_off` in [`wires`](Self::wires). A face's
+    /// outer wire and each of its holes is one entry here (see [`faces`](Self::faces)).
+    pub loops: Vec<f64>,
     /// 2 `f64` per half-edge: `edge_id, reversed` (`reversed` 0 or 1).
     pub wires: Vec<f64>,
     /// 4 `f64` per rational-patch control point: weighted pole `wx, wy, wz` and weight
@@ -246,14 +253,25 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
     }
 
     let mut faces = Vec::with_capacity(b.faces().len() * 7);
+    let mut loops: Vec<f64> = Vec::new();
     let mut wires: Vec<f64> = Vec::new();
     let mut patches: Vec<f64> = Vec::new();
     for f in b.faces() {
-        let wire_off = wires.len() / 2; // half-edge index, not f64 offset
-        for &(eid, reversed) in &f.wire {
-            wires.push(eid as f64);
-            wires.push(if reversed { 1.0 } else { 0.0 });
+        // The face's boundary loops, outer wire first then each hole: one `loops` entry
+        // (wire_off, wire_len) per loop, its half-edges appended to `wires`. A hole-free
+        // face emits exactly one loop, so the layout is byte-identical to the pre-hole
+        // single-wire encoding one indirection level down.
+        let loop_off = loops.len() / 2; // loop index, not f64 offset
+        for lp in std::iter::once(&f.wire).chain(f.holes.iter()) {
+            let wire_off = wires.len() / 2; // half-edge index, not f64 offset
+            for &(eid, reversed) in lp {
+                wires.push(eid as f64);
+                wires.push(if reversed { 1.0 } else { 0.0 });
+            }
+            loops.push(wire_off as f64);
+            loops.push(lp.len() as f64);
         }
+        let n_loops = 1 + f.holes.len();
         match &f.surface {
             FaceSurface::Plane => {
                 faces.extend_from_slice(&[
@@ -262,8 +280,8 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
                     0.0,
                     0.0,
                     0.0,
-                    wire_off as f64,
-                    f.wire.len() as f64,
+                    loop_off as f64,
+                    n_loops as f64,
                 ]);
             }
             FaceSurface::LinearExtrusion { base, dir } => {
@@ -273,8 +291,8 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
                     rat_to_f64(&dir[0]),
                     rat_to_f64(&dir[1]),
                     rat_to_f64(&dir[2]),
-                    wire_off as f64,
-                    f.wire.len() as f64,
+                    loop_off as f64,
+                    n_loops as f64,
                 ]);
             }
             FaceSurface::RationalPatch(patch) => {
@@ -293,8 +311,8 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
                     patch.udeg() as f64,
                     patch.vdeg() as f64,
                     0.0,
-                    wire_off as f64,
-                    f.wire.len() as f64,
+                    loop_off as f64,
+                    n_loops as f64,
                 ]);
             }
         }
@@ -305,6 +323,7 @@ pub fn brep_to_buffers<B: Backend>(b: &Brep<B>) -> BrepBuffers {
         edges,
         beziers,
         faces,
+        loops,
         wires,
         patches,
     }
@@ -342,6 +361,7 @@ pub fn write_brep<B: Backend>(path: &str, b: &Brep<B>) -> String {
         &bufs.edges,
         &bufs.beziers,
         &bufs.faces,
+        &bufs.loops,
         &bufs.wires,
         &bufs.patches,
     )
@@ -386,6 +406,7 @@ pub fn audit_brep<B: Backend>(b: &Brep<B>) -> Result<ShellAudit, String> {
         &bufs.edges,
         &bufs.beziers,
         &bufs.faces,
+        &bufs.loops,
         &bufs.wires,
         &bufs.patches,
     ))
@@ -822,6 +843,35 @@ mod tests {
         let p = path.to_str().expect("utf-8 temp path");
         assert_eq!(super::write_brep(p, &b), "ok");
         let _ = std::fs::remove_file(p);
+    }
+
+    /// G6b interior-hole emit: a planar panel with one interior **hole** wire (a 6×6
+    /// outer square, a 2×2 inner square) writes a STEP face whose inner loop OCCT
+    /// accepts, and the file reloads clean through BRepCheck. Exercises the widened
+    /// N-loop face record + the shim's `mf.Add(holeWire)` + `ShapeFix_Face` orientation.
+    #[test]
+    fn occt_writes_a_planar_holed_face() {
+        use crate::brep::FaceSurface;
+        use crate::brep_build::brep_holed_panel;
+        use lattice::{Bignum, Rat};
+
+        let q = |n: i128| Rat::<Bignum>::from_i128(n);
+        let p = |x: i128, y: i128| [q(x), q(y), q(0)];
+        let outer = [p(0, 0), p(6, 0), p(6, 6), p(0, 6)];
+        let hole = [p(2, 2), p(4, 2), p(4, 4), p(2, 4)];
+        let b = brep_holed_panel(FaceSurface::Plane, &outer, &[&hole]);
+
+        let mut path = std::env::temp_dir();
+        path.push("kirigami-brep-holed.step");
+        let pp = path.to_str().expect("utf-8 temp path");
+        assert_eq!(super::write_brep(pp, &b), "ok");
+        assert!(
+            std::fs::read_to_string(pp)
+                .expect("step file readable")
+                .starts_with("ISO-10303-21"),
+            "not a STEP part-21 file",
+        );
+        let _ = std::fs::remove_file(pp);
     }
 
     /// The `key=val` summary parser round-trips a well-formed line and rejects a
