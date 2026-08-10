@@ -46,3 +46,9 @@ required-features = ["diagnostics"]
 [[example]]
 name = "cone"
 required-features = ["diagnostics"]
+
+# Emits `cone_flat.svg`: `cargo run --example cone_flat --features diagnostics` — the certified
+# flat unrolling of the device cone (develop::unroll, direction ①). Gated like the other renderers.
+[[example]]
+name = "cone_flat"
+required-features = ["diagnostics"]
