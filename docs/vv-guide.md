@@ -1517,12 +1517,18 @@ enclosure is checked against.
     pure-tier `Rat::floor`/`ceil` (+ Kani panic-freedom) and a `develop::interval` `round_out(bits)`
     applied inside the series, so certified endpoints stay bounded-digit at any budget. Rigorous —
     outward rounding only grows an enclosure. **Met when** a high-term-budget development stays
-    bounded-digit *and* still brackets the truth (corroboration digit-bound assertion).
-  - **DEV.2b — the general closed-form angle**: `angle_enclosure` computing `ψ=∫P/Q` via partial fractions
-    (degree-2 core: irreducible `Q`→arctan, real roots→a new `log` enclosure; higher-degree over
-    `lattice::AlgReal` flagged as an extension), `Verdict`-shaped (a γ≠0 curved-directrix chart → a clean
-    `Unresolved` pointing at DEV.3, not a silent `None`). **Met when** it matches DEV.1 on the device
-    cones and certifies a general-placement cone, float-corroborated.
+    bounded-digit *and* still brackets the truth (corroboration digit-bound assertion). **MET** —
+    endpoints ≤ 19 digits at 40 terms, backward error `≈ 6e-12`, corroboration `1.5e-8` (report §5).
+  - **DEV.2b — the general closed-form angle**: `angle_enclosure` computing `ψ=∫P/Q` via complete-the-square
+    (degree-2 core: positive-definite `Q` → `(a/2A)·log((σ−p₀)²+q₀²) + ((ap₀+b)/Aq₀)·arctan((σ−p₀)/q₀)`,
+    the surd `q₀=√(−disc)/2A` via `sqrt`; higher-degree over `lattice::AlgReal` flagged as an extension),
+    `Verdict`-shaped (higher-degree / real-root / γ≠0 charts → a clean `Unresolved(AngleDefer)` pointing at
+    the extension / DEV.3, never a silent `None`). Adds the `interval::log` enclosure (`atanh` series +
+    power-of-two reduction + geometric tail bound), `interval::arctan_on` (interval argument), and
+    `RatIv::recip_pos`. **Met when** it matches DEV.1 on the device cones and certifies a general-placement
+    cone, float-corroborated. **MET** — reproduces `ψ=c·arctan σ` on `cone()`/`cone_alt()` across the gore,
+    certifies a reparametrized cone `q(σ−1)` (`Q=σ²−2σ+2` ⇒ `(130/97)(arctan(σ−1)+π/4)`) that the canonical
+    recognizer declines, and the `log` branch on `σ/(1+σ²)=½ln(1+σ²)`; all corroborated to `≈ 1e-9`.
   - **DEV.2c — the ANCHOR backward-error certificate (the T-part)**: `sup_t|D(â(t))−g(t)| ≤ ε` + DRC
     `ε < clearance/2` (`spec:192`) as an evidence-carrying certificate (`free_boundary` mold:
     `*Cert`/`Valid*`/`*Fault`, `Verdict`-typed) in `develop` — it needs the transcendental enclosures, so
@@ -1558,12 +1564,14 @@ tier stays float-free and untouched.
 the method chosen, the certified `ε_ψ` on the device cone, the float-corroboration numbers, and the GO /
 no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
 
-**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2 planned +
-underway.** The certified development is demonstrated on the device cone (`develop` crate):
+**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2a + DEV.2b met;
+DEV.2c–e planned.** The certified development is demonstrated on the device cone (`develop` crate):
 `ψ = 2 sinβ · arctan σ` closed form, rigorous rational enclosure, backward error `≈ 1e-11`,
 float-corroborated to `≈ 1.5e-8`. **DEV.2** broadens to the whole closed-form developable class (cones at
-any placement + cylinders) across the slices above, opening with DEV.2a (fixed-precision rounding, the
-digit-growth remedy). **DEV.3** owns the γ≠0 curved-directrix frontier (interval integration) + the 2π
+any placement + cylinders) across the slices above: DEV.2a retired the digit-growth wall (bounded-digit
+outward rounding) and DEV.2b generalized the angle (`angle_enclosure`: `∫P/Q` complete-the-square, a
+`Verdict`-shaped arctan/log enclosure certifying cones at *any* placement, not just the canonical
+`c/(1+σ²)` fast path). **DEV.3** owns the γ≠0 curved-directrix frontier (interval integration) + the 2π
 closure + the end-to-end pipelines. **Creases / fold-mates / multi-panel assembly are the atlas (D4.4) +
 `closure`/`sew`**, not `develop`. The exact 3D substrate (charts, intersections, watertight solids, STEP)
 that DEV sits on is delivered through M-D.

@@ -166,6 +166,20 @@ impl<B: Backend> RatIv<B> {
     pub fn rounded(&self) -> Self {
         self.round_out(ROUND_BITS)
     }
+    /// The reciprocal `1/[lo, hi] = [1/hi, 1/lo]` of a **strictly positive**
+    /// interval (`lo > 0`), or `None` when the interval touches or crosses zero
+    /// (where the reciprocal is unbounded). Used to divide by a surd radius `q`
+    /// once its enclosure is tight enough to sign it.
+    pub fn recip_pos(&self) -> Option<Self> {
+        if self.lo.sign() > 0 {
+            Some(RatIv {
+                lo: self.hi.recip(),
+                hi: self.lo.recip(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 // --- arctan --------------------------------------------------------------------------------
@@ -339,6 +353,91 @@ pub fn sin_on<B: Backend>(theta: &RatIv<B>, terms: usize) -> RatIv<B> {
     }
 }
 
+/// A certified enclosure of `arctan(θ)` for an *interval* argument `θ`.
+///
+/// `arctan` is strictly increasing on all of ℝ, so the enclosure is the hull of
+/// the two endpoint enclosures `[arctan(lo).lo, arctan(hi).hi]`. Used when the
+/// argument itself carries the surd `1/q` of a general (non-canonical) cone
+/// placement (`develop::cone::angle_enclosure`).
+pub fn arctan_on<B: Backend>(theta: &RatIv<B>, terms: usize) -> RatIv<B> {
+    RatIv::new(
+        arctan(theta.lo(), terms).lo().clone(),
+        arctan(theta.hi(), terms).hi().clone(),
+    )
+}
+
+// --- log -----------------------------------------------------------------------------------
+
+/// A certified enclosure of `atanh(u) = Σ u²ᵏ⁺¹/(2k+1)` for `u ∈ [0, 1/3]`.
+///
+/// Every term is *positive*, so the partial sums increase to the limit — a
+/// rigorous **lower** bracket. The omitted tail is bounded above geometrically:
+/// with each `1/(2k+1) ≤ 1/(2n+3)` for `k ≥ n+1`,
+/// `Σ_{k≥n+1} u²ᵏ⁺¹/(2k+1) ≤ u²ⁿ⁺³/((2n+3)(1−u²))`, giving the **upper** bracket.
+/// For `u ≤ 1/3` the factor `(1−u²) ≥ 8/9 > 0`, so the bound is finite and tight.
+fn atanh_small<B: Backend>(u: &Rat<B>, terms: usize) -> RatIv<B> {
+    let u2 = u.mul(u);
+    let n = terms.max(1);
+    let mut s = RatIv::point(Rat::from_i128(0));
+    let mut power = RatIv::point(u.clone()); // u^{2k+1}, k = 0 → u
+    for k in 0..=n {
+        let term = power.scale(&Rat::new(1, (2 * k + 1) as i128)).rounded();
+        s = s.add(&term).rounded();
+        power = power.scale(&u2).rounded(); // now u^{2(k+1)+1}
+    }
+    // After the loop `power` encloses u^{2n+3} (the first omitted term is k = n+1);
+    // `power.hi ≥ u^{2n+3} ≥ 0` and the denominator is a positive rational, so
+    // `tail_hi` is a rigorous upper bound on the omitted positive tail.
+    let one = Rat::from_i128(1);
+    let denom = one.sub(&u2).mul(&Rat::from_i128((2 * n + 3) as i128));
+    let tail_hi = power.hi().div(&denom);
+    RatIv::new(s.lo().clone(), s.hi().add(&tail_hi))
+}
+
+/// A certified enclosure of the natural logarithm `ln(x)` for `x > 0`.
+///
+/// Reduces `x = 2ᵐ·y` with `y ∈ [1, 2)` (powers of two factor out *exactly* in ℚ),
+/// so `ln x = m·ln 2 + ln y`; then `ln y = 2·atanh(u)`, `u = (y−1)/(y+1) ∈ [0, 1/3]`
+/// (geometric convergence), and `ln 2 = 2·atanh(1/3)` is enclosed by the same
+/// series. Endpoints stay bounded-digit via the series' outward rounding. A
+/// non-positive argument is out of the domain of `ln` and returns the sentinel
+/// `[0, 0]` (never reached from a positive-definite denominator).
+///
+/// ```
+/// use develop::interval::log;
+/// use lattice::{Bignum, Rat};
+///
+/// // ln 2 ≈ 0.693147; the enclosure brackets it tightly.
+/// let l2 = log::<Bignum>(&Rat::from_i128(2), 40);
+/// assert!(*l2.lo() >= Rat::new(6931, 10000) && *l2.hi() <= Rat::new(6932, 10000));
+/// assert!(l2.width() < Rat::new(1, 1_000_000));
+/// ```
+pub fn log<B: Backend>(x: &Rat<B>, terms: usize) -> RatIv<B> {
+    if x.sign() <= 0 {
+        return RatIv::point(Rat::from_i128(0));
+    }
+    let two = Rat::from_i128(2);
+    let one = Rat::from_i128(1);
+    // Reduce x = 2^m · y with y ∈ [1, 2); each step is an exact ℚ halving/doubling.
+    let mut y = x.clone();
+    let mut m: i128 = 0;
+    while y >= two {
+        y = y.div(&two);
+        m += 1;
+    }
+    while y < one {
+        y = y.mul(&two);
+        m -= 1;
+    }
+    let u = y.sub(&one).div(&y.add(&one)); // ∈ [0, 1/3]
+    let ln_y = atanh_small(&u, terms).scale(&two);
+    if m == 0 {
+        return ln_y;
+    }
+    let ln2 = atanh_small(&Rat::new(1, 3), terms).scale(&two);
+    ln_y.add(&ln2.scale(&Rat::from_i128(m)))
+}
+
 // --- sqrt ----------------------------------------------------------------------------------
 
 /// A certified enclosure of `√r` for `r ≥ 0`, refined by bisection until the
@@ -468,7 +567,10 @@ mod tests {
         // A tight interval with an odd (non-dyadic) denominator.
         let iv = RatIv::new(Q::new(1, 7), Q::new(2, 7));
         let r = iv.round_out(10); // snap outward to a /2^10 grid
-        assert!(*r.lo() <= *iv.lo() && *r.hi() >= *iv.hi(), "must widen (contain)");
+        assert!(
+            *r.lo() <= *iv.lo() && *r.hi() >= *iv.hi(),
+            "must widen (contain)"
+        );
         // Endpoints now have a denominator dividing 2^10 → at most 4 decimal digits.
         for endpoint in [r.lo(), r.hi()] {
             let (_, d) = endpoint.numer_denom_decimal();
@@ -483,9 +585,61 @@ mod tests {
         let iv = arctan::<Bignum>(&Q::new(1, 2), 200);
         for endpoint in [iv.lo(), iv.hi()] {
             let (_, d) = endpoint.numer_denom_decimal();
-            assert!(d.len() < 32, "denominator digit count bounded, got {}", d.len());
+            assert!(
+                d.len() < 32,
+                "denominator digit count bounded, got {}",
+                d.len()
+            );
         }
-        assert!(close(&iv, 0.5f64.atan(), 1e-12), "still brackets arctan(1/2)");
+        assert!(
+            close(&iv, 0.5f64.atan(), 1e-12),
+            "still brackets arctan(1/2)"
+        );
+    }
+
+    #[test]
+    fn log_brackets_known_values() {
+        // Tolerance absorbs the f64 readout of the rational endpoints; the interval
+        // itself is far tighter than an f64 ULP at 40 terms. Covers m = 0 (y ∈ [1,2)),
+        // m > 0 (x ≥ 2), and m < 0 (x < 1 → negative logarithm).
+        let tol = 1e-12;
+        // Exact rationals so `x` and the `want` oracle are the *same* number (no
+        // float-truncation gap). Covers m = 0 (y ∈ [1,2)), m > 0 (x ≥ 2), m < 0 (x < 1),
+        // and a non-dyadic surd-radius argument (144/97).
+        for x in [
+            Q::from_i128(1),
+            Q::new(3, 2),
+            Q::from_i128(2),
+            Q::from_i128(3),
+            Q::from_i128(10),
+            Q::new(1, 2),
+            Q::new(1, 10),
+            Q::new(144, 97),
+        ] {
+            let v = to_f64(&x);
+            assert!(close(&log::<Bignum>(&x, 40), v.ln(), tol), "ln {v}");
+        }
+        // ln 1 = 0 exactly (u = 0, m = 0).
+        let l1 = log::<Bignum>(&Q::from_i128(1), 40);
+        assert_eq!(*l1.lo(), Q::from_i128(0));
+    }
+
+    #[test]
+    fn log_width_shrinks_with_terms() {
+        let a = log::<Bignum>(&Q::from_i128(10), 4).width();
+        let b = log::<Bignum>(&Q::from_i128(10), 30).width();
+        assert!(b < a);
+        assert!(b < Q::new(1, 1_000_000_000));
+    }
+
+    #[test]
+    fn arctan_on_interval_brackets_endpoints() {
+        // arctan is increasing, so the interval enclosure contains both endpoints.
+        let iv = RatIv::new(Q::new(1, 2), Q::from_i128(2));
+        let a = arctan_on::<Bignum>(&iv, 24);
+        assert!(close(&a, 0.5f64.atan(), 1e-9));
+        assert!(close(&a, 2.0f64.atan(), 1e-9));
+        assert!(a.contains(&arctan::<Bignum>(&Q::from_i128(1), 24).mid()));
     }
 
     #[test]
