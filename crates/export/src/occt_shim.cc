@@ -204,8 +204,8 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
         const double wy = beziers[4 * (off + i) + 1];
         const double wz = beziers[4 * (off + i) + 2];
         const double w = beziers[4 * (off + i) + 3];
-        if (w == 0.0) {
-          err = "bezier control point has zero weight";
+        if (w <= 0.0) {
+          err = "bezier control point has non-positive weight";
           return TopoDS_Shape();
         }
         poles(i + 1) = gp_Pnt(wx / w, wy / w, wz / w);
@@ -381,8 +381,8 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
           const double wy = patches[4 * cp + 1];
           const double wz = patches[4 * cp + 2];
           const double w = patches[4 * cp + 3];
-          if (w == 0.0) {
-            err = "patch control point has zero weight";
+          if (w <= 0.0) {
+            err = "patch control point has non-positive weight";
             return TopoDS_Shape();
           }
           poles(i + 1, j + 1) = gp_Pnt(wx / w, wy / w, wz / w);

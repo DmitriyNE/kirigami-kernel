@@ -49,7 +49,7 @@
 //! assert_eq!(brep.nonmanifold_edges(), 0);
 //! ```
 
-use crate::bezier::{RatBezier, RatBezierSurface};
+use crate::bezier::{RatBezier, RatBezierSurface, poly_to_bernstein};
 use crate::brep::{Brep, EdgeGeom, FaceSurface, HalfEdge};
 use certify_core::MarginSq;
 use certify_core::certify1d::{EdgeRegCert, RegCert};
@@ -57,7 +57,7 @@ use certify_core::free_boundary::FreeBoundaryCert;
 use closure::valid::{CapWitness, ClosureTreatment, ClosureValid};
 use closure::{Joint, MuRange};
 use geom::chart::Chart;
-use lattice::{Backend, Interval, Rat, RatFunc, SturmChain, Surd, Vec3Rat};
+use lattice::{Backend, Interval, Poly, Rat, RatFunc, SturmChain, Surd, Vec3Rat};
 
 /// The crease edge two flanks share: the overlap sub-segment `M` (its edge id and the two
 /// endpoint vertex ids), computed as the intersection of the two flanks' crease rulings.
@@ -139,6 +139,55 @@ pub fn brep_holed_panel<B: Backend>(
     brep
 }
 
+/// The exact single-span ruled [`RationalPatch`](FaceSurface::RationalPatch) between two σ-rails
+/// over `[a, b]`. The caller guarantees the span is narrow enough for positive weights (the σ-domain
+/// is subdivided upstream by [`sigma_splits`]); this builds one Bézier patch per positive-weight
+/// slice.
+fn ruled_panel<B: Backend>(
+    rail0: &Vec3Rat<B>,
+    rail1: &Vec3Rat<B>,
+    a: &Rat<B>,
+    b: &Rat<B>,
+) -> FaceSurface<B> {
+    FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(rail0, rail1, a, b))
+}
+
+/// Whether the rational Bézier over `[a, b]` with denominator `den` has **all-positive weights** —
+/// the exact validity condition for a rational Bézier patch/edge (a CAD kernel rejects a
+/// non-positive weight: a control point at/through infinity). The weights are the Bernstein
+/// coefficients of `den` over `[a, b]`; checked at `deg(den)` (degree elevation preserves Bernstein
+/// positivity, so this never *under*-reports — it may only subdivide slightly more than strictly
+/// needed). A strictly-positive polynomial always passes on a small enough interval.
+fn positive_weights<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> bool {
+    let deg = den.degree().unwrap_or(0);
+    poly_to_bernstein(den, a, b, deg)
+        .iter()
+        .all(|w| w.sign() > 0)
+}
+
+/// The ordered σ-stations `[a = s₀, …, s_N = b]` subdividing `[a, b]` so **every** sub-interval's
+/// rational Bézier (shared denominator `den`) has positive weights — the intrinsic,
+/// parametrization-independent criterion for a valid exact Bézier piece (never keyed to a specific
+/// σ value). Adaptive bisection: a sub-interval failing [`positive_weights`] is split at its
+/// midpoint and each half recursed. Terminates because a strictly-positive polynomial's Bernstein
+/// coefficients converge to its (positive) values under subdivision; `MAX_DEPTH` is a safety cap
+/// (a positive developable denominator reaches positivity in a few levels).
+fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Vec<Rat<B>> {
+    const MAX_DEPTH: usize = 32;
+    fn go<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>, depth: usize, out: &mut Vec<Rat<B>>) {
+        if depth == 0 || positive_weights(den, a, b) {
+            out.push(b.clone());
+            return;
+        }
+        let mid = a.add(b).mul(&Rat::new(1, 2));
+        go(den, a, &mid, depth - 1, out);
+        go(den, &mid, b, depth - 1, out);
+    }
+    let mut stations = vec![a.clone()];
+    go(den, a, b, MAX_DEPTH, &mut stations);
+    stations
+}
+
 impl<B: Backend> Builder<B> {
     fn new() -> Self {
         Builder {
@@ -177,6 +226,8 @@ impl<B: Backend> Builder<B> {
     /// Add a μ-rail as an exact rational-Bézier edge over the σ-support: the curve
     /// `surf(σ)` restricted to `[supp.lo, supp.hi]`, its endpoint vertices deduplicated.
     fn add_rail(&mut self, surf: &Vec3Rat<B>, supp: &Interval<B>) -> usize {
+        // A single-span σ-rail Bézier over `supp`; the caller keeps `supp` narrow enough for
+        // positive weights (the σ-domain is subdivided upstream by [`sigma_splits`]).
         let bez = RatBezier::from_vec3rat(surf, &supp.lo, &supp.hi);
         let start = surf.eval(&supp.lo).expect("rail start finite");
         let end = surf.eval(&supp.hi).expect("rail end finite");
@@ -502,12 +553,7 @@ pub fn brep_slab_from_closure<B: Backend>(
             // μ = const wall: exact rational patch ruled between the (μ, wlo) and (μ, whi)
             // σ-rails. Ring corner m is (j, k=?) — the μ index j is shared across w here.
             let (j, _) = ring[m];
-            FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(
-                &surf(j, 0),
-                &surf(j, 1),
-                &sigmas[0],
-                &sigmas[1],
-            ))
+            ruled_panel(&surf(j, 0), &surf(j, 1), &sigmas[0], &sigmas[1])
         };
         bld.brep.add_face(surface, wire);
     }
@@ -573,7 +619,6 @@ pub fn brep_freeboundary<B: Backend>(
 ) -> Brep<B> {
     let mut bld = Builder::new();
     let supp = sigma;
-    let sigmas = [supp.lo.clone(), supp.hi.clone()];
     let ws = [w.lo.clone(), w.hi.clone()];
 
     // The chart fields, reduced once (like the slab's `base`/`dir`): `c + μ±(σ)·r` for the two
@@ -594,72 +639,82 @@ pub fn brep_freeboundary<B: Backend>(
     // The (μ-side, w) cross-section ring: r0=(μ⁻,wlo), r1=(μ⁺,wlo), r2=(μ⁺,whi), r3=(μ⁻,whi).
     let ring = [(0usize, 0usize), (1, 0), (1, 1), (0, 1)];
 
-    // 8 corner vertices: a[m] at σ = σlo, b[m] at σ = σhi, over ring corner m (deduped).
-    let mut a = [0usize; 4];
-    let mut b = [0usize; 4];
-    for (m, &(j, k)) in ring.iter().enumerate() {
-        let s = surf(j, k);
-        a[m] = bld.vertex(
-            &s.eval(&sigmas[0])
-                .expect("free-boundary corner (σlo) finite"),
-        );
-        b[m] = bld.vertex(
-            &s.eval(&sigmas[1])
-                .expect("free-boundary corner (σhi) finite"),
-        );
+    // Subdivide σ into slices narrow enough that every ruled Bézier patch/rail has **positive
+    // weights** — the intrinsic validity criterion (no parametrization-specific split point). All
+    // four rails share one denominator (the reduction above), so one partition serves the whole
+    // solid. A one-sided gore stays a single slice (`N = 1`) → the classic 8-vertex box.
+    let anchor = surf(0, 0);
+    let stations = sigma_splits(anchor.den(), &supp.lo, &supp.hi);
+    let nst = stations.len(); // N + 1 σ-stations, N = nst − 1 slices
+
+    // Corner vertices `v[k][m]`: ring corner m at station s_k (deduped).
+    let mut v: Vec<[usize; 4]> = vec![[0usize; 4]; nst];
+    for (k, sk) in stations.iter().enumerate() {
+        for (m, &(j, kk)) in ring.iter().enumerate() {
+            let s = surf(j, kk);
+            v[k][m] = bld.vertex(&s.eval(sk).expect("free-boundary corner finite"));
+        }
     }
 
-    // 12 edges: the two straight cross-section rings (σlo, σhi) and the four curved σ-rails.
-    let mut ring_a = [0usize; 4];
-    let mut ring_b = [0usize; 4];
-    let mut rails = [0usize; 4];
-    for m in 0..4 {
-        let mp = (m + 1) % 4;
-        ring_a[m] = bld.brep.add_edge(a[m], a[mp], EdgeGeom::Line);
-        ring_b[m] = bld.brep.add_edge(b[m], b[mp], EdgeGeom::Line);
-        let (j, k) = ring[m];
-        rails[m] = bld.add_rail(&surf(j, k), supp);
+    // Edges: at each station a straight cross-ring of 4; per slice, 4 single-span σ-rail segments.
+    let mut ring_e: Vec<[usize; 4]> = vec![[0usize; 4]; nst];
+    for k in 0..nst {
+        for m in 0..4 {
+            ring_e[k][m] = bld
+                .brep
+                .add_edge(v[k][m], v[k][(m + 1) % 4], EdgeGeom::Line);
+        }
+    }
+    let mut rail_e: Vec<[usize; 4]> = vec![[0usize; 4]; nst - 1];
+    for k in 0..nst - 1 {
+        let supp_k = Interval {
+            lo: stations[k].clone(),
+            hi: stations[k + 1].clone(),
+        };
+        for m in 0..4 {
+            let (j, kk) = ring[m];
+            rail_e[k][m] = bld.add_rail(&surf(j, kk), &supp_k);
+        }
     }
 
-    // σ = σlo end cap (planar), wound A0→A3→A2→A1 (outward, matching the cube orientation).
+    // σ = σlo end cap (planar), wound v0→v3→v2→v1 (outward, matching the cube orientation).
+    let a = v[0];
     let cap_lo = vec![
-        bld.directed(ring_a[3], a[0], a[3]),
-        bld.directed(ring_a[2], a[3], a[2]),
-        bld.directed(ring_a[1], a[2], a[1]),
-        bld.directed(ring_a[0], a[1], a[0]),
+        bld.directed(ring_e[0][3], a[0], a[3]),
+        bld.directed(ring_e[0][2], a[3], a[2]),
+        bld.directed(ring_e[0][1], a[2], a[1]),
+        bld.directed(ring_e[0][0], a[1], a[0]),
     ];
     bld.brep.add_plane(cap_lo);
 
-    // σ = σhi end cap (planar), wound B0→B1→B2→B3.
+    // σ = σhi end cap (planar), wound v0→v1→v2→v3.
+    let b = v[nst - 1];
     let cap_hi = vec![
-        bld.directed(ring_b[0], b[0], b[1]),
-        bld.directed(ring_b[1], b[1], b[2]),
-        bld.directed(ring_b[2], b[2], b[3]),
-        bld.directed(ring_b[3], b[3], b[0]),
+        bld.directed(ring_e[nst - 1][0], b[0], b[1]),
+        bld.directed(ring_e[nst - 1][1], b[1], b[2]),
+        bld.directed(ring_e[nst - 1][2], b[2], b[3]),
+        bld.directed(ring_e[nst - 1][3], b[3], b[0]),
     ];
     bld.brep.add_plane(cap_hi);
 
-    // The four side faces: A_m → A_{m+1} → B_{m+1} → B_m, sharing rings and rails by identity.
-    // Every side is now an exact rational patch ruled between its two adjacent σ-rails — the
-    // authored boundary curves in σ, so even the w = const sheets are no longer straight
-    // extrusions (the slab's cylinder-only case). Ring corners m and m+1 supply the rails.
-    for m in 0..4 {
-        let mp = (m + 1) % 4;
-        let wire = vec![
-            bld.directed(ring_a[m], a[m], a[mp]),
-            bld.directed(rails[mp], a[mp], b[mp]),
-            bld.directed(ring_b[m], b[mp], b[m]),
-            bld.directed(rails[m], b[m], a[m]),
-        ];
-        let (jm, km) = ring[m];
-        let (jn, kn) = ring[mp];
-        let surface = FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(
-            &surf(jm, km),
-            &surf(jn, kn),
-            &sigmas[0],
-            &sigmas[1],
-        ));
-        bld.brep.add_face(surface, wire);
+    // Per slice, four side faces `v[k][m] → v[k][m+1] → v[k+1][m+1] → v[k+1][m]`, sharing ring and
+    // rail edges by identity — an exact single-span rational patch ruled between the two adjacent
+    // σ-rails over the slice. Interior cross-rings are shared *edges* only (no interior face), so
+    // the whole stack is one watertight solid: `4(N+1)` verts, `8N+4` edges, `4N+2` faces.
+    for k in 0..nst - 1 {
+        for m in 0..4 {
+            let mp = (m + 1) % 4;
+            let wire = vec![
+                bld.directed(ring_e[k][m], v[k][m], v[k][mp]),
+                bld.directed(rail_e[k][mp], v[k][mp], v[k + 1][mp]),
+                bld.directed(ring_e[k + 1][m], v[k + 1][mp], v[k + 1][m]),
+                bld.directed(rail_e[k][m], v[k + 1][m], v[k][m]),
+            ];
+            let (jm, km) = ring[m];
+            let (jn, kn) = ring[mp];
+            let surface = ruled_panel(&surf(jm, km), &surf(jn, kn), &stations[k], &stations[k + 1]);
+            bld.brep.add_face(surface, wire);
+        }
     }
 
     bld.into_brep()
@@ -1082,6 +1137,106 @@ mod tests {
                 edges: 12,
                 faces: 6
             }),
+        );
+    }
+
+    /// `sigma_splits` subdivides by the **intrinsic positive-weight criterion** — never a
+    /// parametrization-specific point. The `1 + σ²`-type denominator (the device cone's) has a
+    /// single Bézier span's middle weight go non-positive over a wide σ=0-crossing span, so the wide
+    /// `[−15/4, 15/4]` gore genuinely subdivides, and *every* resulting slice has positive weights.
+    #[test]
+    fn sigma_splits_subdivides_until_positive_weights() {
+        use lattice::Poly;
+        let den = Poly::<lattice::Bignum>::from_coeffs(vec![
+            Rat::from_i128(1),
+            Rat::from_i128(0),
+            Rat::from_i128(1),
+        ]); // 1 + σ²
+        let (a, b) = (Rat::new(-15, 4), Rat::new(15, 4));
+        // The undivided wide span fails (a non-positive middle weight); the partition fixes it.
+        assert!(
+            !super::positive_weights(&den, &a, &b),
+            "the wide σ=0-crossing span has a non-positive Bézier weight"
+        );
+        let stations = super::sigma_splits(&den, &a, &b);
+        assert!(stations.len() > 2, "the wide gore subdivides: {stations:?}");
+        assert_eq!(stations.first(), Some(&a));
+        assert_eq!(stations.last(), Some(&b));
+        for w in stations.windows(2) {
+            assert!(
+                super::positive_weights(&den, &w[0], &w[1]),
+                "every slice has positive weights"
+            );
+        }
+    }
+
+    /// The **two-sided** device-cone gore forces σ-subdivision (a single Bézier span would carry
+    /// non-positive weights across the wide, σ=0-crossing span), and the resulting fused **N-slice**
+    /// solid is still a certified closed 2-manifold — all single-span rational patches, no
+    /// parametrization-specific split, no B-spline. Over σ ∈ [−15/4, 15/4], band μ ∈ [−2, −1].
+    #[test]
+    fn the_two_sided_cone_gore_subdivides_and_certifies() {
+        use certify_core::shell::{ClosedShell, closed_shell};
+        use fixtures::devices::cone;
+        use lattice::Poly;
+
+        let muf = |n: i128| {
+            RatFunc::from_poly(Poly::<lattice::Bignum>::from_coeffs(vec![Rat::from_i128(
+                n,
+            )]))
+        };
+        let chart = cone();
+        let sigma = Interval {
+            lo: Rat::new(-15, 4),
+            hi: Rat::new(15, 4),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 8),
+        };
+        let (mu_lo, mu_hi) = (muf(-2), muf(-1));
+
+        let solid = brep_freeboundary(&chart, &sigma, &w, &mu_lo, &mu_hi);
+        let (nv, ne, nf) = (
+            solid.verts().len(),
+            solid.edges().len(),
+            solid.faces().len(),
+        );
+        let big_n = (nf - 2) / 4; // N slices, faces = 4N + 2
+        assert!(
+            big_n >= 2,
+            "the wide two-sided gore subdivides into N ≥ 2 slices: N = {big_n}"
+        );
+        assert_eq!(nv, 4 * (big_n + 1), "4(N+1) verts");
+        assert_eq!(ne, 8 * big_n + 4, "8N+4 edges");
+        assert_eq!(nf, 4 * big_n + 2, "4N+2 faces");
+        assert_eq!(solid.free_edges(), 0, "a closed solid has no free edge");
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        assert_eq!(
+            solid
+                .faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count(),
+            4 * big_n,
+            "all 4N side faces are single-span rational patches (no B-spline)"
+        );
+        let sc = solid.to_shell_certificate();
+        assert_eq!(
+            closed_shell(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: nv,
+                edges: ne,
+                faces: nf
+            }),
+            "the subdivided two-sided cone solid is a certified closed 2-manifold"
         );
     }
 }

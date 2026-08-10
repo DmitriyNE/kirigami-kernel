@@ -667,3 +667,66 @@ fn a_ruled_cone_panel_with_an_interior_hole_through_occt() {
         "OCC accepts the cone face with an off-surface-chord hole: {audit:?}"
     );
 }
+
+/// **G9 — the two-sided cone gore as a robust subdivided closed solid.** The wide σ=0-crossing gore
+/// (σ ∈ [−2, 2], band μ ∈ [−2, −1]) is exactly the case that (a) a single rational Bézier patch
+/// cannot carry with positive weights and (b) SIGSEGV'd OCCT when forced through a B-spline closed
+/// shell. `brep_freeboundary` now subdivides σ by the intrinsic **positive-weight** criterion into
+/// single-span Bézier slices (no σ=0 special case), so the fused N-slice solid is certified closed
+/// internally by `closed_shell` **and** OCCT corroborates it: `brepcheck_valid`, `free_edges == 0`,
+/// `nonmanifold_edges == 0`, no abort. This is the robust replacement for the abandoned B-spline.
+#[test]
+fn the_two_sided_cone_gore_is_a_robust_subdivided_solid() {
+    use crate::brep_build::brep_freeboundary;
+    use lattice::{Interval, Poly, Rat, RatFunc};
+
+    let muf =
+        |n: i128| RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::from_i128(n)]));
+    let chart = fixtures::devices::cone();
+    let sigma = Interval {
+        lo: Rat::from_i128(-2),
+        hi: Rat::from_i128(2),
+    };
+    let w = Interval {
+        lo: Rat::from_i128(0),
+        hi: Rat::new(1, 8),
+    };
+    let solid = brep_freeboundary(&chart, &sigma, &w, &muf(-2), &muf(-1));
+
+    // The two-sided gore genuinely subdivided (faces = 4N+2 > 6), and the fused solid is a certified
+    // closed 2-manifold with the (4(N+1), 8N+4, 4N+2) counts.
+    let (nv, ne, nf) = (
+        solid.verts().len(),
+        solid.edges().len(),
+        solid.faces().len(),
+    );
+    let big_n = (nf - 2) / 4;
+    assert!(big_n >= 2, "subdivided into N ≥ 2 slices: N = {big_n}");
+    let cert = solid.to_shell_certificate();
+    assert_eq!(
+        closed_shell(
+            cert.n_verts,
+            &cert.edge_start,
+            &cert.edge_end,
+            &cert.wire_edge,
+            &cert.wire_reversed,
+            &cert.face_start,
+        ),
+        Verdict::Verified(ClosedShell {
+            verts: nv,
+            edges: ne,
+            faces: nf
+        }),
+        "closed_shell certifies the subdivided two-sided cone solid"
+    );
+
+    // OCCT corroborates the exact single-span-Bézier geometry — cleanly, no crash.
+    let audit = audit_brep(&solid).expect("OCC audits the subdivided two-sided cone solid");
+    assert!(
+        audit.brepcheck_valid,
+        "OCC accepts the subdivided two-sided cone solid: {audit:?}"
+    );
+    assert_eq!(audit.faces, nf, "{audit:?}");
+    assert_eq!(audit.free_edges, 0, "watertight — no free edge: {audit:?}");
+    assert_eq!(audit.nonmanifold_edges, 0, "{audit:?}");
+}

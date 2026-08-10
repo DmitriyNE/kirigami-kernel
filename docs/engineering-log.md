@@ -196,6 +196,45 @@ fine — this is a log, not a schema.
   differential.rs}`. Next = **G7** (demo driver: fold `FoldedWire` → cone `RationalPatch` holed panel via
   `brep_holed_panel` → STEP II + A2 SVG-with-hole).*
 
+- **G7 pipeline driver + a STEP-export stress probe that reshaped the export (→ G9 σ-subdivision).** The
+  `flex_panel` example (`crates/export/examples/flex_panel.rs`, `--features diagnostics[,step]`) drives the whole
+  Stage-1 chain over a *wide two-sided* device-cone gore, printing a certified per-stage verdict: unroll → cut a
+  square hole (`develop::flat::cut_hole`) → A2 SVG-with-hole (`export::svg::region_to_polys`/`polys_svg`, even-odd
+  fill) → fold outer+hole back to 3-D → STEP. **The certified pipeline holds at the full ~300° two-sided gore**
+  (σ∈[−15/4,15/4]): unroll/hole/fold all Verified, fold ε≈3.6e-12. **FINDING (the probe's payoff):** a *two-sided*
+  cone gore could not be written to STEP — a single rational Bézier needs **positive weights** (the Bernstein
+  coefficients of the denominator), and the cone's `1+σ²` denominator over a symmetric span `[−s,s]` has middle
+  weight `1−s²`, exactly 0 at s=1, negative beyond. Located precisely: exports at σ≤9/10, breaks at σ=1; it's the
+  span **crossing σ=0**, not width (one-sided gores of any width are fine). **Finding #0** (analytical): a single
+  offset-plane *cut* also can't span a wide gore — `μ̂=d/(n·ruling)` hits a ruling-parallel pole past ~180° — so
+  the wide demo uses a μ-band. **Finding #2**: the shim's `w==0.0` weight guard missed *negative* weights (|σ|>1
+  crashed OCCT); hardened to `w<=0.0`.
+- **G8 attempt (abandoned): a σ=0-split rational B-spline.** Represented the σ=0-crossing rail/patch as a 2-span
+  positive-weight B-spline (split at σ=0, merge two one-sided Béziers). It exported the *open* holed panel (STEP
+  II) at the wide gore, but **SIGSEGV'd OCCT inside a *closed* shell** (STEP I) — uncatchable in this OCC build
+  (`OSD::SetSignal`+`OCC_CATCH_SIGNALS` "no catch was found"). **User rejected the direction: σ=0 is a
+  *parametrization artifact*** (just where `ψ=c·arctan σ` centers; the cone has no feature there), so keying a
+  split on it is fragile and could re-manifest under a different chart. Reverted in full (kept only the `w<=0.0`
+  guard).
+- **G9 (the robust replacement) — intrinsic σ-subdivision, single-span Bézier only.** The parametrization-
+  *independent* fix: subdivide σ until every piece has positive weights — an exact, self-correcting criterion
+  that never names σ=0. `brep_build::sigma_splits(den, a, b)` adaptively bisects any sub-interval failing
+  `positive_weights` (all Bernstein coefficients of `den` > 0, checked at `deg(den)` — elevation preserves
+  positivity). Small enough slices are always positive-weight (incl. the one straddling σ=0), and single-span
+  Bézier faces are the OCCT-accepted path in closed shells (the one-sided cone-frustum solid already proves it) —
+  so subdivision kills *both* the weight and the closed-shell-crash problems, with no σ=0 anywhere and each piece
+  still **exact**. `brep_freeboundary` now auto-subdivides into a **fused N-σ-slice watertight solid**
+  (`4(N+1)` verts, `8N+4` edges, `4N+2` faces; interior cross-rings are shared *edges* only, no interior faces);
+  **N=1 (one-sided) is byte-identical to the old 8/12/6 box**, so the certified fixtures/tests are untouched.
+  `closed_shell` (the TCB) certifies the subdivided solid unchanged. **STEP I (the input cone) now exports
+  cleanly as a proper two-sided solid** (`write_brep` → `ok`, no abort; wide σ=±15/4 and σ=2 both green). Dead
+  `cone_panel_surface` removed (superseded by the subdivision; a footgun over wide spans). Tests:
+  `sigma_splits_subdivides_until_positive_weights`, `the_two_sided_cone_gore_subdivides_and_certifies`
+  (closed_shell), `the_two_sided_cone_gore_is_a_robust_subdivided_solid` (OCCT `brepcheck_valid`, `free_edges==0`).
+  Gate green: export lib 27 + step 51+16 doctests (`--features step`), clippy default+step, fmt, xtask lint,
+  no_std. *2026-08-11 · **G7 + G9 commit 1**; branch `roadmap-flex-pcb`. Next = **G9 commit 2** — STEP II as a
+  real solid slab with a through-hole (grid-minus-cell, disk-faced, closed_shell-certified genus-1).*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).
