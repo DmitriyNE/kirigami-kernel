@@ -129,6 +129,24 @@ fine — this is a log, not a schema.
   (`export::svg::region_to_polys`, mirroring `annulus_xor_has_ring_and_hole`) is deferred to the G7 demo
   driver.*
 
+- **G4 met — certified `fold_outline` (`develop::fold`, with the two-sided σ=0 split).** Lifted DEV.2e's
+  single-point `fold_point` (flat→3-D inversion, direction ②) to a whole **loop**: fold every flat vertex into
+  a certified 3-D wire `FoldedWire{points, eps, clearance}`. The genuinely new piece is the **σ=0 split** that
+  `invert_sigma`'s own doc deferred to "future G4": the signed-area bisection is faithful only while
+  `|θ−ψ(σ)| < π`; a one-sided σ-domain always satisfies this (span `≤ c·π/2 < π`) but the Stage-1 **wide
+  two-sided gore** (≈240°, ψ-span up to `c·π > π`) does not. `split_domain` restricts each vertex's bisection
+  to the half matching `sign(θ)=sign(y)` (exact: for a gore point `|θ| < c·π/2 < π`, so
+  `sign(y)=sign(sinθ)=sign(θ)=sign(σ)`) — each half one-sided, span `< π`, correct. Reuses `fold_point`
+  unchanged (additive, no DEV.2e edits); per-vertex permissive clearance to read raw ε, one wire-level DRC (the
+  `unroll::rail_edge_eps` pattern). Fail-closed: any vertex out-of-gore/pole/non-cone → `Refuted(FoldFault)`;
+  empty loop → new `Refuted(EmptyLoop)`; loose → `Unresolved`. **Tests: the back-and-forth**
+  `roundtrip_unroll_then_fold` (unroll a band → fold it back → recovers the original 3-D `chart.surface` to
+  `<1e-3`, i.e. develop∘fold ≈ identity) + `two_sided_fold_splits_at_zero` (a wide gore over [−3,3], ψ-span >
+  π, folds correctly — would be silently wrong without the split) + ε-shrinks-with-iters, out-of-gore, empty.
+  Full gate green (develop 72 + 8 doctests, clippy `-D warnings` default + `-p export --features diagnostics`,
+  fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G4 met**; branch `roadmap-flex-pcb`,
+  `crates/develop/src/fold.rs`. The folded outer + hole `FoldedWire`s feed G6 (interior-hole STEP B-rep).*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).

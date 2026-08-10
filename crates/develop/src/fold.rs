@@ -42,6 +42,17 @@ pub struct Fold3D<B: Backend = Bignum> {
     pub clearance: Rat<B>,
 }
 
+/// A certified folded wire: the developed flat loop folded back to a 3-D polyline on the cone
+/// (each vertex a [`fold_point`] 3-D box), with the uniform round-trip backward error `ε`.
+pub struct FoldedWire<B: Backend = Bignum> {
+    /// The folded 3-D wire vertices, in loop order — each a rational box `C(σ, μ̂, w)` on the cone.
+    pub points: Vec<[RatIv<B>; 3]>,
+    /// The uniform round-trip backward error: `max` over vertices of the per-point fold `ε`.
+    pub eps: Rat<B>,
+    /// The clearance the DRC compared against (`ε < clearance/2`).
+    pub clearance: Rat<B>,
+}
+
 /// Why the fold-inversion refused a flat point.
 #[derive(Clone, Debug)]
 pub enum FoldFault {
@@ -55,6 +66,8 @@ pub enum FoldFault {
     /// A field denominator (`ρ²`, or a surface component) straddled zero on the enclosure — a
     /// pole risk, or the radius could not be signed strictly positive.
     PoleInEval,
+    /// A [`fold_outline`] loop was handed no vertices.
+    EmptyLoop,
 }
 
 /// The signed area `cos ψ(σ)·y − sin ψ(σ)·x = r·sin(θ − ψ(σ))` at a rational σ — positive when
@@ -227,6 +240,123 @@ pub fn fold_point<B: Backend>(
     }
 }
 
+/// The one-sided σ sub-domain a point with flat height `y` folds within — the **σ=0 split**.
+///
+/// The signed-area bisection ([`invert_sigma`]) is only faithful while `|θ − ψ(σ)| < π`. A
+/// one-sided domain always satisfies this (span `≤ c·π/2 < π`); a *two-sided* gore
+/// (`σ_lo < 0 < σ_hi`) wide enough to reach span `π` does not, so it is split at σ=0 by the sign of
+/// the flat angle. For a gore point `|θ| < c·π/2 < π`, so `sign(θ) = sign(sin θ) = sign(y) =
+/// sign(σ)` exactly — `y ≥ 0` ⇒ the root is in `[0, σ_hi]`, `y < 0` ⇒ in `[σ_lo, 0]`. A
+/// one-sided domain passes through unchanged.
+fn split_domain<B: Backend>(domain: &Interval<B>, y: &Rat<B>) -> Interval<B> {
+    if domain.lo.sign() < 0 && domain.hi.sign() > 0 {
+        if y.sign() >= 0 {
+            Interval {
+                lo: Rat::from_i128(0),
+                hi: domain.hi.clone(),
+            }
+        } else {
+            Interval {
+                lo: domain.lo.clone(),
+                hi: Rat::from_i128(0),
+            }
+        }
+    } else {
+        domain.clone()
+    }
+}
+
+/// Fold a whole flat loop back onto a cone panel (direction ②): [`fold_point`] every vertex into a
+/// certified 3-D box and collect them into a [`FoldedWire`], with the **two-sided σ=0 split** so a
+/// wide gore (ψ-span `> π`) folds correctly.
+///
+/// `domain` is the source gore's σ-range (may be two-sided); [`split_domain`] restricts each
+/// vertex's bisection to the one-sided half matching `sign(y)`. `mu_negative` is the authored panel
+/// side — one sign for the whole loop (a real cut region never crosses the apex `μ̂ = 0`). Each
+/// vertex is folded under a permissive clearance to read its raw round-trip `ε` back; the uniform
+/// `ε = max` is then gated once by the DRC.
+///
+/// Returns `Verified(`[`FoldedWire`]`)` when `ε < clearance/2`, `Unresolved(ε)` when the wire is not
+/// yet within tolerance (refine `iters`/`cfg`), or `Refuted(`[`FoldFault`]`)` for an empty loop or a
+/// vertex out of the gore / at a pole / on a non-cone chart.
+///
+/// ```
+/// use develop::fold::fold_outline;
+/// use develop::cone::{ConeDevelopment, DevConfig};
+/// use certify_core::Verdict;
+/// use fixtures::devices::cone;
+/// use lattice::{Bignum, Interval, Rat};
+///
+/// let chart = cone();
+/// let dev = ConeDevelopment::new(&chart).unwrap();
+/// let q = |n: i128, d: i128| Rat::<Bignum>::new(n, d);
+/// // A flat loop = the forward images of four (σ, μ̂) corners on the device gore.
+/// let fwd = |s: Rat<Bignum>, m: Rat<Bignum>| {
+///     let b = dev.point(&s, &m, &DevConfig::tight());
+///     [b.x.mid(), b.y.mid()]
+/// };
+/// let loop_ = [fwd(q(0, 1), q(-1, 1)), fwd(q(1, 2), q(-1, 1)), fwd(q(1, 2), q(-2, 1)), fwd(q(0, 1), q(-2, 1))];
+/// let domain = Interval { lo: q(0, 1), hi: q(1, 1) };
+/// let v = fold_outline(&chart, &loop_, &q(0, 1), &domain, 60, true, &DevConfig::tight(), &q(1, 1));
+/// assert!(matches!(v, Verdict::Verified(w) if w.points.len() == 4));
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn fold_outline<B: Backend>(
+    chart: &Chart<B>,
+    flat: &[[Rat<B>; 2]],
+    w: &Rat<B>,
+    domain: &Interval<B>,
+    iters: usize,
+    mu_negative: bool,
+    cfg: &DevConfig<B>,
+    clearance: &Rat<B>,
+) -> Verdict<FoldedWire<B>, FoldFault, Rat<B>> {
+    use core::cmp::Ordering;
+    if flat.is_empty() {
+        return Verdict::Refuted(FoldFault::EmptyLoop);
+    }
+    // Permissive per-vertex clearance: read each raw round-trip ε back, then apply one wire DRC
+    // (the `unroll::rail_edge_eps` pattern).
+    let permissive = Rat::from_i128(1_000_000);
+    let mut points: Vec<[RatIv<B>; 3]> = Vec::with_capacity(flat.len());
+    let mut eps = Rat::from_i128(0);
+    for p in flat {
+        let dom = split_domain(domain, &p[1]);
+        match fold_point(
+            chart,
+            &p[0],
+            &p[1],
+            w,
+            &dom,
+            iters,
+            mu_negative,
+            cfg,
+            &permissive,
+        ) {
+            Verdict::Verified(f) => {
+                if f.eps.cmp(&eps) == Ordering::Greater {
+                    eps = f.eps;
+                }
+                points.push(f.point);
+            }
+            Verdict::Refuted(fault) => return Verdict::Refuted(fault),
+            // Unreachable under the permissive clearance; propagate defensively (panic-free).
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        }
+    }
+
+    let half = clearance.mul(&Rat::new(1, 2));
+    if eps.cmp(&half) == Ordering::Less {
+        Verdict::Verified(FoldedWire {
+            points,
+            eps,
+            clearance: clearance.clone(),
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +517,171 @@ mod tests {
                 &Q::from_i128(1),
             ),
             Verdict::Refuted(FoldFault::DegenerateDomain)
+        ));
+    }
+
+    /// The 3-D coordinates of two boxes agree to `< 1e-3` (f64 audit).
+    fn boxes_close(b: &[RatIv<Bignum>; 3], c: &[Q; 3]) -> bool {
+        (0..3).all(|i| (to_f64(&b[i].mid()) - to_f64(&c[i])).abs() < 1e-3)
+    }
+
+    /// The back-and-forth: unroll a band to a flat outline (direction ①), then fold it back
+    /// (direction ②) recovers the original 3-D geometry — `develop ∘ fold ≈ identity`.
+    #[test]
+    fn roundtrip_unroll_then_fold() {
+        use crate::unroll::{FlatOutline, unroll_freeboundary};
+        use lattice::{Poly, RatFunc};
+
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        let ratf = |c: i128| RatFunc::<Bignum>::from_poly(Poly::constant(Q::from_i128(c)));
+        let domain = ivl(0, 1);
+        let outline: FlatOutline<Bignum> = match unroll_freeboundary(
+            &dev,
+            &domain,
+            &ratf(-1),
+            &ratf(-2),
+            6,
+            &DevConfig::tight(),
+            &Q::from_i128(1000),
+        ) {
+            Verdict::Verified(o) => o,
+            _ => panic!("the band must certify"),
+        };
+        let flat: Vec<[Q; 2]> = outline
+            .vertices
+            .iter()
+            .map(|b| {
+                let (x, y) = b.center();
+                [x, y]
+            })
+            .collect();
+        match fold_outline(
+            &chart,
+            &flat,
+            &Q::from_i128(0),
+            &domain,
+            60,
+            true,
+            &DevConfig::tight(),
+            &Q::from_i128(1),
+        ) {
+            Verdict::Verified(wire) => {
+                assert_eq!(wire.points.len(), outline.vertices.len());
+                // Vertex 0 is the μ̂ = −1 rail at σ = 0 → folds back to C(0, −1, 0).
+                let orig = chart
+                    .surface(&Q::from_i128(-1), &Q::from_i128(0))
+                    .eval(&Q::from_i128(0))
+                    .unwrap();
+                assert!(
+                    boxes_close(&wire.points[0], &orig),
+                    "folded vertex 0 recovers the original 3-D point"
+                );
+            }
+            _ => panic!("unroll then fold must certify"),
+        }
+    }
+
+    /// The σ=0 split: a *wide* two-sided gore (ψ-span over [−3,3] ≈ 3.35 rad > π) folds correctly —
+    /// vertices from σ = ±2 both recover their 3-D points. A single bisection over [−3,3] would be
+    /// unsound (the signed-area sign is unfaithful past span π); the split rescues it.
+    #[test]
+    fn two_sided_fold_splits_at_zero() {
+        let chart = cone();
+        let pos = forward(Q::from_i128(2), Q::from_i128(-1)); // σ = +2 ⇒ y > 0
+        let neg = forward(Q::from_i128(-2), Q::from_i128(-1)); // σ = −2 ⇒ y < 0
+        let flat = [[pos.0, pos.1], [neg.0, neg.1]];
+        match fold_outline(
+            &chart,
+            &flat,
+            &Q::from_i128(0),
+            &ivl(-3, 3),
+            60,
+            true,
+            &DevConfig::tight(),
+            &Q::from_i128(1),
+        ) {
+            Verdict::Verified(wire) => {
+                let cp = chart
+                    .surface(&Q::from_i128(-1), &Q::from_i128(0))
+                    .eval(&Q::from_i128(2))
+                    .unwrap();
+                let cn = chart
+                    .surface(&Q::from_i128(-1), &Q::from_i128(0))
+                    .eval(&Q::from_i128(-2))
+                    .unwrap();
+                assert!(boxes_close(&wire.points[0], &cp), "σ = +2 vertex recovered");
+                assert!(boxes_close(&wire.points[1], &cn), "σ = −2 vertex recovered");
+            }
+            _ => panic!("a wide two-sided fold must certify with the σ=0 split"),
+        }
+    }
+
+    /// The wire's round-trip ε shrinks as the σ-inversion refines (more bisection iters).
+    #[test]
+    fn fold_outline_epsilon_shrinks_with_iters() {
+        let chart = cone();
+        let a = forward(Q::new(1, 2), Q::from_i128(-1));
+        let b = forward(Q::new(3, 4), Q::from_i128(-2));
+        let flat = [[a.0, a.1], [b.0, b.1]];
+        let eps_of = |it: usize| match fold_outline(
+            &chart,
+            &flat,
+            &Q::from_i128(0),
+            &ivl(0, 1),
+            it,
+            true,
+            &DevConfig::tight(),
+            &Q::from_i128(1000),
+        ) {
+            Verdict::Verified(w) => w.eps,
+            Verdict::Unresolved(e) => e,
+            Verdict::Refuted(_) => panic!("unexpected refutation"),
+        };
+        assert!(
+            eps_of(64).cmp(&eps_of(8)) == core::cmp::Ordering::Less,
+            "wire ε must shrink with bisection iters"
+        );
+    }
+
+    /// A vertex whose angle exceeds the gore's max ψ(σ_hi) fails the whole wire (OutOfGore).
+    #[test]
+    fn fold_outline_out_of_gore_is_refused() {
+        let chart = cone();
+        let p = forward(Q::from_i128(5), Q::from_i128(-1)); // ψ(5) > ψ(1)
+        let flat = [[p.0, p.1]];
+        assert!(matches!(
+            fold_outline(
+                &chart,
+                &flat,
+                &Q::from_i128(0),
+                &ivl(0, 1),
+                40,
+                true,
+                &DevConfig::tight(),
+                &Q::from_i128(1),
+            ),
+            Verdict::Refuted(FoldFault::OutOfGore)
+        ));
+    }
+
+    /// An empty loop is refused.
+    #[test]
+    fn empty_loop_is_refused() {
+        let chart = cone();
+        let flat: [[Q; 2]; 0] = [];
+        assert!(matches!(
+            fold_outline(
+                &chart,
+                &flat,
+                &Q::from_i128(0),
+                &ivl(0, 1),
+                40,
+                true,
+                &DevConfig::tight(),
+                &Q::from_i128(1),
+            ),
+            Verdict::Refuted(FoldFault::EmptyLoop)
         ));
     }
 }
