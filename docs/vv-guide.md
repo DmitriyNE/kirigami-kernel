@@ -1557,7 +1557,14 @@ enclosure is checked against.
   - **DEV.2e — certified fold-inversion (direction ②, *per-panel*)**: `D⁻¹` flat→`(σ,μ)` enclosure, then
     exact chart eval `C(σ,μ,w)`→3D. **The single-panel isometry only** — multi-panel **creases /
     fold-mates are the atlas** (D4.4) + `closure`/`sew` (spec §5.3 MONO; the reflection mate is already in
-    M-D), *not* `develop`.
+    M-D), *not* `develop`. **MET** — `develop::fold::fold_point` inverts the polar map: **angle→σ** by
+    monotone bisection on the signed area `cos ψ·y − sin ψ·x = r·sin(θ−ψ)` (a non-dyadic 3/7 split, so a
+    rational root is never hit exactly and the σ-enclosure refines) — never computing the transcendental
+    `θ`; **radius→μ̂** as `|μ̂| = r/ρ(σ)`; **lift** the exact surface `C = c + μ̂·r⃗ + w·n` over the
+    `(σ,μ̂)` enclosures → a 3D box. Certificate = the **round-trip** backward error (re-developing `(σ,μ̂)`
+    reproduces the input flat point within `ε`), DRC-gated. Device-cone fixture: folding the forward image
+    of `(σ₀,μ₀)` recovers both enclosures + `|C| = r`, `ε` shrinks with bisection iters, tight clearance
+    `Unresolved`s, an out-of-gore angle → `OutOfGore`.
 - **DEV.3 — the non-elementary frontier (own milestone, spike-first).** `γ = ∫e(ψ)` for a **curved
   directrix** (tangent-developables / arbitrary ruled developables) is *not* elementary → **verified
   interval integration** (the DEV.1-selected method (b), with its own GO gate). Also the full 2π angular
@@ -1579,8 +1586,8 @@ tier stays float-free and untouched.
 the method chosen, the certified `ε_ψ` on the device cone, the float-corroboration numbers, and the GO /
 no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
 
-**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2a + DEV.2b +
-DEV.2c + DEV.2d met; DEV.2e planned.** The certified development is demonstrated on the device cone (`develop` crate):
+**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2 COMPLETE
+(DEV.2a + DEV.2b + DEV.2c + DEV.2d + DEV.2e all met).** The certified development is demonstrated on the device cone (`develop` crate):
 `ψ = 2 sinβ · arctan σ` closed form, rigorous rational enclosure, backward error `≈ 1e-11`,
 float-corroborated to `≈ 1.5e-8`. **DEV.2** broadens to the whole closed-form developable class (cones at
 any placement + cylinders) across the slices above: DEV.2a retired the digit-growth wall (bounded-digit
@@ -1589,7 +1596,9 @@ outward rounding), DEV.2b generalized the angle (`angle_enclosure`: `∫P/Q` com
 `c/(1+σ²)` fast path), DEV.2c built the ANCHOR T-part (`anchor_dev`: the uniform lift bound
 `sup_t|D(â)−g|≤ε` + DRC, composed with the pure `free_boundary` A-part into the full ANCHOR), and DEV.2d
 certified the **unroll** (direction ①: `unroll_freeboundary` develops the free-boundary band to a flat
-polyline `FlatOutline`, each rail edge within `ε` of the true development, corroborated vs `develop_cone`).
+polyline `FlatOutline`, each rail edge within `ε` of the true development, corroborated vs `develop_cone`),
+and DEV.2e certified the **fold-inversion** (direction ②, per-panel: `fold_point` inverts `D⁻¹` flat→3D
+with a round-trip backward-error certificate). **Both product directions are now certified per-panel.**
 **DEV.3** owns the γ≠0 curved-directrix frontier (interval integration) + the 2π
 closure + the end-to-end pipelines. **Creases / fold-mates / multi-panel assembly are the atlas (D4.4) +
 `closure`/`sew`**, not `develop`. The exact 3D substrate (charts, intersections, watertight solids, STEP)
