@@ -30,6 +30,74 @@ fine — this is a log, not a schema.
   built in M-D. Multilayer = the `w` thickness dimension (native to the chart; layers at distinct `w`-offsets).
   *2026-08-10 · open (product framing recorded; DEV reprioritized in Deferred) · `docs/implementation-plan-v1.md §6`*
 
+- **Flex-PCB roadmap — two acceptance targets, and the "no goal-specific hacks" decision.** With the user,
+  the path from post-DEV.2 to the product spine was restructured around **two concrete end-to-end acceptance
+  demos** that gate the milestones (full detail `docs/roadmap-flex-pcb.md`; `vv-guide.md` Milestone E → "Flex-PCB
+  acceptance roadmap"). **Stage 1 — cone-sector back-and-forth:** a ~300° (rational-approx) cone sector, cut
+  by an offset-plane curve (exactly rational) + a fitted cone∩cylinder curve → unroll → a square interior
+  hole (exact `arrange2d` boolean) → fold back → SVG + two STEPs (input cut cone; folded panel with the hole
+  as a *real interior wire*). = **DEV.3-α** (per-panel pipeline on a wide/two-sided gore) + one exporter
+  milestone (**D4.7 / E-EXPORT** interior-hole/arbitrary-trim B-rep, extending the deferred V_∂ real-cut).
+  Gap ladder **G1–G7**, artifact ladder A1 SVG→A2 SVG+hole→A3 folded mesh→A4 STEP I→A5 STEP II. **Stage 2 —
+  cone + overlap seam:** close the rolled cone with a certified **BONDED lap seam** (the original device's lap
+  seam, `implementation-plan-v1.md:53`) = **DEV.3-β** (transcendental full-2π closure; seam at σ→±∞;
+  chart-graph cycle = [D11]) + **spec §14 BONDED** (SEP≡bond-gap `g`, SLAB, two-to-one projection; the
+  seam-ramp subdivision certificate of `docs/paper.md`). S3⊳S2. Beyond Stage 2: multilayer stackup, atlas
+  (D4.4) + reflection-mate, complex ECAD boundary (D4.3). **The generality analysis (user asked):** it can be
+  done **fully general, no goal-specific hacks** — "exactness is a representation property, not a shape
+  property," so the certified backward-error bound (`anchor_dev`, DRC `ε<clearance/2`) makes rational
+  approximation the *designed*, **fail-closed** treatment (loose → `Unresolved`, never a wrong `Verified`),
+  not a shortcut. Two conscious general-over-shortcut choices in Stage 1: certified `fold_outline`
+  **per-edge** (not per-vertex — else inter-vertex edges are uncertified) and the hole via **explicit (σ,μ)
+  pcurves** (not re-ruling to dodge non-iso trims). Bounded-but-extensible scope (not hacks): interior-only
+  square cut; per-gore range reduction. **General-or-nothing:** S2+S3 have no sound single-chart shortcut —
+  any "shortcut" is uncertified visual, which is why Stage 2 is a milestone. **One genuinely new proof
+  technique enters at Stage 2:** certified **interval subdivision** for the seam ramp (all prior work is
+  closed-form Sturm/resultant/interval-series) — spike/GO-gated. Float stays quarantined (the G2 cut oracle
+  lives in `export`, only proposes, never touches a certificate). Sequence: Phase 1 = Stage 1 (start G1,
+  interval-trig range reduction) → Phase 2 DEV.3-β closure → Phase 3 §14 BONDED → beyond. **G1 met** —
+  generic **mod-2π range reduction** in `develop::interval`: `cos_on`/`sin_on` now certify **any** real
+  angle (the two-sided/shifted cone gore, `ψ = c·arctan σ` crossing 0), not a fixed window. Decision with
+  the user (over an arbitrary `[−π,π]`/`[−π,3π/2]` window — which would bake in "open gore, centred at 0,
+  sub-π", a goal-specific hack): fully general via reduction, using the `exp(iθ)` symmetries. Point
+  evaluators reduce into `[−π,π]` with a certified integer `k` (`k=0` fast path for `|ψ|<π` — byte-identical
+  to the old `[0,π]` result, so no regression); interval evaluators clamp to the exact `±1` at an enclosed
+  extremum (over-approximated ⇒ always sound since cos,sin ∈ [−1,1]) else the monotone endpoint hull, and
+  `[−1,1]` once θ spans a full period. `fold_point`'s bisection is fixed *for free* within a gore (the
+  `span < π` precondition now documented in `invert_sigma`; a two-sided domain reaching span π splits at
+  σ=0 — future G4). Multi-period soundness sweep (≈[−4π,4π]) + straddle/shifted/large-argument/regression
+  tests. Full gate green (nextest ws 441, export 21, develop doctests, clippy `-D warnings`, fmt,
+  `xtask lint`, no_std thumbv7em `lattice`+`certify-core`). **G2 met** — the **cut-curve fit certificate**
+  (turn a cutting *surface* into a certified rational rail `μ̂(σ)`). **G2a** `develop::cut` (pure, no float):
+  a **new sibling checker** `cut_fit` (not an `anchor_dev` reuse — the residual `F(C(σ,μ̂(σ)))` is purely
+  rational in σ, no `cos/sin`), certifying `sup_σ dist(C(σ,μ̂(σ)), {F=0}) ≤ ε` by direct **geometric
+  distance** (plane `|n·C−d|/|n|`; cylinder `|√perp2−R|`, `perp2=|C−p|²−((C−p)·â)²/(â·â)`), DRC
+  `ε<clearance/2`; `CutSurface{Plane,Cylinder}` = the 3-D lift of `cap_in::Carrier`; `plane_cut_rail` = the
+  **exact** offset-plane rail `(d−n·pedal)/(n·ruling)` (verified ε≈0). Founding split: the rail is on the
+  cone *by construction*, so only surface-membership is certified. **G2b** `export::cut_oracle` (behind
+  `diagnostics`): the **float oracle** `fit_cut_rail` proposes a rational fit for the surd cone∩cylinder cut
+  (Chebyshev-node quadratic-branch solve → Vandermonde interpolation → coeffs snapped by the new
+  `approx::f64_to_rat`, the reverse of the exact→f64 bridge); float **proposes**, `cut_fit` **decides**
+  (fail-closed). **FINDING:** the certified `ε` is an interval upper bound, so its refinement handle is
+  **`subdiv`** (as in `anchor_dev`/`unroll`), *not* fit degree — interval-Horner dependency overestimation
+  of a high-degree σ-polynomial rail *grows* with degree, so a higher-degree fit tightens the *true* error
+  but can loosen the *certified* bound; the demo picks a moderate degree + adequate `subdiv`. Full gate green
+  (nextest ws 446, export/diagnostics 47 incl. corroboration, develop+export doctests, clippy `-D warnings`
+  (default + `-p export --features diagnostics`), fmt, `xtask lint`, no_std thumbv7em). *2026-08-10 · roadmap
+  authored (docs-only) + **G1 · G2 met**; branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
+  `crates/develop/src/{interval,cut}.rs`, `crates/export/src/{approx,cut_oracle}.rs`*
+
+- **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
+  flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
+  (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).
+  Several of these are certificate checkers of the same shape as `certify_core::{cap_in,miter}` (subdivide →
+  interval-enclose → `ε=max` → DRC → `Verdict`) and arguably belong beside them, not in the flat-side crate.
+  The natural seam is the **transcendental-vs-rational** boundary: `cut_fit` for instance is *purely rational*
+  in σ and touches no `cos/sin/arctan`, so it could live in a `develop_geom` (or move to `certify_core`)
+  while the transcendental core (`interval`, `cone`) stays a `develop_core`. **Deferred, not blocking** —
+  revisit as a dedicated refactor once the Stage-1 pipeline (G1–G7) is complete and the module boundaries
+  have settled; keep new checkers cohesive (own module, `Verdict`-shaped) so the eventual move is mechanical.
+
 - **DEV / M-E = certified development (the flat↔3D layer); the chosen next big bet, opened as a GO-gated spike.** Product-decision (with the user): after M-D's exact 3D closed solids, the next thread is **DEV**, not the D4.4 atlas — because DEV is the product bottleneck (both directions pivot on it) and the highest-risk unknown (retire-highest-risk-first). Reasoning captured in the exchange: "exactness is a representation property, not a shape property" — the closed cone / **seam** / full 2π wrap is *transcendental* (a rational chart sweeps a bounded azimuth `<2π`, so one chart = a gore), so the seam and general shapes are DEV + rational-input approximation, not algebraic intersection. GO-gate criteria authored in `docs/vv-guide.md` (Milestone E (DEV)). **The spike (DEV.1)** = a certified rational enclosure of the cone's development angle `ψ(σ)=∫ψ′` (`ψ′=chart.psi_prime`, rational ⇒ arctan/log; radius `ρ=|n′|` is a surd, already in `lattice::Surd`), checked against the float ground-truth `export::mesh3d::develop_cone`, verdict-typed, with the backward-error `sup|D(â)−g|≤ε` + DRC `ε<clearance/2` scaffold and the seam as the acceptance case; it **selects the enclosure method** (closed-form arctan/log + certified rational bounds ∣ interval integration ∣ Taylor models) and GO/no-go's the tier. Additive (its own spike boundary; the pure exact tier untouched). *2026-08-10 · **DEV.0 + DEV.1 met — decision GO** (`docs/spike-development-report.md`); the cone development reduces to a single `arctan` of a rational (`ψ = 2 sinβ · arctan σ`, verified as an exact polynomial identity), method (a) closed-form arctan + rational alternating-series bounds selected, certified backward error `≈1e-11` corroborated to `≈1.5e-8` — see the DEV.1 finding below · `docs/vv-guide.md` Milestone E (DEV), `docs/implementation-plan-v1.md §6`*
 
 - **DEV.1 spike GO — the cone development is a single `arctan`, and the one wall is digit-growth.** The spike (`crate develop`: `develop::interval` rational enclosures of `arctan`/`π`/`cos`/`sin`/`√`; `develop::cone` composing them into a certified `FlatBox`) priced the certified flat↔3D development on the device cone and **GOes**. Findings: (1) **the transcendental core is minimal** — `ψ′ = det(n,n′,n″)/|n′|²` reduces to `c/(1+σ²)`, so `ψ(σ) = c·arctan σ` with `c = 2 sinβ` rational (the textbook `ψ = sinβ·φ₃D`); `cone_angle_coeff` **verifies** `ψ′·(1+σ²) ≡ c` as an exact polynomial identity, and the radius `ρ = |n′|` is a surd (perfect-square-rational for the device fixtures). So DEV is "certify `∫(rational)` = an arctan/log," not "certify arbitrary transcendentals." (2) **Method (a)** (closed-form arctan + alternating-series rational brackets, argument-reduced to `|t|≤½` for geometric convergence) beats interval integration (`O(1/N)`, kept as the DEV.2 fallback for the non-elementary `γ=∫e(ψ)`) and Taylor models. (3) **The wall: naive exact-rational composition of the `cos`/`sin` series over a many-digit `arctan` argument blows the endpoint digit count to hundreds–thousands** (values `O(1)`, representation huge). This bit the corroboration harness — a `numer/denom→f64` cast overflowed both to `∞`, `∞/∞=NaN`, and `f64::max` silently dropped every `NaN`, so a *broken* test read green (checking only the trivial `σ=0` row). Caught by challenging the too-perfect `max_diag==max_analytic`; fixed with a leading-digits `big_rat_to_f64`, and it re-surfaced the real numbers (backward error `1e-11`, corroboration `1.5e-8`). **Remedy: fixed-precision interval arithmetic with directed (outward) rounding** — a DEV.2 build item (wants a small additive `floor`/`ceil` on `lattice::Rat`), *not* a viability risk. *2026-08-10 · GO · `docs/spike-development-report.md`, `crates/develop/**`, `export::mesh3d::certified_flat_point_corroborates_develop_cone`*

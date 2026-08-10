@@ -318,39 +318,177 @@ pub fn sin_at<B: Backend>(p: &Rat<B>, terms: usize) -> RatIv<B> {
     prev.hull_with(&s)
 }
 
-/// A certified enclosure of `cos(θ)` for an *interval* `θ ⊆ [0, π]`.
-///
-/// `cos` is monotone decreasing on `[0, π]`, so the enclosure is the hull of the
-/// endpoint enclosures. Outside `[0, π]` this returns the trivial `[−1, 1]`
-/// (still rigorous).
-pub fn cos_on<B: Backend>(theta: &RatIv<B>, terms: usize) -> RatIv<B> {
-    if theta.lo.sign() < 0 || *theta.hi() > pi::<B>(terms).lo {
-        return RatIv::new(Rat::from_i128(-1), Rat::from_i128(1));
-    }
-    RatIv::new(cos_at(theta.hi(), terms).lo, cos_at(theta.lo(), terms).hi)
+// --- range reduction (mod 2π) + generic interval cos/sin -----------------------------------
+//
+// `develop`'s flat-development angle `ψ = c·arctan σ` crosses 0 and, for general
+// placements, is not centered at 0 (`docs/roadmap-flex-pcb.md`, gap G1). The
+// interval `cos`/`sin` therefore accept **any** real angle range, via mod-2π
+// range reduction into `[−π, π]` followed by even/odd symmetry — the standard
+// rigorous interval-trig, not a fixed window. A single rational chart's angle is
+// always sub-period (`k` small), so the reduction is cheap and tight; `k = 0`
+// (`|ψ| < π`, the per-chart common case) reduces nothing and reproduces the
+// earlier `[0, π]` result exactly.
+
+/// The nearest integer to `q` as an integer-valued `Rat` (ties toward `+∞`):
+/// `⌊q + 1/2⌋`. Picks the reduction multiple `k ≈ x/2π`.
+fn nearest_int<B: Backend>(q: &Rat<B>) -> Rat<B> {
+    q.add(&Rat::new(1, 2)).floor()
 }
 
-/// A certified enclosure of `sin(θ)` for an *interval* `θ ⊆ [0, π]`.
+/// A certified enclosure of `x mod 2π` with representative in `[−π, π]`: subtract
+/// `k·2π` for the nearest integer `k = round(x/2π)`. `2π` is only known to an
+/// enclosure, so the result is a (thin) interval, not a point; its width is
+/// `|k|·width(2π)` — negligible for the small `k` a sub-2π chart ever needs. The
+/// `k = 0` fast path (`|x| ≤ π`) subtracts nothing and adds no width.
+fn reduce_point<B: Backend>(x: &Rat<B>, terms: usize) -> RatIv<B> {
+    let pi_iv = pi::<B>(terms);
+    let ax = if x.sign() < 0 { x.neg() } else { x.clone() };
+    if ax <= *pi_iv.lo() {
+        return RatIv::point(x.clone());
+    }
+    let tau = pi_iv.scale(&Rat::from_i128(2));
+    let k = nearest_int(&x.div(&tau.mid()));
+    RatIv::point(x.clone()).sub(&tau.scale(&k))
+}
+
+/// `cos` over an interval already reduced into `[−π, π]` (± a thin enclosure
+/// slack). `cos` is even and decreasing in `|θ|` on `[0, π]`, so the infimum sits
+/// at the largest `|θ|` (clamped to `−1` once `|θ|` can reach `π`) and the
+/// supremum is the exact `1` when `θ` straddles `0`, else `cos` at the smallest
+/// `|θ|` (capped at `1`).
+fn cos_core<B: Backend>(xr: &RatIv<B>, terms: usize) -> RatIv<B> {
+    let one = Rat::from_i128(1);
+    let neg_one = Rat::from_i128(-1);
+    let pilo = pi::<B>(terms).lo;
+    let a = abs_on(xr);
+    let inf = if *a.hi() >= pilo {
+        neg_one
+    } else {
+        max2(cos_at(a.hi(), terms).lo, neg_one)
+    };
+    let sup = if xr.lo().sign() <= 0 && xr.hi().sign() >= 0 {
+        one
+    } else {
+        min2(cos_at(a.lo(), terms).hi, one)
+    };
+    RatIv::new(inf, sup)
+}
+
+/// `sin` at a single rational via oddness `sin(−a) = −sin(a)`. [`RatIv::neg`]
+/// swaps the endpoints, keeping the folded enclosure ordered.
+fn sin_at_signed<B: Backend>(a: &Rat<B>, terms: usize) -> RatIv<B> {
+    if a.sign() >= 0 {
+        sin_at(a, terms)
+    } else {
+        sin_at(&a.neg(), terms).neg()
+    }
+}
+
+/// `sin` over an interval already reduced into `[−π, π]`: monotone endpoint hull,
+/// clamped to the exact peak `+1` when `θ` can reach `+π/2` and trough `−1` when
+/// it can reach `−π/2`. Both clamps over-approximate containment against the
+/// `π/2` enclosure — always sound since `sin ∈ [−1, 1]`.
+fn sin_core<B: Backend>(xr: &RatIv<B>, terms: usize) -> RatIv<B> {
+    let ph = pi_half::<B>(terms);
+    let sl = sin_at_signed(xr.lo(), terms);
+    let sh = sin_at_signed(xr.hi(), terms);
+    let sup = if *xr.lo() <= *ph.hi() && *xr.hi() >= *ph.lo() {
+        Rat::from_i128(1)
+    } else {
+        max2(sl.hi().clone(), sh.hi().clone())
+    };
+    let inf = if *xr.lo() <= ph.lo().neg() && *xr.hi() >= ph.hi().neg() {
+        Rat::from_i128(-1)
+    } else {
+        min2(sl.lo().clone(), sh.lo().clone())
+    };
+    RatIv::new(inf, sup)
+}
+
+/// `cos(x)` for any rational `x`, via mod-2π reduction then [`cos_core`].
+fn cos_pt<B: Backend>(x: &Rat<B>, terms: usize) -> RatIv<B> {
+    cos_core(&reduce_point(x, terms), terms)
+}
+
+/// `sin(x)` for any rational `x`, via mod-2π reduction then [`sin_core`].
+fn sin_pt<B: Backend>(x: &Rat<B>, terms: usize) -> RatIv<B> {
+    sin_core(&reduce_point(x, terms), terms)
+}
+
+/// Whether the interval `θ` can contain an angle congruent to `base` modulo `2π`
+/// — some `base + 2πm`. Over-approximates (overlap tested against the `base` and
+/// `2π` enclosures), so a `±1` extremum clamp keyed on it never misses a
+/// genuinely enclosed critical point. Only integer `m` within one step of the
+/// aligning estimate are tested (a `θ` narrower than a period touches at most one
+/// congruent angle).
+fn contains_angle<B: Backend>(theta: &RatIv<B>, base: &RatIv<B>, terms: usize) -> bool {
+    let tau = pi::<B>(terms).scale(&Rat::from_i128(2));
+    let target = theta.mid().sub(&base.mid()).div(&tau.mid());
+    let m0 = nearest_int(&target);
+    for d in [-1i128, 0, 1] {
+        let m = m0.add(&Rat::from_i128(d));
+        let ang = base.add(&tau.scale(&m));
+        if *theta.lo() <= *ang.hi() && *theta.hi() >= *ang.lo() {
+            return true;
+        }
+    }
+    false
+}
+
+/// A certified enclosure of `cos(θ)` for an *interval* `θ`, for **any** real angle
+/// range — `develop`'s two-sided cone gore (`ψ = c·arctan σ` crossing 0).
 ///
-/// `sin` increases on `[0, π/2]` and decreases on `[π/2, π]`. When `θ` lies on
-/// one side, the enclosure is the endpoint hull; when it straddles `π/2` the
-/// upper bound is the exact peak `1`. Outside `[0, π]` returns `[−1, 1]`.
-pub fn sin_on<B: Backend>(theta: &RatIv<B>, terms: usize) -> RatIv<B> {
-    if theta.lo.sign() < 0 || *theta.hi() > pi::<B>(terms).lo {
+/// Generic mod-2π range reduction: each endpoint is reduced into `[−π, π]` and
+/// evaluated ([`cos_pt`]); the supremum is the exact `+1` when `θ` encloses an
+/// even multiple of `π` and the infimum the exact `−1` at an odd multiple
+/// ([`contains_angle`]), else the monotone endpoint hull. A `θ` at least a full
+/// period wide is the honest full range `[−1, 1]`. On `θ ⊆ [0, π]` this reproduces
+/// the earlier decreasing-hull result exactly.
+pub fn cos_on<B: Backend>(theta: &RatIv<B>, terms: usize) -> RatIv<B> {
+    let tau = pi::<B>(terms).scale(&Rat::from_i128(2));
+    if theta.width() >= *tau.lo() {
         return RatIv::new(Rat::from_i128(-1), Rat::from_i128(1));
     }
-    let ph = pi_half::<B>(terms);
-    if *theta.hi() <= ph.lo {
-        // increasing branch
-        RatIv::new(sin_at(theta.lo(), terms).lo, sin_at(theta.hi(), terms).hi)
-    } else if *theta.lo() >= ph.hi {
-        // decreasing branch
-        RatIv::new(sin_at(theta.hi(), terms).lo, sin_at(theta.lo(), terms).hi)
+    let el = cos_pt(theta.lo(), terms);
+    let eh = cos_pt(theta.hi(), terms);
+    let sup = if contains_angle(theta, &RatIv::point(Rat::from_i128(0)), terms) {
+        Rat::from_i128(1)
     } else {
-        // straddles π/2 — peak is 1
-        let lo = min2(sin_at(theta.lo(), terms).lo, sin_at(theta.hi(), terms).lo);
-        RatIv::new(lo, Rat::from_i128(1))
+        max2(el.hi().clone(), eh.hi().clone())
+    };
+    let inf = if contains_angle(theta, &pi::<B>(terms), terms) {
+        Rat::from_i128(-1)
+    } else {
+        min2(el.lo().clone(), eh.lo().clone())
+    };
+    RatIv::new(inf, sup)
+}
+
+/// A certified enclosure of `sin(θ)` for an *interval* `θ`, for **any** real angle
+/// range. Generic mod-2π range reduction (see [`cos_on`]): endpoints via
+/// [`sin_pt`]; the supremum is clamped to `+1` at a `+π/2 + 2πm` maximum and the
+/// infimum to `−1` at a `−π/2 + 2πm` minimum ([`contains_angle`]), else the
+/// endpoint hull; `[−1, 1]` once `θ` spans a full period. Reproduces the earlier
+/// `[0, π]` dispatch exactly on that sub-domain.
+pub fn sin_on<B: Backend>(theta: &RatIv<B>, terms: usize) -> RatIv<B> {
+    let tau = pi::<B>(terms).scale(&Rat::from_i128(2));
+    if theta.width() >= *tau.lo() {
+        return RatIv::new(Rat::from_i128(-1), Rat::from_i128(1));
     }
+    let el = sin_pt(theta.lo(), terms);
+    let eh = sin_pt(theta.hi(), terms);
+    let ph = pi_half::<B>(terms);
+    let sup = if contains_angle(theta, &ph, terms) {
+        Rat::from_i128(1)
+    } else {
+        max2(el.hi().clone(), eh.hi().clone())
+    };
+    let inf = if contains_angle(theta, &ph.neg(), terms) {
+        Rat::from_i128(-1)
+    } else {
+        min2(el.lo().clone(), eh.lo().clone())
+    };
+    RatIv::new(inf, sup)
 }
 
 /// A certified enclosure of `arctan(θ)` for an *interval* argument `θ`.
@@ -608,6 +746,152 @@ mod tests {
         let iv = RatIv::new(Q::new(150, 100), Q::new(165, 100));
         let s = sin_on::<Bignum>(&iv, 20);
         assert_eq!(*s.hi(), Q::from_i128(1));
+    }
+
+    // --- G1: generic (mod-2π) interval cos/sin over the two-sided gore ----------
+
+    #[test]
+    fn cos_sin_on_two_sided_symmetric() {
+        // θ ∈ [−0.6, 0.6] crosses 0 (both below π/2). cos peaks at 0 (exact 1);
+        // sin brackets ±sin(0.6) and does not reach its peak.
+        let iv = RatIv::new(Q::new(-6, 10), Q::new(6, 10));
+        let c = cos_on::<Bignum>(&iv, 24);
+        let s = sin_on::<Bignum>(&iv, 24);
+        assert_eq!(*c.hi(), Q::from_i128(1), "cos peak at 0 is exact 1");
+        assert!(close(&c, 0.6f64.cos(), 1e-9) && close(&c, (-0.6f64).cos(), 1e-9));
+        assert!(close(&s, 0.6f64.sin(), 1e-9) && close(&s, (-0.6f64).sin(), 1e-9));
+        assert!(*s.hi() < Q::from_i128(1) && *s.lo() > Q::from_i128(-1));
+    }
+
+    #[test]
+    fn cos_sin_on_purely_negative() {
+        // θ ∈ [−1.2, −0.8]: no ±π/2 or 0 inside, so pure monotone endpoint hulls.
+        let iv = RatIv::new(Q::new(-12, 10), Q::new(-8, 10));
+        let c = cos_on::<Bignum>(&iv, 24);
+        let s = sin_on::<Bignum>(&iv, 24);
+        assert!(close(&c, (-1.2f64).cos(), 1e-9) && close(&c, (-0.8f64).cos(), 1e-9));
+        assert!(close(&s, (-1.2f64).sin(), 1e-9) && close(&s, (-0.8f64).sin(), 1e-9));
+        assert!(*c.hi() < Q::from_i128(1), "no cos peak");
+        assert!(*s.lo() > Q::from_i128(-1), "no sin trough");
+    }
+
+    #[test]
+    fn sin_on_straddling_plus_half_pi_is_one() {
+        // θ ∈ [1.4, 1.7] straddles +π/2 → sup is the exact 1.
+        let iv = RatIv::new(Q::new(14, 10), Q::new(17, 10));
+        let s = sin_on::<Bignum>(&iv, 24);
+        assert_eq!(*s.hi(), Q::from_i128(1));
+    }
+
+    #[test]
+    fn sin_on_straddling_minus_half_pi_is_minus_one() {
+        // θ ∈ [−1.7, −1.4] straddles −π/2 → inf is the exact −1.
+        let iv = RatIv::new(Q::new(-17, 10), Q::new(-14, 10));
+        let s = sin_on::<Bignum>(&iv, 24);
+        assert_eq!(*s.lo(), Q::from_i128(-1));
+    }
+
+    #[test]
+    fn cos_on_straddling_zero_is_one() {
+        // θ ∈ [−0.3, 0.5] straddles 0 → sup is the exact 1.
+        let iv = RatIv::new(Q::new(-3, 10), Q::new(5, 10));
+        let c = cos_on::<Bignum>(&iv, 24);
+        assert_eq!(*c.hi(), Q::from_i128(1));
+    }
+
+    #[test]
+    fn cos_on_straddling_pi_is_minus_one() {
+        // θ ∈ [3.0, 3.3] straddles π ≈ 3.14159 → inf is the exact −1.
+        let iv = RatIv::new(Q::from_i128(3), Q::new(33, 10));
+        let c = cos_on::<Bignum>(&iv, 24);
+        assert_eq!(*c.lo(), Q::from_i128(-1));
+        assert!(close(&c, 3.0f64.cos(), 1e-9) && close(&c, 3.3f64.cos(), 1e-9));
+    }
+
+    #[test]
+    fn cos_sin_on_regression_positive_matches_old_formula() {
+        // On θ ⊆ [0, π] the generic path must reproduce the earlier endpoint-hull
+        // result byte-for-byte (k = 0, no clamp fires).
+        let iv = RatIv::new(Q::new(4, 10), Q::new(6, 10));
+        let c = cos_on::<Bignum>(&iv, 20);
+        let s = sin_on::<Bignum>(&iv, 20);
+        // cos: [cos_at(hi).lo, cos_at(lo).hi]; sin: [sin_at(lo).lo, sin_at(hi).hi].
+        // cos: [cos_at(hi).lo, cos_at(lo).hi]; sin: [sin_at(lo).lo, sin_at(hi).hi].
+        assert_eq!(*c.lo(), *cos_at::<Bignum>(&Q::new(6, 10), 20).lo());
+        assert_eq!(*c.hi(), *cos_at::<Bignum>(&Q::new(4, 10), 20).hi());
+        assert_eq!(*s.lo(), *sin_at::<Bignum>(&Q::new(4, 10), 20).lo());
+        assert_eq!(*s.hi(), *sin_at::<Bignum>(&Q::new(6, 10), 20).hi());
+    }
+
+    #[test]
+    fn cos_sin_on_shifted_large_argument() {
+        // Arguments outside [−π, π] prove the reduction is real, not a window:
+        // 2π + 0.5 ≡ 0.5, and 5π/2 ≡ π/2 (sin peak).
+        let two_pi_plus = RatIv::point(Q::new(6_783_185, 1_000_000)); // ≈ 2π + 0.5
+        let c = cos_on::<Bignum>(&two_pi_plus, 24);
+        let s = sin_on::<Bignum>(&two_pi_plus, 24);
+        assert!(close(&c, 0.5f64.cos(), 1e-6), "cos(2π+0.5) = cos(0.5)");
+        assert!(close(&s, 0.5f64.sin(), 1e-6), "sin(2π+0.5) = sin(0.5)");
+        // 5π/2 ≈ 7.853982 → sin = 1, cos = 0.
+        let five_half_pi = RatIv::point(Q::new(7_853_982, 1_000_000));
+        let s2 = sin_on::<Bignum>(&five_half_pi, 24);
+        assert!(close(&s2, 1.0, 1e-6), "sin(5π/2) = 1");
+    }
+
+    #[test]
+    fn cos_sin_on_wide_interval_is_full_range() {
+        // θ spanning ≥ one full period is the honest full range [−1, 1].
+        let iv = RatIv::new(Q::from_i128(-4), Q::from_i128(4)); // width 8 > 2π
+        let c = cos_on::<Bignum>(&iv, 24);
+        let s = sin_on::<Bignum>(&iv, 24);
+        assert_eq!(*c.lo(), Q::from_i128(-1));
+        assert_eq!(*c.hi(), Q::from_i128(1));
+        assert_eq!(*s.lo(), Q::from_i128(-1));
+        assert_eq!(*s.hi(), Q::from_i128(1));
+    }
+
+    #[test]
+    fn cos_sin_on_negative_narrows_with_terms() {
+        // A negative (reduced) argument genuinely encloses — the interval shrinks
+        // with the term budget instead of sitting at the [−1, 1] fallback.
+        let iv = RatIv::new(Q::new(-11, 10), Q::new(-9, 10));
+        let a = cos_on::<Bignum>(&iv, 6).width();
+        let b = cos_on::<Bignum>(&iv, 24).width();
+        assert!(b < a, "cos enclosure tightens with terms");
+        assert!(b < Q::from_i128(2), "genuinely narrower than [−1, 1]");
+    }
+
+    #[test]
+    fn cos_sin_on_multi_period_soundness_sweep() {
+        // The safety net: over a grid of sub-intervals spanning several periods
+        // (≈[−12, 12] ⊃ [−4π, 4π]), the enclosure must contain the true cos/sin at
+        // both endpoints and the midpoint — catching any sign/swap/k error.
+        let terms = 20;
+        let mut n = -48i128;
+        while n <= 48 {
+            for &span in &[1i128, 5, 11] {
+                let a = Q::new(n, 4);
+                let b = Q::new(n + span, 4);
+                let iv = RatIv::new(a.clone(), b.clone());
+                let c = cos_on::<Bignum>(&iv, terms);
+                let s = sin_on::<Bignum>(&iv, terms);
+                let mid = Q::new(2 * n + span, 8);
+                for t in [&a, &mid, &b] {
+                    let tf = to_f64(t);
+                    assert!(
+                        close(&c, tf.cos(), 1e-6),
+                        "cos fails on [{n}/4, {}/4] at {tf}",
+                        n + span
+                    );
+                    assert!(
+                        close(&s, tf.sin(), 1e-6),
+                        "sin fails on [{n}/4, {}/4] at {tf}",
+                        n + span
+                    );
+                }
+            }
+            n += 3;
+        }
     }
 
     #[test]

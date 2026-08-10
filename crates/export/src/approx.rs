@@ -51,6 +51,30 @@ pub fn vec3_to_f64<B: Backend>(v: &[Rat<B>; 3]) -> [f64; 3] {
     [rat_to_f64(&v[0]), rat_to_f64(&v[1]), rat_to_f64(&v[2])]
 }
 
+/// Snap an `f64` to an exact rational on the dyadic grid `round(x·2^bits) / 2^bits`
+/// (diagnostics only) — the **reverse** of [`rat_to_f64`].
+///
+/// This is the one place a float becomes exact, and it is used **only** to hand a
+/// float-oracle *proposal* (e.g. a fitted cut-rail coefficient, `export::cut_oracle`)
+/// to the certified side, which re-verifies it exactly ([`develop::cut::cut_fit`]).
+/// The float never enters a certificate — a loose snap can only make the exact
+/// re-check `Unresolved`, never a wrong `Verified`. `bits` is capped at 52 so
+/// `x·2^bits` stays inside `f64`'s exact-integer range for the modest coefficients a
+/// rail fit produces; a non-finite `x` (or one out of `i128` range) saturates
+/// harmlessly under Rust's `as` cast (the exact checker then rejects the proposal).
+///
+/// ```
+/// use export::approx::{f64_to_rat, rat_to_f64};
+/// use lattice::Bignum;
+/// let q = f64_to_rat::<Bignum>(0.375, 40); // 3/8 is dyadic → exact
+/// assert_eq!(rat_to_f64(&q), 0.375);
+/// ```
+pub fn f64_to_rat<B: Backend>(x: f64, bits: u32) -> Rat<B> {
+    let den = 1i128 << bits.min(52);
+    let num = (x * den as f64).round();
+    Rat::new(num as i128, den)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
