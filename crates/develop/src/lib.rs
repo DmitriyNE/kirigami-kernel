@@ -6,3 +6,16 @@
 //! seam, and calibration. Cold-layer machinery: required for the material grade
 //! and fab exports, not for the closure vertical slice. Its riders sweep the
 //! cold layers late — expect findings and an adversarial pass.
+//!
+//! **Milestone-E spike (DEV.1).** The first concrete slice is the certified
+//! *cone* development: [`interval`] holds the float-free rational enclosures of
+//! the elementary transcendentals (`arctan`, `π`, `cos`, `sin`, `√`), and
+//! [`cone`] turns a cone [`Chart`](geom::chart::Chart) into a certified flat
+//! point `D(σ, μ̂)` with a rational backward-error bound and a `DRC` verdict. See
+//! `docs/spike-development-report.md` for the method choice and the GO call.
+
+pub mod anchor;
+pub mod cone;
+pub mod fold;
+pub mod interval;
+pub mod unroll;

@@ -97,6 +97,7 @@ jobs:
             cargo kani -p lattice \
               --harness neg_sign_panic_free_full_domain \
               --harness cmp_panic_free_full_domain \
+              --harness floor_ceil_fast_path_panic_free_full_domain \
               --harness sign_variations_matches_reference &&
             cargo kani -p certify-core \
               --harness cocycle_implies_telescoping \

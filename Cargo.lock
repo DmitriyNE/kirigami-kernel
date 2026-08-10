@@ -256,7 +256,9 @@ version = "0.0.0"
 dependencies = [
  "arrange2d",
  "certify-core",
+ "fixtures",
  "geom",
+ "lattice",
 ]
 
 [[package]]
