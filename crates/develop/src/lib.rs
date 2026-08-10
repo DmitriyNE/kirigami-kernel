@@ -14,5 +14,6 @@
 //! point `D(σ, μ̂)` with a rational backward-error bound and a `DRC` verdict. See
 //! `docs/spike-development-report.md` for the method choice and the GO call.
 
+pub mod anchor;
 pub mod cone;
 pub mod interval;

@@ -1534,9 +1534,17 @@ enclosure is checked against.
     `*Cert`/`Valid*`/`*Fault`, `Verdict`-typed) in `develop` — it needs the transcendental enclosures, so
     it lives shell-side while `certify_core`'s A-part (`free_boundary`) stays pure; the two **compose**
     into the full ANCHOR (`T,1D + A,1D`, `spec:372`). Introduces the authored target `g` + rational anchor
-    spline `â` (new vs the spike) and a rigorous `sup_t` via interval-σ evaluation. **Met when** a
+    spline `â` (new vs the spike) and a rigorous `sup_t` via interval-`t` subdivision. **Met when** a
     closed-form anchor certifies to `Verified(ε)` under a fab clearance (too-tight → `Unresolved`), the
-    per-span `ε` bounds the `develop_cone` deviation, and it composes with `free_boundary`.
+    per-span `ε` bounds the `develop_cone` deviation, and it composes with `free_boundary`. **MET** —
+    `develop::anchor` = `AnchorDevCert`→`anchor_dev` (subdivides `[t_lo,t_hi]`, encloses `D(â([a,b]))` via
+    `ConeDevelopment::point_on` + the target `g([a,b])` via `eval_ratfunc_on`, bounds `√(Δx²+Δy²)`, takes
+    the max `ε`; `Verified`/`Unresolved(ε)`/`Refuted(DegenerateSpan|PoleInEval)`) composed by `anchor` with
+    the pure `free_boundary` A-part into `Verified((A,T))`. The anchor is a **general rational-`t`** curve
+    `â(t)=(σ(t),μ̂(t))` riding the band's affine μ⁻ rail (no composition primitive — the checker evaluates
+    `σ(t)`, never symbolically composes). Device-cone fixture: `ε` shrinks with `subdiv`, a generous
+    clearance `Verified`s and a tight one is `Unresolved`, `ε` upper-bounds the float chord-sagitta, and a
+    σ-span-mismatched anchor → `SpanMismatch`.
   - **DEV.2d — certified unroll (direction ①)**: develop the free-boundary μ-band
     (`export::brep_build::brep_freeboundary`) to a certified flat outline; corroborate vs `develop_cone`.
   - **DEV.2e — certified fold-inversion (direction ②, *per-panel*)**: `D⁻¹` flat→`(σ,μ)` enclosure, then
@@ -1564,14 +1572,16 @@ tier stays float-free and untouched.
 the method chosen, the certified `ε_ψ` on the device cone, the float-corroboration numbers, and the GO /
 no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
 
-**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2a + DEV.2b met;
-DEV.2c–e planned.** The certified development is demonstrated on the device cone (`develop` crate):
+**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2a + DEV.2b +
+DEV.2c met; DEV.2d–e planned.** The certified development is demonstrated on the device cone (`develop` crate):
 `ψ = 2 sinβ · arctan σ` closed form, rigorous rational enclosure, backward error `≈ 1e-11`,
 float-corroborated to `≈ 1.5e-8`. **DEV.2** broadens to the whole closed-form developable class (cones at
 any placement + cylinders) across the slices above: DEV.2a retired the digit-growth wall (bounded-digit
-outward rounding) and DEV.2b generalized the angle (`angle_enclosure`: `∫P/Q` complete-the-square, a
+outward rounding), DEV.2b generalized the angle (`angle_enclosure`: `∫P/Q` complete-the-square, a
 `Verdict`-shaped arctan/log enclosure certifying cones at *any* placement, not just the canonical
-`c/(1+σ²)` fast path). **DEV.3** owns the γ≠0 curved-directrix frontier (interval integration) + the 2π
+`c/(1+σ²)` fast path), and DEV.2c built the ANCHOR T-part (`anchor_dev`: the uniform lift bound
+`sup_t|D(â)−g|≤ε` + DRC, composed with the pure `free_boundary` A-part into the full ANCHOR). **DEV.3** owns
+the γ≠0 curved-directrix frontier (interval integration) + the 2π
 closure + the end-to-end pipelines. **Creases / fold-mates / multi-panel assembly are the atlas (D4.4) +
 `closure`/`sew`**, not `develop`. The exact 3D substrate (charts, intersections, watertight solids, STEP)
 that DEV sits on is delivered through M-D.

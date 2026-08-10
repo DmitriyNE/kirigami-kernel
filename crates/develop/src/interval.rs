@@ -19,7 +19,7 @@
 //! assert!(iv.width() < Rat::new(1, 1_000_000));
 //! ```
 
-use lattice::{Backend, Rat};
+use lattice::{Backend, Poly, Rat, RatFunc};
 
 /// Series-internal rounding budget (DEV.2a): every intermediate enclosure is snapped
 /// *outward* to a denominator dividing `2^ROUND_BITS`, so digit growth is bounded at
@@ -474,6 +474,54 @@ pub fn sqrt<B: Backend>(r: &Rat<B>, eps: &Rat<B>) -> RatIv<B> {
         }
     }
     RatIv::new(lo, hi)
+}
+
+/// A certified enclosure of `√[a, b]` for a non-negative interval: `[√a, √b]`
+/// (`√` monotone). A lower endpoint that has rounded slightly below 0 is clamped
+/// (`sqrt` returns `[0, 0]` there), keeping the result a valid `ρ ≥ 0` lower bound.
+pub fn sqrt_on<B: Backend>(iv: &RatIv<B>, eps: &Rat<B>) -> RatIv<B> {
+    RatIv::new(sqrt(iv.lo(), eps).lo, sqrt(iv.hi(), eps).hi)
+}
+
+/// The absolute value of an interval: `|[lo, hi]|`. Sign-uniform intervals map to
+/// `[|·|min, |·|max]`; an interval straddling 0 has infimum `0`.
+pub fn abs_on<B: Backend>(iv: &RatIv<B>) -> RatIv<B> {
+    if iv.lo().sign() >= 0 {
+        iv.clone()
+    } else if iv.hi().sign() <= 0 {
+        iv.neg()
+    } else {
+        let hi = max2(iv.lo().neg(), iv.hi().clone());
+        RatIv::new(Rat::from_i128(0), hi)
+    }
+}
+
+// --- interval polynomial / rational-function evaluation ------------------------------------
+
+/// A certified enclosure of `p(x)` for an *interval* argument `x`, by Horner in
+/// interval arithmetic (rounded outward each step so intermediates stay
+/// bounded-digit). Rigorous: the true `p(x₀)` for any `x₀ ∈ x` lies in the result.
+pub fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
+    let mut acc = RatIv::point(Rat::from_i128(0));
+    for c in p.coeffs().iter().rev() {
+        acc = acc.mul(x).add(&RatIv::point(c.clone())).rounded();
+    }
+    acc
+}
+
+/// A certified enclosure of `f(x) = num(x)/den(x)` for an *interval* argument `x`,
+/// or `None` when `den(x)`'s enclosure straddles zero (a possible pole on the
+/// sub-interval — the caller refines or refuses rather than risk an unbounded
+/// quotient). Reuses [`eval_poly_on`] for both parts and interval reciprocal.
+pub fn eval_ratfunc_on<B: Backend>(f: &RatFunc<B>, x: &RatIv<B>) -> Option<RatIv<B>> {
+    let den = eval_poly_on(f.den(), x);
+    // 1/den is bounded only when the denominator interval is sign-uniform.
+    let inv = if den.lo().sign() > 0 || den.hi().sign() < 0 {
+        RatIv::new(den.hi().recip(), den.lo().recip())
+    } else {
+        return None;
+    };
+    Some(eval_poly_on(f.num(), x).mul(&inv).rounded())
 }
 
 #[cfg(test)]

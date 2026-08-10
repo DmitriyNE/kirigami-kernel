@@ -20,7 +20,10 @@
 //! (`spec:402`). No float enters the certificate; `mesh3d::develop_cone` only
 //! *corroborates* it (see `docs/spike-development-report.md`).
 
-use crate::interval::{RatIv, arctan, arctan_on, cos_on, log, pi, pi_half, sin_on, sqrt};
+use crate::interval::{
+    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, log, pi, pi_half, sin_on, sqrt,
+    sqrt_on,
+};
 use certify_core::Verdict;
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Poly, Rat, RatFunc};
@@ -312,6 +315,43 @@ impl<B: Backend> ConeDevelopment<B> {
             x: radial.mul(&cos).rounded(),
             y: radial.mul(&sin).rounded(),
         }
+    }
+
+    /// A certified enclosure of `ψ(σ) = c·arctan σ` for an *interval* σ — the hull of
+    /// the two endpoint enclosures (`ψ` is monotone in σ, `c > 0`). Used by the ANCHOR
+    /// sup-bound to develop over a σ-sub-interval.
+    pub fn angle_on(&self, sigma: &RatIv<B>, terms: usize) -> RatIv<B> {
+        self.angle(sigma.lo(), terms)
+            .hull_with(&self.angle(sigma.hi(), terms))
+    }
+
+    /// A certified enclosure of the ruling-speed radius `ρ(σ) = |n′(σ)|` for an
+    /// *interval* σ, via interval evaluation of `ρ²` then `√`. `None` if `ρ²`'s
+    /// denominator enclosure straddles zero on the sub-interval (a pole risk — never
+    /// for a cone, whose denominator `(1+σ²)²` is positive-definite).
+    pub fn radius_on(&self, sigma: &RatIv<B>, eps: &Rat<B>) -> Option<RatIv<B>> {
+        Some(sqrt_on(&eval_ratfunc_on(&self.rho_sq, sigma)?, eps))
+    }
+
+    /// The certified flat point `D(σ, μ̂)` for *interval* σ and μ̂ — [`point`](Self::point)
+    /// lifted to intervals. `None` when the radius enclosure is undefined (pole risk).
+    pub fn point_on(
+        &self,
+        sigma: &RatIv<B>,
+        mu_hat: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<FlatBox<B>> {
+        let psi = self.angle_on(sigma, cfg.terms);
+        let cos = cos_on(&psi, cfg.terms);
+        let sin = sin_on(&psi, cfg.terms);
+        let radial = self
+            .radius_on(sigma, &cfg.sqrt_eps)?
+            .mul(&abs_on(mu_hat))
+            .rounded();
+        Some(FlatBox {
+            x: radial.mul(&cos).rounded(),
+            y: radial.mul(&sin).rounded(),
+        })
     }
 
     /// The seam's certified flat angular position `ψ(σ→∞) = c·π/2 = π·sinβ`.
