@@ -1604,6 +1604,38 @@ closure + the end-to-end pipelines. **Creases / fold-mates / multi-panel assembl
 `closure`/`sew`**, not `develop`. The exact 3D substrate (charts, intersections, watertight solids, STEP)
 that DEV sits on is delivered through M-D.
 
+### Flex-PCB acceptance roadmap (two stages) — full detail in `docs/roadmap-flex-pcb.md`
+
+The remaining path to the product spine (the bidirectional multilayer flex-PCB, `docs/implementation-plan-v1.md §6`)
+is organized around **two concrete end-to-end acceptance demos** that gate the milestones. Both are built
+**fully general, without goal-specific hacks** — the certified backward-error bound (`anchor_dev`) makes
+rational approximation the *designed* treatment of transcendental/algebraic geometry, fail-closed (a loose
+approximation → `Unresolved`, never a wrong `Verified`), not a shortcut.
+
+- **Stage 1 — cone-sector geometry, back-and-forth.** A ~300° (rational-approx) cone sector, cut by an
+  offset-plane curve (exactly rational, `μ=d/(n·ruling)`) + a fitted cone∩cylinder curve → unroll → a square
+  interior hole on the flat (exact `arrange2d` boolean) → fold back → SVG + two STEPs (input cut cone; folded
+  panel with the hole as a real interior wire). Per-panel, single-layer. **This is DEV.3-α (the per-panel
+  pipeline, on a wide/two-sided gore) + one exporter milestone** — interior-hole / arbitrary-trim STEP
+  B-rep, a new slice **D4.7 / E-EXPORT** extending the deferred V_∂ real-cut. Gap ladder **G1–G7** with an
+  artifact ladder A1 (SVG) → A2 (SVG+hole) → A3 (folded mesh) → A4 (STEP I) → A5 (STEP II). Two conscious
+  general-over-shortcut choices: certified `fold_outline` **per-edge** (not per-vertex), and the hole via
+  **explicit (σ,μ) pcurves** (not re-ruling).
+- **Stage 2 — cone + overlap seam.** Close the rolled cone with a certified **BONDED lap seam** (the
+  original device's "lap seam", `implementation-plan-v1.md:53`). Single-layer. Two independent hard
+  frontiers: **DEV.3-β** = the transcendental full-2π closure (a rational chart is a gore <2π; the seam
+  lives at σ→±∞; chart-graph cycle = deferred [D11]) and **spec §14 (BONDED)** = the lap certificate (SEP ≡
+  bond gap `g`, SLAB one-sided, two-to-one normal projection). S3 depends on S2. Everything bonded rides on
+  the **seam-ramp subdivision certificate** (`docs/paper.md`) — the one place the method broadens from
+  closed-form to certified interval subdivision, hence spike-first / GO-gated. Gaps **S2 + S3**.
+- **Beyond Stage 2 (the full multilayer flex-PCB):** multilayer stackup (`w`-band stack + `z_N` strain
+  budgets, new laminate slot), multi-panel atlas + reflection-mate constructor (D4.4), complex authored ECAD
+  boundary with cutouts (D4.3 + §14 curves).
+
+Sequence: Phase 1 = Stage 1 (start G1, the interval-trig range reduction) · Phase 2 = DEV.3-β closure ·
+Phase 3 = §14 BONDED seam · then the beyond-Stage-2 extensions. **Status: roadmap authored (docs-only,
+`docs/roadmap-flex-pcb.md`); no slice built.**
+
 ---
 
 ## 9. Sequencing
