@@ -1507,12 +1507,42 @@ enclosure is checked against.
   **GO** = a converging, verdict-typed enclosure with a fab-plausible `ε_ψ` on the device cone. **No-go**
   = the enclosure doesn't converge / the method is intractable → record the wall and the alternative
   (the honest §7-spike outcome), *before* the tier is built.
-- **DEV.2+ — the tier (post-GO, sketched, not authored here):** a `develop` crate carrying **unroll**
-  `(σ,μ)→flat` (①) and **fold** `flat→(σ,μ)` (②); general charts (`γ = ∫e(ψ)` the nested directrix
-  integral — harder than the cone's `γ≡0`); the **angular closure + seam** (multi-gore / limit, the 2π
-  wrap); the ANCHOR backward-error certificate + DRC wired into `certify_core`; and the two product
-  pipelines end-to-end (intersect→outline→unroll; ECAD→fold→solid). Each its own slice with its own
-  criteria, authored when DEV.1 GOes.
+- **DEV.2 — the certified development tier for the *closed-form* developable class (post-GO, planned).**
+  DEV.1's foundation is already general (the `develop::interval` enclosures, `ρ=√(‖n′‖²)` surd, and
+  `ψ=∫ψ′` arctan/log-class for any chart); DEV.2 broadens from the device cone to **every developable
+  whose development is elementary** — cones at any placement (`ψ=∫P/Q` = a sum of arctans/logs), and
+  cylinders (`ψ′≡0` ⇒ `e(ψ)` constant ⇒ `γ` elementary). Slices (each commits green; additive; the pure
+  `certify_core` TCB and the crease/atlas layer untouched):
+  - **DEV.2a — fixed-precision outward rounding** (retire the DEV.1 digit-growth wall, report §5): a
+    pure-tier `Rat::floor`/`ceil` (+ Kani panic-freedom) and a `develop::interval` `round_out(bits)`
+    applied inside the series, so certified endpoints stay bounded-digit at any budget. Rigorous —
+    outward rounding only grows an enclosure. **Met when** a high-term-budget development stays
+    bounded-digit *and* still brackets the truth (corroboration digit-bound assertion).
+  - **DEV.2b — the general closed-form angle**: `angle_enclosure` computing `ψ=∫P/Q` via partial fractions
+    (degree-2 core: irreducible `Q`→arctan, real roots→a new `log` enclosure; higher-degree over
+    `lattice::AlgReal` flagged as an extension), `Verdict`-shaped (a γ≠0 curved-directrix chart → a clean
+    `Unresolved` pointing at DEV.3, not a silent `None`). **Met when** it matches DEV.1 on the device
+    cones and certifies a general-placement cone, float-corroborated.
+  - **DEV.2c — the ANCHOR backward-error certificate (the T-part)**: `sup_t|D(â(t))−g(t)| ≤ ε` + DRC
+    `ε < clearance/2` (`spec:192`) as an evidence-carrying certificate (`free_boundary` mold:
+    `*Cert`/`Valid*`/`*Fault`, `Verdict`-typed) in `develop` — it needs the transcendental enclosures, so
+    it lives shell-side while `certify_core`'s A-part (`free_boundary`) stays pure; the two **compose**
+    into the full ANCHOR (`T,1D + A,1D`, `spec:372`). Introduces the authored target `g` + rational anchor
+    spline `â` (new vs the spike) and a rigorous `sup_t` via interval-σ evaluation. **Met when** a
+    closed-form anchor certifies to `Verified(ε)` under a fab clearance (too-tight → `Unresolved`), the
+    per-span `ε` bounds the `develop_cone` deviation, and it composes with `free_boundary`.
+  - **DEV.2d — certified unroll (direction ①)**: develop the free-boundary μ-band
+    (`export::brep_build::brep_freeboundary`) to a certified flat outline; corroborate vs `develop_cone`.
+  - **DEV.2e — certified fold-inversion (direction ②, *per-panel*)**: `D⁻¹` flat→`(σ,μ)` enclosure, then
+    exact chart eval `C(σ,μ,w)`→3D. **The single-panel isometry only** — multi-panel **creases /
+    fold-mates are the atlas** (D4.4) + `closure`/`sew` (spec §5.3 MONO; the reflection mate is already in
+    M-D), *not* `develop`.
+- **DEV.3 — the non-elementary frontier (own milestone, spike-first).** `γ = ∫e(ψ)` for a **curved
+  directrix** (tangent-developables / arbitrary ruled developables) is *not* elementary → **verified
+  interval integration** (the DEV.1-selected method (b), with its own GO gate). Also the full 2π angular
+  closure + multi-gore seam, the two product pipelines end-to-end (intersect→outline→unroll;
+  ECAD→fold→solid), and Lean/Kani for the transcendental enclosure tier. Named here because the product's
+  substrates span all developable classes; authored when DEV.2 lands.
 
 **Doctrine.** No float in a certificate: the enclosure's endpoints and `ε` are **rationals** (interval
 arithmetic over ℚ), the float `develop_cone` only corroborates. Exact-over-rational-inputs: DEV certifies
@@ -1528,12 +1558,15 @@ tier stays float-free and untouched.
 the method chosen, the certified `ε_ψ` on the device cone, the float-corroboration numbers, and the GO /
 no-go call — plus usage-first docs on any new public surface under `-D missing_docs`.
 
-**Status: DEV.0 + DEV.1 met — DEV.1 decision GO** (`docs/spike-development-report.md`). The certified
-development is demonstrated on the device cone (`develop` crate): `ψ = 2 sinβ · arctan σ` closed form,
-rigorous rational enclosure, backward error `≈ 1e-11`, float-corroborated to `≈ 1.5e-8`. **DEV.2+ (the
-tier) is post-GO** — first slice: fixed-precision outward rounding (report §5) + the `develop` unroll/fold
-proper. The exact 3D substrate (charts, intersections, watertight solids, STEP) that DEV sits on is
-delivered through M-D.
+**Status: DEV.0 + DEV.1 met (DEV.1 decision GO, `docs/spike-development-report.md`); DEV.2 planned +
+underway.** The certified development is demonstrated on the device cone (`develop` crate):
+`ψ = 2 sinβ · arctan σ` closed form, rigorous rational enclosure, backward error `≈ 1e-11`,
+float-corroborated to `≈ 1.5e-8`. **DEV.2** broadens to the whole closed-form developable class (cones at
+any placement + cylinders) across the slices above, opening with DEV.2a (fixed-precision rounding, the
+digit-growth remedy). **DEV.3** owns the γ≠0 curved-directrix frontier (interval integration) + the 2π
+closure + the end-to-end pipelines. **Creases / fold-mates / multi-panel assembly are the atlas (D4.4) +
+`closure`/`sew`**, not `develop`. The exact 3D substrate (charts, intersections, watertight solids, STEP)
+that DEV sits on is delivered through M-D.
 
 ---
 
