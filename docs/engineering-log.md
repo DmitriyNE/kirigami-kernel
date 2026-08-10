@@ -87,6 +87,28 @@ fine — this is a log, not a schema.
   authored (docs-only) + **G1 · G2 met**; branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
   `crates/develop/src/{interval,cut}.rs`, `crates/export/src/{approx,cut_oracle}.rs`*
 
+- **G3 met — general trim-loop unroll (`develop::unroll::unroll_trim_loop`).** Generalized the flat-pattern
+  unroll from the two-rail **band** to an **arbitrary ordered loop** of `BoundaryArc`s — σ-monotone **rail**
+  arcs `μ̂(σ)` (incl. the G2 cut rails) joined by ruling **cap**s. Each rail arc develops to a chord polyline
+  certified against the true developed rail by the same DEV.2c `rail_edge_eps` lift bound; caps develop to
+  *exact* straight radial edges (no fidelity cost); the loop must chain **end→start in `(σ, μ̂)`** (checked
+  exactly, float-free — development is injective on the gore, so `(σ,μ̂)`-equality ⟺ coincident flat points),
+  refused as `ArcDiscontinuity` otherwise; `ε = max` over rail edges, DRC `ε<clearance/2`, fail-closed
+  (loose→`Unresolved`, structural→`Refuted{DegenerateSpan,PoleInEval,ArcDiscontinuity,EmptyLoop}`). **DESIGN
+  (user steer, see [[no-interface-ossification]]):** rejected the "keep the special-case `unroll_freeboundary`
+  frozen because an example/test pins its interface" instinct — that ossifies an unsettled kernel. Instead
+  made `unroll_trim_loop` the **one canonical engine** and reimplemented `unroll_freeboundary` as a **thin
+  delegating constructor** (band = the 4-arc loop `[Rail μ⁻, Cap, Rail μ⁺, Cap]`), deleting the duplicated
+  develop/ε/assembly body — single source of truth. The `cone_flat` example + `mesh3d` corroboration stay
+  green by *identical output* (a consequence, not a constraint). **Precondition (documented, not enforced):**
+  no arc crosses the apex `μ̂=0` (the development uses `|μ̂|·ρ`); a real cut region never does. New tests:
+  band≡explicit-loop, triangle (2 rails + cap, ε↓ with segments), a `plane_cut_rail` loop (G2→G3
+  composition, Verified/Unresolved), a two-sided gore (σ across 0, exercises the G1 range reduction),
+  open-loop/pole/empty/degenerate refutations, corner-enclosure corroboration. Full gate green (develop 63 +
+  6 doctests, export/diagnostics 47 incl. corroboration, clippy `-D warnings` default + `-p export --features
+  diagnostics`, fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G3 met**; branch
+  `roadmap-flex-pcb`, `crates/develop/src/unroll.rs`*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).
