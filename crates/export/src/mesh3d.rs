@@ -870,7 +870,10 @@ mod tests {
         // (0, ¼, ½, ¾, 1) — exact arctan of a low-denominator rational is cheap, and the
         // fine float grid still supplies a well-converged diagnostic angle at those rows.
         // A high term budget (40) — with rounding this stays bounded-digit and tight.
-        let cfg = DevConfig::<Bignum> { terms: 40, sqrt_eps: Rat::new(1, 100_000_000_000) };
+        let cfg = DevConfig::<Bignum> {
+            terms: 40,
+            sqrt_eps: Rat::new(1, 100_000_000_000),
+        };
         let c = 130.0 / 97.0; // 2 sinβ
         let (mut max_diag, mut max_analytic, mut max_be) = (0.0f64, 0.0f64, 0.0f64);
         let mut max_den_digits = 0usize;
@@ -896,13 +899,19 @@ mod tests {
             }
         }
         // The certificate is far tighter than the diagnostic's own discretization error.
-        assert!(max_be < 1e-8, "certified backward error {max_be:e} too loose");
+        assert!(
+            max_be < 1e-8,
+            "certified backward error {max_be:e} too loose"
+        );
         // The certified center matches its intended analytic value to the f64 readout limit.
         assert!(max_analytic < 1e-9, "analytic residual {max_analytic:e}");
         // The independent float diagnostic corroborates within its discretization tolerance.
         assert!(max_diag < 1e-6, "corroboration residual {max_diag:e}");
         // DEV.2a: bounded-digit at a high (40-term) budget — no digit explosion.
-        assert!(max_den_digits < 40, "endpoint denominator digits bounded, got {max_den_digits}");
+        assert!(
+            max_den_digits < 40,
+            "endpoint denominator digits bounded, got {max_den_digits}"
+        );
         // Surface the achieved numbers for the spike report.
         println!(
             "DEV corroboration: max_diag={max_diag:e} max_analytic={max_analytic:e} max_backward_error={max_be:e} max_den_digits={max_den_digits}"

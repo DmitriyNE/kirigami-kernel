@@ -388,7 +388,11 @@ impl<B: Backend> Rat<B> {
     pub fn ceil(&self) -> Self {
         if let Rat(RatRepr::Fast(x)) = self {
             let f = x.num.div_euclid(x.den);
-            let c = if x.num.rem_euclid(x.den) != 0 { f + 1 } else { f };
+            let c = if x.num.rem_euclid(x.den) != 0 {
+                f + 1
+            } else {
+                f
+            };
             return Rat::from_i128(c);
         }
         let r = to_slow_rat(self);
@@ -696,7 +700,10 @@ mod tests {
         assert_eq!(big.floor(), big, "integer slow value floors to itself");
         assert_eq!(big.ceil(), big, "integer slow value ceils to itself");
         // (MAX + 7)/3 is not an integer — the brackets still hold on the slow path.
-        for r in [big.div(&Rat::from_i128(3)), big.neg().div(&Rat::from_i128(3))] {
+        for r in [
+            big.div(&Rat::from_i128(3)),
+            big.neg().div(&Rat::from_i128(3)),
+        ] {
             let f = r.floor();
             let c = r.ceil();
             assert!(f <= r && r < f.add(&one));
