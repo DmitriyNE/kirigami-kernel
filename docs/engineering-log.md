@@ -87,6 +87,66 @@ fine — this is a log, not a schema.
   authored (docs-only) + **G1 · G2 met**; branch `roadmap-flex-pcb` · `docs/roadmap-flex-pcb.md`,
   `crates/develop/src/{interval,cut}.rs`, `crates/export/src/{approx,cut_oracle}.rs`*
 
+- **G3 met — general trim-loop unroll (`develop::unroll::unroll_trim_loop`).** Generalized the flat-pattern
+  unroll from the two-rail **band** to an **arbitrary ordered loop** of `BoundaryArc`s — σ-monotone **rail**
+  arcs `μ̂(σ)` (incl. the G2 cut rails) joined by ruling **cap**s. Each rail arc develops to a chord polyline
+  certified against the true developed rail by the same DEV.2c `rail_edge_eps` lift bound; caps develop to
+  *exact* straight radial edges (no fidelity cost); the loop must chain **end→start in `(σ, μ̂)`** (checked
+  exactly, float-free — development is injective on the gore, so `(σ,μ̂)`-equality ⟺ coincident flat points),
+  refused as `ArcDiscontinuity` otherwise; `ε = max` over rail edges, DRC `ε<clearance/2`, fail-closed
+  (loose→`Unresolved`, structural→`Refuted{DegenerateSpan,PoleInEval,ArcDiscontinuity,EmptyLoop}`). **DESIGN
+  (user steer, see [[no-interface-ossification]]):** rejected the "keep the special-case `unroll_freeboundary`
+  frozen because an example/test pins its interface" instinct — that ossifies an unsettled kernel. Instead
+  made `unroll_trim_loop` the **one canonical engine** and reimplemented `unroll_freeboundary` as a **thin
+  delegating constructor** (band = the 4-arc loop `[Rail μ⁻, Cap, Rail μ⁺, Cap]`), deleting the duplicated
+  develop/ε/assembly body — single source of truth. The `cone_flat` example + `mesh3d` corroboration stay
+  green by *identical output* (a consequence, not a constraint). **Precondition (documented, not enforced):**
+  no arc crosses the apex `μ̂=0` (the development uses `|μ̂|·ρ`); a real cut region never does. New tests:
+  band≡explicit-loop, triangle (2 rails + cap, ε↓ with segments), a `plane_cut_rail` loop (G2→G3
+  composition, Verified/Unresolved), a two-sided gore (σ across 0, exercises the G1 range reduction),
+  open-loop/pole/empty/degenerate refutations, corner-enclosure corroboration. Full gate green (develop 63 +
+  6 doctests, export/diagnostics 47 incl. corroboration, clippy `-D warnings` default + `-p export --features
+  diagnostics`, fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G3 met**; branch
+  `roadmap-flex-pcb`, `crates/develop/src/unroll.rs`*
+
+- **G5 met — arrange2d hole glue (`develop::flat::cut_hole`).** Cut an authored interior hole out of a G3
+  `FlatOutline` via the exact 2-D boolean kernel — the **first** `develop` code to actually wire in `arrange2d`
+  (the dep was declared + charter-named but unused). Adapter `outline_to_edges` reduces each `FlatBox` vertex
+  to its rational `center()` and lifts to `Point2::from_rat` (exact over ℚ — no float; outline stays
+  ε-faithful, the hole is placed exactly on that rational polygon). `cut_hole(outline, hole)` builds outline =
+  operand A (src 0) + hole = operand B (src 1) and runs `ledge_dom_certified(…, BoolOp::Xor)`. **KEY: no
+  `BoolOp::Difference` exists** (only `Xor/And/Or`); for a *strictly-interior* hole `A △ B = A ∖ B`, so `Xor`
+  is the in-tree convention (`fixtures::gallery::square_with_hole`). "Strictly interior" is **not assumed** —
+  the checker certifies the postcondition **one face ∧ one hole ∧ no pinch**, else `Refuted(HoleNotInterior)`
+  (a hole outside/crossing/tangent fails it), fail-closed alongside `DegenerateOutline` and
+  `Boolean(CapOutFault)`. Result `HoledFlat{region, eps, clearance}` carries the outline's ε so the composed
+  guarantee (G3 dev-fidelity ∘ G5 exact-boolean) travels to G6/G7. Tests: synthetic square−square clean cut
+  (1 face/1 hole/4 edges, ε carried), hole-outside refused, degenerate refused, and the **G3→G5 bridge** (a
+  *real* `unroll_freeboundary` band develops to a valid simple arrange2d operand — one hole-free face under a
+  single-operand `Or`). Full gate green (develop 67 + 7 doctests, clippy `-D warnings` default + `-p export
+  --features diagnostics`, fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G5 met**;
+  branch `roadmap-flex-pcb`, `crates/develop/src/flat.rs`. The A2 SVG-with-hole render
+  (`export::svg::region_to_polys`, mirroring `annulus_xor_has_ring_and_hole`) is deferred to the G7 demo
+  driver.*
+
+- **G4 met — certified `fold_outline` (`develop::fold`, with the two-sided σ=0 split).** Lifted DEV.2e's
+  single-point `fold_point` (flat→3-D inversion, direction ②) to a whole **loop**: fold every flat vertex into
+  a certified 3-D wire `FoldedWire{points, eps, clearance}`. The genuinely new piece is the **σ=0 split** that
+  `invert_sigma`'s own doc deferred to "future G4": the signed-area bisection is faithful only while
+  `|θ−ψ(σ)| < π`; a one-sided σ-domain always satisfies this (span `≤ c·π/2 < π`) but the Stage-1 **wide
+  two-sided gore** (≈240°, ψ-span up to `c·π > π`) does not. `split_domain` restricts each vertex's bisection
+  to the half matching `sign(θ)=sign(y)` (exact: for a gore point `|θ| < c·π/2 < π`, so
+  `sign(y)=sign(sinθ)=sign(θ)=sign(σ)`) — each half one-sided, span `< π`, correct. Reuses `fold_point`
+  unchanged (additive, no DEV.2e edits); per-vertex permissive clearance to read raw ε, one wire-level DRC (the
+  `unroll::rail_edge_eps` pattern). Fail-closed: any vertex out-of-gore/pole/non-cone → `Refuted(FoldFault)`;
+  empty loop → new `Refuted(EmptyLoop)`; loose → `Unresolved`. **Tests: the back-and-forth**
+  `roundtrip_unroll_then_fold` (unroll a band → fold it back → recovers the original 3-D `chart.surface` to
+  `<1e-3`, i.e. develop∘fold ≈ identity) + `two_sided_fold_splits_at_zero` (a wide gore over [−3,3], ψ-span >
+  π, folds correctly — would be silently wrong without the split) + ε-shrinks-with-iters, out-of-gore, empty.
+  Full gate green (develop 72 + 8 doctests, clippy `-D warnings` default + `-p export --features diagnostics`,
+  fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G4 met**; branch `roadmap-flex-pcb`,
+  `crates/develop/src/fold.rs`. The folded outer + hole `FoldedWire`s feed G6 (interior-hole STEP B-rep).*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).
