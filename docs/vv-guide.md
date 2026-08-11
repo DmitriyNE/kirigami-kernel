@@ -1879,7 +1879,14 @@ to `γ ≠ 0`: `develop::fold::fold_point` now builds `new_developable`, and `in
 the γ≠0/µ̂<0 residual-at-(ψ+π) case, the radius reading `r = |(x,y) − γ(σ)|`. Folding a flat point on the
 seam-ramp flap (`cone_seam_ramp`, µ̂ < 0) recovers its `(σ′, µ̂)` and round-trips to **ε ≈ 3.85e-3** (at 64
 γ-panels, clears the DRC; a tight clearance → `Unresolved`, fail-closed); the γ ≡ 0 path stays byte-identical
-(every DEV.2e fold test passes). **DD.4 pending** (the seam device — body gore + ramp flap + certified bond).
+(every DEV.2e fold test passes). **DD.4 — the acceptance demo — MET, the Driving Demo milestone COMPLETE.** The `bonded_seam_device` driver
++ composed test realize the full bidirectional round-trip on the self-lapping cone-with-ramp as **body gore
+(γ = 0) + ramp flap (γ ≠ 0) + a certified bond** (§6.2, a lap is doubled material): each sheet **develops** to
+a certified flat pattern (flap ε ≈ 7.05e-3 γ≠0, body ε ≈ 7.6e-13 γ=0) and a flat point **folds back** onto it
+(flap ε ≈ 8.1e-2, body ε ≈ 2.7e-12), the seam **bond** is certified by `valid_bonded_seam` (SEP ∧ SLAB ∧
+SHEAR δ=18/65≈0.28 mm ∧ CLEAR), and the two sheets emit as **two certified STEP solids** (`brep_trim_solid`,
+each OCCT `audit valid ∧ free_edges==0 ∧ nonmanifold==0`). Both product directions, on the real γ≠0
+self-lapping geometry, bonded — the flex-PCB spine's acceptance.
 
 ---
 

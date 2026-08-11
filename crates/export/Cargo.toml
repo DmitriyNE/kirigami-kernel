@@ -66,3 +66,10 @@ required-features = ["diagnostics"]
 [[example]]
 name = "roundtrip_panel"
 required-features = ["diagnostics"]
+
+# Emits the DD.4 acceptance demo: `cargo run --example bonded_seam_device --features diagnostics`
+# for the full round-trip report + `seam_{body,flap}.svg` (add `,step` under `nix develop` for the
+# two certified STEP solids). The self-lapping cone-with-ramp: body gore + ramp flap + certified bond.
+[[example]]
+name = "bonded_seam_device"
+required-features = ["diagnostics"]
