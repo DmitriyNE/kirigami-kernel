@@ -56,6 +56,34 @@ pub fn cone_seam() -> Chart<Bignum> {
     Chart::new(q, RatFunc::zero())
 }
 
+/// The **lap-flap seam ramp** — the device cone's seam chart [`cone_seam`] carrying a nonzero
+/// support ramp `h(σ') = ¼ − σ'/2` (Stage-2 S3 / spec §14 BONDED, `docs/paper.md §8`).
+///
+/// The lap flap climbs `Δ = ¼` to seat on the mated edge at the seam (`σ' = 0`), ramping back
+/// down to the base cone (`h = 0`) at `σ' = ½`. The frame `q` is the cone's (the normal rides
+/// the cone's Gauss circle), only the **support ramps** — a genuine **γ≠0** developable, yet
+/// `ψ = c·arctan σ'` stays closed-form (`ψ` is `h`-independent). It is representable today
+/// (`Chart::new` accepts any support) and its 3D surface `c + µr + wn` is exactly rational (the
+/// pedal `c = h·n + (h′/|n′|²)·n′` carries the ramp). The BONDED certificate reads this surface
+/// directly; the `develop::cone` pedal-nonzero rejection bites only the *flat* development
+/// (emission), not the 3D bond. The normal-component of the pedal is exactly the support
+/// (`c·n ≡ h`, since `n·n = 1` and `n′·n = 0`), so the normal separation from the base sheet
+/// (`h = 0`) is precisely `h(σ')` — the quantity SEP/CLEAR certify.
+///
+/// ```
+/// use fixtures::devices::cone_seam_ramp;
+///
+/// // A nonzero support ⇒ nonzero pedal ⇒ NOT an apex cone (γ ≠ 0).
+/// assert!(!cone_seam_ramp().pedal().is_zero());
+/// ```
+pub fn cone_seam_ramp() -> Chart<Bignum> {
+    let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+    let q = [poly(&[0, 9]), poly(&[0, 4]), poly(&[-4]), poly(&[-9])];
+    // h(σ') = 1/4 − σ'/2: Δ = 1/4 at the seam σ' = 0, rejoining h = 0 at σ' = 1/2.
+    let h = RatFunc::from_poly(Poly::from_coeffs(vec![Rat::new(1, 4), Rat::new(-1, 2)]));
+    Chart::new(q, h)
+}
+
 /// A **second-angle** rational cone (apex at the origin, `h ≡ 0`, `n·ẑ ≡ 3/5 ≈ sin 36.87°`) —
 /// a generality witness distinct from [`cone`]'s 65/97, so the closure pipe is demonstrably
 /// not locked to one half-angle.
@@ -392,5 +420,24 @@ mod tests {
         assert_eq!(cs.normal().comp(1).eval(&zero).unwrap(), Rat::new(72, 97));
         assert_eq!(cs.normal().comp(2).eval(&zero).unwrap(), Rat::new(65, 97));
         assert!(cs.normal_deriv_sq().eval(&zero).unwrap() > Rat::from_i128(0));
+    }
+
+    #[test]
+    fn cone_seam_ramp_is_a_gamma_nonzero_lap_flap() {
+        let r = cone_seam_ramp();
+        // γ ≠ 0: the support ramps, so the pedal is nonzero — NOT an apex cone.
+        assert!(!r.pedal().is_zero());
+
+        // The normal-component of the pedal is exactly the support ramp (c·n ≡ h) — the sheet
+        // separation from the base cone (h = 0) that SEP/CLEAR read.
+        let h = RatFunc::<Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(1, 4), Rat::new(-1, 2)]));
+        assert_eq!(r.pedal().dot(r.normal()).reduce(), h.reduce());
+        // Δ = 1/4 at the seam σ' = 0 (lapped); h = 0 at σ' = 1/2 (rejoins the base cone).
+        assert_eq!(h.eval(&Rat::from_i128(0)).unwrap(), Rat::new(1, 4));
+        assert_eq!(h.eval(&Rat::new(1, 2)).unwrap(), Rat::from_i128(0));
+
+        // The 3D surface c + µr + wn is exactly rational and defined on the seam neighborhood.
+        let surf = r.surface(&Rat::from_i128(-1), &Rat::from_i128(0)); // µ = −1 rail, w = 0
+        assert!(surf.eval(&Rat::from_i128(0)).is_some());
     }
 }
