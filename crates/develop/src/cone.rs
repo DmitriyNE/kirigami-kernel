@@ -412,7 +412,7 @@ pub fn drc<B: Backend>(eps: &Rat<B>, clearance: &Rat<B>) -> Verdict<Rat<B>, (), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fixtures::devices::{cone, cone_alt, cylinder};
+    use fixtures::devices::{cone, cone_alt, cone_seam, cylinder};
 
     type Q = Rat<Bignum>;
 
@@ -470,6 +470,26 @@ mod tests {
         // full sector = c·π = 2π sinβ ≈ 4.21040 rad ≈ 240.9°.
         let sector = dev.flat_sector(24);
         assert!((to_f64(&sector.mid()) - c * PI).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_seam_develops_at_the_finite_recentered_point() {
+        // The seam ruling (φ₃D = ±π, at σ = ±∞ in the canonical chart) is UNREACHABLE by the
+        // arctan development there. In the re-centered seam chart (`cone_seam`) it is the regular
+        // finite point σ' = 0 — and the SAME `ConeDevelopment` machinery develops it, unchanged
+        // (the seam chart is a canonical apex cone, γ ≡ 0). This is the whole point of the
+        // re-centering: it conditions the seam so the certificate lives at finite σ'.
+        let dev = ConeDevelopment::new(&cone_seam()).expect("the re-centered cone is canonical");
+        // Same proven angle law c = 2 sinβ = 130/97 as the canonical chart.
+        assert_eq!(cone_angle_coeff(&cone_seam()), Some(Q::new(130, 97)));
+        assert_eq!(dev.angle_coeff(), &Q::new(130, 97));
+
+        // At the seam σ' = 0: ψ = c·arctan 0 = 0 (the seam is this view's reference ray) and
+        // ρ_seam(0) = 144/97, so D(0, −1) = (144/97, 0) — finite, exact, well-conditioned.
+        let seam = dev.point(&Q::from_i128(0), &Q::new(-1, 1), &DevConfig::tight());
+        assert!(seam.x.contains(&Q::new(144, 97)));
+        assert!(seam.y.contains(&Q::from_i128(0)));
+        assert!(seam.backward_error() < Q::new(1, 1_000_000));
     }
 
     #[test]
