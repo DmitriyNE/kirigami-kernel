@@ -14,7 +14,7 @@
 //!
 //! 1. **Shape / range** — the arrays are well-shaped, every id is in range, and every edge
 //!    joins two *distinct* vertices.
-//! 2. **Wires well-formed** — every face wire is a non-empty loop whose consecutive
+//! 2. **Loops well-formed** — every boundary loop is a non-empty cycle whose consecutive
 //!    half-edges chain end→start (cyclically) and never immediately backtrack along one
 //!    edge (the combinatorial analogue of `Brep::wire_is_closed`).
 //! 3. **∂² = 0 (oriented)** — every edge is used **exactly twice: once forward, once
@@ -22,10 +22,24 @@
 //!    the *same* direction is a non-orientable seam (a Klein-bottle-style identification) —
 //!    all three are refused, so acceptance means "no boundary, manifold edges, orientable".
 //! 4. **Vertex link a single cycle** — around each vertex the incident darts, walked by the
-//!    rotation-system map `around = rev_dart ∘ next_in_face`, form **one** orbit covering
+//!    rotation-system map `around = rev_dart ∘ next_in_loop`, form **one** orbit covering
 //!    all of them. This is the manifold-*vertex* condition: two cones sharing an apex pass
 //!    1–3 (each edge is still used once each way) yet split into two orbits here, so this is
 //!    the check that separates a true 2-manifold from a vertex-pinched pseudomanifold.
+//!
+//! # Faces with holes (genus > 0)
+//!
+//! [`closed_shell_holed`] is the general entry point: a face is given as one *or more*
+//! boundary loops (an outer wire plus zero or more interior hole wires), so the input adds a
+//! second CSR level (faces → loops → half-edges) and check 2 / the check-4 rotation run **per
+//! loop**. The `∂² = 0` census (check 3) never saw face shape and is unchanged. Declaring two
+//! loops one *annular* face — rather than two disk faces — is exactly "replace two disks by a
+//! tube" = drilling one handle: it preserves closed-orientable-manifoldness and only raises the
+//! genus, and manifoldness never depended on the loop→face grouping (the checks read only local
+//! dart data). That each face's loops actually bound an orientable patch is the per-face
+//! *realizability* the CAD oracle owns (`BRepCheck`) — the **same** "oracle ∧ audit" split a
+//! disk face already relies on (spec §8.2), not a new axis of trust. [`closed_shell`] is the
+//! disk-face special case (one loop per face), kept as a thin wrapper.
 //!
 //! Pure, total, panic-free, `no_std`, index-arrays-only — the [`crate::arrange`] mold. The
 //! bounded soundness proof is the `closed_shell_sound` Kani harness; the unbounded
@@ -51,7 +65,7 @@
 //!
 //! assert_eq!(
 //!     closed_shell(4, &edge_start, &edge_end, &wire_edge, &wire_reversed, &face_start),
-//!     Verdict::Verified(ClosedShell { verts: 4, edges: 6, faces: 4 }),
+//!     Verdict::Verified(ClosedShell { verts: 4, edges: 6, faces: 4, loops: 4 }),
 //! );
 //! ```
 
@@ -60,8 +74,10 @@ use alloc::vec::Vec;
 use crate::verdict::Verdict;
 
 /// The evidence a [`Verified`](Verdict::Verified) closed-shell certificate carries: the
-/// shell's element counts. Holding one *is* the proof that the `(verts, edges, faces)`
-/// complex is a closed oriented 2-manifold.
+/// shell's element counts. Holding one *is* the proof that the complex is a closed oriented
+/// 2-manifold. `loops` counts boundary loops across all faces — it equals `faces` for a
+/// disk-face shell (one loop per face) and exceeds it by one per interior hole, so
+/// `loops − faces` is the total number of holes drilled (each raising the genus by one).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClosedShell {
     /// Number of vertices.
@@ -70,6 +86,8 @@ pub struct ClosedShell {
     pub edges: usize,
     /// Number of faces.
     pub faces: usize,
+    /// Number of boundary loops across all faces (`≥ faces`; the excess is the hole count).
+    pub loops: usize,
 }
 
 /// Which closed-shell condition a shell violated (the leftmost failing check).
@@ -116,41 +134,64 @@ fn dart_ends(
     }
 }
 
-/// Decide whether a shell's combinatorics describe a **closed oriented 2-manifold** (spec
-/// §8: the assembly-scale CAP-OUT-LINK). See the [module docs](self) for the four checks.
+/// Decide whether a shell whose faces may carry **interior hole loops** describes a **closed
+/// oriented 2-manifold** — the genus-`g` generalization of [`closed_shell`] (see the
+/// [module docs](self#faces-with-holes-genus--0)).
 ///
-/// Inputs are flat index arrays (no coordinates): `edge_start`/`edge_end` are the parallel
-/// endpoint tables of the `n_edges` edges; `wire_edge`/`wire_reversed` are the parallel
-/// half-edge tables (`edge id`, traversed-reversed?) of all face wires concatenated; and
-/// `face_start` is the CSR offset table of length `n_faces + 1`, so face `f`'s wire is
-/// `wire_edge[face_start[f] .. face_start[f + 1]]` (`face_start[0] == 0`,
-/// `face_start[n_faces] == wire_edge.len()`).
+/// Inputs are flat index arrays (no coordinates). `edge_start`/`edge_end` are the parallel
+/// endpoint tables of the `n_edges` edges. `wire_edge`/`wire_reversed` are the parallel
+/// half-edge tables (`edge id`, traversed-reversed?) of **all loops of all faces** concatenated.
+/// Two CSR levels index them:
 ///
-/// Returns [`Verified`](Verdict::Verified) with the element counts, or
-/// [`Refuted`](Verdict::Refuted) naming the leftmost failing check. Total — it never returns
+/// - `loop_start` — length `n_loops + 1`: loop `ℓ`'s half-edges are
+///   `wire_edge[loop_start[ℓ] .. loop_start[ℓ + 1]]` (`loop_start[0] == 0`,
+///   `loop_start[n_loops] == wire_edge.len()`).
+/// - `face_start` — length `n_faces + 1`, indexing **loops**: face `f` owns loops
+///   `face_start[f] .. face_start[f + 1]` (`face_start[0] == 0`, `face_start[n_faces] == n_loops`).
+///
+/// A hole-free face is just a face with one loop; [`closed_shell`] is that special case.
+/// Returns [`Verified`](Verdict::Verified) with the element counts (including the loop count),
+/// or [`Refuted`](Verdict::Refuted) naming the leftmost failing check. Total — it never returns
 /// [`Unresolved`](Verdict::Unresolved) (a combinatorial fact is always decided).
-pub fn closed_shell(
+pub fn closed_shell_holed(
     n_verts: usize,
     edge_start: &[usize],
     edge_end: &[usize],
     wire_edge: &[usize],
     wire_reversed: &[bool],
+    loop_start: &[usize],
     face_start: &[usize],
 ) -> Verdict<ClosedShell, ClosedShellFault, ()> {
     let n_edges = edge_start.len();
     let n_wire = wire_edge.len();
 
     // ---- Check 1: shape / range integrity ----
-    if edge_end.len() != n_edges || wire_reversed.len() != n_wire || face_start.is_empty() {
+    if edge_end.len() != n_edges
+        || wire_reversed.len() != n_wire
+        || loop_start.is_empty()
+        || face_start.is_empty()
+    {
         return Verdict::Refuted(ClosedShellFault::Shape);
     }
+    let n_loops = loop_start.len() - 1;
     let n_faces = face_start.len() - 1;
     // A non-empty shell: an empty complex is not a solid boundary.
-    if n_verts == 0 || n_edges == 0 || n_faces == 0 {
+    if n_verts == 0 || n_edges == 0 || n_loops == 0 || n_faces == 0 {
         return Verdict::Refuted(ClosedShellFault::Shape);
     }
-    // CSR offsets: anchored at 0, ending at the wire length, non-decreasing.
-    if face_start[0] != 0 || face_start[n_faces] != n_wire {
+    // Loop CSR: anchored at 0, ending at the wire length, non-decreasing.
+    if loop_start[0] != 0 || loop_start[n_loops] != n_wire {
+        return Verdict::Refuted(ClosedShellFault::Shape);
+    }
+    let mut l = 0;
+    while l < n_loops {
+        if loop_start[l] > loop_start[l + 1] {
+            return Verdict::Refuted(ClosedShellFault::Shape);
+        }
+        l += 1;
+    }
+    // Face CSR: anchored at 0, ending at the loop count, non-decreasing.
+    if face_start[0] != 0 || face_start[n_faces] != n_loops {
         return Verdict::Refuted(ClosedShellFault::Shape);
     }
     let mut f = 0;
@@ -177,36 +218,41 @@ pub fn closed_shell(
         i += 1;
     }
 
-    // ---- Check 2: every wire is a well-formed closed loop ----
+    // ---- Check 2: every loop is a well-formed closed cycle (per loop; faults named by face) ----
     let mut f = 0;
     while f < n_faces {
-        let lo = face_start[f];
-        let hi = face_start[f + 1];
-        if lo == hi {
-            return Verdict::Refuted(ClosedShellFault::OpenWire { face: f });
-        }
-        let mut k = lo;
-        let mut bad = false;
-        while k < hi {
-            let next = if k + 1 < hi { k + 1 } else { lo };
-            let (_, t_k) = dart_ends(edge_start, edge_end, wire_edge, wire_reversed, k);
-            let (s_next, _) = dart_ends(edge_start, edge_end, wire_edge, wire_reversed, next);
-            // Chains end→start, and does not immediately backtrack along the same edge
-            // (a degenerate spike that would forge a manifold vertex link).
-            if t_k != s_next || wire_edge[k] == wire_edge[next] {
-                bad = true;
+        let mut l = face_start[f];
+        while l < face_start[f + 1] {
+            let lo = loop_start[l];
+            let hi = loop_start[l + 1];
+            if lo == hi {
+                return Verdict::Refuted(ClosedShellFault::OpenWire { face: f });
             }
-            k += 1;
-        }
-        if bad {
-            return Verdict::Refuted(ClosedShellFault::OpenWire { face: f });
+            let mut k = lo;
+            let mut bad = false;
+            while k < hi {
+                let next = if k + 1 < hi { k + 1 } else { lo };
+                let (_, t_k) = dart_ends(edge_start, edge_end, wire_edge, wire_reversed, k);
+                let (s_next, _) = dart_ends(edge_start, edge_end, wire_edge, wire_reversed, next);
+                // Chains end→start, and does not immediately backtrack along the same edge
+                // (a degenerate spike that would forge a manifold vertex link).
+                if t_k != s_next || wire_edge[k] == wire_edge[next] {
+                    bad = true;
+                }
+                k += 1;
+            }
+            if bad {
+                return Verdict::Refuted(ClosedShellFault::OpenWire { face: f });
+            }
+            l += 1;
         }
         f += 1;
     }
 
     // ---- Check 3: ∂² = 0 oriented edge census (each edge: exactly one fwd + one rev) ----
     // Per edge, tally forward/reverse uses and remember the (unique, once accepted) position
-    // of each so we can pair reverse darts in check 4. `n_wire` is the "none" sentinel.
+    // of each so we can pair reverse darts in check 4. `n_wire` is the "none" sentinel. This
+    // is over *all* darts and never saw the loop/face nesting — unchanged from the disk case.
     let mut fwd_count: Vec<usize> = Vec::new();
     let mut rev_count: Vec<usize> = Vec::new();
     let mut fwd_pos: Vec<usize> = Vec::new();
@@ -249,22 +295,24 @@ pub fn closed_shell(
         };
         i += 1;
     }
-    // The next half-edge in the same face (cyclic).
-    let mut next_in_face: Vec<usize> = Vec::new();
-    next_in_face.resize(n_wire, n_wire);
-    let mut f = 0;
-    while f < n_faces {
-        let lo = face_start[f];
-        let hi = face_start[f + 1];
+    // The next half-edge in the same **loop** (cyclic). A face's outer and hole loops are
+    // separate cycles here — exactly the "drill a handle" identification — but the rotation
+    // walk below only ever reads local dart data, so a pinch still splits the link regardless.
+    let mut next_in_loop: Vec<usize> = Vec::new();
+    next_in_loop.resize(n_wire, n_wire);
+    let mut l = 0;
+    while l < n_loops {
+        let lo = loop_start[l];
+        let hi = loop_start[l + 1];
         let mut k = lo;
         while k < hi {
-            next_in_face[k] = if k + 1 < hi { k + 1 } else { lo };
+            next_in_loop[k] = if k + 1 < hi { k + 1 } else { lo };
             k += 1;
         }
-        f += 1;
+        l += 1;
     }
-    // Incoming darts at each vertex: `around = rev_dart ∘ next_in_face` maps a dart ending
-    // at v to another dart ending at v (wires close ⇒ the next dart starts at v; its reverse
+    // Incoming darts at each vertex: `around = rev_dart ∘ next_in_loop` maps a dart ending
+    // at v to another dart ending at v (loops close ⇒ the next dart starts at v; its reverse
     // ends at v). The vertex is manifold iff those darts are one `around`-orbit.
     let mut deg_in: Vec<usize> = Vec::new();
     let mut some_incoming: Vec<usize> = Vec::new();
@@ -285,11 +333,11 @@ pub fn closed_shell(
         }
         // Walk the link from one incoming dart; a single cycle visits exactly deg_in[v].
         let start = some_incoming[v];
-        let mut cur = rev_dart[next_in_face[start]];
+        let mut cur = rev_dart[next_in_loop[start]];
         let mut steps = 1usize;
         // Bounded by the dart count — a runaway (impossible once checks 1–3 pass) is capped.
         while cur != start && steps <= n_wire {
-            cur = rev_dart[next_in_face[cur]];
+            cur = rev_dart[next_in_loop[cur]];
             steps += 1;
         }
         if cur != start || steps != deg_in[v] {
@@ -302,7 +350,51 @@ pub fn closed_shell(
         verts: n_verts,
         edges: n_edges,
         faces: n_faces,
+        loops: n_loops,
     })
+}
+
+/// Decide whether a **disk-face** shell's combinatorics describe a **closed oriented
+/// 2-manifold** (spec §8: the assembly-scale CAP-OUT-LINK). See the [module docs](self) for
+/// the four checks.
+///
+/// Inputs are flat index arrays (no coordinates): `edge_start`/`edge_end` are the parallel
+/// endpoint tables of the `n_edges` edges; `wire_edge`/`wire_reversed` are the parallel
+/// half-edge tables (`edge id`, traversed-reversed?) of all face wires concatenated; and
+/// `face_start` is the CSR offset table of length `n_faces + 1`, so face `f`'s wire is
+/// `wire_edge[face_start[f] .. face_start[f + 1]]` (`face_start[0] == 0`,
+/// `face_start[n_faces] == wire_edge.len()`).
+///
+/// This is exactly [`closed_shell_holed`] with **one loop per face** (the identity face→loop
+/// nesting), so the disk case is a literal special case of the holed one. Returns
+/// [`Verified`](Verdict::Verified) with the element counts (`loops == faces` here), or
+/// [`Refuted`](Verdict::Refuted) naming the leftmost failing check.
+pub fn closed_shell(
+    n_verts: usize,
+    edge_start: &[usize],
+    edge_end: &[usize],
+    wire_edge: &[usize],
+    wire_reversed: &[bool],
+    face_start: &[usize],
+) -> Verdict<ClosedShell, ClosedShellFault, ()> {
+    // Each face is exactly one loop: the per-face wire CSR *is* the loop CSR, and the face→loop
+    // map is the identity 0,1,…,n_faces. (A malformed empty `face_start` falls through to the
+    // holed checker's shape check.)
+    if face_start.is_empty() {
+        return Verdict::Refuted(ClosedShellFault::Shape);
+    }
+    let n_faces = face_start.len() - 1;
+    // Identity face→loop nesting: face f owns loop f only (one loop per face).
+    let identity: Vec<usize> = (0..=n_faces).collect();
+    closed_shell_holed(
+        n_verts,
+        edge_start,
+        edge_end,
+        wire_edge,
+        wire_reversed,
+        face_start,
+        &identity,
+    )
 }
 
 #[cfg(test)]
@@ -318,6 +410,18 @@ mod tests {
         Vec<usize>,
         Vec<usize>,
         Vec<bool>,
+        Vec<usize>,
+    );
+
+    /// A holed shell certificate: [`ShellArrays`] plus the loop-level CSR — `(n_verts, edge_start,
+    /// edge_end, wire_edge, wire_reversed, loop_start, face_start)`.
+    type HoledShellArrays = (
+        usize,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<bool>,
+        Vec<usize>,
         Vec<usize>,
     );
 
@@ -391,7 +495,8 @@ mod tests {
             Verdict::Verified(ClosedShell {
                 verts: 8,
                 edges: 12,
-                faces: 6
+                faces: 6,
+                loops: 6,
             })
         );
     }
@@ -500,6 +605,127 @@ mod tests {
         assert_eq!(
             run(3, &[0usize], &[0usize], &[0usize], &[false], &[0usize, 1]),
             Verdict::Refuted(ClosedShellFault::Shape)
+        );
+    }
+
+    /// A square slab with a square hole drilled through it — a **genus-1** solid whose
+    /// boundary is a torus. Its two `z = const` sheets are **annular faces** (an outer wire +
+    /// an interior hole wire, 2 loops each); four outer walls and four tube walls close it.
+    /// 16 vertices, 24 edges, 10 faces, 12 loops; every edge is used once each way and every
+    /// vertex link (including the three-face inner-rim corners) is a single cycle.
+    ///
+    /// Vertices: outer bottom 0–3 / top 4–7 (7 above 3, …); inner-rim bottom 8–11 / top 12–15.
+    fn holed_box() -> HoledShellArrays {
+        // Edges e0..e23: outer bottom ring 0..3, outer top ring 4..7, outer verticals 8..11,
+        // inner bottom ring 12..15, inner top ring 16..19, inner verticals 20..23.
+        let edge_start = vec![
+            0, 1, 2, 3, /* outer top */ 4, 5, 6, 7, /* outer vert */ 0, 1, 2, 3,
+            /* inner bot */ 8, 9, 10, 11, /* inner top */ 12, 13, 14, 15,
+            /* inner vert */ 8, 9, 10, 11,
+        ];
+        let edge_end = vec![
+            1, 2, 3, 0, /* outer top */ 5, 6, 7, 4, /* outer vert */ 4, 5, 6, 7,
+            /* inner bot */ 9, 10, 11, 8, /* inner top */ 13, 14, 15, 12,
+            /* inner vert */ 12, 13, 14, 15,
+        ];
+        // Loops, four darts each (edge id, reversed), in face order.
+        let loops: [[(usize, bool); 4]; 12] = [
+            // F0 bottom (normal −z): outer 0→3→2→1, hole 8→9→10→11.
+            [(3, true), (2, true), (1, true), (0, true)],
+            [(12, false), (13, false), (14, false), (15, false)],
+            // F1 top (normal +z): outer 4→5→6→7, hole 12→15→14→13.
+            [(4, false), (5, false), (6, false), (7, false)],
+            [(19, true), (18, true), (17, true), (16, true)],
+            // Outer walls W0..W3 (outward normal).
+            [(0, false), (9, false), (4, true), (8, true)],
+            [(1, false), (10, false), (5, true), (9, true)],
+            [(2, false), (11, false), (6, true), (10, true)],
+            [(3, false), (8, false), (7, true), (11, true)],
+            // Tube walls T0..T3 (normal toward the hole axis — opposite an outer wall).
+            [(20, false), (16, false), (21, true), (12, true)],
+            [(21, false), (17, false), (22, true), (13, true)],
+            [(22, false), (18, false), (23, true), (14, true)],
+            [(23, false), (19, false), (20, true), (15, true)],
+        ];
+        let mut wire_edge = Vec::new();
+        let mut wire_reversed = Vec::new();
+        let mut loop_start = vec![0usize];
+        for lp in &loops {
+            for &(e, r) in lp {
+                wire_edge.push(e);
+                wire_reversed.push(r);
+            }
+            loop_start.push(wire_edge.len());
+        }
+        // F0,F1 own two loops each; the eight walls own one loop each.
+        let face_start = vec![0usize, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        (
+            16,
+            edge_start,
+            edge_end,
+            wire_edge,
+            wire_reversed,
+            loop_start,
+            face_start,
+        )
+    }
+
+    #[test]
+    fn a_square_slab_with_a_through_hole_is_a_closed_torus() {
+        let (nv, es, ee, we, wr, ls, fs) = holed_box();
+        assert_eq!(
+            closed_shell_holed(nv, &es, &ee, &we, &wr, &ls, &fs),
+            Verdict::Verified(ClosedShell {
+                verts: 16,
+                edges: 24,
+                faces: 10,
+                loops: 12,
+            }),
+            "the drilled slab is a genus-1 closed 2-manifold (loops − faces = 2 = one hole × 2 sheets)"
+        );
+    }
+
+    #[test]
+    fn an_unpaired_hole_edge_is_a_census_fault() {
+        // Flip F0's hole loop (reverse order and direction): it stays a closed cycle
+        // (11→10→9→8→11), so check 2 passes — but now the four inner-bottom edges are used
+        // *reversed* by both the bottom sheet and their tube walls (two same-direction uses),
+        // which check 3 refuses. The hole must be wound opposite its tube to pair.
+        let (nv, es, ee, mut we, mut wr, ls, fs) = holed_box();
+        // F0's hole loop is loop 1 → wire positions 4..8.
+        we[4..8].reverse();
+        wr[4..8].reverse();
+        for r in wr[4..8].iter_mut() {
+            *r = !*r;
+        }
+        assert!(matches!(
+            closed_shell_holed(nv, &es, &ee, &we, &wr, &ls, &fs),
+            Verdict::Refuted(ClosedShellFault::EdgeCensus { .. })
+        ));
+    }
+
+    #[test]
+    fn a_broken_hole_loop_is_open() {
+        // Corrupt one dart of F0's hole loop so it no longer chains end→start.
+        let (nv, es, ee, mut we, wr, ls, fs) = holed_box();
+        // Position 4 is the hole loop's first dart (e12, 8→9); repoint it to an edge that
+        // does not start where the previous dart ended.
+        we[4] = 14; // e14 = (10,11), breaking the 11→8→9 chain
+        assert!(matches!(
+            closed_shell_holed(nv, &es, &ee, &we, &wr, &ls, &fs),
+            Verdict::Refuted(ClosedShellFault::OpenWire { face: 0 })
+        ));
+    }
+
+    #[test]
+    fn the_disk_wrapper_is_the_one_loop_per_face_special_case() {
+        // `closed_shell` must agree with `closed_shell_holed` fed the identity face→loop
+        // nesting — the wrapper is faithful, so every disk-face caller rides the general path.
+        let (nv, es, ee, we, wr, fs) = cube();
+        let identity: Vec<usize> = (0..=fs.len() - 1).collect();
+        assert_eq!(
+            closed_shell(nv, &es, &ee, &we, &wr, &fs),
+            closed_shell_holed(nv, &es, &ee, &we, &wr, &fs, &identity),
         );
     }
 }

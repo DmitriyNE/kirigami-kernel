@@ -49,15 +49,18 @@
 //! assert_eq!(brep.nonmanifold_edges(), 0);
 //! ```
 
-use crate::bezier::{RatBezier, RatBezierSurface};
+use crate::bezier::{RatBezier, RatBezierSurface, poly_to_bernstein};
 use crate::brep::{Brep, EdgeGeom, FaceSurface, HalfEdge};
+use arrange2d::boolean::{BoolOp, OperandId, ledge_dom_certified};
 use certify_core::MarginSq;
+use certify_core::Verdict;
 use certify_core::certify1d::{EdgeRegCert, RegCert};
 use certify_core::free_boundary::FreeBoundaryCert;
 use closure::valid::{CapWitness, ClosureTreatment, ClosureValid};
 use closure::{Joint, MuRange};
 use geom::chart::Chart;
-use lattice::{Backend, Interval, Rat, RatFunc, SturmChain, Surd, Vec3Rat};
+use geom::content::{CurveId, Edge as ArrEdge, Line, Orient, Point2, SegPiece};
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, SturmChain, Surd, Vec3Rat};
 
 /// The crease edge two flanks share: the overlap sub-segment `M` (its edge id and the two
 /// endpoint vertex ids), computed as the intersection of the two flanks' crease rulings.
@@ -77,6 +80,12 @@ struct SharedCrease {
 struct Builder<B: Backend> {
     brep: Brep<B>,
     verts: Vec<([Rat<B>; 3], usize)>,
+    /// Edge **dedup table** keyed by `(v_min, v_max, kind)` — the undirected endpoint pair and a
+    /// geometry-kind tag (`0` = [`Line`](EdgeGeom::Line), `1` = [`RationalBezier`](EdgeGeom::RationalBezier)).
+    /// An edge two faces share (a lid and its tube wall, two adjacent σ-slices' lids) is emitted
+    /// once and found again by exact identity — the sole source of watertight seams in the holed
+    /// construction, the edge-level analogue of [`verts`](Self::verts)' coordinate dedup.
+    edge_keys: Vec<(usize, usize, u8, usize)>,
 }
 
 /// A rational vertex lifted into [`Surd`] components (the `b = 0` case), as [`crate::shell`].
@@ -88,12 +97,184 @@ fn vert<B: Backend>(p: &[Rat<B>; 3]) -> [Surd<B>; 3] {
     ]
 }
 
+/// Build one closed polyline loop of straight [`Line`](EdgeGeom::Line) edges through `pts` (in
+/// order, closing last→first) into `brep`, returning its wire of forward half-edges. Each point
+/// becomes a fresh vertex — a simple polyline loop revisits none, so no dedup is needed.
+fn polyline_loop<B: Backend>(brep: &mut Brep<B>, pts: &[[Rat<B>; 3]]) -> Vec<HalfEdge> {
+    let v: Vec<usize> = pts.iter().map(|p| brep.add_vertex(vert(p))).collect();
+    let n = v.len();
+    (0..n)
+        .map(|i| (brep.add_edge(v[i], v[(i + 1) % n], EdgeGeom::Line), false))
+        .collect()
+}
+
+/// Assemble one exact B-rep face on `surface` whose outer boundary is the polyline `outer` and
+/// which carries one interior hole per loop in `holes` — the straight-chord
+/// ([`Line`](EdgeGeom::Line)) wires of a folded flat pattern (G4's `develop::fold::FoldedWire`
+/// boxes collapsed to their rational midpoints).
+///
+/// Every loop is closed last→first, and the outer and hole loops reference disjoint vertices and
+/// edges, so the result is an honestly *open* holed sheet (all boundary edges free) — the STEP-II
+/// panel. The `surface` is caller-supplied (a cone panel is a
+/// [`RationalPatch`](FaceSurface::RationalPatch) built like [`brep_freeboundary`]'s side faces);
+/// this builder is surface-agnostic. No float enters — points are exact rationals lifted to
+/// [`Surd`].
+///
+/// ```
+/// use export::brep::FaceSurface;
+/// use export::brep_build::brep_holed_panel;
+/// use lattice::{Bignum, Rat};
+///
+/// let q = |n: i128| Rat::<Bignum>::from_i128(n);
+/// let p = |x: i128, y: i128| [q(x), q(y), q(0)];
+/// // A 4×4 plane panel with a 2×2 interior hole.
+/// let outer = [p(0, 0), p(4, 0), p(4, 4), p(0, 4)];
+/// let hole = [p(1, 1), p(3, 1), p(3, 3), p(1, 3)];
+/// let brep = brep_holed_panel(FaceSurface::Plane, &outer, &[&hole]);
+/// assert_eq!(brep.faces()[0].holes.len(), 1);
+/// assert!(brep.all_loops_closed(0));
+/// assert_eq!(brep.free_edges(), 8); // 4 outer + 4 hole, all free (open sheet)
+/// ```
+pub fn brep_holed_panel<B: Backend>(
+    surface: FaceSurface<B>,
+    outer: &[[Rat<B>; 3]],
+    holes: &[&[[Rat<B>; 3]]],
+) -> Brep<B> {
+    let mut brep = Brep::new();
+    let outer_wire = polyline_loop(&mut brep, outer);
+    let hole_wires: Vec<Vec<HalfEdge>> =
+        holes.iter().map(|h| polyline_loop(&mut brep, h)).collect();
+    brep.add_face_with_holes(surface, outer_wire, hole_wires);
+    brep
+}
+
+/// The exact single-span ruled [`RationalPatch`](FaceSurface::RationalPatch) between two σ-rails
+/// over `[a, b]`. The caller guarantees the span is narrow enough for positive weights (the σ-domain
+/// is subdivided upstream by [`sigma_splits`]); this builds one Bézier patch per positive-weight
+/// slice.
+fn ruled_panel<B: Backend>(
+    rail0: &Vec3Rat<B>,
+    rail1: &Vec3Rat<B>,
+    a: &Rat<B>,
+    b: &Rat<B>,
+) -> FaceSurface<B> {
+    FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(rail0, rail1, a, b))
+}
+
+/// Whether the rational Bézier over `[a, b]` with denominator `den` has **all-positive weights** —
+/// the exact validity condition for a rational Bézier patch/edge (a CAD kernel rejects a
+/// non-positive weight: a control point at/through infinity). The weights are the Bernstein
+/// coefficients of `den` over `[a, b]`; checked at `deg(den)` (degree elevation preserves Bernstein
+/// positivity, so this never *under*-reports — it may only subdivide slightly more than strictly
+/// needed). A strictly-positive polynomial always passes on a small enough interval.
+fn positive_weights<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> bool {
+    let deg = den.degree().unwrap_or(0);
+    poly_to_bernstein(den, a, b, deg)
+        .iter()
+        .all(|w| w.sign() > 0)
+}
+
+/// The ordered σ-stations `[a = s₀, …, s_N = b]` subdividing `[a, b]` so **every** sub-interval's
+/// rational Bézier (shared denominator `den`) has positive weights — the intrinsic,
+/// parametrization-independent criterion for a valid exact Bézier piece (never keyed to a specific
+/// σ value). Adaptive bisection: a sub-interval failing [`positive_weights`] is split at its
+/// midpoint and each half recursed. Terminates because a strictly-positive polynomial's Bernstein
+/// coefficients converge to its (positive) values under subdivision; `MAX_DEPTH` is a safety cap
+/// (a positive developable denominator reaches positivity in a few levels).
+fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Vec<Rat<B>> {
+    const MAX_DEPTH: usize = 32;
+    fn go<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>, depth: usize, out: &mut Vec<Rat<B>>) {
+        if depth == 0 || positive_weights(den, a, b) {
+            out.push(b.clone());
+            return;
+        }
+        let mid = a.add(b).mul(&Rat::new(1, 2));
+        go(den, a, &mid, depth - 1, out);
+        go(den, &mid, b, depth - 1, out);
+    }
+    let mut stations = vec![a.clone()];
+    go(den, a, b, MAX_DEPTH, &mut stations);
+    stations
+}
+
+/// The exact σ-stations `[σ_lo, …, σ_hi]` that [`brep_freeboundary`] subdivides a chart's σ-support
+/// into so every ruled Bézier patch has positive weights — its intrinsic, parametrization-
+/// independent partition. The stations depend on the chart alone, **not** on any hole: the holed
+/// construction lets a [`HoleRect`] cross a station freely (cutting it per slice). All four σ-rails
+/// share one denominator (the `μ⁻` base fixes it), so this single partition serves the whole solid;
+/// `w` does not affect it (the offset `n·w` is denominator-preserving). Exposed for callers that
+/// want the partition itself.
+pub fn sigma_stations<B: Backend>(
+    chart: &Chart<B>,
+    sigma: &Interval<B>,
+    w: &Interval<B>,
+    mu_lo: &RatFunc<B>,
+    mu_hi: &RatFunc<B>,
+) -> Vec<Rat<B>> {
+    let _ = mu_hi; // both μ-bases share the denominator; the μ⁻ rail fixes the partition
+    let c = chart.pedal().reduce();
+    let r = chart.ruling().reduce();
+    let n = chart.normal().reduce();
+    let anchor = c.add(&r.scale(mu_lo)).reduce().add(&n.scale_rat(&w.lo));
+    sigma_splits(anchor.den(), &sigma.lo, &sigma.hi)
+}
+
 impl<B: Backend> Builder<B> {
     fn new() -> Self {
         Builder {
             brep: Brep::new(),
             verts: Vec::new(),
+            edge_keys: Vec::new(),
         }
+    }
+
+    /// The dedup key of an undirected edge `{a, b}` of `kind` (`0` = Line, `1` = Bézier), returning
+    /// its edge id if already emitted.
+    fn edge_key(&self, a: usize, b: usize, kind: u8) -> Option<usize> {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        self.edge_keys
+            .iter()
+            .find(|(x, y, k, _)| *x == lo && *y == hi && *k == kind)
+            .map(|&(_, _, _, e)| e)
+    }
+
+    /// Record an edge id under its undirected `{a, b}`/`kind` key.
+    fn record_edge(&mut self, a: usize, b: usize, kind: u8, eid: usize) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        self.edge_keys.push((lo, hi, kind, eid));
+    }
+
+    /// Get-or-add a straight [`Line`](EdgeGeom::Line) edge between two existing vertices, **deduped**
+    /// by the undirected endpoint pair: a straight edge two faces share (a hole rim vertical shared
+    /// by two tube walls; a σ-station radial shared by two adjacent slice lids) is one edge id. A
+    /// straight edge is determined by its endpoints, so this dedup is exact and unambiguous.
+    fn line_edge(&mut self, a: usize, b: usize) -> usize {
+        if let Some(e) = self.edge_key(a, b, 0) {
+            return e;
+        }
+        let e = self.brep.add_edge(a, b, EdgeGeom::Line);
+        self.record_edge(a, b, 0, e);
+        e
+    }
+
+    /// Get-or-add a σ-rail [`RationalBezier`](EdgeGeom::RationalBezier) edge for `surf` over `supp`,
+    /// **deduped** by its endpoint pair: the σ-rail a lid and its tube wall (or a lid and a μ-wall)
+    /// both carry — always `surf(μ, w)` for one `(μ, w)`, so distinct rails have distinct endpoints —
+    /// is one edge id. Distinct rails between the *same* endpoints do not arise in the developable
+    /// construction (a rail is pinned by its `(μ, w)`, which fixes both ends), so the endpoint key is
+    /// exact here.
+    fn rail_edge(&mut self, surf: &Vec3Rat<B>, supp: &Interval<B>) -> usize {
+        let start = surf.eval(&supp.lo).expect("rail start finite");
+        let end = surf.eval(&supp.hi).expect("rail end finite");
+        let sv = self.vertex(&start);
+        let ev = self.vertex(&end);
+        if let Some(e) = self.edge_key(sv, ev, 1) {
+            return e;
+        }
+        let bez = RatBezier::from_vec3rat(surf, &supp.lo, &supp.hi);
+        let e = self.brep.add_edge(sv, ev, EdgeGeom::RationalBezier(bez));
+        self.record_edge(sv, ev, 1, e);
+        e
     }
 
     /// Get-or-add a vertex by **exact** rational coordinates: a point that coincides with
@@ -126,6 +307,8 @@ impl<B: Backend> Builder<B> {
     /// Add a μ-rail as an exact rational-Bézier edge over the σ-support: the curve
     /// `surf(σ)` restricted to `[supp.lo, supp.hi]`, its endpoint vertices deduplicated.
     fn add_rail(&mut self, surf: &Vec3Rat<B>, supp: &Interval<B>) -> usize {
+        // A single-span σ-rail Bézier over `supp`; the caller keeps `supp` narrow enough for
+        // positive weights (the σ-domain is subdivided upstream by [`sigma_splits`]).
         let bez = RatBezier::from_vec3rat(surf, &supp.lo, &supp.hi);
         let start = surf.eval(&supp.lo).expect("rail start finite");
         let end = surf.eval(&supp.hi).expect("rail end finite");
@@ -451,12 +634,7 @@ pub fn brep_slab_from_closure<B: Backend>(
             // μ = const wall: exact rational patch ruled between the (μ, wlo) and (μ, whi)
             // σ-rails. Ring corner m is (j, k=?) — the μ index j is shared across w here.
             let (j, _) = ring[m];
-            FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(
-                &surf(j, 0),
-                &surf(j, 1),
-                &sigmas[0],
-                &sigmas[1],
-            ))
+            ruled_panel(&surf(j, 0), &surf(j, 1), &sigmas[0], &sigmas[1])
         };
         bld.brep.add_face(surface, wire);
     }
@@ -520,17 +698,240 @@ pub fn brep_freeboundary<B: Backend>(
     mu_lo: &RatFunc<B>,
     mu_hi: &RatFunc<B>,
 ) -> Brep<B> {
-    let mut bld = Builder::new();
-    let supp = sigma;
-    let sigmas = [supp.lo.clone(), supp.hi.clone()];
-    let ws = [w.lo.clone(), w.hi.clone()];
+    // A hole-free slab is the empty-holes case of the general engine, which then never refuses
+    // (refusal is only ever a hole that will not fit a positive-weight σ-slice).
+    brep_freeboundary_holed(chart, sigma, w, mu_lo, mu_hi, &[])
+        .expect("a hole-free free-boundary solid is always constructible")
+}
 
-    // The chart fields, reduced once (like the slab's `base`/`dir`): `c + μ±(σ)·r` for the two
-    // authored boundary splines — `Vec3Rat::scale` by the `RatFunc` μ±, the generalization of
-    // the slab's scalar `scale_rat`. Reducing pedal/ruling/normal first keeps the true low
-    // degree AND collapses both μ-bases to one shared denominator, so — since `n·w` is added
-    // via `scale_rat` (denominator-preserving) — all four σ-rails share `base.den · n.den`,
-    // exactly the shared-weights condition `ruled_from_rails` needs.
+/// A rectangular **through-hole** authored in the sheet's `(σ, μ)` parameter domain — the intrinsic
+/// coordinates of the developable, so the *same* hole describes the cut in both the flat (unrolled)
+/// and folded states. Its `sigma` range is where it sits along the ruling family and its `mu` range
+/// is the band it removes; the hole is lifted to both thickness offsets and closed by a tube. It may
+/// **cross any number of positive-weight σ-stations** — [`brep_freeboundary_holed`] cuts it out per
+/// slice with the exact `arrange2d` boolean and splits its tube at every crossed station — but must
+/// be **strictly interior** to the panel in both σ and μ (a genus-raising through-hole, not a
+/// boundary slot). Multiple holes are supported (each raises the genus); disjoint holes may share a
+/// slice.
+pub struct HoleRect<B: Backend = Bignum> {
+    /// The σ-interval the hole spans — strictly inside the panel's σ-support.
+    pub sigma: Interval<B>,
+    /// The μ-interval the hole removes — strictly inside the constant band `[μ⁻, μ⁺]`.
+    pub mu: Interval<B>,
+}
+
+/// [`brep_freeboundary`] with rectangular **through-holes** (arbitrary genus), by the general
+/// **arrangement-per-slice** construction. The solid is the prism over the exact 2-D region
+/// `P ∖ H` (P = the panel `(σ,μ)` rectangle, H = the union of the [`HoleRect`]s) extruded through
+/// the thickness. Positive-weight σ-stations subdivide the two developable lids into single-span
+/// Bézier patches and **cross holes freely**: per σ-slice the lid is `strip ∖ (holes ∩ slice)`
+/// computed by the *same* exact `arrange2d` boolean the flat side uses (`develop::flat::cut_hole`,
+/// `A △ B = A ∖ B` for an interior hole). A hole may straddle any station — it opens onto the
+/// station edge as a **notch**, or splits the strip into two **μ-bands**; the arrangement decides,
+/// with no special case. Each hole is closed by a tube through the thickness, **split at every
+/// station it crosses** so each wall is single-span; the result is watertight by edge identity
+/// ([`Builder`]'s vertex + edge dedup) and certified by `certify_core::shell::closed_shell_holed`.
+///
+/// Holes must be **strictly interior** to the panel in both σ and μ (a through-hole raising the
+/// genus, not a boundary slot), and the panel μ-band must be **constant** (a rectangular P — a
+/// curved free boundary in `(σ,μ)` is not a polygon operand, so it is deferred). `None` on a hole
+/// touching/exceeding the panel boundary, a non-rectangular panel, a degenerate hole, or an
+/// internal arrangement fault (a self-touch pinch or a CAP-OUT refutation) — never a silent
+/// mis-build.
+///
+/// With `holes` empty this delegates to [`brep_freeboundary_slab`] — the same `4(N+1)`/`8N+4`/`4N+2`
+/// disk-face solid, which additionally supports a *curved* authored μ-boundary (the holed path does
+/// not — it needs the rectangular panel).
+pub fn brep_freeboundary_holed<B: Backend>(
+    chart: &Chart<B>,
+    sigma: &Interval<B>,
+    w: &Interval<B>,
+    mu_lo: &RatFunc<B>,
+    mu_hi: &RatFunc<B>,
+    holes: &[HoleRect<B>],
+) -> Option<Brep<B>> {
+    // A hole-free solid is the N-slice slab (which also handles a curved authored μ-boundary).
+    if holes.is_empty() {
+        return Some(brep_freeboundary_slab(chart, sigma, w, mu_lo, mu_hi));
+    }
+
+    let wlo = w.lo.clone();
+    let whi = w.hi.clone();
+
+    // The panel μ-band must be constant — a rectangular P (a curved ∂P is not a polygon operand).
+    let mlo = ratfunc_const(mu_lo)?;
+    let mhi = ratfunc_const(mu_hi)?;
+    if mlo.sub(&mhi).sign() >= 0 {
+        return None;
+    }
+
+    // Every hole strictly interior to the panel in σ and μ (a through-hole, not a boundary slot).
+    let lt = |a: &Rat<B>, b: &Rat<B>| a.sub(b).sign() < 0;
+    for h in holes {
+        if !(lt(&sigma.lo, &h.sigma.lo)
+            && lt(&h.sigma.lo, &h.sigma.hi)
+            && lt(&h.sigma.hi, &sigma.hi)
+            && lt(&mlo, &h.mu.lo)
+            && lt(&h.mu.lo, &h.mu.hi)
+            && lt(&h.mu.hi, &mhi))
+        {
+            return None;
+        }
+    }
+
+    // Reduce the chart fields once (low degree; the same shared-denominator rails as the slab).
+    let c = chart.pedal().reduce();
+    let r = chart.ruling().reduce();
+    let n = chart.normal().reduce();
+
+    // The positive-weight σ-stations — the intrinsic partition, hole-independent (stations cross
+    // holes freely). `N = stations − 1` slices.
+    let stations = sigma_stations(chart, sigma, w, mu_lo, mu_hi);
+    let nst = stations.len();
+    if nst < 2 {
+        return None;
+    }
+
+    let mut bld = Builder::new();
+
+    // Per σ-slice: the two developable lids (`strip ∖ holes` at wlo/whi) + each crossed hole's tube.
+    for k in 0..nst - 1 {
+        let sk = stations[k].clone();
+        let sk1 = stations[k + 1].clone();
+
+        // Operand A = the slice strip; operand B = each hole clipped to this slice's σ-range.
+        let mut edges = rect_edges(&sk, &sk1, &mlo, &mhi, 0);
+        for (hi, h) in holes.iter().enumerate() {
+            let clo = if h.sigma.lo.sub(&sk).sign() >= 0 {
+                h.sigma.lo.clone()
+            } else {
+                sk.clone()
+            };
+            let chi = if h.sigma.hi.sub(&sk1).sign() <= 0 {
+                h.sigma.hi.clone()
+            } else {
+                sk1.clone()
+            };
+            if lt(&clo, &chi) {
+                edges.extend(rect_edges(&clo, &chi, &h.mu.lo, &h.mu.hi, (hi + 1) as u32));
+            }
+        }
+        let operand_of = |cv: CurveId| {
+            if cv.0 == 0 {
+                OperandId::A
+            } else {
+                OperandId::B
+            }
+        };
+        let region = match ledge_dom_certified(&edges, &operand_of, BoolOp::Xor) {
+            Verdict::Verified(cap) => {
+                let (region, _v_boundary, pinches) = cap.into_parts();
+                if !pinches.is_empty() {
+                    return None; // a self-touching cut — refuse rather than mis-build
+                }
+                region
+            }
+            _ => return None,
+        };
+
+        for face in &region.faces {
+            let outer = ordered_loop(&face.outer, true)?;
+            let hole_loops: Vec<Vec<(Rat<B>, Rat<B>)>> = face
+                .holes
+                .iter()
+                .map(|h| ordered_loop(h, false))
+                .collect::<Option<_>>()?;
+
+            // Top lid (whi): arrangement winding as-is (outer CCW-in-(σ,μ), holes CW).
+            let top_outer = lift_loop_forward(&mut bld, &c, &r, &n, &outer, &whi);
+            let top_holes: Vec<Vec<HalfEdge>> = hole_loops
+                .iter()
+                .map(|h| lift_loop_forward(&mut bld, &c, &r, &n, h, &whi))
+                .collect();
+            let surf_top = ruled_panel(
+                &rail_vec(&c, &r, &n, &mlo, &whi),
+                &rail_vec(&c, &r, &n, &mhi, &whi),
+                &sk,
+                &sk1,
+            );
+            bld.brep.add_face_with_holes(surf_top, top_outer, top_holes);
+
+            // Bottom lid (wlo): every loop reversed (opposite winding), so the two lids face out.
+            let bot_outer = reversed_wire(lift_loop_forward(&mut bld, &c, &r, &n, &outer, &wlo));
+            let bot_holes: Vec<Vec<HalfEdge>> = hole_loops
+                .iter()
+                .map(|h| reversed_wire(lift_loop_forward(&mut bld, &c, &r, &n, h, &wlo)))
+                .collect();
+            let surf_bot = ruled_panel(
+                &rail_vec(&c, &r, &n, &mlo, &wlo),
+                &rail_vec(&c, &r, &n, &mhi, &wlo),
+                &sk,
+                &sk1,
+            );
+            bld.brep.add_face_with_holes(surf_bot, bot_outer, bot_holes);
+
+            // Tubes: one wall per hole-rim edge, in arrangement (top-lid) order — the reverse of
+            // each lid's use of the shared edge, so every rim edge is once-forward-once-reversed.
+            for corners in core::iter::once(&outer).chain(hole_loops.iter()) {
+                let m = corners.len();
+                for i in 0..m {
+                    let a = &corners[i];
+                    let b = &corners[(i + 1) % m];
+                    if is_rim_edge(a, b, &sk, &sk1, &mlo, &mhi) {
+                        emit_tube(&mut bld, &c, &r, &n, a, b, &wlo, &whi);
+                    }
+                }
+            }
+        }
+
+        // The two panel μ-walls (μ⁺ = mhi, μ⁻ = mlo) for this slice, swept through the thickness.
+        add_mu_wall(&mut bld, &c, &r, &n, &sk, &sk1, &mhi, &wlo, &whi, true);
+        add_mu_wall(&mut bld, &c, &r, &n, &sk, &sk1, &mlo, &wlo, &whi, false);
+    }
+
+    // The two σ-end caps (planar (μ,w) rectangles at σlo/σhi; holes are strictly interior in σ).
+    add_sigma_cap(
+        &mut bld,
+        &c,
+        &r,
+        &n,
+        &stations[0],
+        &mlo,
+        &mhi,
+        &wlo,
+        &whi,
+        false,
+    );
+    add_sigma_cap(
+        &mut bld,
+        &c,
+        &r,
+        &n,
+        &stations[nst - 1],
+        &mlo,
+        &mhi,
+        &wlo,
+        &whi,
+        true,
+    );
+
+    Some(bld.into_brep())
+}
+
+/// The hole-free **N-slice slab** — [`brep_freeboundary`]'s certified closed 2-manifold over an
+/// authored σ-band `[μ⁻(σ), μ⁺(σ)]`, which may be a *curved* free boundary (unlike the holed path,
+/// which needs a rectangular panel). σ is subdivided by [`sigma_stations`] into positive-weight
+/// slices; each slice is four exact ruled-patch sides sharing the cross-ring and σ-rail edges by
+/// identity, plus the two planar σ-end caps: `4(N+1)` verts, `8N+4` edges, `4N+2` faces.
+fn brep_freeboundary_slab<B: Backend>(
+    chart: &Chart<B>,
+    sigma: &Interval<B>,
+    w: &Interval<B>,
+    mu_lo: &RatFunc<B>,
+    mu_hi: &RatFunc<B>,
+) -> Brep<B> {
+    let mut bld = Builder::new();
+    let ws = [w.lo.clone(), w.hi.clone()];
     let c = chart.pedal().reduce();
     let r = chart.ruling().reduce();
     let n = chart.normal().reduce();
@@ -539,79 +940,474 @@ pub fn brep_freeboundary<B: Backend>(
         c.add(&r.scale(mu_hi)).reduce(),
     ];
     let surf = |j: usize, k: usize| bases[j].add(&n.scale_rat(&ws[k]));
-
     // The (μ-side, w) cross-section ring: r0=(μ⁻,wlo), r1=(μ⁺,wlo), r2=(μ⁺,whi), r3=(μ⁻,whi).
     let ring = [(0usize, 0usize), (1, 0), (1, 1), (0, 1)];
+    let stations = sigma_stations(chart, sigma, w, mu_lo, mu_hi);
+    let nst = stations.len();
 
-    // 8 corner vertices: a[m] at σ = σlo, b[m] at σ = σhi, over ring corner m (deduped).
-    let mut a = [0usize; 4];
-    let mut b = [0usize; 4];
-    for (m, &(j, k)) in ring.iter().enumerate() {
-        let s = surf(j, k);
-        a[m] = bld.vertex(
-            &s.eval(&sigmas[0])
-                .expect("free-boundary corner (σlo) finite"),
-        );
-        b[m] = bld.vertex(
-            &s.eval(&sigmas[1])
-                .expect("free-boundary corner (σhi) finite"),
-        );
+    // Corner vertices v[k][m]: ring corner m at station s_k (deduped by coordinate).
+    let mut v: Vec<[usize; 4]> = vec![[0usize; 4]; nst];
+    for (k, sk) in stations.iter().enumerate() {
+        for (m, &(j, kk)) in ring.iter().enumerate() {
+            v[k][m] = bld.vertex(&surf(j, kk).eval(sk).expect("free-boundary corner finite"));
+        }
     }
-
-    // 12 edges: the two straight cross-section rings (σlo, σhi) and the four curved σ-rails.
-    let mut ring_a = [0usize; 4];
-    let mut ring_b = [0usize; 4];
-    let mut rails = [0usize; 4];
-    for m in 0..4 {
-        let mp = (m + 1) % 4;
-        ring_a[m] = bld.brep.add_edge(a[m], a[mp], EdgeGeom::Line);
-        ring_b[m] = bld.brep.add_edge(b[m], b[mp], EdgeGeom::Line);
-        let (j, k) = ring[m];
-        rails[m] = bld.add_rail(&surf(j, k), supp);
+    // Edges: a straight cross-ring of 4 at each station; 4 single-span σ-rails per slice.
+    let mut ring_e: Vec<[usize; 4]> = vec![[0usize; 4]; nst];
+    for k in 0..nst {
+        for m in 0..4 {
+            ring_e[k][m] = bld
+                .brep
+                .add_edge(v[k][m], v[k][(m + 1) % 4], EdgeGeom::Line);
+        }
     }
-
-    // σ = σlo end cap (planar), wound A0→A3→A2→A1 (outward, matching the cube orientation).
+    let mut rail_e: Vec<[usize; 4]> = vec![[0usize; 4]; nst - 1];
+    for k in 0..nst - 1 {
+        let supp_k = Interval {
+            lo: stations[k].clone(),
+            hi: stations[k + 1].clone(),
+        };
+        for m in 0..4 {
+            let (j, kk) = ring[m];
+            rail_e[k][m] = bld.add_rail(&surf(j, kk), &supp_k);
+        }
+    }
+    // σ = σlo end cap (planar), wound v0→v3→v2→v1 (outward).
+    let a = v[0];
     let cap_lo = vec![
-        bld.directed(ring_a[3], a[0], a[3]),
-        bld.directed(ring_a[2], a[3], a[2]),
-        bld.directed(ring_a[1], a[2], a[1]),
-        bld.directed(ring_a[0], a[1], a[0]),
+        bld.directed(ring_e[0][3], a[0], a[3]),
+        bld.directed(ring_e[0][2], a[3], a[2]),
+        bld.directed(ring_e[0][1], a[2], a[1]),
+        bld.directed(ring_e[0][0], a[1], a[0]),
     ];
     bld.brep.add_plane(cap_lo);
-
-    // σ = σhi end cap (planar), wound B0→B1→B2→B3.
+    // σ = σhi end cap (planar), wound v0→v1→v2→v3.
+    let b = v[nst - 1];
     let cap_hi = vec![
-        bld.directed(ring_b[0], b[0], b[1]),
-        bld.directed(ring_b[1], b[1], b[2]),
-        bld.directed(ring_b[2], b[2], b[3]),
-        bld.directed(ring_b[3], b[3], b[0]),
+        bld.directed(ring_e[nst - 1][0], b[0], b[1]),
+        bld.directed(ring_e[nst - 1][1], b[1], b[2]),
+        bld.directed(ring_e[nst - 1][2], b[2], b[3]),
+        bld.directed(ring_e[nst - 1][3], b[3], b[0]),
     ];
     bld.brep.add_plane(cap_hi);
-
-    // The four side faces: A_m → A_{m+1} → B_{m+1} → B_m, sharing rings and rails by identity.
-    // Every side is now an exact rational patch ruled between its two adjacent σ-rails — the
-    // authored boundary curves in σ, so even the w = const sheets are no longer straight
-    // extrusions (the slab's cylinder-only case). Ring corners m and m+1 supply the rails.
-    for m in 0..4 {
-        let mp = (m + 1) % 4;
-        let wire = vec![
-            bld.directed(ring_a[m], a[m], a[mp]),
-            bld.directed(rails[mp], a[mp], b[mp]),
-            bld.directed(ring_b[m], b[mp], b[m]),
-            bld.directed(rails[m], b[m], a[m]),
-        ];
-        let (jm, km) = ring[m];
-        let (jn, kn) = ring[mp];
-        let surface = FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(
-            &surf(jm, km),
-            &surf(jn, kn),
-            &sigmas[0],
-            &sigmas[1],
-        ));
-        bld.brep.add_face(surface, wire);
+    // Per slice, four ruled-patch side faces sharing ring and rail edges by identity.
+    for k in 0..nst - 1 {
+        for m in 0..4 {
+            let mp = (m + 1) % 4;
+            let wire = vec![
+                bld.directed(ring_e[k][m], v[k][m], v[k][mp]),
+                bld.directed(rail_e[k][mp], v[k][mp], v[k + 1][mp]),
+                bld.directed(ring_e[k + 1][m], v[k + 1][mp], v[k + 1][m]),
+                bld.directed(rail_e[k][m], v[k + 1][m], v[k][m]),
+            ];
+            let (jm, km) = ring[m];
+            let (jn, kn) = ring[mp];
+            let surface = ruled_panel(&surf(jm, km), &surf(jn, kn), &stations[k], &stations[k + 1]);
+            bld.brep.add_face(surface, wire);
+        }
     }
-
     bld.into_brep()
+}
+
+// ============================================================================
+// The general holed construction's `(σ,μ)`→3-D lifting layer. Each slice's lid
+// region comes from the exact `arrange2d` boolean; these free functions lift its
+// loops and rim edges to the developable, deduping every shared edge so the
+// lids, μ-walls, σ-caps, and hole tubes stitch watertight by identity.
+// ============================================================================
+
+/// The constant value of a `RatFunc` if it is constant (num and den both degree 0), else `None` —
+/// the panel μ-band must be constant for the holed path (a curved ∂P is not a polygon operand).
+fn ratfunc_const<B: Backend>(rf: &RatFunc<B>) -> Option<Rat<B>> {
+    let rf = rf.reduce();
+    let nd = rf.num().degree().unwrap_or(0);
+    let dd = rf.den().degree().unwrap_or(0);
+    if nd == 0 && dd == 0 {
+        rf.eval(&Rat::from_i128(0))
+    } else {
+        None
+    }
+}
+
+/// The rational value of an arrangement endpoint coordinate. The strip and every hole is an
+/// axis-aligned *rational* rectangle, so their boolean's vertices are rational — a degenerate
+/// [`Surd`] with no radical part.
+fn surd_rat<B: Backend>(s: &Surd<B>) -> Rat<B> {
+    let (a, b, d) = s.parts();
+    debug_assert!(
+        b.is_zero() || d.is_zero(),
+        "an axis-aligned rational arrangement has rational vertices"
+    );
+    a.clone()
+}
+
+/// A rational `(σ, μ)` point in the panel parameter domain.
+type SigMu<B> = (Rat<B>, Rat<B>);
+
+/// The two `(σ, μ)` rational endpoints of an arrangement edge.
+fn edge_endpoints<B: Backend>(e: &ArrEdge<B>) -> (SigMu<B>, SigMu<B>) {
+    let (s, t) = match e {
+        ArrEdge::Seg(sp) => (&sp.start, &sp.end),
+        ArrEdge::Arc(ap) => (&ap.start, &ap.end),
+    };
+    (
+        (surd_rat(&s.x), surd_rat(&s.y)),
+        (surd_rat(&t.x), surd_rat(&t.y)),
+    )
+}
+
+/// One axis-aligned polygon edge `(sx, sy) → (ex, ey)` as an exact [`arrange2d`] segment tagged with
+/// operand source `src` — the directed carrier line passes through both endpoints exactly (as in
+/// `develop::flat`, so the CAP-IN pre-pass accepts it).
+fn seg_edge<B: Backend>(
+    sx: &Rat<B>,
+    sy: &Rat<B>,
+    ex: &Rat<B>,
+    ey: &Rat<B>,
+    src: u32,
+) -> ArrEdge<B> {
+    let a = ey.sub(sy).neg();
+    let b = ex.sub(sx);
+    let c = a.mul(sx).add(&b.mul(sy)).neg();
+    ArrEdge::Seg(Box::new(SegPiece {
+        line: Line { a, b, c },
+        start: Point2::from_rat(sx.clone(), sy.clone()),
+        end: Point2::from_rat(ex.clone(), ey.clone()),
+        orient: Orient::Ccw,
+        source: CurveId(src),
+    }))
+}
+
+/// The four CCW segment edges of the axis-aligned `(σ,μ)` rectangle `[slo,shi]×[mlo,mhi]`, source `src`.
+fn rect_edges<B: Backend>(
+    slo: &Rat<B>,
+    shi: &Rat<B>,
+    mlo: &Rat<B>,
+    mhi: &Rat<B>,
+    src: u32,
+) -> Vec<ArrEdge<B>> {
+    vec![
+        seg_edge(slo, mlo, shi, mlo, src),
+        seg_edge(shi, mlo, shi, mhi, src),
+        seg_edge(shi, mhi, slo, mhi, src),
+        seg_edge(slo, mhi, slo, mlo, src),
+    ]
+}
+
+/// `a == b` for a rational.
+fn req<B: Backend>(a: &Rat<B>, b: &Rat<B>) -> bool {
+    a.sub(b).sign() == 0
+}
+
+/// `(σ,μ)` point equality.
+fn pt_eq<B: Backend>(p: &(Rat<B>, Rat<B>), q: &(Rat<B>, Rat<B>)) -> bool {
+    req(&p.0, &q.0) && req(&p.1, &q.1)
+}
+
+/// Twice the signed area of a `(σ,μ)` polygon (shoelace) — positive iff CCW.
+fn signed_area2<B: Backend>(poly: &[(Rat<B>, Rat<B>)]) -> Rat<B> {
+    let n = poly.len();
+    let mut acc = Rat::from_i128(0);
+    for i in 0..n {
+        let (sx, sy) = &poly[i];
+        let (tx, ty) = &poly[(i + 1) % n];
+        acc = acc.add(&sx.mul(ty)).sub(&tx.mul(sy));
+    }
+    acc
+}
+
+/// Reconstruct an arrangement boundary loop as an ordered `(σ,μ)` corner list, oriented CCW iff
+/// `want_ccw`. The loop is a simple cycle (each vertex degree 2), walked here by an adjacency chase
+/// robust to the emitted edge order, then flipped to the requested winding by its signed area.
+/// `None` for a degenerate (< 3-vertex) or broken loop.
+fn ordered_loop<B: Backend>(loop_edges: &[ArrEdge<B>], want_ccw: bool) -> Option<Vec<SigMu<B>>> {
+    let segs: Vec<(SigMu<B>, SigMu<B>)> = loop_edges.iter().map(edge_endpoints).collect();
+    let n = segs.len();
+    if n < 3 {
+        return None;
+    }
+    let mut used = vec![false; n];
+    let mut poly = vec![segs[0].0.clone(), segs[0].1.clone()];
+    used[0] = true;
+    while poly.len() < n {
+        let cur = poly.last().expect("nonempty").clone();
+        let mut found = false;
+        for i in 0..n {
+            if used[i] {
+                continue;
+            }
+            if pt_eq(&segs[i].0, &cur) {
+                poly.push(segs[i].1.clone());
+                used[i] = true;
+                found = true;
+                break;
+            }
+            if pt_eq(&segs[i].1, &cur) {
+                poly.push(segs[i].0.clone());
+                used[i] = true;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    let is_ccw = signed_area2(&poly).sign() > 0;
+    if is_ccw != want_ccw {
+        poly.reverse();
+    }
+    Some(poly)
+}
+
+/// The developable σ-rail `c + μ·r + w·n` at a scalar `(μ, w)`, reduced (low degree; the two rails of
+/// a same-`μ` patch share a denominator — [`RatBezierSurface::ruled_from_rails`]'s precondition).
+fn rail_vec<B: Backend>(
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    mu: &Rat<B>,
+    w: &Rat<B>,
+) -> Vec3Rat<B> {
+    c.add(&r.scale_rat(mu)).reduce().add(&n.scale_rat(w))
+}
+
+/// The deduped 3-D vertex id of `(σ, μ)` lifted to thickness level `w`.
+fn pt3d<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    sigma: &Rat<B>,
+    mu: &Rat<B>,
+    w: &Rat<B>,
+) -> usize {
+    let p = rail_vec(c, r, n, mu, w)
+        .eval(sigma)
+        .expect("free-boundary point finite");
+    bld.vertex(&p)
+}
+
+/// Lift one `(σ,μ)` boundary edge `a → b` (at thickness level `w`) to a directed 3-D half-edge,
+/// deduped: a **horizontal** edge (`μ = const`, σ varies) is a σ-rail Bézier; a **vertical** edge
+/// (`σ = const`, μ varies) is a straight radial [`Line`] (`c + μr + wn` is affine in `(μ, w)` at
+/// fixed σ). Both endpoints deduplicate by exact coordinate.
+fn lift_edge<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    a: &(Rat<B>, Rat<B>),
+    b: &(Rat<B>, Rat<B>),
+    w: &Rat<B>,
+) -> HalfEdge {
+    let va = pt3d(bld, c, r, n, &a.0, &a.1, w);
+    let vb = pt3d(bld, c, r, n, &b.0, &b.1, w);
+    if req(&a.1, &b.1) {
+        // Horizontal: μ = const → σ-rail over [min σ, max σ].
+        let (lo, hi) = if a.0.sub(&b.0).sign() <= 0 {
+            (a.0.clone(), b.0.clone())
+        } else {
+            (b.0.clone(), a.0.clone())
+        };
+        let rv = rail_vec(c, r, n, &a.1, w);
+        let eid = bld.rail_edge(&rv, &Interval { lo, hi });
+        bld.directed(eid, va, vb)
+    } else {
+        // Vertical: σ = const → straight radial line.
+        let eid = bld.line_edge(va, vb);
+        bld.directed(eid, va, vb)
+    }
+}
+
+/// Lift a whole normalized loop (ordered corners) to a forward wire at thickness level `w`.
+fn lift_loop_forward<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    corners: &[(Rat<B>, Rat<B>)],
+    w: &Rat<B>,
+) -> Vec<HalfEdge> {
+    let m = corners.len();
+    (0..m)
+        .map(|i| lift_edge(bld, c, r, n, &corners[i], &corners[(i + 1) % m], w))
+        .collect()
+}
+
+/// Reverse a wire's orientation: reverse the order and flip every half-edge, so it traverses the
+/// same edges the opposite way (the bottom lid is the top lid's loop reversed).
+fn reversed_wire(mut wire: Vec<HalfEdge>) -> Vec<HalfEdge> {
+    wire.reverse();
+    for h in &mut wire {
+        h.1 = !h.1;
+    }
+    wire
+}
+
+/// Whether a `(σ,μ)` boundary edge `a → b` of a slice is a **hole-rim** edge (gets a tube wall) — as
+/// opposed to a panel edge (`μ = mlo/mhi`, shared with a μ-wall) or a σ-station radial (`σ = sk/sk1`,
+/// shared with the neighbouring slice's lid).
+fn is_rim_edge<B: Backend>(
+    a: &(Rat<B>, Rat<B>),
+    b: &(Rat<B>, Rat<B>),
+    sk: &Rat<B>,
+    sk1: &Rat<B>,
+    mlo: &Rat<B>,
+    mhi: &Rat<B>,
+) -> bool {
+    if req(&a.1, &b.1) {
+        // horizontal (μ = const): rim iff not on a panel μ-boundary.
+        !(req(&a.1, mlo) || req(&a.1, mhi))
+    } else {
+        // vertical (σ = const): rim iff not on a σ-station (slice boundary).
+        !(req(&a.0, sk) || req(&a.0, sk1))
+    }
+}
+
+/// Emit one hole-rim **tube wall** for the `(σ,μ)` rim edge `a → b` (in arrangement/top-lid order),
+/// sweeping it through the thickness `[wlo, whi]`. Its bottom/top edges are the same σ-rail/radial
+/// the two lids carry (deduped → shared, 2-incident), and its two verticals are shared with the
+/// adjacent walls; the wall is a ruled patch for a σ-rim edge (`μ = const`) and planar for a μ-rim
+/// edge (`σ = const`). The winding is the reverse of each lid's use of the shared edge (bottom lid =
+/// the forward loop reversed, top lid = the forward loop), so every rim edge is once-each-way.
+#[allow(clippy::too_many_arguments)]
+fn emit_tube<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    a: &(Rat<B>, Rat<B>),
+    b: &(Rat<B>, Rat<B>),
+    wlo: &Rat<B>,
+    whi: &Rat<B>,
+) {
+    let ab = pt3d(bld, c, r, n, &a.0, &a.1, wlo);
+    let at = pt3d(bld, c, r, n, &a.0, &a.1, whi);
+    let bb = pt3d(bld, c, r, n, &b.0, &b.1, wlo);
+    let bt = pt3d(bld, c, r, n, &b.0, &b.1, whi);
+    let bottom_e = lift_edge(bld, c, r, n, a, b, wlo); // ab → bb
+    let top_e = lift_edge(bld, c, r, n, a, b, whi); // at → bt
+    let va = bld.line_edge(ab, at);
+    let vb = bld.line_edge(bb, bt);
+    let wire = vec![
+        bottom_e,                 // ab → bb
+        bld.directed(vb, bb, bt), // bb → bt
+        (top_e.0, !top_e.1),      // bt → at  (top_e runs at → bt)
+        bld.directed(va, at, ab), // at → ab
+    ];
+    let surface = if req(&a.1, &b.1) {
+        // σ-rim edge (μ = const): ruled through the thickness.
+        let (slo, shi) = if a.0.sub(&b.0).sign() <= 0 {
+            (a.0.clone(), b.0.clone())
+        } else {
+            (b.0.clone(), a.0.clone())
+        };
+        ruled_panel(
+            &rail_vec(c, r, n, &a.1, wlo),
+            &rail_vec(c, r, n, &a.1, whi),
+            &slo,
+            &shi,
+        )
+    } else {
+        // μ-rim edge (σ = const): planar (affine in (μ, w)).
+        FaceSurface::Plane
+    };
+    bld.brep.add_face(surface, wire);
+}
+
+/// Emit one panel **μ-wall** (`μ = mu`; `is_hi` selects the μ⁺ vs μ⁻ winding) over slice `[sk, sk1]`:
+/// a ruled patch swept through the thickness, its two σ-rails shared with the two lids and its two
+/// verticals shared with the neighbouring slice's μ-wall and the σ-caps — all deduped.
+#[allow(clippy::too_many_arguments)]
+fn add_mu_wall<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    sk: &Rat<B>,
+    sk1: &Rat<B>,
+    mu: &Rat<B>,
+    wlo: &Rat<B>,
+    whi: &Rat<B>,
+    is_hi: bool,
+) {
+    let a = pt3d(bld, c, r, n, sk, mu, wlo); // wlo @ sk
+    let b = pt3d(bld, c, r, n, sk, mu, whi); // whi @ sk
+    let cc = pt3d(bld, c, r, n, sk1, mu, whi); // whi @ sk1
+    let d = pt3d(bld, c, r, n, sk1, mu, wlo); // wlo @ sk1
+    let wv_k = bld.line_edge(a, b);
+    let wv_k1 = bld.line_edge(d, cc);
+    let a_pt = (sk.clone(), mu.clone());
+    let b_pt = (sk1.clone(), mu.clone());
+    let rail_wlo = lift_edge(bld, c, r, n, &a_pt, &b_pt, wlo); // a → d
+    let rail_whi = lift_edge(bld, c, r, n, &a_pt, &b_pt, whi); // b → cc
+    let wire = if is_hi {
+        vec![
+            bld.directed(wv_k, a, b),   // a → b
+            rail_whi,                   // b → cc
+            bld.directed(wv_k1, cc, d), // cc → d
+            (rail_wlo.0, !rail_wlo.1),  // d → a
+        ]
+    } else {
+        vec![
+            bld.directed(wv_k, b, a),   // b → a
+            rail_wlo,                   // a → d
+            bld.directed(wv_k1, d, cc), // d → cc
+            (rail_whi.0, !rail_whi.1),  // cc → b
+        ]
+    };
+    let surface = ruled_panel(
+        &rail_vec(c, r, n, mu, wlo),
+        &rail_vec(c, r, n, mu, whi),
+        sk,
+        sk1,
+    );
+    bld.brep.add_face(surface, wire);
+}
+
+/// Emit one planar **σ-end cap** (the `(μ,w)` rectangle at σ = `s_end`): its two radials are shared
+/// with the adjacent slice's lids and its two verticals with the μ-walls — all deduped. `is_hi`
+/// selects the σ⁺ (else σ⁻) outward winding.
+#[allow(clippy::too_many_arguments)]
+fn add_sigma_cap<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    s_end: &Rat<B>,
+    mlo: &Rat<B>,
+    mhi: &Rat<B>,
+    wlo: &Rat<B>,
+    whi: &Rat<B>,
+    is_hi: bool,
+) {
+    let a0 = pt3d(bld, c, r, n, s_end, mlo, wlo);
+    let a1 = pt3d(bld, c, r, n, s_end, mhi, wlo);
+    let a2 = pt3d(bld, c, r, n, s_end, mhi, whi);
+    let a3 = pt3d(bld, c, r, n, s_end, mlo, whi);
+    let radial_wlo = bld.line_edge(a0, a1); // μ⁻ → μ⁺ at wlo
+    let radial_whi = bld.line_edge(a3, a2); // μ⁻ → μ⁺ at whi
+    let wv_mlo = bld.line_edge(a0, a3); // wlo → whi at μ⁻
+    let wv_mhi = bld.line_edge(a1, a2); // wlo → whi at μ⁺
+    let wire = if is_hi {
+        // σ = σhi: v0→v1→v2→v3.
+        vec![
+            bld.directed(radial_wlo, a0, a1),
+            bld.directed(wv_mhi, a1, a2),
+            bld.directed(radial_whi, a2, a3),
+            bld.directed(wv_mlo, a3, a0),
+        ]
+    } else {
+        // σ = σlo: v0→v3→v2→v1 (outward).
+        vec![
+            bld.directed(wv_mlo, a0, a3),
+            bld.directed(radial_whi, a3, a2),
+            bld.directed(wv_mhi, a2, a1),
+            bld.directed(radial_wlo, a1, a0),
+        ]
+    };
+    bld.brep.add_plane(wire);
 }
 
 /// [`brep_freeboundary`] specialized to a certified one-joint closure: flank A's chart over the
@@ -823,7 +1619,7 @@ mod tests {
     /// corroborates it separately, `crate::differential`).
     #[test]
     fn the_flank_slab_is_a_certified_closed_2_manifold() {
-        use certify_core::shell::{ClosedShell, closed_shell};
+        use certify_core::shell::{ClosedShell, closed_shell_holed};
 
         let joint = one_joint();
         let d24 = ledge_d24();
@@ -853,18 +1649,20 @@ mod tests {
         // The trusted checker certifies the combinatorics as a closed oriented 2-manifold.
         let cert = slab.to_shell_certificate();
         assert_eq!(
-            closed_shell(
+            closed_shell_holed(
                 cert.n_verts,
                 &cert.edge_start,
                 &cert.edge_end,
                 &cert.wire_edge,
                 &cert.wire_reversed,
+                &cert.loop_start,
                 &cert.face_start,
             ),
             Verdict::Verified(ClosedShell {
                 verts: 8,
                 edges: 12,
-                faces: 6
+                faces: 6,
+                loops: 6,
             }),
         );
     }
@@ -880,7 +1678,7 @@ mod tests {
     #[test]
     fn the_free_boundary_slab_is_a_certified_closed_2_manifold() {
         use certify_core::free_boundary::free_boundary;
-        use certify_core::shell::{ClosedShell, closed_shell};
+        use certify_core::shell::{ClosedShell, closed_shell_holed};
         use lattice::Poly;
 
         let poly = |cs: &[i128]| {
@@ -941,18 +1739,20 @@ mod tests {
         // The trusted checker certifies the combinatorics as a closed oriented 2-manifold.
         let sc = solid.to_shell_certificate();
         assert_eq!(
-            closed_shell(
+            closed_shell_holed(
                 sc.n_verts,
                 &sc.edge_start,
                 &sc.edge_end,
                 &sc.wire_edge,
                 &sc.wire_reversed,
+                &sc.loop_start,
                 &sc.face_start,
             ),
             Verdict::Verified(ClosedShell {
                 verts: 8,
                 edges: 12,
-                faces: 6
+                faces: 6,
+                loops: 6,
             }),
         );
     }
@@ -965,7 +1765,7 @@ mod tests {
     #[test]
     fn the_cone_frustum_band_is_a_certified_closed_2_manifold() {
         use certify_core::free_boundary::free_boundary;
-        use certify_core::shell::{ClosedShell, closed_shell};
+        use certify_core::shell::{ClosedShell, closed_shell_holed};
         use fixtures::devices::cone;
         use lattice::Poly;
 
@@ -1018,19 +1818,496 @@ mod tests {
         );
         let sc = solid.to_shell_certificate();
         assert_eq!(
-            closed_shell(
+            closed_shell_holed(
                 sc.n_verts,
                 &sc.edge_start,
                 &sc.edge_end,
                 &sc.wire_edge,
                 &sc.wire_reversed,
+                &sc.loop_start,
                 &sc.face_start,
             ),
             Verdict::Verified(ClosedShell {
                 verts: 8,
                 edges: 12,
-                faces: 6
+                faces: 6,
+                loops: 6,
             }),
+        );
+    }
+
+    /// `sigma_splits` subdivides by the **intrinsic positive-weight criterion** — never a
+    /// parametrization-specific point. The `1 + σ²`-type denominator (the device cone's) has a
+    /// single Bézier span's middle weight go non-positive over a wide σ=0-crossing span, so the wide
+    /// `[−15/4, 15/4]` gore genuinely subdivides, and *every* resulting slice has positive weights.
+    #[test]
+    fn sigma_splits_subdivides_until_positive_weights() {
+        use lattice::Poly;
+        let den = Poly::<lattice::Bignum>::from_coeffs(vec![
+            Rat::from_i128(1),
+            Rat::from_i128(0),
+            Rat::from_i128(1),
+        ]); // 1 + σ²
+        let (a, b) = (Rat::new(-15, 4), Rat::new(15, 4));
+        // The undivided wide span fails (a non-positive middle weight); the partition fixes it.
+        assert!(
+            !super::positive_weights(&den, &a, &b),
+            "the wide σ=0-crossing span has a non-positive Bézier weight"
+        );
+        let stations = super::sigma_splits(&den, &a, &b);
+        assert!(stations.len() > 2, "the wide gore subdivides: {stations:?}");
+        assert_eq!(stations.first(), Some(&a));
+        assert_eq!(stations.last(), Some(&b));
+        for w in stations.windows(2) {
+            assert!(
+                super::positive_weights(&den, &w[0], &w[1]),
+                "every slice has positive weights"
+            );
+        }
+    }
+
+    /// The **two-sided** device-cone gore forces σ-subdivision (a single Bézier span would carry
+    /// non-positive weights across the wide, σ=0-crossing span), and the resulting fused **N-slice**
+    /// solid is still a certified closed 2-manifold — all single-span rational patches, no
+    /// parametrization-specific split, no B-spline. Over σ ∈ [−15/4, 15/4], band μ ∈ [−2, −1].
+    #[test]
+    fn the_two_sided_cone_gore_subdivides_and_certifies() {
+        use certify_core::shell::{ClosedShell, closed_shell_holed};
+        use fixtures::devices::cone;
+        use lattice::Poly;
+
+        let muf = |n: i128| {
+            RatFunc::from_poly(Poly::<lattice::Bignum>::from_coeffs(vec![Rat::from_i128(
+                n,
+            )]))
+        };
+        let chart = cone();
+        let sigma = Interval {
+            lo: Rat::new(-15, 4),
+            hi: Rat::new(15, 4),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 8),
+        };
+        let (mu_lo, mu_hi) = (muf(-2), muf(-1));
+
+        let solid = brep_freeboundary(&chart, &sigma, &w, &mu_lo, &mu_hi);
+        let (nv, ne, nf) = (
+            solid.verts().len(),
+            solid.edges().len(),
+            solid.faces().len(),
+        );
+        let big_n = (nf - 2) / 4; // N slices, faces = 4N + 2
+        assert!(
+            big_n >= 2,
+            "the wide two-sided gore subdivides into N ≥ 2 slices: N = {big_n}"
+        );
+        assert_eq!(nv, 4 * (big_n + 1), "4(N+1) verts");
+        assert_eq!(ne, 8 * big_n + 4, "8N+4 edges");
+        assert_eq!(nf, 4 * big_n + 2, "4N+2 faces");
+        assert_eq!(solid.free_edges(), 0, "a closed solid has no free edge");
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        assert_eq!(
+            solid
+                .faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count(),
+            4 * big_n,
+            "all 4N side faces are single-span rational patches (no B-spline)"
+        );
+        let sc = solid.to_shell_certificate();
+        assert_eq!(
+            closed_shell_holed(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.loop_start,
+                &sc.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: nv,
+                edges: ne,
+                faces: nf,
+                loops: nf,
+            }),
+            "the subdivided two-sided cone solid is a certified closed 2-manifold"
+        );
+    }
+
+    /// A slab with one rectangular through-hole is a certified **genus-1** solid: the two `w=const`
+    /// sheets gain the hole as an inner loop (annular faces), a tube closes it through the
+    /// thickness, and `closed_shell_holed` certifies the watertight result — `loops = faces + 2`
+    /// (one hole cutting both sheets), `free_edges == 0`.
+    #[test]
+    fn a_through_hole_slab_is_a_certified_genus_1_solid() {
+        use certify_core::shell::{ClosedShell, closed_shell_holed};
+        use fixtures::closure_joint::one_joint;
+        use lattice::Poly;
+
+        let muf = |n: i128| {
+            RatFunc::from_poly(Poly::<lattice::Bignum>::from_coeffs(vec![Rat::from_i128(
+                n,
+            )]))
+        };
+        let chart = one_joint();
+        let chart = chart.flank_a().chart();
+        // A single positive-weight σ-slice (N = 1) over a constant-μ band, thickness away from w=0.
+        let sigma = Interval {
+            lo: Rat::new(-1, 8),
+            hi: Rat::from_i128(0),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(1),
+            hi: Rat::from_i128(2),
+        };
+        let (mu_lo, mu_hi) = (muf(-1), muf(1));
+
+        let plain = brep_freeboundary(chart, &sigma, &w, &mu_lo, &mu_hi);
+        // A hole strictly inside the slice in σ and inside [μ⁻, μ⁺] in μ.
+        let hole = HoleRect {
+            sigma: Interval {
+                lo: Rat::new(-3, 32),
+                hi: Rat::new(-1, 32),
+            },
+            mu: Interval {
+                lo: Rat::new(-1, 4),
+                hi: Rat::new(1, 4),
+            },
+        };
+        let holed = brep_freeboundary_holed(chart, &sigma, &w, &mu_lo, &mu_hi, &[hole])
+            .expect("the small interior hole fits one positive-weight slice");
+
+        // The hole adds 8 rim vertices, 12 rim edges (4 bottom + 4 top + 4 vertical) and 4 tube
+        // faces; the two sheets each gain an inner loop.
+        assert_eq!(holed.verts().len(), plain.verts().len() + 8, "8 rim verts");
+        assert_eq!(
+            holed.edges().len(),
+            plain.edges().len() + 12,
+            "12 rim edges"
+        );
+        assert_eq!(holed.faces().len(), plain.faces().len() + 4, "4 tube walls");
+        assert!(holed.indices_in_range());
+        for f in 0..holed.faces().len() {
+            assert!(holed.all_loops_closed(f), "holed face {f} loops all close");
+        }
+        assert_eq!(
+            holed.free_edges(),
+            0,
+            "a closed through-hole solid is watertight"
+        );
+        assert_eq!(holed.nonmanifold_edges(), 0);
+        // Two tube walls are ruled patches (the μ = const σ-rails), two are planar (σ = const).
+        assert_eq!(
+            holed
+                .faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count(),
+            plain
+                .faces()
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::RationalPatch(_)))
+                .count()
+                + 2,
+            "the hole adds two ruled tube walls (its two σ-rail sides)"
+        );
+
+        let nf = holed.faces().len();
+        let sc = holed.to_shell_certificate();
+        assert_eq!(
+            closed_shell_holed(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.loop_start,
+                &sc.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: holed.verts().len(),
+                edges: holed.edges().len(),
+                faces: nf,
+                loops: nf + 2, // one through-hole = an inner loop on each of the two sheets
+            }),
+            "the through-hole slab is a certified genus-1 closed 2-manifold"
+        );
+    }
+
+    /// The genus of a certified closed orientable 2-manifold B-rep, by Euler: a face with `h` holes
+    /// is a 2-cell-with-holes contributing `(1 − h)`, so `χ = V − E + (2F − L)` (L = total loops) and
+    /// `g = (2 − χ)/2`. Representation-invariant — a through-hole reads as genus 1 whether it is an
+    /// interior inner loop, a boundary **notch**, or a **μ-band split**.
+    fn genus(b: &Brep<lattice::Bignum>) -> i64 {
+        let v = b.verts().len() as i64;
+        let e = b.edges().len() as i64;
+        let f = b.faces().len() as i64;
+        let l: i64 = b.faces().iter().map(|fc| 1 + fc.holes.len() as i64).sum();
+        let chi = v - e + (2 * f - l);
+        (2 - chi) / 2
+    }
+
+    /// The certified device-cone gore fixture: the symmetric two-sided gore `σ ∈ [−15/4, 15/4]`,
+    /// constant μ-band `[−2, −1]`, thickness `[0, 1/8]` — whose positive-weight partition forces
+    /// `σ = 0` to be a **station** (the parametrization artifact the summary describes).
+    #[allow(clippy::type_complexity)]
+    fn cone_gore() -> (
+        geom::chart::Chart<lattice::Bignum>,
+        Interval<lattice::Bignum>,
+        Interval<lattice::Bignum>,
+        RatFunc<lattice::Bignum>,
+        RatFunc<lattice::Bignum>,
+    ) {
+        use fixtures::devices::cone;
+        use lattice::Poly;
+        let muf = |n: i128| {
+            RatFunc::from_poly(Poly::<lattice::Bignum>::from_coeffs(vec![Rat::from_i128(
+                n,
+            )]))
+        };
+        (
+            cone(),
+            Interval {
+                lo: Rat::new(-15, 4),
+                hi: Rat::new(15, 4),
+            },
+            Interval {
+                lo: Rat::from_i128(0),
+                hi: Rat::new(1, 8),
+            },
+            muf(-2),
+            muf(-1),
+        )
+    }
+
+    /// The bug the user caught, now fixed: a through-hole **centred on σ = 0** — which the
+    /// positive-weight partition forces to be a subdivision **station** — is cut cleanly and
+    /// certifies genus 1. The single-slice builder could not place it there (it landed off-centre
+    /// in a corner); the arrangement construction opens it as a **notch** into both adjacent slices,
+    /// glued along the station, and `closed_shell_holed` certifies the watertight result. The hole
+    /// contributes **no** inner loop here (it opens onto the lid boundary), yet the genus is still 1.
+    #[test]
+    fn a_through_hole_crossing_a_sigma_station_is_a_certified_genus_1_solid() {
+        use certify_core::shell::closed_shell_holed;
+
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        // Straddles σ = 0 (the station), strictly interior in σ and μ.
+        let hole = HoleRect {
+            sigma: Interval {
+                lo: Rat::new(-1, 4),
+                hi: Rat::new(1, 4),
+            },
+            mu: Interval {
+                lo: Rat::new(-7, 4),
+                hi: Rat::new(-5, 4),
+            },
+        };
+        let holed = brep_freeboundary_holed(&chart, &sigma, &w, &mu_lo, &mu_hi, &[hole])
+            .expect("a station-crossing hole builds via the arrangement");
+
+        assert!(holed.indices_in_range());
+        for f in 0..holed.faces().len() {
+            assert!(holed.all_loops_closed(f), "holed face {f} loops all close");
+        }
+        assert_eq!(holed.free_edges(), 0, "a through-hole solid is watertight");
+        assert_eq!(holed.nonmanifold_edges(), 0);
+        assert_eq!(
+            genus(&holed),
+            1,
+            "a through-hole is genus 1, however the stations split it"
+        );
+
+        let sc = holed.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "the station-crossing through-hole is a certified closed 2-manifold"
+        );
+    }
+
+    /// A through-hole whose σ-range **spans an entire σ-slice** splits that slice's strip into two
+    /// μ-bands (the arrangement returns two faces), and the fused solid still certifies genus 1. Over
+    /// the asymmetric cone gore `σ ∈ [−15/4, 15/2]` (stations `−15/4, −15/16, 15/32, 15/8, 15/2`), a
+    /// hole `σ ∈ [0, 5/2]` fully spans the middle slice `[15/32, 15/8]` while notching the two
+    /// neighbours — three different per-slice cell shapes, one uniform arrangement.
+    #[test]
+    fn a_through_hole_spanning_a_slice_splits_into_mu_bands_and_certifies() {
+        use certify_core::shell::closed_shell_holed;
+        use fixtures::devices::cone;
+        use lattice::Poly;
+
+        let muf = |n: i128| {
+            RatFunc::from_poly(Poly::<lattice::Bignum>::from_coeffs(vec![Rat::from_i128(
+                n,
+            )]))
+        };
+        let chart = cone();
+        let sigma = Interval {
+            lo: Rat::new(-15, 4),
+            hi: Rat::new(15, 2),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 8),
+        };
+        let (mu_lo, mu_hi) = (muf(-2), muf(-1));
+        let hole = HoleRect {
+            sigma: Interval {
+                lo: Rat::from_i128(0),
+                hi: Rat::new(5, 2),
+            },
+            mu: Interval {
+                lo: Rat::new(-7, 4),
+                hi: Rat::new(-5, 4),
+            },
+        };
+        let holed = brep_freeboundary_holed(&chart, &sigma, &w, &mu_lo, &mu_hi, &[hole])
+            .expect("a slice-spanning hole builds via the arrangement");
+
+        assert!(holed.indices_in_range());
+        for f in 0..holed.faces().len() {
+            assert!(holed.all_loops_closed(f), "holed face {f} loops all close");
+        }
+        assert_eq!(holed.free_edges(), 0, "a through-hole solid is watertight");
+        assert_eq!(holed.nonmanifold_edges(), 0);
+        assert_eq!(
+            genus(&holed),
+            1,
+            "the slice-spanning through-hole is genus 1"
+        );
+
+        let sc = holed.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "the slice-spanning through-hole is a certified closed 2-manifold"
+        );
+    }
+
+    /// Two holes in one panel — one straddling the σ = 0 station (a notch), one strictly inside a
+    /// slice (an annular inner loop) — compose to a certified **genus-2** solid, each hole raising
+    /// the genus independently. The mixed representation (a notch hole with no inner loop + an
+    /// annular hole with two) exercises both cell shapes in one build.
+    #[test]
+    fn two_holes_one_crossing_one_interior_compose_to_genus_2() {
+        use certify_core::shell::closed_shell_holed;
+
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        let crossing = HoleRect {
+            sigma: Interval {
+                lo: Rat::new(-1, 4),
+                hi: Rat::new(1, 4),
+            },
+            mu: Interval {
+                lo: Rat::new(-7, 4),
+                hi: Rat::new(-13, 8),
+            },
+        };
+        // Strictly inside the right slice [0, 15/4]; disjoint from the crossing hole in σ.
+        let interior = HoleRect {
+            sigma: Interval {
+                lo: Rat::from_i128(1),
+                hi: Rat::from_i128(2),
+            },
+            mu: Interval {
+                lo: Rat::new(-3, 2),
+                hi: Rat::new(-5, 4),
+            },
+        };
+        let holed =
+            brep_freeboundary_holed(&chart, &sigma, &w, &mu_lo, &mu_hi, &[crossing, interior])
+                .expect("two holes build");
+
+        assert!(holed.indices_in_range());
+        assert_eq!(holed.free_edges(), 0, "watertight");
+        assert_eq!(holed.nonmanifold_edges(), 0);
+        assert_eq!(
+            genus(&holed),
+            2,
+            "two independent through-holes are genus 2"
+        );
+
+        let sc = holed.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "the two-hole panel is a certified closed 2-manifold"
+        );
+    }
+
+    /// The builder **refuses** (returns `None`) rather than silently mis-building a hole that is not
+    /// **strictly interior** to the panel — here one touching the σ-support boundary. A through-hole
+    /// must raise the genus (a closed void), not open a boundary slot; the honest refusal keeps the
+    /// arrangement construction from fabricating a non-manifold cut.
+    #[test]
+    fn a_hole_touching_the_panel_boundary_is_refused() {
+        use fixtures::closure_joint::one_joint;
+        use lattice::Poly;
+
+        let muf = |n: i128| {
+            RatFunc::from_poly(Poly::<lattice::Bignum>::from_coeffs(vec![Rat::from_i128(
+                n,
+            )]))
+        };
+        let chart = one_joint();
+        let chart = chart.flank_a().chart();
+        let sigma = Interval {
+            lo: Rat::new(-1, 8),
+            hi: Rat::from_i128(0),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(1),
+            hi: Rat::from_i128(2),
+        };
+        let (mu_lo, mu_hi) = (muf(-1), muf(1));
+        // σ.lo == support.lo: the hole touches the panel σ-boundary — not strictly interior.
+        let hole = HoleRect {
+            sigma: Interval {
+                lo: Rat::new(-1, 8),
+                hi: Rat::new(-1, 16),
+            },
+            mu: Interval {
+                lo: Rat::new(-1, 4),
+                hi: Rat::new(1, 4),
+            },
+        };
+        assert!(
+            brep_freeboundary_holed(chart, &sigma, &w, &mu_lo, &mu_hi, &[hole]).is_none(),
+            "a hole touching the panel boundary is refused, not silently mis-built"
         );
     }
 }

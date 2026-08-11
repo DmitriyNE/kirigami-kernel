@@ -8,7 +8,7 @@ use crate::certify1d::{ClipBranch, clip_sigma_branch, corner_range};
 use crate::gate::conj;
 use crate::miter::{Occupancy, OrderSign, eps_from_cmp, eps_from_slopes};
 use crate::sew::occupancy_row;
-use crate::shell::closed_shell;
+use crate::shell::{closed_shell, closed_shell_holed};
 use crate::verdict::Verdict;
 
 // Soundness of the ★ CLIP-σ signed disjunction (spec §8.5). `clip_sigma` ranges the
@@ -661,6 +661,67 @@ fn closed_shell_never_accepts_a_vertex_pinch() {
     let fs = [0usize, 2, 4, 6, 8];
     assert!(!matches!(
         closed_shell(3, &es, &ee, &we, &rev, &fs),
+        Verdict::Verified(_)
+    ));
+}
+
+// Soundness of the multi-loop (faces-with-holes / genus-`g`) generalization `closed_shell_holed`.
+// The census (check 3) and the vertex-link walk (check 4) read only per-*dart* data; the only new
+// code is the two-level CSR (check 2 per loop, `next_in_loop` per loop). The load-bearing property
+// is therefore that the accept/reject verdict depends only on the *loops*, never on how loops are
+// grouped into faces — "declaring two loops one annular face preserves the manifold" (module docs).
+// These harnesses pin that over symbolic orientation, on a genus-1 fixture and on a pinch.
+
+/// The 2-annulus torus: two triangular circles `a = (0,1,2)` and `b = (3,4,5)` (edges `a0..a2`,
+/// `b0..b2`), spanned by two annular faces each bounded by both circles. Six edges, four loops
+/// (`a`,`b`,`a`,`b`). The `wire`/`loop_start` are fixed; only the twelve orientation bits vary.
+fn torus_2annulus() -> ([usize; 6], [usize; 6], [usize; 12], [usize; 5]) {
+    let es = [0usize, 1, 2, 3, 4, 5];
+    let ee = [1usize, 2, 0, 4, 5, 3];
+    // L0=[a0,a1,a2] L1=[b0,b1,b2] L2=[a0,a1,a2] L3=[b0,b1,b2]
+    let we = [0usize, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5];
+    let loop_start = [0usize, 3, 6, 9, 12];
+    (es, ee, we, loop_start)
+}
+
+#[kani::proof]
+#[kani::unwind(14)]
+fn closed_shell_holed_verdict_is_grouping_invariant() {
+    // Same loops, two face groupings: G1 = two annular faces (F0={L0,L1}, F1={L2,L3}); G2 = four
+    // disk faces (each loop its own face). For *every* orientation the two verdicts must agree on
+    // acceptance. Since G2 is the one-loop-per-face (disk) path — the already-sound checker — this
+    // transfers soundness to the holed grouping: grouping loops into faces changes only the
+    // reported face count, never whether the shell is a closed 2-manifold.
+    let rev: [bool; 12] = kani::any();
+    let (es, ee, we, ls) = torus_2annulus();
+    let g1_faces = [0usize, 2, 4]; // two annular faces
+    let g2_faces = [0usize, 1, 2, 3, 4]; // four disk faces
+    let g1 = matches!(
+        closed_shell_holed(6, &es, &ee, &we, &rev, &ls, &g1_faces),
+        Verdict::Verified(_)
+    );
+    let g2 = matches!(
+        closed_shell_holed(6, &es, &ee, &we, &rev, &ls, &g2_faces),
+        Verdict::Verified(_)
+    );
+    assert!(g1 == g2);
+}
+
+#[kani::proof]
+#[kani::unwind(10)]
+fn closed_shell_holed_hides_no_pinch_in_a_multi_loop_face() {
+    // The vertex-pinch fixture of `closed_shell_never_accepts_a_vertex_pinch`, but its four bigon
+    // loops are packed into a *single* face (four loops) instead of four faces. A multi-loop face
+    // must not launder the pinch: `next_in_loop` is per loop regardless of face grouping, so the
+    // link at vertex 0 still splits into two orbits and no orientation is accepted.
+    let rev: [bool; 8] = kani::any();
+    let es = [0usize, 0, 0, 0];
+    let ee = [1usize, 1, 2, 2];
+    let we = [0usize, 1, 1, 0, 2, 3, 3, 2];
+    let loop_start = [0usize, 2, 4, 6, 8];
+    let face_start = [0usize, 4]; // one face owning all four loops
+    assert!(!matches!(
+        closed_shell_holed(3, &es, &ee, &we, &rev, &loop_start, &face_start),
         Verdict::Verified(_)
     ));
 }

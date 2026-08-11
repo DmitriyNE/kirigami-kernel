@@ -52,3 +52,10 @@ required-features = ["diagnostics"]
 [[example]]
 name = "cone_flat"
 required-features = ["diagnostics"]
+
+# Emits the Stage-1 flex-PCB panel (G7 finale): `cargo run --example flex_panel --features
+# diagnostics` for the pipeline + `flex_panel.svg` (add `,step` under `nix develop` for STEP I/II).
+# The whole certified chain unroll→hole→fold→STEP over a wide two-sided cone gore.
+[[example]]
+name = "flex_panel"
+required-features = ["diagnostics"]

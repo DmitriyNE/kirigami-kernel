@@ -147,6 +147,178 @@ fine — this is a log, not a schema.
   fmt, missing_docs=0, `xtask lint`, no_std thumbv7em). *2026-08-10 · **G4 met**; branch `roadmap-flex-pcb`,
   `crates/develop/src/fold.rs`. The folded outer + hole `FoldedWire`s feed G6 (interior-hole STEP B-rep).*
 
+- **G6a met — exact B-rep faces with interior hole wires (`export::brep` + `brep_build`, pure IR).** First
+  half of the interior-hole STEP milestone (split with the user: **G6a** pure IR now, **G6b** the OCCT bridge
+  next). The exact B-rep `Face` had a single outer `wire` and no holes concept (unlike the 2-D
+  `arrange2d::Face{outer,holes}`); G6a lifts holes into the 3-D IR: `Face` gains `holes: Vec<Vec<HalfEdge>>`,
+  `add_face` delegates to a new `add_face_with_holes` (no caller churn — the 22 `add_face`/`add_plane` sites
+  and the sole `Face{}` literal are source-compatible), `edge_incidence`/`indices_in_range` fold in the hole
+  loops, the wire-closure logic is extracted to `loop_is_closed` with new `hole_is_closed`/`all_loops_closed`,
+  and `to_shell_certificate` is documented **outer-wire only** (a holed face is an honestly *open* sheet — all
+  boundary edges free — outside the `closed_shell` TCB's scope; hole-free breps certify byte-identically, so no
+  `certify_core` change). Builder `brep_build::brep_holed_panel(surface, outer, holes)` assembles one face from
+  polyline (`EdgeGeom::Line`) loops via a private `polyline_loop` — the straight-chord wires a folded
+  `FoldedWire` already is (G7 collapses its `[RatIv;3]` boxes to `[Rat;3]` midpoints; builder stays
+  surface-agnostic, cone panel = `RationalPatch`). Fail-closed stays pure combinatorics + watertight-by-identity
+  (hole shares no edge/vertex with the outer). Tests: holed plane face closes both loops / 8 free edges / 0
+  nonmanifold / disjoint edge ids; broken-hole detected; `add_face` keeps holes empty; cert excludes holes.
+  Full gate green (export 25 + 8 doctests, clippy `-D warnings`, fmt, missing_docs=0, `xtask lint`, no_std
+  thumbv7em). **`step`/OCCT untouched (G6b).** *2026-08-10 · **G6a met**; branch `roadmap-flex-pcb`,
+  `crates/export/src/{brep,brep_build}.rs`. G6b widens the FFI face record to N wires + `occt_shim.cc`
+  `mf.Add(reversed holeWire)` before `ShapeFix_Face` + an OCCT `BRepCheck` differential test under `nix develop`.*
+
+- **G6b met — interior-hole STEP B-rep: the OCCT bridge (N-loop faces, `export::step` + `occt_shim`).** Second
+  half of the interior-hole milestone: widen the STEP bridge end-to-end so a G6a holed `Face` emits a
+  `TopoDS_Face` with an outer wire **plus N inner (hole) wires** that round-trips through `BRepCheck_Analyzer`.
+  **Buffer layout (CSR-of-CSR):** `BrepBuffers` gains a `loops` pool (2 f64/loop = `wire_off, wire_len` into
+  `wires`); the 7-f64 face record's last two fields move from `(wire_off, wire_len)` down one indirection to
+  `(loop_off, n_loops)` into `loops` (loop 0 = outer wire, rest = holes). A hole-free face emits exactly one
+  loop ⇒ **byte-identical geometry** to the pre-hole encoding, so the existing 5 differential + step tests
+  re-run through the new path untouched. **C++ shim:** a `build_loop` lambda assembles each loop's wire
+  (shared edges by identity, as before); the surf-kind branches add holes via `mf.Add(holeWire)` before
+  `IsDone`, and `ShapeFix_Face` (`FixOrientationMode=1` + `FixOrientation`) reverses inner wires to proper
+  holes — the extrusion/patch branches already ran that ShapeFix (holes fold in free), the plane branch now
+  runs it **only when holed** (hole-free plane path kept exactly, zero regression). **KEY RESULT (user chose
+  "also attempt curved"): OCCT accepts BOTH the planar AND the curved holed panel.** The planar gate (6×6
+  square, 2×2 hole, both authored CCW so `ShapeFix` genuinely reverses the hole) audits as one face, 8 edges,
+  8 free (open sheet), 0 nonmanifold, `brepcheck_valid`. And the **curved cone `RationalPatch` panel with an
+  off-surface-chord interior hole** — one open `brep_freeboundary` side face (on-surface rail+ruling outer
+  isolates the risk) whose hole corners lie on the device cone but whose edges are straight `Line` chords
+  cutting across it — **also passes `BRepCheck`**: `ShapeFix` projects the chord edges' pcurves onto the cone
+  within tolerance. So STEP-II (the curved holed panel) round-trips at this hole scale with **no new
+  pcurve-edge IR needed**. *Caveat carried to G7:* `ShapeFix` may inflate an edge tolerance to absorb the
+  chord→surface sag (an oracle-side approximation, never the certificate); for a larger/again-curved hole
+  whose sag exceeds tolerance, on-surface (σ,μ)-pcurve hole edges would become necessary — the fold-back hole
+  in G7 is small, so this stays a flagged contingency, not a blocker. Gate green under `nix develop`: export
+  **49 tests + 15 doctests** (`--features step`), clippy `-D warnings` (default **and** `--features step`),
+  fmt, `xtask lint`, no_std thumbv7em; the default build is unaffected (all G6b code is `step`-gated).
+  *2026-08-10 · **G6b met**; branch `roadmap-flex-pcb`, `crates/export/src/{step.rs,occt_shim.cc,occt_shim.h,
+  differential.rs}`. Next = **G7** (demo driver: fold `FoldedWire` → cone `RationalPatch` holed panel via
+  `brep_holed_panel` → STEP II + A2 SVG-with-hole).*
+
+- **G7 pipeline driver + a STEP-export stress probe that reshaped the export (→ G9 σ-subdivision).** The
+  `flex_panel` example (`crates/export/examples/flex_panel.rs`, `--features diagnostics[,step]`) drives the whole
+  Stage-1 chain over a *wide two-sided* device-cone gore, printing a certified per-stage verdict: unroll → cut a
+  square hole (`develop::flat::cut_hole`) → A2 SVG-with-hole (`export::svg::region_to_polys`/`polys_svg`, even-odd
+  fill) → fold outer+hole back to 3-D → STEP. **The certified pipeline holds at the full ~300° two-sided gore**
+  (σ∈[−15/4,15/4]): unroll/hole/fold all Verified, fold ε≈3.6e-12. **FINDING (the probe's payoff):** a *two-sided*
+  cone gore could not be written to STEP — a single rational Bézier needs **positive weights** (the Bernstein
+  coefficients of the denominator), and the cone's `1+σ²` denominator over a symmetric span `[−s,s]` has middle
+  weight `1−s²`, exactly 0 at s=1, negative beyond. Located precisely: exports at σ≤9/10, breaks at σ=1; it's the
+  span **crossing σ=0**, not width (one-sided gores of any width are fine). **Finding #0** (analytical): a single
+  offset-plane *cut* also can't span a wide gore — `μ̂=d/(n·ruling)` hits a ruling-parallel pole past ~180° — so
+  the wide demo uses a μ-band. **Finding #2**: the shim's `w==0.0` weight guard missed *negative* weights (|σ|>1
+  crashed OCCT); hardened to `w<=0.0`.
+- **G8 attempt (abandoned): a σ=0-split rational B-spline.** Represented the σ=0-crossing rail/patch as a 2-span
+  positive-weight B-spline (split at σ=0, merge two one-sided Béziers). It exported the *open* holed panel (STEP
+  II) at the wide gore, but **SIGSEGV'd OCCT inside a *closed* shell** (STEP I) — uncatchable in this OCC build
+  (`OSD::SetSignal`+`OCC_CATCH_SIGNALS` "no catch was found"). **User rejected the direction: σ=0 is a
+  *parametrization artifact*** (just where `ψ=c·arctan σ` centers; the cone has no feature there), so keying a
+  split on it is fragile and could re-manifest under a different chart. Reverted in full (kept only the `w<=0.0`
+  guard).
+- **G9 (the robust replacement) — intrinsic σ-subdivision, single-span Bézier only.** The parametrization-
+  *independent* fix: subdivide σ until every piece has positive weights — an exact, self-correcting criterion
+  that never names σ=0. `brep_build::sigma_splits(den, a, b)` adaptively bisects any sub-interval failing
+  `positive_weights` (all Bernstein coefficients of `den` > 0, checked at `deg(den)` — elevation preserves
+  positivity). Small enough slices are always positive-weight (incl. the one straddling σ=0), and single-span
+  Bézier faces are the OCCT-accepted path in closed shells (the one-sided cone-frustum solid already proves it) —
+  so subdivision kills *both* the weight and the closed-shell-crash problems, with no σ=0 anywhere and each piece
+  still **exact**. `brep_freeboundary` now auto-subdivides into a **fused N-σ-slice watertight solid**
+  (`4(N+1)` verts, `8N+4` edges, `4N+2` faces; interior cross-rings are shared *edges* only, no interior faces);
+  **N=1 (one-sided) is byte-identical to the old 8/12/6 box**, so the certified fixtures/tests are untouched.
+  `closed_shell` (the TCB) certifies the subdivided solid unchanged. **STEP I (the input cone) now exports
+  cleanly as a proper two-sided solid** (`write_brep` → `ok`, no abort; wide σ=±15/4 and σ=2 both green). Dead
+  `cone_panel_surface` removed (superseded by the subdivision; a footgun over wide spans). Tests:
+  `sigma_splits_subdivides_until_positive_weights`, `the_two_sided_cone_gore_subdivides_and_certifies`
+  (closed_shell), `the_two_sided_cone_gore_is_a_robust_subdivided_solid` (OCCT `brepcheck_valid`, `free_edges==0`).
+  Gate green: export lib 27 + step 51+16 doctests (`--features step`), clippy default+step, fmt, xtask lint,
+  no_std. *2026-08-11 · **G7 + G9 commit 1**; branch `roadmap-flex-pcb`. Next = **G9 commit 2** — STEP II as a
+  real solid slab with a through-hole (grid-minus-cell, disk-faced, closed_shell-certified genus-1).*
+
+- **STEP II geometry — the general arrangement-per-slice construction (holes cross σ-stations freely).**
+  The single-slice `add_hole` had a geometry bug the user caught: a hole had to sit *strictly inside one
+  positive-weight σ-slice*, so the natural demo hole — centred on the symmetric gore's **σ=0**, which the
+  positive-weight partition *forces* to be a station — could not be placed there and got shoved off-centre
+  into a corner, huge and distorted (topology certified fine, geometry wrong). Two non-fixes were rejected
+  (both the same mistake): grid-minus-cell (hole represented implicitly) and station-bracketing (a bandaid —
+  with many holes *any* σ=const line crosses some hole, so no dodging placement exists). **The fix accepts
+  that σ-stations cross holes.** The solid is now the prism over the exact 2-D region `P ∖ H` (P = panel
+  `(σ,μ)` rectangle, H = holes) extruded through the thickness. Stations come from positive-weights **alone**
+  (`sigma_splits`, hole-independent); per σ-slice the two developable **lids** are `strip ∖ (holes ∩ slice)`
+  computed by the **same** exact `arrange2d` boolean the flat side uses (`develop::flat::cut_hole`,
+  `A △ B = A ∖ B`). The arrangement decides the per-slice cell shape with **no special case**: a hole inside a
+  slice → **annular** (an inner loop); a hole crossing a station → **notch** (opens onto the split station
+  edge, no inner loop); a hole spanning a slice → **two μ-bands** (two faces). Each hole's tube is **split at
+  every station it crosses** so each wall is single-span. **Watertight for free** via a new `Builder` edge
+  dedup (`line_edge`/`rail_edge`, keyed by undirected endpoints + geometry-kind): adjacent slices share the
+  split station edges by identity, and each lid shares its hole-rim edges with the tube walls — the edge-level
+  analogue of the existing vertex-coordinate dedup, no global adjacency graph. Lift `(σ,μ)`→3-D by edge
+  orientation: a **horizontal** edge (μ=const) → a σ-rail Bézier, a **vertical** edge (σ=const) → a straight
+  radial line, a vertex → `surf(μ,w).eval(σ)`. Winding: top lid = arrangement CCW as-is, bottom lid = its
+  reverse, each tube wall the reverse of both lids' use of the shared edge (once-forward-once-reversed) — the
+  consistent CCW orientation makes every shared station/rim edge oppositely-directed automatically. **Scope:**
+  any number of `(σ,μ)`-**rectangle** holes at any positions crossing any stations, on a **rectangular** panel
+  (constant μ-band). Deferred (orthogonal): non-rectangle polygon holes (the arrangement already handles them
+  once authoring emits them) and a **curved** free-boundary ∂P (a curved `(σ,μ)` boundary is not a polygon
+  operand — so the **hole-free** path keeps the curved-μ N-slice slab, extracted verbatim as
+  `brep_freeboundary_slab`; `brep_freeboundary` and its curved-boundary tests are untouched). `add_hole` + the
+  strictly-inside-one-slice refusal are gone; refusal now only for a genuinely non-interior authored hole (or
+  a non-rectangular panel / arrangement pinch). **Certified:** genus by Euler `g = (2 − (V−E+2F−L))/2`
+  (representation-invariant — a notch reads genus 1 with *no* inner loop), `closed_shell_holed` (the TCB,
+  unchanged) + OCCT `brepcheck_valid`/`free_edges==0`/`nonmanifold==0`. Tests (export lib):
+  `a_through_hole_crossing_a_sigma_station_is_a_certified_genus_1_solid` (**the reported bug**, hole on σ=0),
+  `a_through_hole_spanning_a_slice_splits_into_mu_bands_and_certifies`,
+  `two_holes_one_crossing_one_interior_compose_to_genus_2`, the interior-hole test reused (now via the
+  arrangement, same 16/24/10 counts), `a_hole_touching_the_panel_boundary_is_refused`; the OCCT differential
+  `the_two_sided_cone_gore_with_a_station_crossing_hole_is_a_robust_genus_1_solid` drills the **σ=0-crossing**
+  hole and OCCT accepts it watertight — the ground-truth that the geometry is now faithful. **Demo coherence:**
+  `flex_panel` authors **one** `(σ,μ)` rectangle centred on σ=0 and derives *both* the flat cut (its
+  development, a curved quad) and the STEP-II drill from it, so the SVG and STEP II land the hole in the same
+  place. Full gate green: export lib 33 + doctests 8, clippy, fmt, xtask lint; certify-core 115+17 unchanged
+  (the multi-loop TCB + 4 Kani harnesses are untouched — this is a `brep_build` construction rebuild, not a
+  TCB change); export/step differential 10 (OCCT). *2026-08-11 · **STEP II geometry rebuilt (general)**;
+  branch `roadmap-flex-pcb`. Next = Stage-2 seam (DEV.3-β · §14 BONDED).*
+
+- **STEP II done — certified genus-`g` solids via multi-loop faces (the generic through-hole, *not* grid-minus-cell).**
+  The grid-minus-cell fallback was rejected (user, same objection as σ=0): it is a *specific* construction that
+  dodges a real limitation instead of removing it. The generic move is the opposite — make the **TCB certify
+  faces with holes**. Key realization from reading `closed_shell` end-to-end: it is **not fundamentally
+  disk-only**. Checks 3 (`∂²=0` edge census) and 4 (vertex-link single cycle) read only per-*dart* data and are
+  topology-agnostic; the one-loop-per-face restriction lived entirely in check 2's input shape (one CSR wire
+  per face) and in `next_in_face`. So the change is a focused **two-level CSR** (faces → loops → darts):
+  **(A · TCB)** `certify_core::shell::closed_shell_holed(…, loop_start, face_start)` runs check 2 / the check-4
+  rotation **per loop** (`next_in_loop`); census unchanged. `closed_shell` becomes a thin wrapper with the
+  identity face→loop nesting, so **every prior caller/test/Kani harness is untouched verbatim**. `ClosedShell`
+  gains `loops` (`loops − faces` = hole count). Soundness (the argument, since it is a TCB edit): declaring two
+  loops one *annular* face rather than two disks is exactly "replace two disks by a tube" = drill one handle —
+  preserves closed-orientable-manifoldness, only raises genus, and the checks never depended on the loop→face
+  grouping (they read local dart data). Per-face *realizability* is delegated to the OCCT oracle
+  (`brepcheck_valid`) — **the same delegation disk faces already rely on**, not a new trust axis. Two new Kani
+  harnesses, both SUCCESSFUL: `closed_shell_holed_verdict_is_grouping_invariant` (the accept/reject verdict is
+  invariant under regrouping loops into faces — transfers the disk-case soundness to the holed path) and
+  `closed_shell_holed_hides_no_pinch_in_a_multi_loop_face` (a pinch packed into one multi-loop face is still
+  rejected). **(B · emitter)** `Brep::to_shell_certificate` stops excluding holes — emits each face's outer wire
+  + hole wires as loops (a hole-free `Brep` yields the identity nesting, certified as before). **(C ·
+  construction)** `brep_freeboundary_holed(chart, σ, w, μ⁻, μ⁺, holes)` cuts a `HoleRect` authored in the
+  sheet's `(σ,μ)` domain — the intrinsic coords, so the *same* hole describes the flat and folded cuts. The
+  pierced `w=const` sheets become **annular** faces (an inner loop each); a **tube** (two ruled `μ=const` walls,
+  two planar `σ=const` walls) closes it through the thickness; each hole raises the genus by one. The hole must
+  sit strictly inside one positive-weight σ-slice — exposed via `sigma_stations` so a caller can place it — and
+  the builder **refuses (returns `None`)** a hole straddling a slice boundary rather than silently mis-building
+  (the general arrangement partition for wide/straddling holes is the documented, deferred scaling path).
+  `brep_freeboundary` is now a thin `holes=&[]` delegate (no-interface-ossification: one engine + sugar).
+  **(D · STEP II)** the demo's STEP II is a **real genus-1 through-hole solid** (`brep_freeboundary_holed` →
+  OCCT `MakeFace` inner wire, the G6b path): `flex_panel_II.step` writes `ok` (14 faces, 0 free edges).
+  `closed_shell_holed` certifies it internally (`loops = faces + 2`) **and** OCCT corroborates
+  (`brepcheck_valid`, `free_edges==0`, `nonmanifold==0`). Tests: `a_square_slab_with_a_through_hole_is_a_closed_torus`
+  + census/open-loop/wrapper refutations (certify-core), `a_through_hole_slab_is_a_certified_genus_1_solid` +
+  `a_hole_that_does_not_fit_one_slice_is_refused` (export lib),
+  `the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid` (OCCT differential). Full gate green:
+  certify-core 115+17, export 30+8 default / 56+15 step, demo STEP I+II `ok`, 4 Kani harnesses, clippy
+  default+step, fmt, xtask lint, certify-core no_std. *2026-08-11 · **STEP II / genus-`g`**; branch
+  `roadmap-flex-pcb`. Next = general arrangement-driven partition for holes wider than a slice / straddling —
+  **DONE** (see the "STEP II geometry — general arrangement-per-slice" entry above).*
+
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
   (`cone`), and a growing family of **geometry certificates** (`anchor`, `unroll`, `fold`, and now `cut`).
