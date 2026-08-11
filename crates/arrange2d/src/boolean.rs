@@ -10,7 +10,8 @@
 //! 1. Build the arrangement half-edge structure ([`super::dcel`]).
 //! 2. Label every cell with its `(inside-A, inside-B)` membership by exact
 //!    point-location (a horizontal-slab ray-cast; see [`super::locate`]).
-//! 3. Select the cells the operation keeps: `△ = A⊕B`, `∩ = A∧B`, `∪ = A∨B` ([`BoolOp`]).
+//! 3. Select the cells the operation keeps: `△ = A⊕B`, `∩ = A∧B`, `∪ = A∨B`, `∖ = A∧¬B`
+//!    ([`BoolOp`]).
 //! 4. Trace the boundary between kept and dropped cells into the output face loops.
 //!
 //! It is exact and invariant under rigid motion and rescaling across the full input
@@ -71,6 +72,13 @@ pub enum BoolOp {
     And,
     /// Union, `A ∪ B` — in either operand.
     Or,
+    /// Set difference, `A ∖ B` — in `A` and **not** in `B`. This is the *true* difference:
+    /// unlike the `A △ B = A ∖ B` shortcut (valid only when `B` is strictly interior to `A`),
+    /// `Diff` is correct for a `B` that crosses `A`'s boundary. Caveat: `B` is the region
+    /// bounded by the `B` curves under even-odd parity, so **overlapping** `B` loops must be
+    /// unioned first (or the difference staged one subtrahend at a time) — pairwise-disjoint
+    /// `B` loops already read as their union.
+    Diff,
 }
 
 impl BoolOp {
@@ -81,6 +89,7 @@ impl BoolOp {
             BoolOp::Xor => a ^ b,
             BoolOp::And => a && b,
             BoolOp::Or => a || b,
+            BoolOp::Diff => a && !b,
         }
     }
 }
@@ -1148,6 +1157,71 @@ mod tests {
         for f in &r.faces {
             assert_eq!(f.outer.len(), 4, "each lune: two outer + two inner arcs");
             assert!(f.holes.is_empty(), "a lune has no hole");
+        }
+    }
+
+    /// `A ∖ B` (the true set-difference) for two transversely overlapping disks is the
+    /// **single** A-lune — one face, no hole — where `△` gives two lunes and `∩` the lens.
+    /// This is exactly the case the strictly-interior `Xor` trick cannot express: `B` crosses
+    /// `A`'s boundary, yet `Diff` keeps precisely `A ∧ ¬B`.
+    #[test]
+    fn two_disks_difference_one_lune() {
+        let r = ledge_dom(&two_disks(), &ab, BoolOp::Diff);
+        assert_eq!(
+            r.faces.len(),
+            1,
+            "A∖B of two crossing disks is the single A-lune"
+        );
+        assert_eq!(
+            r.faces[0].outer.len(),
+            4,
+            "two outer (A) + two inner (B) arcs"
+        );
+        assert!(r.faces[0].holes.is_empty(), "a lune has no hole");
+        assert_eq!(
+            ledge_dom(&two_disks(), &ab, BoolOp::Xor).faces.len(),
+            2,
+            "Diff ≠ Xor when B crosses A"
+        );
+    }
+
+    /// `A ∖ B` with `B` strictly interior to `A` is an **annulus** (one face, one hole) —
+    /// here it coincides with `△`, confirming the interior case the old `Xor` trick relied on.
+    #[test]
+    fn nested_difference_is_annulus() {
+        let e = two_disk_edges(&disk(0, 0, 9), &disk(0, 0, 1));
+        let r = ledge_dom(&e, &ab, BoolOp::Diff);
+        assert_eq!(r.faces.len(), 1, "A∖B (B⊂A) is one face");
+        assert_eq!(r.faces[0].holes.len(), 1, "with the B disk as its hole");
+    }
+
+    /// `A ∖ B` with `B` disjoint from `A` leaves `A` untouched (one face, no hole), where
+    /// `△`/`∪` would report both disks.
+    #[test]
+    fn disjoint_difference_keeps_a() {
+        let e = two_disk_edges(&disk(0, 0, 1), &disk(0, 3, 1));
+        let r = ledge_dom(&e, &ab, BoolOp::Diff);
+        assert_eq!(r.faces.len(), 1, "only A survives");
+        assert!(r.faces[0].holes.is_empty());
+        assert_eq!(
+            ledge_dom(&e, &ab, BoolOp::Xor).faces.len(),
+            2,
+            "△ keeps both disks"
+        );
+    }
+
+    /// The certified entry accepts `Diff` across the corpus (transverse, disjoint, nested,
+    /// tangency) — the CAP-OUT gates read the selection, not the op, so the new op certifies.
+    #[test]
+    fn certified_verified_on_corpus_diff() {
+        for e in corpus() {
+            assert!(
+                matches!(
+                    ledge_dom_certified(&e, &ab, BoolOp::Diff),
+                    Verdict::Verified(_)
+                ),
+                "CAP-OUT must certify A∖B"
+            );
         }
     }
 
