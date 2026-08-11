@@ -161,6 +161,76 @@ fn ruled_panel<B: Backend>(
     FaceSurface::RationalPatch(RatBezierSurface::ruled_from_rails(rail0, rail1, a, b))
 }
 
+/// The exact single-span ruled cone patch between two σ-rails, tolerant of rails with **different
+/// denominators** (a trimmed-panel lid rules between the eccentric-inner and concentric-outer rails,
+/// whose reduced denominators differ). Matching denominators (a wall's two thickness rails) go
+/// straight to [`ruled_panel`]; otherwise both rails are cross-multiplied to the common denominator
+/// `d₀·d₁` (value-preserving; positive weights preserved — a product of positive denominators) so
+/// [`RatBezierSurface::ruled_from_rails`]' shared-denominator precondition holds.
+fn ruled_common<B: Backend>(
+    rail0: &Vec3Rat<B>,
+    rail1: &Vec3Rat<B>,
+    a: &Rat<B>,
+    b: &Rat<B>,
+) -> FaceSurface<B> {
+    let (d0, d1) = (rail0.den(), rail1.den());
+    if d0 == d1 {
+        return ruled_panel(rail0, rail1, a, b);
+    }
+    let common = d0.mul(d1);
+    let over = |rail: &Vec3Rat<B>, other_den: &Poly<B>| {
+        let num = rail.num();
+        Vec3Rat::new(
+            [
+                num[0].mul(other_den),
+                num[1].mul(other_den),
+                num[2].mul(other_den),
+            ],
+            common.clone(),
+        )
+    };
+    ruled_panel(&over(rail0, d1), &over(rail1, d0), a, b)
+}
+
+/// Normalize a rail `μ̂` to a **polynomial** (denominator 1): reduce first (the concentric D1 plane
+/// rail reduces to a *constant* denominator, which `reduce` leaves in place — constants are units),
+/// then fold a constant denominator into the numerator. So `c + μ̂·r + w·n` carries only the chart
+/// denominator, and — crucially — the reducible D1 rail is a *low-degree* polynomial that a later
+/// constant stitch-shift keeps low-degree (shifting it *before* reducing would raise it to full
+/// degree). `μ̂` with a genuine non-constant denominator (not expected here) passes through reduced.
+fn poly_rail<B: Backend>(mu: &RatFunc<B>) -> RatFunc<B> {
+    let m = mu.reduce();
+    let d = m.den();
+    if d.degree().unwrap_or(0) == 0 {
+        let scale = d.eval(&Rat::from_i128(0)).recip();
+        RatFunc::from_poly(m.num().scale(&scale))
+    } else {
+        m
+    }
+}
+
+/// Polynomialize (via [`poly_rail`]) then **stitch** a piecewise rail chain so adjacent pieces agree
+/// *exactly* at shared σ-boundaries (a left-to-right constant-shift propagation). A solid builder's
+/// exact vertex dedup needs the notch corner `μ̂_left(σ*) = μ̂_right(σ*)` byte-identical; the pieces
+/// meet only to bisection precision, so each piece is shifted by that O(1e-18) residual — inside the
+/// certified ε — and, being a polynomial, stays low-degree.
+fn stitched_poly_chain<B: Backend>(
+    chain: &[(Interval<B>, RatFunc<B>)],
+) -> Vec<(Interval<B>, RatFunc<B>)> {
+    let mut v: Vec<(Interval<B>, RatFunc<B>)> = chain
+        .iter()
+        .map(|(iv, mu)| (iv.clone(), poly_rail(mu)))
+        .collect();
+    for i in 1..v.len() {
+        let b = v[i].0.lo.clone();
+        if let (Some(p), Some(cur)) = (v[i - 1].1.eval(&b), v[i].1.eval(&b)) {
+            let shift = p.sub(&cur);
+            v[i].1 = v[i].1.add(&RatFunc::from_poly(Poly::constant(shift)));
+        }
+    }
+    v
+}
+
 /// Whether the rational Bézier over `[a, b]` with denominator `den` has **all-positive weights** —
 /// the exact validity condition for a rational Bézier patch/edge (a CAD kernel rejects a
 /// non-positive weight: a control point at/through infinity). The weights are the Bernstein
@@ -1009,6 +1079,145 @@ fn brep_freeboundary_slab<B: Backend>(
     bld.into_brep()
 }
 
+/// A trimmed cone solid over a **curved generalized band** `μ ∈ [μ̂_inner(σ), μ̂_outer(σ)]`,
+/// `σ ∈ [σ_lo, σ_hi]`, extruded through `w`. `inner`/`outer` are the two μ-boundaries as **piecewise**
+/// ruling-rails — ordered, contiguous `(σ-range, μ̂)` pieces covering `[σ_lo, σ_hi]` (σ-increasing);
+/// the outer boundary carries the D3 notch as its middle piece(s).
+///
+/// Generalizes [`brep_freeboundary_slab`] to curved, *piecewise* μ-boundaries: σ is subdivided at
+/// [`sigma_splits`] ∪ the piece boundaries so every ruled patch is single-span, and each slice's four
+/// ruled sides are the two lids (`w_lo`/`w_hi`, a cone `RationalPatch` ruled between that slice's inner
+/// and outer rails) + the inner/outer walls (swept through the thickness), plus the two planar σ-end
+/// caps. `Rail`s lift to `RationalBezier` edges (`c+μ̂·r+w·n` via `Vec3Rat::scale`), radials/verticals
+/// to `Line`s; watertight by the `Builder`'s vertex + edge dedup (the notch corner `μ̂_D1=μ̂_D3`
+/// deduplicates). The certified STEP builder for the xy-trimmed panel outer boundary (gap G-C,
+/// stage A — no interior holes). `None` on empty boundaries or a degenerate partition.
+pub fn brep_trim_solid<B: Backend>(
+    chart: &Chart<B>,
+    w: &Interval<B>,
+    inner: &[(Interval<B>, RatFunc<B>)],
+    outer: &[(Interval<B>, RatFunc<B>)],
+) -> Option<Brep<B>> {
+    use core::cmp::Ordering;
+    if inner.is_empty() || outer.is_empty() {
+        return None;
+    }
+    let sigma_lo = inner[0].0.lo.clone();
+    let sigma_hi = inner.last()?.0.hi.clone();
+    let c = chart.pedal().reduce();
+    let r = chart.ruling().reduce();
+    let n = chart.normal().reduce();
+    let ws = [w.lo.clone(), w.hi.clone()];
+
+    // σ-stations: the intrinsic positive-weight partition ∪ every piece boundary (so each slice lies
+    // within a single inner and a single outer piece).
+    let sigma = Interval {
+        lo: sigma_lo,
+        hi: sigma_hi,
+    };
+    let mut stations = sigma_stations(chart, &sigma, w, &inner[0].1, &outer[0].1);
+    for (iv, _) in inner.iter().chain(outer.iter()) {
+        stations.push(iv.lo.clone());
+        stations.push(iv.hi.clone());
+    }
+    stations.sort();
+    stations.dedup();
+    let nst = stations.len();
+    if nst < 2 {
+        return None;
+    }
+
+    // Polynomialize + stitch both chains once, so every rail is low-degree and adjacent pieces share
+    // their corner exactly (watertight notch). The σ-ranges are unchanged, so `stations` still hold.
+    let inner = stitched_poly_chain(inner);
+    let outer = stitched_poly_chain(outer);
+
+    // The developable σ-rail `c + μ̂·r + w·n` (μ̂ a polynomial) at thickness level `wl`, its μ-base
+    // reduced (low-degree, positive weights — OCCT-friendly, like the legacy builder). Two rails at
+    // the *same* μ̂ (a wall's two thickness rails) then share a denominator; the lids do not rule
+    // between different-μ̂ rails (see below), so no cross-μ̂ denominator match is required.
+    let surf =
+        |mu_hat: &RatFunc<B>, wl: &Rat<B>| c.add(&r.scale(mu_hat)).reduce().add(&n.scale_rat(wl));
+    // The piece of a piecewise boundary covering a slice midpoint.
+    let piece_at = |pieces: &[(Interval<B>, RatFunc<B>)], smid: &Rat<B>| -> Option<RatFunc<B>> {
+        pieces
+            .iter()
+            .find(|(iv, _)| {
+                iv.lo.cmp(smid) != Ordering::Greater && smid.cmp(&iv.hi) != Ordering::Greater
+            })
+            .map(|(_, mu)| mu.clone())
+    };
+
+    let mut bld = Builder::new();
+    for k in 0..nst - 1 {
+        let (sk, sk1) = (&stations[k], &stations[k + 1]);
+        let smid = sk.add(sk1).mul(&Rat::new(1, 2));
+        let mu_in = piece_at(&inner, &smid)?;
+        let mu_out = piece_at(&outer, &smid)?;
+        // Ring corners: [(inner,wlo), (outer,wlo), (outer,whi), (inner,whi)].
+        let ring_mu = [&mu_in, &mu_out, &mu_out, &mu_in];
+        let ring_wl = [&ws[0], &ws[0], &ws[1], &ws[1]];
+        let rs: Vec<Vec3Rat<B>> = (0..4).map(|m| surf(ring_mu[m], ring_wl[m])).collect();
+        // Corner vertices at sk / sk1 (deduped by coordinate).
+        let vk: Vec<usize> = rs
+            .iter()
+            .map(|s| bld.vertex(&s.eval(sk).expect("trim corner finite")))
+            .collect();
+        let vk1: Vec<usize> = rs
+            .iter()
+            .map(|s| bld.vertex(&s.eval(sk1).expect("trim corner finite")))
+            .collect();
+        // Cross-ring straight edges at each station (deduped → shared with neighbour slices / caps).
+        let re_k: Vec<usize> = (0..4)
+            .map(|m| bld.line_edge(vk[m], vk[(m + 1) % 4]))
+            .collect();
+        let re_k1: Vec<usize> = (0..4)
+            .map(|m| bld.line_edge(vk1[m], vk1[(m + 1) % 4]))
+            .collect();
+        // Four σ-rails (deduped) over the slice.
+        let supp = Interval {
+            lo: sk.clone(),
+            hi: sk1.clone(),
+        };
+        let rail: Vec<usize> = rs.iter().map(|s| bld.rail_edge(s, &supp)).collect();
+        // Four ruled sides: m=0 wlo lid, m=1 outer wall, m=2 whi lid, m=3 inner wall.
+        for m in 0..4 {
+            let mp = (m + 1) % 4;
+            let wire = vec![
+                bld.directed(re_k[m], vk[m], vk[mp]),
+                bld.directed(rail[mp], vk[mp], vk1[mp]),
+                bld.directed(re_k1[m], vk1[mp], vk1[m]),
+                bld.directed(rail[m], vk1[m], vk[m]),
+            ];
+            // Ruled cone patch between the two ring rails; `ruled_common` brings them to a shared
+            // denominator (the lids rule between different-μ̂ rails, whose reduced denominators
+            // differ), falling back to the direct `ruled_panel` when they already match (walls).
+            let surface = ruled_common(&rs[m], &rs[mp], sk, sk1);
+            bld.brep.add_face(surface, wire);
+        }
+        // σ-end caps (planar), at σ_lo (first slice) and σ_hi (last slice), wound outward.
+        if k == 0 {
+            let cap = vec![
+                bld.directed(re_k[3], vk[0], vk[3]),
+                bld.directed(re_k[2], vk[3], vk[2]),
+                bld.directed(re_k[1], vk[2], vk[1]),
+                bld.directed(re_k[0], vk[1], vk[0]),
+            ];
+            bld.brep.add_plane(cap);
+        }
+        if k == nst - 2 {
+            let cap = vec![
+                bld.directed(re_k1[0], vk1[0], vk1[1]),
+                bld.directed(re_k1[1], vk1[1], vk1[2]),
+                bld.directed(re_k1[2], vk1[2], vk1[3]),
+                bld.directed(re_k1[3], vk1[3], vk1[0]),
+            ];
+            bld.brep.add_plane(cap);
+        }
+    }
+    Some(bld.into_brep())
+}
+
 // ============================================================================
 // The general holed construction's `(σ,μ)`→3-D lifting layer. Each slice's lid
 // region comes from the exact `arrange2d` boolean; these free functions lift its
@@ -1833,6 +2042,138 @@ mod tests {
                 faces: 6,
                 loops: 6,
             }),
+        );
+    }
+
+    /// `brep_trim_solid` on a plain single-piece curved band (μ⁻=1, μ⁺=2+σ over σ∈[0,1]) builds the
+    /// same certified closed 8/12/6 solid as `brep_freeboundary` — the generalized builder reduces to
+    /// the slab when both boundaries are single pieces.
+    #[test]
+    fn trim_solid_reduces_to_the_band() {
+        use certify_core::shell::{ClosedShell, closed_shell_holed};
+        use fixtures::devices::cone;
+        use lattice::Poly;
+        let poly = |cs: &[i128]| {
+            Poly::<lattice::Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+        };
+        let chart = cone();
+        let sigma = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 4),
+        };
+        let mu_lo = RatFunc::from_poly(poly(&[1])); // μ⁻ = 1
+        let mu_hi = RatFunc::from_poly(poly(&[2, 1])); // μ⁺ = 2 + σ
+        let solid =
+            brep_trim_solid(&chart, &w, &[(sigma.clone(), mu_lo)], &[(sigma, mu_hi)]).unwrap();
+        assert_eq!(solid.verts().len(), 8);
+        assert_eq!(solid.faces().len(), 6);
+        assert_eq!(solid.free_edges(), 0);
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        let sc = solid.to_shell_certificate();
+        assert_eq!(
+            closed_shell_holed(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.loop_start,
+                &sc.face_start,
+            ),
+            Verdict::Verified(ClosedShell {
+                verts: 8,
+                edges: 12,
+                faces: 6,
+                loops: 6,
+            }),
+        );
+    }
+
+    /// A low-degree `brep_trim_solid` band round-trips through OCCT (isolates the builder's OCCT
+    /// path from the high-degree fitted trim rails).
+    #[cfg(feature = "step")]
+    #[test]
+    fn trim_solid_band_exports_via_occt() {
+        use crate::step::write_brep;
+        use fixtures::devices::cone;
+        use lattice::Poly;
+        let poly = |cs: &[i128]| {
+            Poly::<lattice::Bignum>::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect())
+        };
+        let chart = cone();
+        let sigma = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 4),
+        };
+        let solid = brep_trim_solid(
+            &chart,
+            &w,
+            &[(sigma.clone(), RatFunc::from_poly(poly(&[1])))],
+            &[(sigma, RatFunc::from_poly(poly(&[2, 1])))],
+        )
+        .unwrap();
+        let path = format!("{}/trim_band.step", std::env::temp_dir().display());
+        assert_eq!(
+            write_brep(&path, &solid),
+            "ok",
+            "low-degree trim band → OCCT"
+        );
+    }
+
+    /// A **piecewise outer boundary** (the D3-notch mechanism): μ⁺ = 2 on [0, 2/5] then σ+8/5 on
+    /// [2/5, 1], meeting continuously at σ=2/5. The two outer rails share the kink corner (deduped),
+    /// so the two-slice solid is watertight and `closed_shell` certifies it closed.
+    #[test]
+    fn trim_solid_piecewise_outer_is_closed() {
+        use certify_core::shell::closed_shell_holed;
+        use fixtures::devices::cone;
+        use lattice::Poly;
+        let chart = cone();
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 4),
+        };
+        let iv = |lo, hi| Interval { lo, hi };
+        let konst = |cst: i128| {
+            RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::from_i128(cst)]))
+        };
+        let inner = [(iv(Rat::from_i128(0), Rat::from_i128(1)), konst(1))];
+        // outer: 2 on [0, 2/5], then σ + 8/5 on [2/5, 1] (= 2 at σ = 2/5 — a continuous kink).
+        let ramp = RatFunc::from_poly(Poly::from_coeffs(vec![Rat::new(8, 5), Rat::from_i128(1)]));
+        let outer = [
+            (iv(Rat::from_i128(0), Rat::new(2, 5)), konst(2)),
+            (iv(Rat::new(2, 5), Rat::from_i128(1)), ramp),
+        ];
+        let solid = brep_trim_solid(&chart, &w, &inner, &outer).unwrap();
+        assert_eq!(
+            solid.free_edges(),
+            0,
+            "piecewise outer stays watertight (kink corner dedups)"
+        );
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        let sc = solid.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "piecewise-outer trim solid is a certified closed 2-manifold"
         );
     }
 
