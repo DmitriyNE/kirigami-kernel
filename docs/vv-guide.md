@@ -1867,7 +1867,13 @@ cone (`develop::fold::fold_outline`, direction ②) to a certified 3-D wire — 
 ≈2.7e-12. The `roundtrip_fold` integration test closes the loop (develop ∘ fold recovers the 3-D geometry
 to <1e-6), float-corroborated by `develop_cone` (<1e-5, oracle ∧ audit), fail-closed on an out-of-gore
 feature; the driver writes SVG + a certified STEP annulus solid (OCCT `write_brep` "ok", 0 free edges). No
-new frontier (γ=0 throughout). **DD.2–DD.4 pending.**
+new frontier (γ=0 throughout). **DD.2** landed the one genuine frontier — the **γ≠0 flat-directrix
+integrator** (DEV.3 method b): `develop::interval::integrate_on` (a verified interval Riemann sum) +
+`ConeDevelopment` generalized in place with an optional directrix `γ(σ) = ∫₀^σ [a·e(ψ) + b·e⊥(ψ)]`
+(`a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`, spec §Tier C), a byte-identical `γ ≡ 0` fast path, and the pedal
+gate lifted (`arctan_coeff`). GO (`docs/spike-directrix-report.md`): the development is a **machine-exact
+local isometry** (`|D_σ|²−|X_σ|² = 7.1e-15`, confirming the Tier-C frame/sign) with a converging,
+fab-plausible `ε_γ` (1.45e-3 → 9.0e-5 over 64 → 1024 panels). **DD.3–DD.4 pending.**
 
 ---
 

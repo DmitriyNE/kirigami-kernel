@@ -21,8 +21,8 @@
 //! *corroborates* it (see `docs/spike-development-report.md`).
 
 use crate::interval::{
-    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, log, pi, pi_half, sin_on, sqrt,
-    sqrt_on,
+    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on, log, pi, pi_half,
+    sin_on, sqrt, sqrt_on,
 };
 use certify_core::Verdict;
 use geom::chart::Chart;
@@ -56,7 +56,20 @@ pub fn cone_angle_coeff<B: Backend>(chart: &Chart<B>) -> Option<Rat<B>> {
     if !chart.pedal().is_zero() {
         return None; // not an apex-at-origin cone (γ ≢ 0)
     }
-    let psi = chart.psi_prime().reduce();
+    arctan_coeff(&chart.psi_prime())
+}
+
+/// The rational `c` with `ψ = c·arctan σ` extracted from `ψ′ = c/(1+σ²)`, when `ψ′` has that
+/// canonical shape (constant numerator `A`, denominator a rational multiple `k·(1+σ²)`), else
+/// `None`. The check is an exact polynomial identity.
+///
+/// Unlike [`cone_angle_coeff`] this does **not** require an apex cone (`pedal ≡ 0`): the angle law
+/// is `h`-independent — `ψ′` reads only `n, n′, n″` (spec §3.2), all from `q` — so a curved-support
+/// developable that shares the cone's Gauss circle (the seam ramp, `cone_seam_ramp`) has the same
+/// `c·arctan σ` angle; only its flat *directrix* `γ ≠ 0`. [`ConeDevelopment::new_developable`] uses
+/// this to admit that ramp, where [`cone_angle_coeff`]'s pedal gate turns it away.
+fn arctan_coeff<B: Backend>(psi_prime: &RatFunc<B>) -> Option<Rat<B>> {
+    let psi = psi_prime.reduce();
     // numerator must be a nonzero constant A
     if psi.num().degree() != Some(0) {
         return None;
@@ -277,6 +290,31 @@ impl<B: Backend> FlatBox<B> {
 pub struct ConeDevelopment<B: Backend = Bignum> {
     c: Rat<B>,
     rho_sq: RatFunc<B>,
+    /// `Some` for a curved-support developable (`γ ≠ 0`); `None` for the apex cone (`γ ≡ 0`), whose
+    /// development is the byte-identical polar map [`ConeDevelopment::new`] produced before DD.2.
+    directrix: Option<Directrix<B>>,
+    /// Quadrature budget for the flat directrix `γ` (subintervals of `[0, σ]`); unused when `γ ≡ 0`.
+    panels: usize,
+}
+
+/// The exact rational data of a curved-support developable's flat directrix `γ` (the `γ ≠ 0` case):
+/// the pedal-velocity dot products `c′·r` and `c′·n′`, the numerators of the flat-frame resolution
+/// `a = (c′·r)/ρ`, `b = −(c′·n′)/ρ` (spec §Tier C — the development maps the positively oriented
+/// tangent pair `(r/ρ, −n′/ρ)` to `(e(ψ), e⊥(ψ))`). `ρ = √ρ²` is the shared surd atom.
+#[derive(Debug)]
+struct Directrix<B: Backend> {
+    cr: RatFunc<B>, // c′·r
+    cn: RatFunc<B>, // c′·n′
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Directrix<B> {
+    fn clone(&self) -> Self {
+        Directrix {
+            cr: self.cr.clone(),
+            cn: self.cn.clone(),
+        }
+    }
 }
 
 // Hand-written so `B` need not be `Clone` (the backend markers are not), like `RatIv`.
@@ -285,19 +323,137 @@ impl<B: Backend> Clone for ConeDevelopment<B> {
         ConeDevelopment {
             c: self.c.clone(),
             rho_sq: self.rho_sq.clone(),
+            directrix: self.directrix.clone(),
+            panels: self.panels,
         }
     }
 }
 
 impl<B: Backend> ConeDevelopment<B> {
     /// Prepare a cone chart, or `None` if it is not a canonical arctangent cone
-    /// (see [`cone_angle_coeff`]).
+    /// (see [`cone_angle_coeff`]). The apex-cone development (`γ ≡ 0`).
     pub fn new(chart: &Chart<B>) -> Option<Self> {
         let c = cone_angle_coeff(chart)?;
         Some(ConeDevelopment {
             c,
             rho_sq: chart.normal_deriv_sq().reduce(),
+            directrix: None,
+            panels: 0,
         })
+    }
+
+    /// Prepare a **curved-support** developable for certified development — the `γ ≠ 0` case (DD.2 /
+    /// DEV.3 method b). Admits a chart whose angle law is `ψ = c·arctan σ` ([`arctan_coeff`]
+    /// succeeds — it shares the cone's Gauss circle) but whose pedal `c(σ) ≠ 0`, so the flat pattern
+    /// gains a *directrix* `γ(σ) = ∫₀^σ [a·e(ψ) + b·e⊥(ψ)]`, `a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`,
+    /// enclosed by validated quadrature over `panels` subintervals. The apex cone (`pedal ≡ 0`) gets
+    /// `directrix = None` and develops **identically** to [`new`]. `None` if the chart's angle law is
+    /// not the shared-Gauss-circle `c·arctan σ`.
+    ///
+    /// ```
+    /// use develop::cone::{ConeDevelopment, DevConfig};
+    /// use fixtures::devices::{cone, cone_seam_ramp};
+    ///
+    /// // The apex cone: no directrix (γ ≡ 0), develops exactly as `new`.
+    /// let apex = ConeDevelopment::new_developable(&cone(), 128).unwrap();
+    /// let base = ConeDevelopment::new(&cone()).unwrap();
+    /// let s = lattice::Rat::new(1, 2);
+    /// let m = lattice::Rat::from_i128(-1);
+    /// assert_eq!(
+    ///     apex.point(&s, &m, &DevConfig::tight()).center(),
+    ///     base.point(&s, &m, &DevConfig::tight()).center(),
+    /// );
+    /// // The seam ramp is a γ ≠ 0 developable — admitted here, refused by the apex-only `new`.
+    /// assert!(ConeDevelopment::new_developable(&cone_seam_ramp(), 128).is_some());
+    /// assert!(ConeDevelopment::new(&cone_seam_ramp()).is_none());
+    /// ```
+    pub fn new_developable(chart: &Chart<B>, panels: usize) -> Option<Self> {
+        let c = arctan_coeff(&chart.psi_prime())?;
+        let rho_sq = chart.normal_deriv_sq().reduce();
+        let directrix = if chart.pedal().is_zero() {
+            None
+        } else {
+            let cp = chart.pedal().derivative();
+            Some(Directrix {
+                cr: cp.dot(chart.ruling()).reduce(),
+                cn: cp.dot(chart.normal_deriv()).reduce(),
+            })
+        };
+        Some(ConeDevelopment {
+            c,
+            rho_sq,
+            directrix,
+            panels,
+        })
+    }
+
+    /// The flat directrix velocity `γ′(s) = a·e(ψ) + b·e⊥(ψ)` enclosed over a σ-*panel*, with
+    /// `a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`, `e(ψ) = (cos ψ, sin ψ)`, `e⊥(ψ) = (−sin ψ, cos ψ)`. `None`
+    /// on a pole (`ρ²` or a component denominator straddles zero — never on a nondegenerate span).
+    fn directrix_velocity(
+        &self,
+        d: &Directrix<B>,
+        panel: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
+        let cr = eval_ratfunc_on(&d.cr, panel)?;
+        let cn = eval_ratfunc_on(&d.cn, panel)?;
+        let rho2 = eval_ratfunc_on(&self.rho_sq, panel)?;
+        let inv_rho = sqrt_on(&rho2, &cfg.sqrt_eps).recip_pos()?;
+        let a = cr.mul(&inv_rho); // (c′·r)/ρ
+        let b = cn.neg().mul(&inv_rho); // −(c′·n′)/ρ
+        let psi = self.angle_on(panel, cfg.terms);
+        let cos = cos_on(&psi, cfg.terms);
+        let sin = sin_on(&psi, cfg.terms);
+        Some([
+            a.mul(&cos).sub(&b.mul(&sin)).rounded(),
+            a.mul(&sin).add(&b.mul(&cos)).rounded(),
+        ])
+    }
+
+    /// A certified enclosure of the flat directrix `γ(σ) = ∫₀^σ γ′` at a rational `σ ≥ 0`, or the
+    /// point `[0, 0]` when the chart has no directrix (`γ ≡ 0`, the apex cone). `None` on a pole or
+    /// `σ < 0`.
+    fn directrix_at(&self, sigma: &Rat<B>, cfg: &DevConfig<B>) -> Option<[RatIv<B>; 2]> {
+        let d = match &self.directrix {
+            None => {
+                let zero = RatIv::point(Rat::from_i128(0));
+                return Some([zero.clone(), zero]);
+            }
+            Some(d) => d,
+        };
+        let zero = Rat::from_i128(0);
+        let gx = integrate_on(
+            |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
+            &zero,
+            sigma,
+            self.panels,
+        )?;
+        let gy = integrate_on(
+            |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
+            &zero,
+            sigma,
+            self.panels,
+        )?;
+        Some([gx, gy])
+    }
+
+    /// A certified enclosure of `γ(σ)` over an *interval* σ: `γ(σ_lo)` plus the tail `γ′([σ_lo,
+    /// σ_hi]) · [0, σ_hi − σ_lo]` — a sound hull, since `γ(σ) = γ(σ_lo) + ∫_{σ_lo}^{σ} γ′` and the
+    /// integral lies in `γ′`-enclosure × `[0, width]`. `None` on a pole.
+    fn directrix_on(
+        &self,
+        d: &Directrix<B>,
+        sigma: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
+        let base = self.directrix_at(sigma.lo(), cfg)?;
+        let vel = self.directrix_velocity(d, sigma, cfg)?;
+        let tail = RatIv::new(Rat::from_i128(0), sigma.hi().sub(sigma.lo()));
+        Some([
+            base[0].add(&vel[0].mul(&tail)).rounded(),
+            base[1].add(&vel[1].mul(&tail)).rounded(),
+        ])
     }
 
     /// The proven angle coefficient `c` (`ψ = c·arctan σ`).
@@ -327,13 +483,32 @@ impl<B: Backend> ConeDevelopment<B> {
         let psi = self.angle(sigma, cfg.terms);
         let cos = cos_on(&psi, cfg.terms);
         let sin = sin_on(&psi, cfg.terms);
-        let radial = self
-            .radius(sigma, &cfg.sqrt_eps)
-            .scale(&abs(mu_hat))
-            .rounded();
-        FlatBox {
-            x: radial.mul(&cos).rounded(),
-            y: radial.mul(&sin).rounded(),
+        match &self.directrix {
+            // γ ≡ 0 fast path — byte-identical to the apex-cone development.
+            None => {
+                let radial = self
+                    .radius(sigma, &cfg.sqrt_eps)
+                    .scale(&abs(mu_hat))
+                    .rounded();
+                FlatBox {
+                    x: radial.mul(&cos).rounded(),
+                    y: radial.mul(&sin).rounded(),
+                }
+            }
+            // γ ≠ 0: D(σ, µ̂) = γ(σ) + µ̂·ρ·e(ψ), with **signed** µ̂ (the directrix breaks the apex
+            // symmetry, so the ruling coordinate is a signed offset, not a distance). A directrix
+            // pole is unreachable on a nondegenerate span; it degrades to the ruling-only term.
+            Some(_) => {
+                let g = self.directrix_at(sigma, cfg).unwrap_or_else(|| {
+                    let zero = RatIv::point(Rat::from_i128(0));
+                    [zero.clone(), zero]
+                });
+                let radial = self.radius(sigma, &cfg.sqrt_eps).scale(mu_hat).rounded();
+                FlatBox {
+                    x: g[0].add(&radial.mul(&cos)).rounded(),
+                    y: g[1].add(&radial.mul(&sin)).rounded(),
+                }
+            }
         }
     }
 
@@ -364,14 +539,26 @@ impl<B: Backend> ConeDevelopment<B> {
         let psi = self.angle_on(sigma, cfg.terms);
         let cos = cos_on(&psi, cfg.terms);
         let sin = sin_on(&psi, cfg.terms);
-        let radial = self
-            .radius_on(sigma, &cfg.sqrt_eps)?
-            .mul(&abs_on(mu_hat))
-            .rounded();
-        Some(FlatBox {
-            x: radial.mul(&cos).rounded(),
-            y: radial.mul(&sin).rounded(),
-        })
+        let rho = self.radius_on(sigma, &cfg.sqrt_eps)?;
+        match &self.directrix {
+            // γ ≡ 0 fast path — byte-identical to the apex-cone development.
+            None => {
+                let radial = rho.mul(&abs_on(mu_hat)).rounded();
+                Some(FlatBox {
+                    x: radial.mul(&cos).rounded(),
+                    y: radial.mul(&sin).rounded(),
+                })
+            }
+            // γ ≠ 0: D = γ(σ) + µ̂·ρ·e(ψ), signed µ̂.
+            Some(d) => {
+                let radial = rho.mul(mu_hat).rounded();
+                let g = self.directrix_on(d, sigma, cfg)?;
+                Some(FlatBox {
+                    x: g[0].add(&radial.mul(&cos)).rounded(),
+                    y: g[1].add(&radial.mul(&sin)).rounded(),
+                })
+            }
+        }
     }
 
     /// The seam's certified flat angular position `ψ(σ→∞) = c·π/2 = π·sinβ`.
@@ -412,7 +599,7 @@ pub fn drc<B: Backend>(eps: &Rat<B>, clearance: &Rat<B>) -> Verdict<Rat<B>, (), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fixtures::devices::{cone, cone_alt, cone_seam, cylinder};
+    use fixtures::devices::{cone, cone_alt, cone_seam, cone_seam_ramp, cylinder};
 
     type Q = Rat<Bignum>;
 
@@ -601,5 +788,114 @@ mod tests {
             integrate_ratfunc(&real_roots, &one, &cfg),
             Verdict::Unresolved(AngleDefer::RealRoots)
         ));
+    }
+
+    // ---- DD.2: the γ ≠ 0 flat-directrix integrator (DEV.3 method b) ---------------------------
+
+    /// The `γ ≡ 0` fast path is byte-identical: `new_developable` on the apex cone (`pedal ≡ 0`)
+    /// produces exactly the same flat point as the pre-DD.2 `new`, across the gore.
+    #[test]
+    fn new_developable_reproduces_new_on_the_apex_cone() {
+        let base = ConeDevelopment::new(&cone()).unwrap();
+        let devd = ConeDevelopment::new_developable(&cone(), 128).unwrap();
+        let cfg = DevConfig::tight();
+        for &(sn, sd) in &[(0i128, 1i128), (1, 2), (3, 4), (1, 1)] {
+            for &m in &[-1i128, -2] {
+                let (s, mu) = (Q::new(sn, sd), Q::from_i128(m));
+                assert_eq!(
+                    base.point(&s, &mu, &cfg).center(),
+                    devd.point(&s, &mu, &cfg).center(),
+                    "γ≡0 fast path must reproduce `new` at σ={sn}/{sd}, µ̂={m}"
+                );
+            }
+        }
+    }
+
+    /// The seam ramp (`cone_seam_ramp`, γ ≠ 0) develops as a **local isometry**: the certified
+    /// development's first fundamental form matches the 3-D surface's, `|D_σ|² = |X_σ|²` at sample
+    /// points — the exact check the paper's §Tier C flags (a wrong flat-frame sign gives the
+    /// non-isometric defect `|D_σ|² − |X_σ|² = 4bℓψ′`). Computed from the directrix *velocity* `γ′`
+    /// (no quadrature error), so it isolates the frame/sign correctness of the integrand.
+    #[test]
+    fn the_ramp_development_is_a_local_isometry() {
+        let chart = cone_seam_ramp();
+        let dev = ConeDevelopment::new_developable(&chart, 64).unwrap();
+        let c = to_f64(dev.angle_coeff());
+        // exact-rational fields, evaluated to f64 (audit only).
+        let eval3 = |v: &lattice::Vec3Rat<Bignum>, s: &Q| -> [f64; 3] {
+            let p = v.eval(s).unwrap();
+            [to_f64(&p[0]), to_f64(&p[1]), to_f64(&p[2])]
+        };
+        let dot3 = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let cp = chart.pedal().derivative(); // c′
+        let rp = chart.ruling().derivative(); // r′
+        let rho_sq = chart.normal_deriv_sq();
+        let rho_sq_p = rho_sq.derivative();
+
+        let mut max_abs = 0f64;
+        for &(sn, sd) in &[(0i128, 1i128), (1, 8), (1, 4), (3, 8), (1, 2)] {
+            let s = Q::new(sn, sd);
+            let sf = to_f64(&s);
+            let cpv = eval3(&cp, &s);
+            let rv = eval3(chart.ruling(), &s);
+            let rpv = eval3(&rp, &s);
+            let npv = eval3(chart.normal_deriv(), &s);
+            let rho2 = to_f64(&rho_sq.eval(&s).unwrap());
+            let rho = rho2.sqrt();
+            let rhop = to_f64(&rho_sq_p.eval(&s).unwrap()) / (2.0 * rho); // ρ′ = (ρ²)′/(2ρ)
+            let psi = c * sf.atan();
+            let psip = c / (1.0 + sf * sf); // ψ′ = c/(1+σ²)
+            let (cs, sn_) = (psi.cos(), psi.sin());
+            let a = dot3(cpv, rv) / rho; // (c′·r)/ρ
+            let b = -dot3(cpv, npv) / rho; // −(c′·n′)/ρ
+            for &m in &[-1.0f64, -1.5, -2.0] {
+                // D_σ = γ′ + µ̂·(ρ′·e + ρ·ψ′·e⊥),  e=(cos,sin), e⊥=(−sin,cos)
+                let gx = a * cs - b * sn_;
+                let gy = a * sn_ + b * cs;
+                let tx = rhop * cs - rho * psip * sn_;
+                let ty = rhop * sn_ + rho * psip * cs;
+                let (dsx, dsy) = (gx + m * tx, gy + m * ty);
+                let e_d = dsx * dsx + dsy * dsy; // |D_σ|²
+                // X_σ = c′ + µ̂·r′  (3-D)
+                let xs = [
+                    cpv[0] + m * rpv[0],
+                    cpv[1] + m * rpv[1],
+                    cpv[2] + m * rpv[2],
+                ];
+                let e_x = dot3(xs, xs); // |X_σ|²
+                max_abs = max_abs.max((e_d - e_x).abs());
+            }
+        }
+        assert!(
+            max_abs < 1e-6,
+            "development must be a local isometry (|D_σ|²−|X_σ|² = {max_abs:e}); a nonzero value \
+             is the §Tier C frame-sign defect 4bℓψ′"
+        );
+    }
+
+    /// The certified directrix `γ` converges: the flat point's backward error on the ramp flap
+    /// shrinks as the quadrature budget grows, and clears a fab-plausible DRC — the DD.2 GO signal.
+    #[test]
+    fn the_ramp_directrix_converges_and_is_fab_plausible() {
+        let chart = cone_seam_ramp();
+        let cfg = DevConfig::tight();
+        let (s, mu) = (Q::new(1, 4), Q::new(-3, 2)); // mid-ramp, in the flap band
+        let eps = |panels: usize| {
+            ConeDevelopment::new_developable(&chart, panels)
+                .unwrap()
+                .point(&s, &mu, &cfg)
+                .backward_error()
+        };
+        let coarse = eps(64);
+        let fine = eps(1024);
+        assert!(
+            fine.cmp(&coarse) == core::cmp::Ordering::Less,
+            "γ enclosure must converge"
+        );
+        // Fab-plausible: well under the demo clearance's half (clearance = 1 ⇒ DRC ε < 1/2).
+        assert!(
+            fine.cmp(&Q::new(1, 100)) == core::cmp::Ordering::Less,
+            "the ramp develops to a fab-plausible ε (< 0.01) at 1024 panels, got {fine:?}"
+        );
     }
 }

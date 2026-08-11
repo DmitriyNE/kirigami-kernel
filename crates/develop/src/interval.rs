@@ -662,6 +662,50 @@ pub fn eval_ratfunc_on<B: Backend>(f: &RatFunc<B>, x: &RatIv<B>) -> Option<RatIv
     Some(eval_poly_on(f.num(), x).mul(&inv).rounded())
 }
 
+/// A certified enclosure of `∫_lo^σ f(s) ds` by an **interval Riemann sum** over `panels` equal
+/// subintervals: each panel `[s_i, s_{i+1}]` contributes `f([s_i, s_{i+1}]) · width`, a sound
+/// enclosure because `f(s) ∈ f([s_i, s_{i+1}])` for every `s` in the panel — so the sum contains
+/// the true integral. The enclosure *width* is the certified quadrature error; it shrinks `∝
+/// 1/panels` for a Lipschitz `f`. Returns `None` if a panel evaluation is `None` (a pole), if
+/// `panels == 0`, or if `σ < lo`.
+///
+/// This is the DEV.3 "method (b)" primitive: the flat directrix `γ(σ) = ∫₀^σ e(ψ)·(pedal speed)`
+/// is **non-elementary** (`rational × cos(c·arctan σ)` for a curved-support developable), so it is
+/// enclosed by *validated quadrature* rather than a closed form — the honest transcendental frontier
+/// the apex cone (`ψ` closed-form, `γ ≡ 0`) never reaches.
+///
+/// ```
+/// use develop::interval::{RatIv, integrate_on};
+/// use lattice::{Bignum, Rat};
+///
+/// // ∫₀¹ s² ds = 1/3 — the enclosure brackets it, and narrows as panels grow.
+/// let sq = |iv: &RatIv<Bignum>| Some(iv.mul(iv));
+/// let coarse = integrate_on(sq, &Rat::from_i128(0), &Rat::from_i128(1), 8).unwrap();
+/// let fine = integrate_on(sq, &Rat::from_i128(0), &Rat::from_i128(1), 256).unwrap();
+/// assert!(coarse.contains(&Rat::new(1, 3)) && fine.contains(&Rat::new(1, 3)));
+/// assert!(fine.width() < coarse.width());
+/// ```
+pub fn integrate_on<B, F>(f: F, lo: &Rat<B>, sigma: &Rat<B>, panels: usize) -> Option<RatIv<B>>
+where
+    B: Backend,
+    F: Fn(&RatIv<B>) -> Option<RatIv<B>>,
+{
+    use core::cmp::Ordering::Less;
+    if panels == 0 || sigma.cmp(lo) == Less {
+        return None;
+    }
+    let width = sigma.sub(lo).div(&Rat::from_i128(panels as i128));
+    let mut acc = RatIv::point(Rat::from_i128(0));
+    let mut a = lo.clone();
+    for _ in 0..panels {
+        let b = a.add(&width);
+        let fv = f(&RatIv::new(a.clone(), b.clone()))?;
+        acc = acc.add(&fv.scale(&width)).rounded();
+        a = b;
+    }
+    Some(acc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,6 +721,27 @@ mod tests {
     fn to_f64(r: &Q) -> f64 {
         let (n, d) = r.numer_denom_decimal();
         n.parse::<f64>().unwrap() / d.parse::<f64>().unwrap()
+    }
+
+    /// The validated quadrature brackets a *transcendental* integrand and narrows with panels:
+    /// `∫₀^1 cos s ds = sin 1 ≈ 0.841471`. Exercises the `cos_on` enclosure inside `integrate_on`
+    /// (the shape the flat directrix `γ = ∫ rational·cos ψ` takes).
+    #[test]
+    fn integrate_on_brackets_a_transcendental_integrand() {
+        let cosf = |iv: &RatIv<Bignum>| Some(cos_on(iv, 24));
+        let coarse = integrate_on(cosf, &Q::from_i128(0), &Q::from_i128(1), 16).unwrap();
+        let fine = integrate_on(cosf, &Q::from_i128(0), &Q::from_i128(1), 512).unwrap();
+        let want = 1.0f64.sin();
+        assert!(close(&coarse, want, 1e-9), "coarse must bracket sin 1");
+        assert!(close(&fine, want, 1e-9), "fine must bracket sin 1");
+        assert!(
+            fine.width() < coarse.width(),
+            "the enclosure narrows with panels"
+        );
+        assert!(
+            to_f64(&fine.width()) < 1e-2,
+            "512 panels give a tight enclosure"
+        );
     }
 
     #[test]
