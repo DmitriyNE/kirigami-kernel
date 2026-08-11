@@ -620,6 +620,69 @@ pub fn unroll_loop<B: Backend>(
     unroll_trim_loop(dev, arcs, cfg, clearance)
 }
 
+/// A developed loop's rational polygon: each [`FlatOutline`] vertex reduced to its `FlatBox`
+/// centre. This is the flat operand for the arrangement assembly.
+pub fn flat_to_poly<B: Backend>(outline: &FlatOutline<B>) -> Vec<[Rat<B>; 2]> {
+    outline
+        .vertices
+        .iter()
+        .map(|b| {
+            let (x, y) = b.center();
+            [x, y]
+        })
+        .collect()
+}
+
+/// One closed polygon `pts` as exact [`arrange2d`] segment edges tagged `src` (mirrors
+/// `develop::flat`'s `seg_edge`: the directed line through each consecutive pair).
+fn poly_edges<B: Backend>(pts: &[[Rat<B>; 2]], src: u32) -> Vec<geom::content::Edge<B>> {
+    use geom::content::{CurveId, Edge, Line, Orient, Point2, SegPiece};
+    let n = pts.len();
+    (0..n)
+        .map(|i| {
+            let s = &pts[i];
+            let e = &pts[(i + 1) % n];
+            let a = e[1].sub(&s[1]).neg();
+            let b = e[0].sub(&s[0]);
+            let c = a.mul(&s[0]).add(&b.mul(&s[1])).neg();
+            Edge::Seg(Box::new(SegPiece {
+                line: Line { a, b, c },
+                start: Point2::from_rat(s[0].clone(), s[1].clone()),
+                end: Point2::from_rat(e[0].clone(), e[1].clone()),
+                orient: Orient::Ccw,
+                source: CurveId(src),
+            }))
+        })
+        .collect()
+}
+
+/// Assemble the final flat panel `Region` = `outer − ⋃ holes`, via the `BoolOp::Diff` arrangement
+/// (operand A = the outer polygon, operand B = the union of the interior hole polygons — authored
+/// pairwise-disjoint). Certified by `ledge_dom_certified`. This is [`crate::cut_oracle`]'s
+/// downstream: the developed rails become flat polygons the exact 2-D boolean stitches together.
+pub fn assemble_flat<B: Backend>(
+    outer: &[[Rat<B>; 2]],
+    holes: &[Vec<[Rat<B>; 2]>],
+) -> Verdict<arrange2d::boolean::Region<B>, arrange2d::boolean::CapOutFault, ()> {
+    use arrange2d::boolean::{BoolOp, OperandId, ledge_dom_certified};
+    use geom::content::CurveId;
+    let mut edges = poly_edges(outer, 0);
+    for (i, h) in holes.iter().enumerate() {
+        edges.extend(poly_edges(h, (i + 1) as u32));
+    }
+    let operand_of = |c: CurveId| {
+        if c.0 == 0 { OperandId::A } else { OperandId::B }
+    };
+    match ledge_dom_certified(&edges, &operand_of, BoolOp::Diff) {
+        Verdict::Verified(cap) => {
+            let (region, _v, _pinch) = cap.into_parts();
+            Verdict::Verified(region)
+        }
+        Verdict::Refuted(f) => Verdict::Refuted(f),
+        Verdict::Unresolved(()) => Verdict::Unresolved(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,6 +940,94 @@ mod tests {
             }
             other => panic!("arrangement not certified: {}", tag(&other)),
         }
+    }
+
+    /// The whole panel assembles: develop the notched outer boundary + the D4 hole, author a
+    /// polygon (quad) cut, and stitch them with the flat `BoolOp::Diff` into one certified
+    /// `Region` — one face, two holes (D4 + the quad).
+    #[test]
+    fn full_panel_assembles() {
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        let cfg = DevConfig::tight();
+        let clearance = Q::from_i128(1);
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let fit = RailFit::default();
+        let (d1, d2, d3, d4) = demo_disks(&chart);
+
+        let outer = match outer_loop(
+            &chart,
+            &d1,
+            &d2,
+            (&d3[0], &d3[1], &d3[2]),
+            &span,
+            fit,
+            &clearance,
+            &cfg,
+            &Q::new(1, 1000),
+            96,
+        ) {
+            Verdict::Verified(o) => o,
+            o => panic!("outer: {}", tag(&o)),
+        };
+        let outer_flat = match unroll_loop(&dev, &outer.arcs, &cfg, &clearance) {
+            Verdict::Verified(o) => o,
+            o => panic!("outer unroll: {}", tag(&o)),
+        };
+        let hole = match hole_loop(
+            &chart,
+            &d4[0],
+            &d4[1],
+            &d4[2],
+            &span,
+            fit,
+            &clearance,
+            &cfg,
+            &Q::new(1, 200),
+            48,
+        ) {
+            Verdict::Verified(h) => h,
+            o => panic!("hole: {}", tag(&o)),
+        };
+        let d4_flat = match unroll_loop(&dev, &hole.arcs, &cfg, &clearance) {
+            Verdict::Verified(o) => o,
+            o => panic!("hole unroll: {}", tag(&o)),
+        };
+
+        // An authored quad cut, developed from (σ,μ) so it lands in the panel band (left of D4).
+        let quad: Vec<[Q; 2]> = [
+            (Q::new(-9, 20), Q::new(43, 20)),
+            (Q::new(-6, 20), Q::new(43, 20)),
+            (Q::new(-6, 20), Q::new(47, 20)),
+            (Q::new(-9, 20), Q::new(47, 20)),
+        ]
+        .iter()
+        .map(|(s, m)| {
+            let (x, y) = dev.point(s, m, &cfg).center();
+            [x, y]
+        })
+        .collect();
+
+        let outer_poly = flat_to_poly(&outer_flat);
+        let d4_poly = flat_to_poly(&d4_flat);
+        let region = match assemble_flat(&outer_poly, &[d4_poly, quad]) {
+            Verdict::Verified(r) => r,
+            o => panic!("assemble: {}", tag(&o)),
+        };
+        assert_eq!(region.faces.len(), 1, "one connected panel face");
+        assert_eq!(
+            region.faces[0].holes.len(),
+            2,
+            "two interior cuts: the D4 circular hole and the authored quad"
+        );
+        println!(
+            "full panel: 1 face, {} holes ({} outer verts)",
+            region.faces[0].holes.len(),
+            region.faces[0].outer.len()
+        );
     }
 
     fn tag<T, E: core::fmt::Debug, M>(v: &Verdict<T, E, M>) -> String {
