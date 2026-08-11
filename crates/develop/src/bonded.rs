@@ -20,8 +20,10 @@
 
 use crate::interval::{RatIv, eval_ratfunc_on};
 use certify_core::Verdict;
+use certify_core::certify1d::{RegCert, RegFault, reg_q};
+use certify_core::margin::MarginSq;
 use geom::chart::Chart;
-use lattice::{Backend, Bignum, Interval, Rat, RatFunc};
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, SturmChain};
 
 /// A lapping curve over the seam σ'-box: a rail `c + µr + wn` at a fixed `(µ, w)`, held as
 /// its three reduced component `RatFunc`s of σ'. This is what [`clear`] encloses and
@@ -152,6 +154,157 @@ fn axis_gap<B: Backend>(a: &RatIv<B>, b: &RatIv<B>) -> Rat<B> {
     }
 }
 
+/// The constant `RatFunc` `r`.
+fn konst<B: Backend>(r: &Rat<B>) -> RatFunc<B> {
+    RatFunc::from_poly(Poly::from_coeffs(vec![r.clone()]))
+}
+
+/// Evidence that SEP holds: the certified constant face-separation, equal to the bond gap `g`.
+pub struct SepWitness<B: Backend = Bignum> {
+    /// The certified constant separation (`= g`).
+    pub gap: Rat<B>,
+}
+
+/// Why a [`sep`] check refuted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SepFault<B: Backend = Bignum> {
+    /// The face separation is not constant on the bonded range — so this is not the bonded
+    /// plateau (SEP is a plateau property; the ramp reverts to [`clear`]).
+    NotConstant,
+    /// The separation is a constant, but not the declared bond gap `g` (the actual value).
+    GapMismatch(Rat<B>),
+}
+
+/// **SEP** — certify the corresponding-normal face separation ≡ the bond gap `g` on the
+/// bonded range (§7 face identity `h_A + w_{A,face} + g = h_B + w_{B,face}`).
+///
+/// Two shared-frame sheets separate purely in the normal (`c·n ≡ h`, since `n·n = 1` and
+/// `n′·n = 0`), so the corresponding-normal separation is `(h_B + w_B) − (h_A + w_A)`; SEP
+/// holds iff that is the constant `g`. An **exact rational identity** — "compares two ring
+/// scalars", spec §7 — no subdivision, no float, no `Unresolved`.
+pub fn sep<B: Backend>(
+    h_a: &RatFunc<B>,
+    w_a: &Rat<B>,
+    h_b: &RatFunc<B>,
+    w_b: &Rat<B>,
+    g: &Rat<B>,
+) -> Verdict<SepWitness<B>, SepFault<B>, ()> {
+    let gap = h_b.add(&konst(w_b)).sub(&h_a.add(&konst(w_a))).reduce();
+    let is_const = gap.num().degree().is_none_or(|d| d == 0) && gap.den().degree() == Some(0);
+    if !is_const {
+        return Verdict::Refuted(SepFault::NotConstant);
+    }
+    // A constant `RatFunc` (nonzero constant denominator) evaluates anywhere; σ' = 0 is fine.
+    let val = gap.eval(&Rat::from_i128(0)).unwrap_or_else(|| g.clone());
+    if &val == g {
+        Verdict::Verified(SepWitness { gap: val })
+    } else {
+        Verdict::Refuted(SepFault::GapMismatch(val))
+    }
+}
+
+/// The constant value of `f` if it is constant on σ', else `None`.
+fn as_constant<B: Backend>(f: &RatFunc<B>) -> Option<Rat<B>> {
+    let f = f.reduce();
+    let is_const = f.num().degree().is_none_or(|d| d == 0) && f.den().degree() == Some(0);
+    if is_const {
+        f.eval(&Rat::from_i128(0))
+    } else {
+        None
+    }
+}
+
+/// Evidence that SHEAR holds: the Tier-1 identification `J = rigid ∘ ruling-shear`.
+pub struct ShearWitness<B: Backend = Bignum> {
+    /// The constant geodesic curvature `κ_g ≡ k` (signed witness).
+    pub kappa_g: Rat<B>,
+    /// The constant midplane offset `Δ ≡ Δ₀`.
+    pub delta0: Rat<B>,
+    /// The ruling-shear `δ = −Δ₀/k`.
+    pub shear: Rat<B>,
+}
+
+/// Why a [`shear`] check refuted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShearFault {
+    /// `κ_g` is not constant on the range — the Tier-1 collapse does not apply (Tier 0 stands).
+    KappaNotConstant,
+    /// `Δ` is not constant — a layer-dropped / pad-topology face (varying or piecewise `Δ`).
+    DeltaNotConstant,
+    /// `κ_g` is not separated from zero (`k² < m`, or `k = 0`) — the cylinder degeneracy, where
+    /// the map is affine with cross-ruling scale (Tier 2), not rigid ∘ shear.
+    KappaTooSmall,
+}
+
+/// **SHEAR** — certify the Tier-1 identification `J = rigid ∘ ruling-shear` collapses (§7).
+///
+/// Given the (searcher-supplied) geodesic curvature `κ_g(σ')` and midplane offset `Δ(σ')`,
+/// SHEAR holds iff `κ_g ≡ k` (constant, signed), `k² ≥ m > 0` (separated from zero), and
+/// `Δ ≡ Δ₀` (constant); then the shear is `δ = −Δ₀/k`. All hypotheses are **exactly
+/// decidable rational identities** (constancy, one sign, one ring comparison) — no float, no
+/// subdivision. For the device cone `κ_g = −tan β = −65/72`, `Δ₀ = 1/4` ⇒ `δ = Δ cot β = 18/65
+/// ≈ 0.28 mm`, the number the ghost footprint needs.
+pub fn shear<B: Backend>(
+    kappa_g: &RatFunc<B>,
+    delta: &RatFunc<B>,
+    m: &Rat<B>,
+) -> Verdict<ShearWitness<B>, ShearFault, ()> {
+    let k = match as_constant(kappa_g) {
+        Some(k) => k,
+        None => return Verdict::Refuted(ShearFault::KappaNotConstant),
+    };
+    let d0 = match as_constant(delta) {
+        Some(d) => d,
+        None => return Verdict::Refuted(ShearFault::DeltaNotConstant),
+    };
+    if k.sign() == 0 || k.mul(&k) < *m {
+        return Verdict::Refuted(ShearFault::KappaTooSmall);
+    }
+    let shear = d0.neg().div(&k);
+    Verdict::Verified(ShearWitness {
+        kappa_g: k,
+        delta0: d0,
+        shear,
+    })
+}
+
+/// **SLAB** (SLAB-S0, spec §11) — certify the offset slab stays regular on the ramp: the
+/// principal-radius datum `R₁ + w = det J / |n′|² > 0` over the σ'-span, at the `(µ, w)` corner.
+///
+/// `det J = c′·n′ + µ(r′·n′) + w|n′|²` is affine in `(µ, w)`, so its box minimum is a corner
+/// (the caller passes the inf corner). Since `|n′|² > 0`, `R₁ + w > 0 ⟺ det J > 0`, so the check
+/// is `det J ≥ m > 0` (the margin is in `det J` units), discharged by the reused **Sturm**
+/// positivity checker `certify_core::certify1d::reg_q` (the searcher builds the σ'-numerator /
+/// denominator and their Sturm chains; the checker re-verifies them).
+/// Rational, no transcendental — the ramp's regularity is single-span-Sturm-certifiable (§8).
+pub fn slab<B: Backend>(
+    chart: &Chart<B>,
+    mu: &Rat<B>,
+    w: &Rat<B>,
+    span: &Interval<B>,
+    m: &Rat<B>,
+) -> Verdict<MarginSq<Rat<B>>, RegFault<B>, ()> {
+    let dj = chart.det_j();
+    // det J at the fixed (µ, w) corner, as a σ'-rational function.
+    let val = dj
+        .constant
+        .add(&dj.mu.scale(mu))
+        .add(&dj.w.scale(w))
+        .reduce();
+    let num = val.num().clone();
+    let den = val.den().clone();
+    let r = num.sub(&den.scale(m)); // R = num − m·den
+    let cert = RegCert {
+        den_chain: SturmChain::new(&den),
+        res_chain: SturmChain::new(&r),
+        num,
+        den,
+        m: MarginSq(m.clone()),
+        span: span.clone(),
+    };
+    reg_q(&cert)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +368,85 @@ mod tests {
         assert!(matches!(
             clear(&a, &b, &bad, &Q::new(1, 16), 10),
             Verdict::Refuted(ClearFault::DegenerateBox)
+        ));
+    }
+
+    #[test]
+    fn sep_holds_on_the_plateau_and_refutes_off_it() {
+        let zero = RatFunc::<Bignum>::zero(); // base sheet, h_A = 0
+        let plateau = konst(&Q::new(1, 4)); // bonded plateau, h_B ≡ 1/4
+        let w = Q::from_i128(0);
+        // The plateau separation is 1/4 = g → SEP holds, exactly.
+        match sep(&zero, &w, &plateau, &w, &Q::new(1, 4)) {
+            Verdict::Verified(s) => assert_eq!(s.gap, Q::new(1, 4)),
+            _ => panic!("SEP should hold on the plateau"),
+        }
+        // A wrong declared gap → GapMismatch (with the true value).
+        assert!(matches!(
+            sep(&zero, &w, &plateau, &w, &Q::new(1, 8)),
+            Verdict::Refuted(SepFault::GapMismatch(v)) if v == Q::new(1, 4)
+        ));
+        // The ramp (varying support) is not a plateau → NotConstant.
+        let ramp =
+            RatFunc::<Bignum>::from_poly(Poly::from_coeffs(vec![Q::new(1, 4), Q::new(-1, 2)]));
+        assert!(matches!(
+            sep(&zero, &w, &ramp, &w, &Q::new(1, 4)),
+            Verdict::Refuted(SepFault::NotConstant)
+        ));
+    }
+
+    #[test]
+    fn shear_collapses_tier1_for_the_cone() {
+        // Device cone: κ_g = −tan β = −65/72, Δ₀ = 1/4 ⇒ δ = Δ cot β = 18/65 ≈ 0.28 mm.
+        let kappa = konst(&Q::new(-65, 72));
+        let delta = konst(&Q::new(1, 4));
+        match shear(&kappa, &delta, &Q::new(1, 100)) {
+            Verdict::Verified(w) => {
+                assert_eq!(w.kappa_g, Q::new(-65, 72));
+                assert_eq!(w.shear, Q::new(18, 65)); // −(1/4)/(−65/72) = 72/260 = 18/65
+            }
+            _ => panic!("SHEAR should collapse to Tier 1 for the cone"),
+        }
+        // A σ'-varying κ_g → KappaNotConstant.
+        let varying =
+            RatFunc::<Bignum>::from_poly(Poly::from_coeffs(vec![Q::new(-65, 72), Q::new(1, 10)]));
+        assert!(matches!(
+            shear(&varying, &delta, &Q::new(1, 100)),
+            Verdict::Refuted(ShearFault::KappaNotConstant)
+        ));
+        // κ_g too near zero (the cylinder degeneracy) → KappaTooSmall.
+        assert!(matches!(
+            shear(&konst(&Q::new(1, 100)), &delta, &Q::new(1, 100)),
+            Verdict::Refuted(ShearFault::KappaTooSmall)
+        ));
+    }
+
+    #[test]
+    fn slab_certifies_the_ramp_stays_regular() {
+        // The ramp's offset slab stays regular: det J > 0 (⟺ R₁ + w > 0) over the seam box at
+        // the µ = −1 corner (w = 0), via the reused Sturm positivity checker.
+        let ramp = cone_seam_ramp();
+        let span = ramp_box();
+        match slab(
+            &ramp,
+            &Q::from_i128(-1),
+            &Q::from_i128(0),
+            &span,
+            &Q::new(1, 1000),
+        ) {
+            Verdict::Verified(_) => {}
+            _ => panic!("the ramp offset slab should be regular"),
+        }
+        // An over-large margin the datum cannot meet → a genuine margin failure.
+        assert!(matches!(
+            slab(
+                &ramp,
+                &Q::from_i128(-1),
+                &Q::from_i128(0),
+                &span,
+                &Q::from_i128(1000)
+            ),
+            Verdict::Refuted(_)
         ));
     }
 }
