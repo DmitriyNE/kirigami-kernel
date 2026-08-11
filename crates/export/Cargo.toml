@@ -59,3 +59,10 @@ required-features = ["diagnostics"]
 [[example]]
 name = "flex_panel"
 required-features = ["diagnostics"]
+
+# Emits the DD.1 round-trip panel: `cargo run --example roundtrip_panel --features diagnostics` for
+# the pipeline + `roundtrip_panel.svg` (add `,step` under `nix develop` for the annulus STEP solid).
+# Boundaries cut in 3D → develop → an interior feature authored in 2D + folded back onto the cone.
+[[example]]
+name = "roundtrip_panel"
+required-features = ["diagnostics"]

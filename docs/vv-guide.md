@@ -1859,8 +1859,15 @@ flagged at that point if so.
 the γ method + the certified `ε_γ` on the ramp flap + the float directrix-oracle corroboration + the
 GO/no-go.
 
-**Status: DD.0 met** — on `driving-demo` (branched off `stage-2-seam`). This section + the `vv-matrix.md`
-DD rows + the engineering-log DD thread. DD.1–DD.4 pending.
+**Status: DD.0 + DD.1 met** — on `driving-demo` (branched off `stage-2-seam`). DD.0 authored this section
++ the `vv-matrix.md` DD rows + the engineering-log DD thread. **DD.1** wired the fold-back leg the Stage-1
+demo skips: the `roundtrip_panel` driver cuts the gore boundary in 3D (eccentric annulus), develops it
+(direction ①), authors an interior ECAD feature **on the flat pattern**, and **folds it back** onto the
+cone (`develop::fold::fold_outline`, direction ②) to a certified 3-D wire — round-trip backward error
+≈2.7e-12. The `roundtrip_fold` integration test closes the loop (develop ∘ fold recovers the 3-D geometry
+to <1e-6), float-corroborated by `develop_cone` (<1e-5, oracle ∧ audit), fail-closed on an out-of-gore
+feature; the driver writes SVG + a certified STEP annulus solid (OCCT `write_brep` "ok", 0 free edges). No
+new frontier (γ=0 throughout). **DD.2–DD.4 pending.**
 
 ---
 
