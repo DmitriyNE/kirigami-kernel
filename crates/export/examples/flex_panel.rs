@@ -27,10 +27,14 @@
 //! nix develop -c cargo run --example flex_panel --features diagnostics,step    # + trimmed STEP
 //! ```
 //!
-//! Flags: `--segments <n>` (rail discretization, default 72), `--out-dir <dir>`. The gore is the
-//! moderate `σ ∈ [−1, 1]` (~180°) at band scale — a *cut* (circular) boundary is a varying-μ̂
-//! rail, so a large radius / a wider gore blows μ̂ up and the interval development goes loose (a
-//! logged strain; the constant-μ band is exempt).
+//! Flags: `--segments <n>` (rail discretization, default 72), `--out-dir <dir>`. The gore is
+//! `σ ∈ [−7/2, 7/2]` ≈ **296° of azimuth**: the σ↔azimuth law is exactly `φ = 2·arctan σ` (the
+//! development coefficient `c = 130/97 = 2·sin β` divides by the development factor `sin β = 65/97`),
+//! so `σ = ±7/2 → φ = ±148.1°`. The width is capped not by the STEP builder (which lifts the rails
+//! directly and exports past 304°) but by the **SVG unroll**: the D1 plane-cut rail grows `μ̂ ∝
+//! (1 + σ²)`, so the interval development's certified error climbs (`ε ≈ 0.49` at 296°) toward the
+//! DRC gate `ε < clearance/2 = 0.5`; at `σ = ±15/4` (300°) it crosses and unroll is `Unresolved`
+//! (fail-closed). Raise `clearance` or tighten the dev config to push further toward the full 360°.
 
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
@@ -75,8 +79,8 @@ fn main() {
     let cfg = DevConfig::tight();
     let clearance = Q::from_i128(1);
     let span = Interval {
-        lo: Q::from_i128(-1),
-        hi: Q::from_i128(1),
+        lo: Q::new(-7, 2),
+        hi: Q::new(7, 2),
     };
     let fit = RailFit::default();
 
@@ -91,7 +95,9 @@ fn main() {
     let d3 = [Q::new(-9, 4), Q::new(9, 4), Q::new(9, 16)]; // boundary notch (straddles D1)
     let d4 = [Q::from_i128(0), Q::new(11, 5), Q::new(1, 25)]; // interior hole
 
-    println!("flex-PCB panel — device cone (β≈42°), gore σ∈[−1,1], trim (D1−D2)−D3−D4 in xy");
+    println!(
+        "flex-PCB panel — device cone (β≈42°), gore σ∈[−7/2,7/2] (~296°), trim (D1−D2)−D3−D4 in xy"
+    );
 
     // — Certify the physical-xy arrangement topology (BoolOp::Diff) —
     certify_arrangement(&d1, &d2, &d3, &d4);
