@@ -411,10 +411,31 @@ impl<B: Backend> ConeDevelopment<B> {
         ])
     }
 
+    /// Whether this developable carries a nonzero flat directrix (`γ ≠ 0`) — the curved-support
+    /// case. `false` for the apex cone (`γ ≡ 0`). Used by the fold to branch the residual handling.
+    pub(crate) fn has_directrix(&self) -> bool {
+        self.directrix.is_some()
+    }
+
+    /// γ over an *interval* σ (the fold's residual `(x, y) − γ(σ)` needs it), `[0, 0]` when `γ ≡ 0`.
+    pub(crate) fn directrix_on_iv(
+        &self,
+        sigma: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
+        match &self.directrix {
+            None => {
+                let z = RatIv::point(Rat::from_i128(0));
+                Some([z.clone(), z])
+            }
+            Some(d) => self.directrix_on(d, sigma, cfg),
+        }
+    }
+
     /// A certified enclosure of the flat directrix `γ(σ) = ∫₀^σ γ′` at a rational `σ ≥ 0`, or the
     /// point `[0, 0]` when the chart has no directrix (`γ ≡ 0`, the apex cone). `None` on a pole or
     /// `σ < 0`.
-    fn directrix_at(&self, sigma: &Rat<B>, cfg: &DevConfig<B>) -> Option<[RatIv<B>; 2]> {
+    pub(crate) fn directrix_at(&self, sigma: &Rat<B>, cfg: &DevConfig<B>) -> Option<[RatIv<B>; 2]> {
         let d = match &self.directrix {
             None => {
                 let zero = RatIv::point(Rat::from_i128(0));

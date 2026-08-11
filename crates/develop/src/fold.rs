@@ -20,10 +20,15 @@
 //! + `closure`/`sew`, not `develop`. No float enters the certificate.
 
 use crate::cone::{ConeDevelopment, DevConfig};
-use crate::interval::{RatIv, cos_on, eval_ratfunc_on, sin_on, sqrt};
+use crate::interval::{RatIv, cos_on, eval_ratfunc_on, sin_on, sqrt, sqrt_on};
 use certify_core::Verdict;
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Interval, Rat};
+
+/// Quadrature budget for the flat directrix `γ` in the **γ ≠ 0 fold** (DD.3). Each `invert_sigma`
+/// bisection step re-integrates `γ(σ)` from 0, so this trades fold speed against the round-trip ε;
+/// `64` gives a fab-plausible ε on the seam ramp (the apex cone has `γ ≡ 0` and never integrates).
+const GAMMA_PANELS: usize = 64;
 
 /// A certified folded point: the recovered chart coordinate `(σ, μ̂)` enclosures, the lifted 3D
 /// box `C(σ, μ̂, w)`, and the round-trip backward error `ε` under the recorded clearance.
@@ -70,19 +75,28 @@ pub enum FoldFault {
     EmptyLoop,
 }
 
-/// The signed area `cos ψ(σ)·y − sin ψ(σ)·x = r·sin(θ − ψ(σ))` at a rational σ — positive when
-/// the target direction `(x, y)` is CCW of the developed ray (i.e. `ψ(σ) < θ`), negative when CW.
+/// The signed area `cos ψ(σ)·(y − γ_y(σ)) − sin ψ(σ)·(x − γ_x(σ))` at a rational σ — the
+/// perpendicular component of the **directrix residual** `(x, y) − γ(σ)` against the developed ray
+/// `e(ψ)`. It vanishes exactly when the residual is (anti)parallel to `e(ψ)`, i.e. at the true σ.
+/// For the apex cone (`γ ≡ 0`) this reduces to the pure-radial `cos ψ·y − sin ψ·x` of DEV.2e.
 fn cross_at<B: Backend>(
     dev: &ConeDevelopment<B>,
     s: &Rat<B>,
     x: &Rat<B>,
     y: &Rat<B>,
-    terms: usize,
+    cfg: &DevConfig<B>,
 ) -> RatIv<B> {
-    let ang = dev.angle(s, terms);
-    let c = cos_on(&ang, terms);
-    let si = sin_on(&ang, terms);
-    c.scale(y).sub(&si.scale(x))
+    let ang = dev.angle(s, cfg.terms);
+    let c = cos_on(&ang, cfg.terms);
+    let si = sin_on(&ang, cfg.terms);
+    // Residual (x, y) − γ(σ); γ ≡ [0,0] for the apex cone, so this is byte-identical there.
+    let g = dev.directrix_at(s, cfg).unwrap_or_else(|| {
+        let z = RatIv::point(Rat::from_i128(0));
+        [z.clone(), z]
+    });
+    let yg = RatIv::point(y.clone()).sub(&g[1]);
+    let xg = RatIv::point(x.clone()).sub(&g[0]);
+    c.mul(&yg).sub(&si.mul(&xg))
 }
 
 /// Recover the σ-enclosure with `ψ(σ) = atan2(y, x)` by monotone bisection on the signed area,
@@ -101,18 +115,26 @@ fn invert_sigma<B: Backend>(
     y: &Rat<B>,
     domain: &Interval<B>,
     iters: usize,
-    terms: usize,
+    cfg: &DevConfig<B>,
+    flip: bool,
 ) -> Result<RatIv<B>, FoldFault> {
     use core::cmp::Ordering;
     if domain.lo.cmp(&domain.hi) != Ordering::Less {
         return Err(FoldFault::DegenerateDomain);
     }
+    // The signed area, with the **residual-direction flip**: for a γ ≠ 0 chart the flat point is
+    // `γ(σ) + µ̂·ρ·e(ψ)` with *signed* µ̂, so a negative µ̂ (the device band) puts the residual
+    // `(x, y) − γ(σ)` at angle `ψ + π` — the opposite bracketing convention. Negating the signed
+    // area restores the `+ → −` monotonicity `invert_sigma` bisects on. The apex cone (`|µ̂|`,
+    // residual always at `ψ`) never flips, so its bisection is byte-identical.
+    let xat = |s: &Rat<B>| -> RatIv<B> {
+        let c = cross_at(dev, s, x, y, cfg);
+        if flip { c.neg() } else { c }
+    };
     // The root must be bracketed: cross(σ_lo) ≥ 0 (θ ≥ ψ(σ_lo)) and cross(σ_hi) ≤ 0. If cross is
     // strictly negative at σ_lo (θ < ψ(σ_lo)) or strictly positive at σ_hi (θ > ψ(σ_hi)), the
     // target angle is outside the gore.
-    if cross_at(dev, &domain.lo, x, y, terms).hi().sign() < 0
-        || cross_at(dev, &domain.hi, x, y, terms).lo().sign() > 0
-    {
+    if xat(&domain.lo).hi().sign() < 0 || xat(&domain.hi).lo().sign() > 0 {
         return Err(FoldFault::OutOfGore);
     }
     let (mut lo, mut hi) = (domain.lo.clone(), domain.hi.clone());
@@ -124,7 +146,7 @@ fn invert_sigma<B: Backend>(
     let ratio = Rat::new(3, 7);
     for _ in 0..iters {
         let mid = lo.add(&hi.sub(&lo).mul(&ratio));
-        let cr = cross_at(dev, &mid, x, y, terms);
+        let cr = xat(&mid);
         if cr.lo().sign() > 0 {
             lo = mid; // ψ(mid) < θ ⇒ σ* > mid
         } else if cr.hi().sign() < 0 {
@@ -173,18 +195,31 @@ pub fn fold_point<B: Backend>(
     clearance: &Rat<B>,
 ) -> Verdict<Fold3D<B>, FoldFault, Rat<B>> {
     use core::cmp::Ordering;
-    let dev = match ConeDevelopment::new(chart) {
+    // A curved-support developable admits a directrix γ (DD.2); the apex cone gets γ ≡ 0 and folds
+    // byte-identically to DEV.2e (`new_developable` reduces to `new` when `pedal ≡ 0`).
+    let dev = match ConeDevelopment::new_developable(chart, GAMMA_PANELS) {
         Some(d) => d,
         None => return Verdict::Refuted(FoldFault::NotACone),
     };
-    // angle → σ
-    let sigma = match invert_sigma(&dev, x, y, domain, iters, cfg.terms) {
+    // angle → σ. `flip` handles the γ ≠ 0, µ̂ < 0 residual-at-(ψ+π) case (see `invert_sigma`).
+    let flip = dev.has_directrix() && mu_negative;
+    let sigma = match invert_sigma(&dev, x, y, domain, iters, cfg, flip) {
         Ok(s) => s,
         Err(f) => return Verdict::Refuted(f),
     };
-    // radius → |μ̂| = r / ρ(σ)
-    let r_sq = x.mul(x).add(&y.mul(y));
-    let r = sqrt(&r_sq, &cfg.sqrt_eps);
+    // radius → |µ̂| = r / ρ(σ), where r = |(x, y) − γ(σ)| is the length of the directrix residual
+    // (the pure `|(x, y)|` of DEV.2e when γ ≡ 0).
+    let r = if dev.has_directrix() {
+        let g = match dev.directrix_on_iv(&sigma, cfg) {
+            Some(g) => g,
+            None => return Verdict::Refuted(FoldFault::PoleInEval),
+        };
+        let xr = RatIv::point(x.clone()).sub(&g[0]);
+        let yr = RatIv::point(y.clone()).sub(&g[1]);
+        sqrt_on(&xr.mul(&xr).add(&yr.mul(&yr)), &cfg.sqrt_eps)
+    } else {
+        sqrt(&x.mul(x).add(&y.mul(y)), &cfg.sqrt_eps)
+    };
     let rho = match dev.radius_on(&sigma, &cfg.sqrt_eps) {
         Some(rho) => rho,
         None => return Verdict::Refuted(FoldFault::PoleInEval),
@@ -662,6 +697,73 @@ mod tests {
                 &Q::from_i128(1),
             ),
             Verdict::Refuted(FoldFault::OutOfGore)
+        ));
+    }
+
+    // ---- DD.3: the γ ≠ 0 fold (folding onto the seam-ramp flap) ----------------------------
+
+    /// Folding a flat point on the **γ ≠ 0 seam-ramp flap** recovers its `(σ′, µ̂)` chart coordinate
+    /// and round-trips within the DRC — the signed-µ̂ directrix-residual inversion `(x, y) − γ(σ)`.
+    /// The device band is `µ̂ < 0`, so this exercises the residual-at-(ψ+π) `flip` in `invert_sigma`.
+    #[test]
+    fn fold_recovers_a_ramp_flap_coordinate() {
+        use crate::cone::ConeDevelopment;
+        let chart = fixtures::devices::cone_seam_ramp();
+        let dev = ConeDevelopment::new_developable(&chart, 64).unwrap();
+        let cfg = DevConfig::tight();
+        let (s0, m0) = (Q::new(1, 4), Q::new(-3, 2)); // mid-flap, µ̂ < 0 (the device band side)
+        let (x, y) = dev.point(&s0, &m0, &cfg).center();
+        match fold_point(
+            &chart,
+            &x,
+            &y,
+            &Q::from_i128(0),
+            &ivl(0, 1),
+            40,
+            true,
+            &cfg,
+            &Q::from_i128(1),
+        ) {
+            Verdict::Verified(f) => {
+                assert!(
+                    f.sigma.contains(&s0),
+                    "σ′ enclosure must contain the flap σ′ = 1/4"
+                );
+                assert!(
+                    f.mu.contains(&m0),
+                    "signed µ̂ enclosure must contain µ̂ = −3/2"
+                );
+                assert!(
+                    f.eps.cmp(&Q::new(1, 2)) == core::cmp::Ordering::Less,
+                    "the round-trip backward error must clear the DRC (ε < clearance/2)"
+                );
+            }
+            _ => panic!("the ramp-flap fold must certify"),
+        }
+    }
+
+    /// A tight clearance leaves the ramp-flap fold `Unresolved` (fail-closed): the γ quadrature's
+    /// floor exceeds `clearance/2`, so the certificate refuses rather than over-claim.
+    #[test]
+    fn a_ramp_fold_with_a_tight_clearance_is_unresolved() {
+        use crate::cone::ConeDevelopment;
+        let chart = fixtures::devices::cone_seam_ramp();
+        let dev = ConeDevelopment::new_developable(&chart, 64).unwrap();
+        let cfg = DevConfig::tight();
+        let (x, y) = dev.point(&Q::new(1, 4), &Q::new(-3, 2), &cfg).center();
+        assert!(matches!(
+            fold_point(
+                &chart,
+                &x,
+                &y,
+                &Q::from_i128(0),
+                &ivl(0, 1),
+                40,
+                true,
+                &cfg,
+                &Q::new(1, 100_000_000), // clearance/2 = 5e-9, far under the γ floor
+            ),
+            Verdict::Unresolved(_)
         ));
     }
 

@@ -1873,7 +1873,13 @@ integrator** (DEV.3 method b): `develop::interval::integrate_on` (a verified int
 (`a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`, spec §Tier C), a byte-identical `γ ≡ 0` fast path, and the pedal
 gate lifted (`arctan_coeff`). GO (`docs/spike-directrix-report.md`): the development is a **machine-exact
 local isometry** (`|D_σ|²−|X_σ|² = 7.1e-15`, confirming the Tier-C frame/sign) with a converging,
-fab-plausible `ε_γ` (1.45e-3 → 9.0e-5 over 64 → 1024 panels). **DD.3–DD.4 pending.**
+fab-plausible `ε_γ` (1.45e-3 → 9.0e-5 over 64 → 1024 panels). **DD.3** extended the fold (direction ②)
+to `γ ≠ 0`: `develop::fold::fold_point` now builds `new_developable`, and `invert_sigma` inverts the
+**directrix residual** `(x,y) − γ(σ)` (signed area `cos ψ·(y−γ_y) − sin ψ·(x−γ_x)`) with a **flip** for
+the γ≠0/µ̂<0 residual-at-(ψ+π) case, the radius reading `r = |(x,y) − γ(σ)|`. Folding a flat point on the
+seam-ramp flap (`cone_seam_ramp`, µ̂ < 0) recovers its `(σ′, µ̂)` and round-trips to **ε ≈ 3.85e-3** (at 64
+γ-panels, clears the DRC; a tight clearance → `Unresolved`, fail-closed); the γ ≡ 0 path stays byte-identical
+(every DEV.2e fold test passes). **DD.4 pending** (the seam device — body gore + ramp flap + certified bond).
 
 ---
 
