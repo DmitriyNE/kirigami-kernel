@@ -4,7 +4,8 @@
 //! prints a per-stage certified verdict, so **running it is a stress report**:
 //!
 //! 1. **unroll** (`develop::unroll`, ①) — develop the μ-band boundary loop to a flat polyline;
-//! 2. **hole** (`develop::flat::cut_hole`, exact `arrange2d` boolean) — cut a square interior hole;
+//! 2. **hole** (`develop::flat::cut_hole`, exact `arrange2d` boolean) — cut the interior hole (the
+//!    development of the authored `(σ,μ)` rectangle, the *same* one STEP II drills);
 //! 3. **fold** (`develop::fold`, ②) — fold the flat outline *and* the hole back to 3-D;
 //! 4. **STEP** (`export::brep_build` + the OCCT bridge) — write the input cone solid (STEP I) and
 //!    the folded panel carrying the hole as a real interior wire (STEP II).
@@ -108,6 +109,21 @@ fn main() {
     // A generous fab clearance so the demo certifies; the report shows the *achieved* ε per stage.
     let clearance = Rat::from_i128(1);
 
+    // One hole authored in the sheet's `(σ, μ)` domain, centred on the σ-midline at mid-band μ = −3/2.
+    // The *same* rectangle drives both the flat cut (via its development) and the STEP-II drill, so the
+    // two stay coherent — and on a symmetric gore its centre σ = 0 is a positive-weight **station**,
+    // the exact placement the single-slice builder mis-drilled (off-centre, distorted). The general
+    // arrangement construction cuts it per slice and splits its tube at the station.
+    let hole_sigma_half = span.hi.sub(&span.lo).mul(&Rat::new(1, 40));
+    let hole_sigma = Interval {
+        lo: sigma_mid.sub(&hole_sigma_half),
+        hi: sigma_mid.add(&hole_sigma_half),
+    };
+    let hole_mu = Interval {
+        lo: Rat::new(-25, 16),
+        hi: Rat::new(-23, 16),
+    };
+
     println!(
         "flex-PCB Stage-1 panel — device cone (β≈42°), gore σ∈[{:.4},{:.4}], band μ∈[−2,−1]\n\
          segments={segments} iters={iters}",
@@ -139,19 +155,21 @@ fn main() {
         }
     };
 
-    // — Stage 2: cut a square interior hole (develop::flat + exact arrange2d) —
-    // Place it at mid-band on the σ=0 midline (a small axis-aligned square, safely interior).
-    let (cx, cy) = dev.point(&sigma_mid, &Rat::new(-3, 2), &cfg).center();
-    let d = cx.mul(&Rat::new(1, 6));
-    let square: Vec<[Rat<Bignum>; 2]> = [(-1i128, -1i128), (1, -1), (1, 1), (-1, 1)]
-        .iter()
-        .map(|&(a, b)| {
-            [
-                cx.add(&d.mul(&Rat::from_i128(a))),
-                cy.add(&d.mul(&Rat::from_i128(b))),
-            ]
-        })
-        .collect();
+    // — Stage 2: cut the interior hole (develop::flat + exact arrange2d) —
+    // The flat hole is the **development of the authored (σ,μ) rectangle**: its four corners mapped
+    // through the exact cone development, so the flat cut and the STEP-II drill are one hole.
+    let square: Vec<[Rat<Bignum>; 2]> = [
+        (&hole_sigma.lo, &hole_mu.lo),
+        (&hole_sigma.hi, &hole_mu.lo),
+        (&hole_sigma.hi, &hole_mu.hi),
+        (&hole_sigma.lo, &hole_mu.hi),
+    ]
+    .iter()
+    .map(|&(s, m)| {
+        let (x, y) = dev.point(s, m, &cfg).center();
+        [x, y]
+    })
+    .collect();
     let holed = match cut_hole(&outline, &square) {
         Verdict::Verified(h) => {
             println!("hole:       Verified    (1 face · 1 hole · no pinch)");
@@ -223,7 +241,17 @@ fn main() {
 
     // — Stage 4: STEP I (cone solid) + STEP II (folded holed panel) —
     #[cfg(feature = "step")]
-    emit_step(&chart, &span, &mu_lo, &mu_hi, &fw_outer, &fw_hole, &out_dir);
+    emit_step(
+        &chart,
+        &span,
+        &mu_lo,
+        &mu_hi,
+        &hole_sigma,
+        &hole_mu,
+        &fw_outer,
+        &fw_hole,
+        &out_dir,
+    );
     #[cfg(not(feature = "step"))]
     {
         let _ = (&fw_outer, &fw_hole);
@@ -233,25 +261,27 @@ fn main() {
 
 /// Emit STEP I — the input cone gore as a thin closed solid via [`brep_freeboundary`] — and STEP II
 /// — the **same slab with a real through-hole** via [`brep_freeboundary_holed`]. Both auto-subdivide
-/// σ into positive-weight single-span-Bézier slices (a wide two-sided gore needs it). STEP II cuts a
-/// rectangular hole authored in the sheet's `(σ, μ)` domain, placed strictly inside one slice via
-/// [`sigma_stations`]; its pierced sheets become annular faces and a tube closes it — a certified
-/// **genus-1** solid, exported through OCCT `MakeFace` inner wires. Written through the OCCT bridge
+/// σ into positive-weight single-span-Bézier slices (a wide two-sided gore needs it). STEP II drills
+/// the *same* `(σ, μ)` rectangle the flat cut used, at its authored location — on a symmetric gore
+/// that centre σ = 0 is a subdivision station, so the general arrangement construction cuts the hole
+/// per slice (a **notch** into each) and splits its tube at the station. The result is a certified
+/// **genus-1** solid, exported through OCCT `MakeFace` inner wires and written through the OCCT bridge
 /// ([`write_brep`] = write-then-reload-through-BRepCheck), which prints `ok` or `error: <what>` — a
 /// rejection is reported, not hidden.
 #[cfg(feature = "step")]
+#[allow(clippy::too_many_arguments)]
 fn emit_step(
     chart: &geom::chart::Chart<Bignum>,
     span: &Interval<Bignum>,
     mu_lo: &RatFunc<Bignum>,
     mu_hi: &RatFunc<Bignum>,
+    hole_sigma: &Interval<Bignum>,
+    hole_mu: &Interval<Bignum>,
     fw_outer: &FoldedWire<Bignum>,
     fw_hole: &FoldedWire<Bignum>,
     out_dir: &str,
 ) {
-    use export::brep_build::{
-        HoleRect, brep_freeboundary, brep_freeboundary_holed, sigma_stations,
-    };
+    use export::brep_build::{HoleRect, brep_freeboundary, brep_freeboundary_holed};
     use export::step::write_brep;
     // The folded wires are the 3-D preview of the flat pattern + hole (Stage 3); the exact solids
     // below are reconstructed from the chart in (σ, μ), so the wires are only reported here.
@@ -270,37 +300,25 @@ fn emit_step(
     let p1 = format!("{out_dir}/flex_panel_I.step");
     println!("STEP I:     {:<40}   → {p1}", write_brep(&p1, &solid));
 
-    // STEP II — the same slab with a real through-hole. Author a rectangular hole in (σ, μ) placed
-    // strictly inside the central positive-weight slice (its middle third in σ), in the band interior
-    // (μ ∈ [−7/4, −5/4] ⊂ [−2, −1]). The hole is a first-class inner loop, not a σ-artifact.
-    let stations = sigma_stations(chart, span, &w_iv, mu_lo, mu_hi);
-    let n_slices = stations.len() - 1;
-    let k = n_slices / 2; // an interior slice
-    let (a, b) = (&stations[k], &stations[k + 1]);
-    let third = b.sub(a).mul(&Rat::new(1, 3));
+    // STEP II — the same slab with the hole drilled at its authored `(σ, μ)` rectangle (the one the
+    // flat cut developed). On the symmetric gore its centre σ = 0 is a station; the arrangement cuts
+    // it per slice and splits its tube there — the hole lands exactly where the SVG shows it.
     let hole = HoleRect {
-        sigma: Interval {
-            lo: a.add(&third),
-            hi: b.sub(&third),
-        },
-        mu: Interval {
-            lo: Rat::new(-7, 4),
-            hi: Rat::new(-5, 4),
-        },
+        sigma: hole_sigma.clone(),
+        mu: hole_mu.clone(),
     };
     match brep_freeboundary_holed(chart, span, &w_iv, mu_lo, mu_hi, &[hole]) {
         Some(solid2) => {
             let p2 = format!("{out_dir}/flex_panel_II.step");
-            let genus = (solid2.faces().len(), solid2.free_edges());
             println!("STEP II:    {:<40}   → {p2}", write_brep(&p2, &solid2));
             println!(
                 "            (genus-1 through-hole solid: {} faces, {} free edges)",
-                genus.0, genus.1
+                solid2.faces().len(),
+                solid2.free_edges()
             );
         }
         None => println!(
-            "STEP II:    refused — the hole does not fit one positive-weight slice \
-             (needs the arrangement partition)"
+            "STEP II:    refused — the authored hole is not strictly interior to the panel"
         ),
     }
 }

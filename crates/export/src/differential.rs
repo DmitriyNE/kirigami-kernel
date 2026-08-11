@@ -741,21 +741,24 @@ fn the_two_sided_cone_gore_is_a_robust_subdivided_solid() {
     assert_eq!(audit.nonmanifold_edges, 0, "{audit:?}");
 }
 
-/// STEP II — the same wide two-sided cone gore with a **real through-hole**: a rectangular hole
-/// authored in `(σ, μ)`, placed strictly inside an interior positive-weight slice via
-/// [`sigma_stations`]. The pierced sheets become annular faces (an inner loop each) and a tube
-/// closes the hole through the thickness. This is the generic answer to the STEP-II through-hole:
-/// no σ=0 split, no grid-minus-cell — a first-class inner loop. `closed_shell_holed` certifies the
-/// **genus-1** solid internally (`loops = faces + 2`) and OCCT corroborates it through the `MakeFace`
-/// inner-wire path: `brepcheck_valid`, `free_edges == 0`, `nonmanifold_edges == 0`, no abort.
+/// STEP II — the wide two-sided cone gore with a **real through-hole straddling the σ = 0 station**:
+/// the exact case the single-slice builder mis-placed (the hole landed off-centre in a corner, badly
+/// distorted). The general arrangement construction cuts it **per slice** with the exact `arrange2d`
+/// boolean, opening it as a **notch** into both slices glued along the station, and closes it with a
+/// tube split at the station. The hole is drilled *exactly* at its authored `(σ, μ)` rectangle — no
+/// σ=0 special case, no grid-minus-cell, no station dodging — so a watertight, valid OCCT solid here
+/// is the ground-truth corroboration that the STEP-II geometry is now faithful. `closed_shell_holed`
+/// certifies the **genus-1** solid internally and OCCT corroborates: `brepcheck_valid`,
+/// `free_edges == 0`, `nonmanifold_edges == 0`, no abort.
 #[test]
-fn the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid() {
-    use crate::brep_build::{HoleRect, brep_freeboundary_holed, sigma_stations};
+fn the_two_sided_cone_gore_with_a_station_crossing_hole_is_a_robust_genus_1_solid() {
+    use crate::brep_build::{HoleRect, brep_freeboundary_holed};
     use lattice::{Interval, Poly, Rat, RatFunc};
 
     let muf =
         |n: i128| RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::from_i128(n)]));
     let chart = fixtures::devices::cone();
+    // Symmetric gore ⇒ σ = 0 is a positive-weight station; the hole is centred right on it.
     let sigma = Interval {
         lo: Rat::from_i128(-2),
         hi: Rat::from_i128(2),
@@ -766,15 +769,12 @@ fn the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid() {
     };
     let (mu_lo, mu_hi) = (muf(-2), muf(-1));
 
-    // Place the hole in the middle third of an interior slice, in the band interior μ ∈ [−7/4, −5/4].
-    let stations = sigma_stations(&chart, &sigma, &w, &mu_lo, &mu_hi);
-    let k = (stations.len() - 1) / 2;
-    let (a, b) = (&stations[k], &stations[k + 1]);
-    let third = b.sub(a).mul(&Rat::new(1, 3));
+    // A hole centred on σ = 0 (the station), interior μ ∈ [−7/4, −5/4] — the natural placement the
+    // single-slice construction could not represent.
     let hole = HoleRect {
         sigma: Interval {
-            lo: a.add(&third),
-            hi: b.sub(&third),
+            lo: Rat::new(-1, 2),
+            hi: Rat::new(1, 2),
         },
         mu: Interval {
             lo: Rat::new(-7, 4),
@@ -782,38 +782,38 @@ fn the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid() {
         },
     };
     let solid = brep_freeboundary_holed(&chart, &sigma, &w, &mu_lo, &mu_hi, &[hole])
-        .expect("the interior hole fits one positive-weight slice");
+        .expect("the station-crossing hole builds via the arrangement");
 
-    let (nv, ne, nf) = (
-        solid.verts().len(),
-        solid.edges().len(),
-        solid.faces().len(),
-    );
+    let nf = solid.faces().len();
+    // The genus via Euler (χ = V − E + (2F − L)): representation-invariant, so the notch reads genus 1.
+    let (v, e) = (solid.verts().len() as i64, solid.edges().len() as i64);
+    let l: i64 = solid.faces().iter().map(|f| 1 + f.holes.len() as i64).sum();
+    let genus = (2 - (v - e + (2 * nf as i64 - l))) / 2;
+    assert_eq!(genus, 1, "a station-crossing through-hole is still genus 1");
+
     let cert = solid.to_shell_certificate();
-    assert_eq!(
-        closed_shell_holed(
-            cert.n_verts,
-            &cert.edge_start,
-            &cert.edge_end,
-            &cert.wire_edge,
-            &cert.wire_reversed,
-            &cert.loop_start,
-            &cert.face_start,
+    assert!(
+        matches!(
+            closed_shell_holed(
+                cert.n_verts,
+                &cert.edge_start,
+                &cert.edge_end,
+                &cert.wire_edge,
+                &cert.wire_reversed,
+                &cert.loop_start,
+                &cert.face_start,
+            ),
+            Verdict::Verified(_)
         ),
-        Verdict::Verified(ClosedShell {
-            verts: nv,
-            edges: ne,
-            faces: nf,
-            loops: nf + 2, // one through-hole = an inner loop on each of the two sheets
-        }),
-        "closed_shell_holed certifies the through-hole cone solid a genus-1 closed 2-manifold"
+        "closed_shell_holed certifies the station-crossing through-hole solid a closed 2-manifold"
     );
 
-    // OCCT corroborates the annular (holed) faces + tube through the MakeFace inner-wire path.
-    let audit = audit_brep(&solid).expect("OCC audits the through-hole cone solid");
+    // OCCT corroborates the notched lids + station-split tube: a valid, watertight solid means the
+    // hole is drilled exactly where authored (the geometry the single-slice builder got wrong).
+    let audit = audit_brep(&solid).expect("OCC audits the station-crossing through-hole solid");
     assert!(
         audit.brepcheck_valid,
-        "OCC accepts the genus-1 through-hole solid: {audit:?}"
+        "OCC accepts the genus-1 station-crossing through-hole solid: {audit:?}"
     );
     assert_eq!(audit.faces, nf, "{audit:?}");
     assert_eq!(

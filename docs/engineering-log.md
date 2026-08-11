@@ -235,6 +235,50 @@ fine — this is a log, not a schema.
   no_std. *2026-08-11 · **G7 + G9 commit 1**; branch `roadmap-flex-pcb`. Next = **G9 commit 2** — STEP II as a
   real solid slab with a through-hole (grid-minus-cell, disk-faced, closed_shell-certified genus-1).*
 
+- **STEP II geometry — the general arrangement-per-slice construction (holes cross σ-stations freely).**
+  The single-slice `add_hole` had a geometry bug the user caught: a hole had to sit *strictly inside one
+  positive-weight σ-slice*, so the natural demo hole — centred on the symmetric gore's **σ=0**, which the
+  positive-weight partition *forces* to be a station — could not be placed there and got shoved off-centre
+  into a corner, huge and distorted (topology certified fine, geometry wrong). Two non-fixes were rejected
+  (both the same mistake): grid-minus-cell (hole represented implicitly) and station-bracketing (a bandaid —
+  with many holes *any* σ=const line crosses some hole, so no dodging placement exists). **The fix accepts
+  that σ-stations cross holes.** The solid is now the prism over the exact 2-D region `P ∖ H` (P = panel
+  `(σ,μ)` rectangle, H = holes) extruded through the thickness. Stations come from positive-weights **alone**
+  (`sigma_splits`, hole-independent); per σ-slice the two developable **lids** are `strip ∖ (holes ∩ slice)`
+  computed by the **same** exact `arrange2d` boolean the flat side uses (`develop::flat::cut_hole`,
+  `A △ B = A ∖ B`). The arrangement decides the per-slice cell shape with **no special case**: a hole inside a
+  slice → **annular** (an inner loop); a hole crossing a station → **notch** (opens onto the split station
+  edge, no inner loop); a hole spanning a slice → **two μ-bands** (two faces). Each hole's tube is **split at
+  every station it crosses** so each wall is single-span. **Watertight for free** via a new `Builder` edge
+  dedup (`line_edge`/`rail_edge`, keyed by undirected endpoints + geometry-kind): adjacent slices share the
+  split station edges by identity, and each lid shares its hole-rim edges with the tube walls — the edge-level
+  analogue of the existing vertex-coordinate dedup, no global adjacency graph. Lift `(σ,μ)`→3-D by edge
+  orientation: a **horizontal** edge (μ=const) → a σ-rail Bézier, a **vertical** edge (σ=const) → a straight
+  radial line, a vertex → `surf(μ,w).eval(σ)`. Winding: top lid = arrangement CCW as-is, bottom lid = its
+  reverse, each tube wall the reverse of both lids' use of the shared edge (once-forward-once-reversed) — the
+  consistent CCW orientation makes every shared station/rim edge oppositely-directed automatically. **Scope:**
+  any number of `(σ,μ)`-**rectangle** holes at any positions crossing any stations, on a **rectangular** panel
+  (constant μ-band). Deferred (orthogonal): non-rectangle polygon holes (the arrangement already handles them
+  once authoring emits them) and a **curved** free-boundary ∂P (a curved `(σ,μ)` boundary is not a polygon
+  operand — so the **hole-free** path keeps the curved-μ N-slice slab, extracted verbatim as
+  `brep_freeboundary_slab`; `brep_freeboundary` and its curved-boundary tests are untouched). `add_hole` + the
+  strictly-inside-one-slice refusal are gone; refusal now only for a genuinely non-interior authored hole (or
+  a non-rectangular panel / arrangement pinch). **Certified:** genus by Euler `g = (2 − (V−E+2F−L))/2`
+  (representation-invariant — a notch reads genus 1 with *no* inner loop), `closed_shell_holed` (the TCB,
+  unchanged) + OCCT `brepcheck_valid`/`free_edges==0`/`nonmanifold==0`. Tests (export lib):
+  `a_through_hole_crossing_a_sigma_station_is_a_certified_genus_1_solid` (**the reported bug**, hole on σ=0),
+  `a_through_hole_spanning_a_slice_splits_into_mu_bands_and_certifies`,
+  `two_holes_one_crossing_one_interior_compose_to_genus_2`, the interior-hole test reused (now via the
+  arrangement, same 16/24/10 counts), `a_hole_touching_the_panel_boundary_is_refused`; the OCCT differential
+  `the_two_sided_cone_gore_with_a_station_crossing_hole_is_a_robust_genus_1_solid` drills the **σ=0-crossing**
+  hole and OCCT accepts it watertight — the ground-truth that the geometry is now faithful. **Demo coherence:**
+  `flex_panel` authors **one** `(σ,μ)` rectangle centred on σ=0 and derives *both* the flat cut (its
+  development, a curved quad) and the STEP-II drill from it, so the SVG and STEP II land the hole in the same
+  place. Full gate green: export lib 33 + doctests 8, clippy, fmt, xtask lint; certify-core 115+17 unchanged
+  (the multi-loop TCB + 4 Kani harnesses are untouched — this is a `brep_build` construction rebuild, not a
+  TCB change); export/step differential 10 (OCCT). *2026-08-11 · **STEP II geometry rebuilt (general)**;
+  branch `roadmap-flex-pcb`. Next = Stage-2 seam (DEV.3-β · §14 BONDED).*
+
 - **STEP II done — certified genus-`g` solids via multi-loop faces (the generic through-hole, *not* grid-minus-cell).**
   The grid-minus-cell fallback was rejected (user, same objection as σ=0): it is a *specific* construction that
   dodges a real limitation instead of removing it. The generic move is the opposite — make the **TCB certify
@@ -272,8 +316,8 @@ fine — this is a log, not a schema.
   `the_two_sided_cone_gore_with_a_through_hole_is_a_robust_genus_1_solid` (OCCT differential). Full gate green:
   certify-core 115+17, export 30+8 default / 56+15 step, demo STEP I+II `ok`, 4 Kani harnesses, clippy
   default+step, fmt, xtask lint, certify-core no_std. *2026-08-11 · **STEP II / genus-`g`**; branch
-  `roadmap-flex-pcb`. Next = general arrangement-driven partition for holes wider than a slice / straddling
-  (deferred); Stage-2 seam.*
+  `roadmap-flex-pcb`. Next = general arrangement-driven partition for holes wider than a slice / straddling —
+  **DONE** (see the "STEP II geometry — general arrangement-per-slice" entry above).*
 
 - **TECH-DEBT (user-flagged, 2026-08-10): `develop` is becoming a catch-all — future crate split.** As the
   flex-PCB slices land, `develop` now holds the transcendental enclosures (`interval`), the cone development
