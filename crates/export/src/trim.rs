@@ -627,6 +627,111 @@ pub fn unroll_loop<B: Backend>(
     unroll_trim_loop(dev, arcs, cfg, clearance)
 }
 
+/// Split a trim [`OuterLoop`] into the two piecewise μ-boundaries the curved-rail solid builder
+/// (`export::brep_build::brep_trim_solid`) consumes: the **outer** chain (the forward rails,
+/// σ-increasing — D1 / D3 notch / D1) and the **inner** chain (the backward rails reversed to
+/// σ-increasing — D2), each an ordered list of `(σ-range, μ̂)` pieces. Rails are classified by
+/// traversal direction (`σ_start < σ_end` ⇒ outer/top, `>` ⇒ inner/bottom); the σ-caps and the
+/// ~zero notch micro-caps drop out (the band ends and the notch corner are recovered from the rail
+/// σ-extents and the `μ̂_D1 = μ̂_D3` shared corner). `None` if either chain is empty.
+#[allow(clippy::type_complexity)]
+pub fn trim_rail_chains<B: Backend>(
+    outer: &OuterLoop<B>,
+) -> Option<(
+    Vec<(Interval<B>, RatFunc<B>)>,
+    Vec<(Interval<B>, RatFunc<B>)>,
+)> {
+    use core::cmp::Ordering::{Greater, Less};
+    let mut inner_ch: Vec<(Interval<B>, RatFunc<B>)> = Vec::new();
+    let mut outer_ch: Vec<(Interval<B>, RatFunc<B>)> = Vec::new();
+    for arc in &outer.arcs {
+        if let BoundaryArc::Rail {
+            mu,
+            sigma_start,
+            sigma_end,
+            ..
+        } = arc
+        {
+            match sigma_start.cmp(sigma_end) {
+                Less => outer_ch.push((
+                    Interval {
+                        lo: sigma_start.clone(),
+                        hi: sigma_end.clone(),
+                    },
+                    mu.clone(),
+                )),
+                Greater => inner_ch.push((
+                    Interval {
+                        lo: sigma_end.clone(),
+                        hi: sigma_start.clone(),
+                    },
+                    mu.clone(),
+                )),
+                _ => {} // a degenerate rail — skip
+            }
+        }
+    }
+    outer_ch.sort_by(|a, b| a.0.lo.cmp(&b.0.lo));
+    inner_ch.sort_by(|a, b| a.0.lo.cmp(&b.0.lo));
+    if inner_ch.is_empty() || outer_ch.is_empty() {
+        return None;
+    }
+    // Snap the interior piece boundaries (the D3∩D1 crossings, bisected to ~60-bit denominators) to a
+    // small-denominator dyadic. A huge-rational σ-station makes the exported Bézier control points
+    // huge rationals whose f64 endpoints drift from the vertex, so OCCT's `MakeEdge` rejects them; the
+    // crossing σ needs no such precision — the builder's stitch re-establishes the corner exactly at
+    // the snapped σ. (Only the STEP path snaps; the flat SVG uses `outer_loop`'s full-precision σ.)
+    snap_boundaries(&mut inner_ch);
+    snap_boundaries(&mut outer_ch);
+    Some((inner_ch, outer_ch))
+}
+
+/// Adapt a developed [`HoleLoop`] to a [`HoleRail`](crate::brep_build::HoleRail) for the curved-rail
+/// solid builder: its far (Upper, `s1→s2` forward) and near (Lower, `s2→s1` backward) branch rails,
+/// with the two tangent σ **dyadic-snapped** — exactly like [`trim_rail_chains`]'s notch crossings,
+/// so the exported Bézier control points stay small-denominator and OCCT's `f64` endpoints do not
+/// drift. `None` unless the loop is the canonical far-rail/near-rail pair.
+pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
+    use core::cmp::Ordering::{Greater, Less};
+    let mut far: Option<(RatFunc<B>, Rat<B>, Rat<B>)> = None;
+    let mut near: Option<RatFunc<B>> = None;
+    for arc in &hole.arcs {
+        if let BoundaryArc::Rail {
+            mu,
+            sigma_start,
+            sigma_end,
+            ..
+        } = arc
+        {
+            match sigma_start.cmp(sigma_end) {
+                Less => far = Some((mu.clone(), sigma_start.clone(), sigma_end.clone())),
+                Greater => near = Some(mu.clone()),
+                _ => {}
+            }
+        }
+    }
+    let (far, s1, s2) = far?;
+    let near = near?;
+    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    Some(crate::brep_build::HoleRail {
+        near,
+        far,
+        s1: snap(&s1),
+        s2: snap(&s2),
+    })
+}
+
+/// Snap each interior piece boundary of a contiguous chain to a 2⁻³⁰ dyadic (via `f64`), keeping
+/// adjacent pieces adjacent; the outer σ-ends are authored and left untouched.
+fn snap_boundaries<B: Backend>(chain: &mut [(Interval<B>, RatFunc<B>)]) {
+    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    for i in 0..chain.len().saturating_sub(1) {
+        let s = snap(&chain[i].0.hi);
+        chain[i].0.hi = s.clone();
+        chain[i + 1].0.lo = s;
+    }
+}
+
 /// A developed loop's rational polygon: each [`FlatOutline`] vertex reduced to its `FlatBox`
 /// centre, with **exactly-coincident consecutive vertices dropped** (float-free). A micro-cap
 /// whose μ̂ gap falls below the development's rounding precision develops to two identical
@@ -1045,6 +1150,160 @@ mod tests {
             region.faces[0].holes.len(),
             region.faces[0].outer.len()
         );
+    }
+
+    /// The eccentric annulus + D3 notch built as a certified closed cone solid via `brep_trim_solid`
+    /// from the real D1/D2/D3 rails, and round-tripped through OCCT (Stage A, no interior holes).
+    #[cfg(feature = "step")]
+    #[test]
+    fn annulus_notch_solid_exports() {
+        use crate::brep_build::brep_trim_solid;
+        use crate::step::write_brep;
+        use certify_core::shell::closed_shell_holed;
+        let chart = cone();
+        let cfg = DevConfig::tight();
+        let clearance = Q::from_i128(1);
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let (d1, d2, d3, _d4) = demo_disks(&chart);
+        let lowfit = RailFit {
+            degree: 4,
+            subdiv: 256,
+            bits: 44,
+        };
+        let outer = match outer_loop(
+            &chart,
+            &d1,
+            &d2,
+            (&d3[0], &d3[1], &d3[2]),
+            &span,
+            lowfit,
+            &clearance,
+            &cfg,
+            &Q::new(1, 20),
+            8,
+        ) {
+            Verdict::Verified(o) => o,
+            other => panic!("outer_loop: {}", tag(&other)),
+        };
+        let (inner, outer_ch) = trim_rail_chains(&outer).expect("rail chains");
+        let w = Interval {
+            lo: Q::from_i128(0),
+            hi: Q::new(1, 8),
+        };
+        let solid = brep_trim_solid(&chart, &w, &inner, &outer_ch, &[]).expect("trim solid");
+        assert_eq!(solid.free_edges(), 0, "annulus+notch solid is watertight");
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        let sc = solid.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "annulus+notch solid is a certified closed 2-manifold"
+        );
+        let path = format!("{}/trim_annulus.step", std::env::temp_dir().display());
+        assert_eq!(write_brep(&path, &solid), "ok", "OCCT round-trip");
+    }
+
+    /// The **finished panel** (STEP II): the annulus + D3 notch with the **D4** circular through-hole
+    /// (which sits at σ = 0, a positive-weight station → a curved cross-ring **notch**) and the
+    /// authored **quad** cut both drilled through, from the real developed rails. A certified genus-2
+    /// closed solid that round-trips through OCCT — the end-to-end trimmed-panel STEP the demo emits.
+    #[cfg(feature = "step")]
+    #[test]
+    fn full_panel_solid_exports() {
+        use crate::brep_build::{HoleRail, brep_trim_solid};
+        use crate::step::write_brep;
+        use certify_core::shell::closed_shell_holed;
+        use lattice::Poly;
+        let chart = cone();
+        let cfg = DevConfig::tight();
+        let clearance = Q::from_i128(1);
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let (d1, d2, d3, d4) = demo_disks(&chart);
+        let lowfit = RailFit {
+            degree: 4,
+            subdiv: 256,
+            bits: 44,
+        };
+        let outer = match outer_loop(
+            &chart,
+            &d1,
+            &d2,
+            (&d3[0], &d3[1], &d3[2]),
+            &span,
+            lowfit,
+            &clearance,
+            &cfg,
+            &Q::new(1, 20),
+            8,
+        ) {
+            Verdict::Verified(o) => o,
+            other => panic!("outer_loop: {}", tag(&other)),
+        };
+        let (inner, outer_ch) = trim_rail_chains(&outer).expect("rail chains");
+        let d4_hole = match hole_loop(
+            &chart,
+            &d4[0],
+            &d4[1],
+            &d4[2],
+            &span,
+            lowfit,
+            &clearance,
+            &cfg,
+            &Q::new(1, 200),
+            4,
+        ) {
+            Verdict::Verified(h) => hole_rail(&h).expect("D4 hole rail"),
+            other => panic!("hole_loop: {}", tag(&other)),
+        };
+        let konst = |n: i128, dd: i128| RatFunc::<Bignum>::from_poly(Poly::constant(Q::new(n, dd)));
+        let quad = HoleRail {
+            near: konst(43, 20),
+            far: konst(47, 20),
+            s1: Q::new(-9, 20),
+            s2: Q::new(-6, 20),
+        };
+        let w = Interval {
+            lo: Q::from_i128(0),
+            hi: Q::new(1, 8),
+        };
+        let solid = brep_trim_solid(&chart, &w, &inner, &outer_ch, &[d4_hole, quad])
+            .expect("full panel trim solid");
+        assert_eq!(solid.free_edges(), 0, "the drilled panel is watertight");
+        assert_eq!(solid.nonmanifold_edges(), 0);
+        let sc = solid.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "the finished panel is a certified closed 2-manifold"
+        );
+        let path = format!("{}/trim_full_panel.step", std::env::temp_dir().display());
+        assert_eq!(write_brep(&path, &solid), "ok", "OCCT round-trip");
     }
 
     fn tag<T, E: core::fmt::Debug, M>(v: &Verdict<T, E, M>) -> String {
