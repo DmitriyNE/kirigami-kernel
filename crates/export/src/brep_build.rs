@@ -209,6 +209,32 @@ fn poly_rail<B: Backend>(mu: &RatFunc<B>) -> RatFunc<B> {
     }
 }
 
+/// An interior hole for [`brep_trim_solid`]: a circular cut developed to its **near** and **far**
+/// σ-rails over `[s1, s2]` (the tangent rulings), meeting at the two σ-caps. Authored in `(σ, μ̂)`.
+#[derive(Clone)]
+pub struct HoleRail<B: Backend = Bignum> {
+    /// The near (smaller-μ̂) branch rail.
+    pub near: RatFunc<B>,
+    /// The far (larger-μ̂) branch rail.
+    pub far: RatFunc<B>,
+    /// The lower tangent-ruling σ.
+    pub s1: Rat<B>,
+    /// The upper tangent-ruling σ.
+    pub s2: Rat<B>,
+}
+
+/// The developable σ-rail `c + μ̂·r + w·n` (μ̂ a polynomial) at thickness `wl`, its μ-base reduced
+/// (low-degree, positive-weight — OCCT-friendly). Same-μ̂ rails then share a denominator.
+fn trim_surf<B: Backend>(
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    mu: &RatFunc<B>,
+    wl: &Rat<B>,
+) -> Vec3Rat<B> {
+    c.add(&r.scale(mu)).reduce().add(&n.scale_rat(wl))
+}
+
 /// Polynomialize (via [`poly_rail`]) then **stitch** a piecewise rail chain so adjacent pieces agree
 /// *exactly* at shared σ-boundaries (a left-to-right constant-shift propagation). A solid builder's
 /// exact vertex dedup needs the notch corner `μ̂_left(σ*) = μ̂_right(σ*)` byte-identical; the pieces
@@ -1079,6 +1105,133 @@ fn brep_freeboundary_slab<B: Backend>(
     bld.into_brep()
 }
 
+/// Lift a hole's boundary loop at thickness `w` to a wire: far rail (s1→s2), σ-cap @ s2 (far→near),
+/// near rail (s2→s1), σ-cap @ s1 (near→far). `reversed` flips it (the bottom lid vs the top). The
+/// near/far rails must already be polynomials. Endpoints/edges dedup, so the hole's rails/caps are
+/// shared with its tube walls by identity.
+fn lift_hole_wire<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    hole: &HoleRail<B>,
+    w: &Rat<B>,
+    reversed: bool,
+) -> Vec<HalfEdge> {
+    let (s1, s2) = (&hole.s1, &hole.s2);
+    let sf = trim_surf(c, r, n, &hole.far, w);
+    let sn = trim_surf(c, r, n, &hole.near, w);
+    let supp = Interval {
+        lo: s1.clone(),
+        hi: s2.clone(),
+    };
+    let far_s1 = bld.vertex(&sf.eval(s1).expect("hole far s1 finite"));
+    let far_s2 = bld.vertex(&sf.eval(s2).expect("hole far s2 finite"));
+    let near_s1 = bld.vertex(&sn.eval(s1).expect("hole near s1 finite"));
+    let near_s2 = bld.vertex(&sn.eval(s2).expect("hole near s2 finite"));
+    let far_e = bld.rail_edge(&sf, &supp);
+    let near_e = bld.rail_edge(&sn, &supp);
+    let cap2 = bld.line_edge(far_s2, near_s2);
+    let cap1 = bld.line_edge(near_s1, far_s1);
+    let wire = vec![
+        bld.directed(far_e, far_s1, far_s2),
+        bld.directed(cap2, far_s2, near_s2),
+        bld.directed(near_e, near_s2, near_s1),
+        bld.directed(cap1, near_s1, far_s1),
+    ];
+    if reversed { reversed_wire(wire) } else { wire }
+}
+
+/// One ruled μ̂-rail **tube wall** for a hole rail `mu` over `[s_lo, s_hi]` swept through `[wlo, whi]`.
+#[allow(clippy::too_many_arguments)]
+fn rail_wall<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    mu: &RatFunc<B>,
+    s_lo: &Rat<B>,
+    s_hi: &Rat<B>,
+    wlo: &Rat<B>,
+    whi: &Rat<B>,
+    flip: bool,
+) {
+    let surf_lo = trim_surf(c, r, n, mu, wlo);
+    let surf_hi = trim_surf(c, r, n, mu, whi);
+    let supp = Interval {
+        lo: s_lo.clone(),
+        hi: s_hi.clone(),
+    };
+    let a_lo = bld.vertex(&surf_lo.eval(s_lo).expect("rail wall finite"));
+    let a_hi = bld.vertex(&surf_hi.eval(s_lo).expect("rail wall finite"));
+    let b_lo = bld.vertex(&surf_lo.eval(s_hi).expect("rail wall finite"));
+    let b_hi = bld.vertex(&surf_hi.eval(s_hi).expect("rail wall finite"));
+    let rail_lo = bld.rail_edge(&surf_lo, &supp);
+    let rail_hi = bld.rail_edge(&surf_hi, &supp);
+    let v_lo = bld.line_edge(a_lo, a_hi);
+    let v_hi = bld.line_edge(b_lo, b_hi);
+    let wire = vec![
+        bld.directed(rail_lo, a_lo, b_lo),
+        bld.directed(v_hi, b_lo, b_hi),
+        bld.directed(rail_hi, b_hi, a_hi),
+        bld.directed(v_lo, a_hi, a_lo),
+    ];
+    let wire = if flip { reversed_wire(wire) } else { wire };
+    let surface = ruled_common(&surf_lo, &surf_hi, s_lo, s_hi);
+    bld.brep.add_face(surface, wire);
+}
+
+/// One planar σ-cap **tube wall** of a hole at fixed σ = `s` (far → near, swept through `[wlo, whi]`).
+#[allow(clippy::too_many_arguments)]
+fn cap_wall<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    hole: &HoleRail<B>,
+    s: &Rat<B>,
+    wlo: &Rat<B>,
+    whi: &Rat<B>,
+    flip: bool,
+) {
+    let pt = |bld: &mut Builder<B>, mu: &RatFunc<B>, wl: &Rat<B>| {
+        bld.vertex(&trim_surf(c, r, n, mu, wl).eval(s).expect("cap wall finite"))
+    };
+    let far_lo = pt(bld, &hole.far, wlo);
+    let far_hi = pt(bld, &hole.far, whi);
+    let near_lo = pt(bld, &hole.near, wlo);
+    let near_hi = pt(bld, &hole.near, whi);
+    let cap_lo = bld.line_edge(far_lo, near_lo);
+    let cap_hi = bld.line_edge(far_hi, near_hi);
+    let v_far = bld.line_edge(far_lo, far_hi);
+    let v_near = bld.line_edge(near_lo, near_hi);
+    let wire = vec![
+        bld.directed(cap_lo, far_lo, near_lo),
+        bld.directed(v_near, near_lo, near_hi),
+        bld.directed(cap_hi, near_hi, far_hi),
+        bld.directed(v_far, far_hi, far_lo),
+    ];
+    let wire = if flip { reversed_wire(wire) } else { wire };
+    bld.brep.add_plane(wire);
+}
+
+/// Emit a hole's four tube walls swept through the thickness: the near/far ruled μ̂-rail walls + the
+/// two planar σ-cap walls (winding chosen so every shared edge is traversed once each way).
+fn emit_hole_tube<B: Backend>(
+    bld: &mut Builder<B>,
+    c: &Vec3Rat<B>,
+    r: &Vec3Rat<B>,
+    n: &Vec3Rat<B>,
+    hole: &HoleRail<B>,
+    wlo: &Rat<B>,
+    whi: &Rat<B>,
+) {
+    rail_wall(bld, c, r, n, &hole.far, &hole.s1, &hole.s2, wlo, whi, false);
+    rail_wall(bld, c, r, n, &hole.near, &hole.s1, &hole.s2, wlo, whi, true);
+    cap_wall(bld, c, r, n, hole, &hole.s2, wlo, whi, false);
+    cap_wall(bld, c, r, n, hole, &hole.s1, wlo, whi, true);
+}
+
 /// A trimmed cone solid over a **curved generalized band** `μ ∈ [μ̂_inner(σ), μ̂_outer(σ)]`,
 /// `σ ∈ [σ_lo, σ_hi]`, extruded through `w`. `inner`/`outer` are the two μ-boundaries as **piecewise**
 /// ruling-rails — ordered, contiguous `(σ-range, μ̂)` pieces covering `[σ_lo, σ_hi]` (σ-increasing);
@@ -1090,13 +1243,18 @@ fn brep_freeboundary_slab<B: Backend>(
 /// and outer rails) + the inner/outer walls (swept through the thickness), plus the two planar σ-end
 /// caps. `Rail`s lift to `RationalBezier` edges (`c+μ̂·r+w·n` via `Vec3Rat::scale`), radials/verticals
 /// to `Line`s; watertight by the `Builder`'s vertex + edge dedup (the notch corner `μ̂_D1=μ̂_D3`
-/// deduplicates). The certified STEP builder for the xy-trimmed panel outer boundary (gap G-C,
-/// stage A — no interior holes). `None` on empty boundaries or a degenerate partition.
+/// deduplicates). Each [`HoleRail`] in `holes` pierces the band — its lids become annular
+/// ([`add_face_with_holes`](Brep::add_face_with_holes)) and a tube (near/far ruled walls + σ-cap
+/// walls) closes it, +1 genus/hole. **A hole must sit within a single σ-slice** — its tangent σ are
+/// added as stations, and a hole spanning a positive-weight station between them is refused (`None`;
+/// the cross-station clip is a follow-on). The certified STEP builder for the xy-trimmed panel (gap
+/// G-C). `None` on empty boundaries, a degenerate partition, or a station-crossing hole.
 pub fn brep_trim_solid<B: Backend>(
     chart: &Chart<B>,
     w: &Interval<B>,
     inner: &[(Interval<B>, RatFunc<B>)],
     outer: &[(Interval<B>, RatFunc<B>)],
+    holes: &[HoleRail<B>],
 ) -> Option<Brep<B>> {
     use core::cmp::Ordering;
     if inner.is_empty() || outer.is_empty() {
@@ -1127,10 +1285,33 @@ pub fn brep_trim_solid<B: Backend>(
         return None;
     }
 
+    // Each hole must sit **strictly interior** to a single σ-slice — a station falling in `[s1, s2]`
+    // (a hole straddling it, or a σ-cap flush with the hole's own cap) would make the hole wire touch
+    // the lid's outer wire (OCCT `IntersectingWires`), so refuse it (the cross-station clip is a
+    // follow-on). A hole's σ are deliberately **not** added as stations: aligning a slice boundary to
+    // the hole is exactly the flush-degeneracy we reject.
+    for h in holes {
+        let interior = stations
+            .windows(2)
+            .any(|w| w[0].cmp(&h.s1) == Ordering::Less && h.s2.cmp(&w[1]) == Ordering::Less);
+        if !interior {
+            return None;
+        }
+    }
+
     // Polynomialize + stitch both chains once, so every rail is low-degree and adjacent pieces share
     // their corner exactly (watertight notch). The σ-ranges are unchanged, so `stations` still hold.
     let inner = stitched_poly_chain(inner);
     let outer = stitched_poly_chain(outer);
+    let holes: Vec<HoleRail<B>> = holes
+        .iter()
+        .map(|h| HoleRail {
+            near: poly_rail(&h.near),
+            far: poly_rail(&h.far),
+            s1: h.s1.clone(),
+            s2: h.s2.clone(),
+        })
+        .collect();
 
     // The developable σ-rail `c + μ̂·r + w·n` (μ̂ a polynomial) at thickness level `wl`, its μ-base
     // reduced (low-degree, positive weights — OCCT-friendly, like the legacy builder). Two rails at
@@ -1180,6 +1361,21 @@ pub fn brep_trim_solid<B: Backend>(
             hi: sk1.clone(),
         };
         let rail: Vec<usize> = rs.iter().map(|s| bld.rail_edge(s, &supp)).collect();
+        // Holes strictly interior to this slice pierce both lids (annular) and add a tube. Strict
+        // containment (`sk < s1 ≤ s2 < sk1`) keeps the hole clear of the slice's σ-caps; the
+        // interior check above already guaranteed each hole lands in exactly one slice.
+        let slice_holes: Vec<&HoleRail<B>> = holes
+            .iter()
+            .filter(|h| sk.cmp(&h.s1) == Ordering::Less && h.s2.cmp(sk1) == Ordering::Less)
+            .collect();
+        let hole_wires_wlo: Vec<Vec<HalfEdge>> = slice_holes
+            .iter()
+            .map(|h| lift_hole_wire(&mut bld, &c, &r, &n, h, &ws[0], true))
+            .collect();
+        let hole_wires_whi: Vec<Vec<HalfEdge>> = slice_holes
+            .iter()
+            .map(|h| lift_hole_wire(&mut bld, &c, &r, &n, h, &ws[1], false))
+            .collect();
         // Four ruled sides: m=0 wlo lid, m=1 outer wall, m=2 whi lid, m=3 inner wall.
         for m in 0..4 {
             let mp = (m + 1) % 4;
@@ -1193,7 +1389,18 @@ pub fn brep_trim_solid<B: Backend>(
             // denominator (the lids rule between different-μ̂ rails, whose reduced denominators
             // differ), falling back to the direct `ruled_panel` when they already match (walls).
             let surface = ruled_common(&rs[m], &rs[mp], sk, sk1);
-            bld.brep.add_face(surface, wire);
+            if m == 0 && !hole_wires_wlo.is_empty() {
+                bld.brep
+                    .add_face_with_holes(surface, wire, hole_wires_wlo.clone());
+            } else if m == 2 && !hole_wires_whi.is_empty() {
+                bld.brep
+                    .add_face_with_holes(surface, wire, hole_wires_whi.clone());
+            } else {
+                bld.brep.add_face(surface, wire);
+            }
+        }
+        for h in &slice_holes {
+            emit_hole_tube(&mut bld, &c, &r, &n, h, &ws[0], &ws[1]);
         }
         // σ-end caps (planar), at σ_lo (first slice) and σ_hi (last slice), wound outward.
         if k == 0 {
@@ -2067,8 +2274,14 @@ mod tests {
         };
         let mu_lo = RatFunc::from_poly(poly(&[1])); // μ⁻ = 1
         let mu_hi = RatFunc::from_poly(poly(&[2, 1])); // μ⁺ = 2 + σ
-        let solid =
-            brep_trim_solid(&chart, &w, &[(sigma.clone(), mu_lo)], &[(sigma, mu_hi)]).unwrap();
+        let solid = brep_trim_solid(
+            &chart,
+            &w,
+            &[(sigma.clone(), mu_lo)],
+            &[(sigma, mu_hi)],
+            &[],
+        )
+        .unwrap();
         assert_eq!(solid.verts().len(), 8);
         assert_eq!(solid.faces().len(), 6);
         assert_eq!(solid.free_edges(), 0);
@@ -2118,6 +2331,7 @@ mod tests {
             &w,
             &[(sigma.clone(), RatFunc::from_poly(poly(&[1])))],
             &[(sigma, RatFunc::from_poly(poly(&[2, 1])))],
+            &[],
         )
         .unwrap();
         let path = format!("{}/trim_band.step", std::env::temp_dir().display());
@@ -2126,6 +2340,40 @@ mod tests {
             "ok",
             "low-degree trim band → OCCT"
         );
+    }
+
+    /// The genus-1 trim solid (one interior hole drilled through a slice) round-trips through OCCT:
+    /// the annular lids (`add_face_with_holes`) and the four-wall tube reload through `BRepCheck`
+    /// with no free edges — the certified tunnel is a valid OCCT solid.
+    #[cfg(feature = "step")]
+    #[test]
+    fn trim_solid_interior_hole_exports_via_occt() {
+        use crate::step::write_brep;
+        use fixtures::devices::cone;
+        use lattice::Poly;
+        let chart = cone();
+        let iv = |lo, hi| Interval { lo, hi };
+        let konst = |n: i128, d: i128| {
+            RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(n, d)]))
+        };
+        let w = iv(Rat::from_i128(0), Rat::new(1, 4));
+        let inner = [(iv(Rat::from_i128(0), Rat::from_i128(1)), konst(1, 1))];
+        let outer = [(
+            iv(Rat::from_i128(0), Rat::from_i128(1)),
+            RatFunc::from_poly(Poly::from_coeffs(vec![
+                Rat::from_i128(2),
+                Rat::from_i128(1),
+            ])),
+        )];
+        let hole = HoleRail {
+            near: konst(4, 3),
+            far: konst(5, 3),
+            s1: Rat::new(1, 4),
+            s2: Rat::new(3, 4),
+        };
+        let solid = brep_trim_solid(&chart, &w, &inner, &outer, &[hole]).unwrap();
+        let path = format!("{}/trim_hole.step", std::env::temp_dir().display());
+        assert_eq!(write_brep(&path, &solid), "ok", "genus-1 trim solid → OCCT");
     }
 
     /// A **piecewise outer boundary** (the D3-notch mechanism): μ⁺ = 2 on [0, 2/5] then σ+8/5 on
@@ -2152,7 +2400,7 @@ mod tests {
             (iv(Rat::from_i128(0), Rat::new(2, 5)), konst(2)),
             (iv(Rat::new(2, 5), Rat::from_i128(1)), ramp),
         ];
-        let solid = brep_trim_solid(&chart, &w, &inner, &outer).unwrap();
+        let solid = brep_trim_solid(&chart, &w, &inner, &outer, &[]).unwrap();
         assert_eq!(
             solid.free_edges(),
             0,
@@ -2174,6 +2422,79 @@ mod tests {
                 Verdict::Verified(_)
             ),
             "piecewise-outer trim solid is a certified closed 2-manifold"
+        );
+    }
+
+    /// `brep_trim_solid` with **one interior hole within a single slice** drills a through-tunnel:
+    /// the slice's two lids become annular (`add_face_with_holes`) and a four-wall tube closes the
+    /// bore, so the solid is a certified **genus-1** closed 2-manifold. The band is the single-slice
+    /// `μ ∈ [1, 2+σ]` over `σ ∈ [0,1]`; the hole is `μ ∈ [4/3, 5/3]` over `σ ∈ [1/4, 3/4]` (strictly
+    /// interior, and its tangent σ don't straddle an interior station).
+    #[test]
+    fn trim_solid_interior_hole_is_a_certified_genus_1_solid() {
+        use certify_core::shell::closed_shell_holed;
+        use fixtures::devices::cone;
+        use lattice::Poly;
+        let chart = cone();
+        let iv = |lo, hi| Interval { lo, hi };
+        let konst = |n: i128, d: i128| {
+            RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(n, d)]))
+        };
+        let w = iv(Rat::from_i128(0), Rat::new(1, 4));
+        let inner = [(iv(Rat::from_i128(0), Rat::from_i128(1)), konst(1, 1))];
+        let outer = [(
+            iv(Rat::from_i128(0), Rat::from_i128(1)),
+            RatFunc::from_poly(Poly::from_coeffs(vec![
+                Rat::from_i128(2),
+                Rat::from_i128(1),
+            ])),
+        )];
+        let hole = HoleRail {
+            near: konst(4, 3),
+            far: konst(5, 3),
+            s1: Rat::new(1, 4),
+            s2: Rat::new(3, 4),
+        };
+        let holed = brep_trim_solid(&chart, &w, &inner, &outer, &[hole]).unwrap();
+        assert_eq!(holed.free_edges(), 0, "the drilled tube is watertight");
+        assert_eq!(holed.nonmanifold_edges(), 0);
+        assert_eq!(genus(&holed), 1, "one interior through-hole is genus 1");
+        let sc = holed.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "the interior-hole trim solid is a certified closed genus-1 2-manifold"
+        );
+    }
+
+    /// A hole whose tangent span straddles an interior positive-weight station is **refused** (`None`)
+    /// by the single-slice builder — the honest boundary of Stage B (the cross-station clip is the
+    /// follow-on). The wide gore forces `σ = 0` to be a station; a hole over `σ ∈ [−1/4, 1/4]` crosses
+    /// it, so the builder declines rather than emit a torn solid.
+    #[test]
+    fn trim_solid_refuses_a_station_crossing_hole() {
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        let inner = [(sigma.clone(), mu_lo)];
+        let outer = [(sigma, mu_hi)];
+        let hole = HoleRail {
+            near: RatFunc::from_poly(lattice::Poly::from_coeffs(vec![Rat::new(-7, 4)])),
+            far: RatFunc::from_poly(lattice::Poly::from_coeffs(vec![Rat::new(-5, 4)])),
+            s1: Rat::new(-1, 4),
+            s2: Rat::new(1, 4),
+        };
+        assert!(
+            brep_trim_solid(&chart, &w, &inner, &outer, &[hole]).is_none(),
+            "a hole straddling the σ=0 station is refused by the single-slice builder"
         );
     }
 

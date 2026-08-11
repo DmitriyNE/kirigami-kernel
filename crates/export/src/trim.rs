@@ -1158,7 +1158,7 @@ mod tests {
             lo: Q::from_i128(0),
             hi: Q::new(1, 8),
         };
-        let solid = brep_trim_solid(&chart, &w, &inner, &outer_ch).expect("trim solid");
+        let solid = brep_trim_solid(&chart, &w, &inner, &outer_ch, &[]).expect("trim solid");
         assert_eq!(solid.free_edges(), 0, "annulus+notch solid is watertight");
         assert_eq!(solid.nonmanifold_edges(), 0);
         let sc = solid.to_shell_certificate();
