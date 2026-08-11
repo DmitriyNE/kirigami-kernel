@@ -305,6 +305,72 @@ pub fn slab<B: Backend>(
     reg_q(&cert)
 }
 
+/// The combined evidence for a certified BONDED lap seam — all four §14 invariants hold.
+pub struct BondedSeam<B: Backend = Bignum> {
+    /// SEP: the plateau separation ≡ the bond gap.
+    pub sep: SepWitness<B>,
+    /// SLAB-S0: the offset slab's certified positivity margin.
+    pub slab: MarginSq<Rat<B>>,
+    /// SHEAR: the Tier-1 identification (`κ_g`, `Δ₀`, `δ`).
+    pub shear: ShearWitness<B>,
+    /// CLEAR: the ramp min-distance² lower bound.
+    pub clear: ClearWitness<B>,
+}
+
+/// Why [`valid_bonded_seam`] did not certify — the first failing invariant.
+pub enum BondedSeamFault<B: Backend = Bignum> {
+    /// SEP refuted (the plateau separation ≠ the bond gap, or it is not a plateau).
+    Sep(SepFault<B>),
+    /// SLAB-S0 refuted (the offset slab is not regular).
+    Slab(RegFault<B>),
+    /// SHEAR refuted (the Tier-1 identification does not collapse).
+    Shear(ShearFault),
+    /// CLEAR refuted (a degenerate ramp box or a pole in evaluation).
+    Clear(ClearFault),
+}
+
+/// **VALID_bonded-seam** — the §14 BONDED conjunction: `SEP ∧ SLAB ∧ SHEAR ∧ CLEAR`.
+///
+/// Threads the four sub-verdicts as a strong-Kleene AND: the first `Refuted` wins (wrapped as
+/// a [`BondedSeamFault`]); else a CLEAR `Unresolved` propagates (fail-closed — the seam-ramp
+/// clearance was not established within budget, carrying its min-distance² handle); else all
+/// four hold and the combined [`BondedSeam`] evidence is returned. SEP/SLAB/SHEAR are total
+/// (never `Unresolved`); a defensive `Unresolved` from them fails closed with a zero handle.
+pub fn valid_bonded_seam<B: Backend>(
+    sep: Verdict<SepWitness<B>, SepFault<B>, ()>,
+    slab: Verdict<MarginSq<Rat<B>>, RegFault<B>, ()>,
+    shear: Verdict<ShearWitness<B>, ShearFault, ()>,
+    clear: Verdict<ClearWitness<B>, ClearFault, Rat<B>>,
+) -> Verdict<BondedSeam<B>, BondedSeamFault<B>, Rat<B>> {
+    let zero = Rat::from_i128(0);
+    let sep = match sep {
+        Verdict::Verified(w) => w,
+        Verdict::Refuted(f) => return Verdict::Refuted(BondedSeamFault::Sep(f)),
+        Verdict::Unresolved(()) => return Verdict::Unresolved(zero),
+    };
+    let slab = match slab {
+        Verdict::Verified(w) => w,
+        Verdict::Refuted(f) => return Verdict::Refuted(BondedSeamFault::Slab(f)),
+        Verdict::Unresolved(()) => return Verdict::Unresolved(zero),
+    };
+    let shear = match shear {
+        Verdict::Verified(w) => w,
+        Verdict::Refuted(f) => return Verdict::Refuted(BondedSeamFault::Shear(f)),
+        Verdict::Unresolved(()) => return Verdict::Unresolved(zero),
+    };
+    let clear = match clear {
+        Verdict::Verified(w) => w,
+        Verdict::Refuted(f) => return Verdict::Refuted(BondedSeamFault::Clear(f)),
+        Verdict::Unresolved(d2) => return Verdict::Unresolved(d2),
+    };
+    Verdict::Verified(BondedSeam {
+        sep,
+        slab,
+        shear,
+        clear,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +513,67 @@ mod tests {
                 &Q::from_i128(1000)
             ),
             Verdict::Refuted(_)
+        ));
+    }
+
+    // The four invariants, threaded, for the device seam: SEP/SHEAR on the plateau
+    // (h_B ≡ Δ = 1/4, κ_g = −65/72), SLAB on the ramp chart, CLEAR on the ramp rails.
+    #[allow(clippy::type_complexity)]
+    fn device_seam(
+        gap: &Q,
+    ) -> (
+        Verdict<SepWitness<Bignum>, SepFault<Bignum>, ()>,
+        Verdict<MarginSq<Q>, RegFault<Bignum>, ()>,
+        Verdict<ShearWitness<Bignum>, ShearFault, ()>,
+        Verdict<ClearWitness<Bignum>, ClearFault, Q>,
+    ) {
+        let w = Q::from_i128(0);
+        (
+            sep(
+                &RatFunc::<Bignum>::zero(),
+                &w,
+                &konst(&Q::new(1, 4)),
+                &w,
+                gap,
+            ),
+            slab(
+                &cone_seam_ramp(),
+                &Q::from_i128(-1),
+                &w,
+                &ramp_box(),
+                &Q::new(1, 1000),
+            ),
+            shear(
+                &konst(&Q::new(-65, 72)),
+                &konst(&Q::new(1, 4)),
+                &Q::new(1, 100),
+            ),
+            clear(
+                &rail(&cone_seam()),
+                &rail(&cone_seam_ramp()),
+                &ramp_box(),
+                &Q::new(1, 8),
+                1000,
+            ),
+        )
+    }
+
+    #[test]
+    fn valid_bonded_seam_conjoins_all_four() {
+        let (s, l, h, c) = device_seam(&Q::new(1, 4)); // correct bond gap
+        match valid_bonded_seam(s, l, h, c) {
+            Verdict::Verified(b) => {
+                assert_eq!(b.sep.gap, Q::new(1, 4));
+                assert_eq!(b.shear.shear, Q::new(18, 65)); // δ ≈ 0.28 mm
+                assert!(b.slab.0 > Q::from_i128(0));
+            }
+            _ => panic!("the device bonded seam should certify"),
+        }
+        // A wrong bond gap fails SEP; the conjunction short-circuits to that fault.
+        let (s, l, h, c) = device_seam(&Q::new(1, 8)); // wrong gap
+        assert!(matches!(
+            valid_bonded_seam(s, l, h, c),
+            Verdict::Refuted(BondedSeamFault::Sep(_))
         ));
     }
 }
