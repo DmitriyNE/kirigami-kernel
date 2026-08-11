@@ -474,11 +474,12 @@ pub struct OuterLoop<B: Backend = Bignum> {
 
 /// Build the panel's **outer boundary** loop: the eccentric annulus band (inner rail from `d2`,
 /// outer rail from `d1`) with the outer rail **notched** where `d3` bites across it. The two
-/// D1↔D3 transition σ are the D1∩D3 crossings, found EXACTLY as [`rail_cylinder_crossings`] of
-/// the D1 rail against the D3 cylinder (no D3 fit). The D3 near/Lower branch is then fitted only
-/// over `[σ_nL, σ_nR]` (padded by `d3_margin`), clear of the √-branch tangents, and joined to the
-/// D1 rail at each crossing by a small micro-cap. `d1` is the concentric outer (exact plane
-/// rail), `d2` the eccentric inner (Upper branch). Fail-closed: a loose rail is `Unresolved`.
+/// D1↔D3 transition σ are located as the D1∩D3 crossings via [`rail_cylinder_crossings`] of the
+/// D1 rail against the D3 cylinder (no D3 fit); the D3 near/Lower branch is fitted over that range
+/// (clear of the √-branch tangents), then each crossing is **refined** to where the *fitted* D3
+/// meets D1 (a bisection within `± d3_margin ×` the crossing range) so the D1↔D3 corner is a clean
+/// join (the micro-cap collapses to the bisection residual). `d1` is the concentric outer (exact
+/// plane rail), `d2` the eccentric inner (Upper branch). Fail-closed: a loose rail is `Unresolved`.
 #[allow(clippy::too_many_arguments)]
 pub fn outer_loop<B: Backend>(
     chart: &Chart<B>,
@@ -505,18 +506,16 @@ pub fn outer_loop<B: Backend>(
     let (mu_d1, e1) = rail!(d1, span, fit);
     let (mu_d2, e2) = rail!(d2, span, fit);
 
-    // The D1∩D3 crossings, computed EXACTLY from the D1 rail ∩ D3 cylinder (no D3 fit): the two
-    // σ where the outer boundary switches D1 ↔ D3. They sit mid-span, clear of D3's √-branch
-    // tangents, so the near branch is then fitted only there and certifies tightly.
-    let crossings = match rail_cylinder_crossings(chart, &mu_d1, d3.0, d3.1, d3.2, span, 256, 60) {
+    // Locate the notch: the D1∩D3 crossings computed EXACTLY from the D1 rail ∩ D3 cylinder (no
+    // D3 fit). They sit mid-span, clear of D3's √-branch tangents, so the near branch is fitted
+    // only there and certifies tightly.
+    let cross0 = match rail_cylinder_crossings(chart, &mu_d1, d3.0, d3.1, d3.2, span, 256, 60) {
         Some(r) if r.len() == 2 => r,
         _ => return Verdict::Unresolved(clearance.clone()),
     };
-    let (snl, snr) = (crossings[0].clone(), crossings[1].clone());
-    let pad = snr.sub(&snl).mul(d3_margin); // small inner pad for the fit endpoints
     let d3_span = Interval {
-        lo: snl.add(&pad),
-        hi: snr.sub(&pad),
+        lo: cross0[0].clone(),
+        hi: cross0[1].clone(),
     };
     let d3_disk = eccentric_disk(d3.0.clone(), d3.1.clone(), d3.2.clone(), RootPick::Lower);
     // The notch range is narrow and far from the σ-origin, where the oracle's monomial-basis
@@ -524,8 +523,16 @@ pub fn outer_loop<B: Backend>(
     // evaluation explodes (ε ~ 100s). A low degree (the dip is gentle) certifies tightly.
     let d3_fit = RailFit { degree: 3, ..fit };
     let (mu_d3, e3) = rail!(&d3_disk, &d3_span, d3_fit);
-    // The notch rail runs over the padded range; the caps bridge D1(crossing) → D3(padded).
-    let (snl, snr) = (d3_span.lo.clone(), d3_span.hi.clone());
+    // Refine each crossing to where the FITTED D3 meets D1 exactly (`μ̂_D3fit − μ̂_D1 = 0`), so the
+    // D1↔D3 corner is a clean join — the micro-cap collapses to the bisection residual (invisible)
+    // instead of the degree-3 fit residual (a visible step). Fail-safe: if the fit does not bracket
+    // a root in the window (`d3_margin` × the crossing range), fall back to the geometric crossing.
+    let dmu = mu_d3.sub(&mu_d1);
+    let w = cross0[1].sub(&cross0[0]).mul(d3_margin);
+    let snl = bisect_root(&dmu, &cross0[0].sub(&w), &cross0[0].add(&w), 60)
+        .unwrap_or_else(|| cross0[0].clone());
+    let snr = bisect_root(&dmu, &cross0[1].sub(&w), &cross0[1].add(&w), 60)
+        .unwrap_or_else(|| cross0[1].clone());
 
     // Evaluate every needed rail value; any pole ⇒ Refuted.
     let vals: Option<[Rat<B>; 8]> = (|| {
@@ -621,16 +628,26 @@ pub fn unroll_loop<B: Backend>(
 }
 
 /// A developed loop's rational polygon: each [`FlatOutline`] vertex reduced to its `FlatBox`
-/// centre. This is the flat operand for the arrangement assembly.
+/// centre, with **exactly-coincident consecutive vertices dropped** (float-free). A micro-cap
+/// whose μ̂ gap falls below the development's rounding precision develops to two identical
+/// rational points — a zero-length edge the `arrange2d` boolean would reject as degenerate; the
+/// dedup removes it. The wrap-around pair (last == first) is dropped too.
 pub fn flat_to_poly<B: Backend>(outline: &FlatOutline<B>) -> Vec<[Rat<B>; 2]> {
-    outline
-        .vertices
-        .iter()
-        .map(|b| {
-            let (x, y) = b.center();
-            [x, y]
-        })
-        .collect()
+    use core::cmp::Ordering::Equal;
+    let same =
+        |a: &[Rat<B>; 2], b: &[Rat<B>; 2]| a[0].cmp(&b[0]) == Equal && a[1].cmp(&b[1]) == Equal;
+    let mut out: Vec<[Rat<B>; 2]> = Vec::with_capacity(outline.vertices.len());
+    for v in &outline.vertices {
+        let (x, y) = v.center();
+        let p = [x, y];
+        if out.last().is_none_or(|q| !same(q, &p)) {
+            out.push(p);
+        }
+    }
+    if out.len() > 1 && same(&out[0], &out[out.len() - 1]) {
+        out.pop();
+    }
+    out
 }
 
 /// One closed polygon `pts` as exact [`arrange2d`] segment edges tagged `src` (mirrors
@@ -857,7 +874,7 @@ mod tests {
             RailFit::default(),
             &clearance,
             &cfg,
-            &Q::new(1, 1000),
+            &Q::new(1, 20),
             48,
         ) {
             Verdict::Verified(o) => o,
@@ -868,11 +885,11 @@ mod tests {
             f(&outer.eps),
             f(&outer.max_microcap)
         );
-        // Small vs the ≈2.7 panel — the degree-3 notch-fit residual at the transverse crossing
-        // (no √-branch here, unlike the hole tangents).
+        // Refining each crossing to where the FITTED D3 meets D1 collapses the micro-cap to the
+        // bisection residual — the D1↔D3 corner is a clean join, not a visible step.
         assert!(
-            outer.max_microcap.cmp(&Q::new(1, 20)) == core::cmp::Ordering::Less,
-            "D1∩D3 crossing micro-cap should stay small, got {:.4}",
+            outer.max_microcap.cmp(&Q::new(1, 1_000_000_000)) == core::cmp::Ordering::Less,
+            "D1∩D3 crossing micro-cap should be ~0 (clean join), got {:.2e}",
             f(&outer.max_microcap)
         );
         match unroll_loop(&dev, &outer.arcs, &cfg, &clearance) {
@@ -967,7 +984,7 @@ mod tests {
             fit,
             &clearance,
             &cfg,
-            &Q::new(1, 1000),
+            &Q::new(1, 20),
             48,
         ) {
             Verdict::Verified(o) => o,

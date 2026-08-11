@@ -103,7 +103,7 @@ fn main() {
         fit,
         &clearance,
         &cfg,
-        &Q::new(1, 1000),
+        &Q::new(1, 20),
         segments,
     ) {
         Verdict::Verified(o) => {
