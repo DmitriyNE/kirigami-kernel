@@ -1,0 +1,579 @@
+//! **xy → (σ,μ) trim bridge** (G-B): author trimming cylinders in the cone's *physical*
+//! xy-plane and develop the trimmed panel.
+//!
+//! The cone is trimmed by an arrangement of vertical cylinders (disks in xy). Each disk is a
+//! [`CutSurface`] — an axis-centered parallel becomes an *exact* [`CutSurface::Plane`]
+//! `{z = d}`, an eccentric one a [`CutSurface::Cylinder`] — pulled back to a ruling-rail
+//! `μ̂(σ)` by the G2 machinery: the float oracle [`fit_cut_rail`](crate::cut_oracle::fit_cut_rail)
+//! **proposes**, the exact [`cut_fit`] certificate **decides** (`ε < clearance/2`, fail-closed).
+//!
+//! Each disk carries both its 3-D cut surface (for the rail) and its exact circular footprint
+//! `(cx, cy, r²)` (the [`arrange2d`](arrange2d) operand) — the two are the same cylinder, so the
+//! physical-xy arrangement and the developed rails stay consistent within the certified `ε`.
+//!
+//! The panel lives on the `μ > 0` side of the ruling (the apex `μ̂ = 0` is excised by the inner
+//! disk), so physical-xy is the natural `(x, y)`. For the device cone the gore develops the
+//! **upper** half-plane — `σ = 0` maps to azimuth 90° (`+y`), `σ = ±1` to 0°/180° — so trimming
+//! disks are authored around `+y`, and a disk `(cx, cy, R)` is exactly what the user draws.
+
+use certify_core::Verdict;
+use develop::cone::{ConeDevelopment, DevConfig};
+use develop::cut::{CutFitCert, CutFitFault, CutSurface, cut_fit, plane_cut_rail};
+use develop::unroll::{BoundaryArc, FlatOutline, UnrollFault, unroll_trim_loop};
+use geom::chart::Chart;
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Vec3Rat};
+
+use crate::cut_oracle::{RootPick, fit_cut_rail};
+
+/// The `i`-th standard basis vector as a constant [`Vec3Rat`] (for picking a chart-field component
+/// by dotting with it).
+fn basis3<B: Backend>(i: usize) -> Vec3Rat<B> {
+    let z = || Poly::constant(Rat::from_i128(0));
+    let mut c = [z(), z(), z()];
+    c[i] = Poly::constant(Rat::from_i128(1));
+    Vec3Rat::new(c, Poly::constant(Rat::from_i128(1)))
+}
+
+/// The physical-xy components `(r_x(σ), r_y(σ))` of the ruling — the direction of the apex ray,
+/// since `C(σ, μ) = μ·ruling(σ)` at `w = 0` on the apex-centred cone.
+fn ruling_xy<B: Backend>(chart: &Chart<B>) -> (RatFunc<B>, RatFunc<B>) {
+    (
+        chart.ruling().dot(&basis3(0)),
+        chart.ruling().dot(&basis3(1)),
+    )
+}
+
+/// `g(σ) = (cx·r_y − cy·r_x)² − R²·(r_x² + r_y²)` — the (rational) tangency residual of the apex
+/// ray to the disk `(cx, cy, R)`: **negative** where the ray crosses the disk (two real cut
+/// branches), **zero** at the two tangent rulings, **positive** outside.
+fn tangent_poly<B: Backend>(chart: &Chart<B>, cx: &Rat<B>, cy: &Rat<B>, r2: &Rat<B>) -> RatFunc<B> {
+    let (rx, ry) = ruling_xy(chart);
+    let konst = |r: &Rat<B>| RatFunc::from_poly(Poly::constant(r.clone()));
+    let cross = ry.mul(&konst(cx)).sub(&rx.mul(&konst(cy))); // cx·r_y − cy·r_x
+    let norm2 = rx.mul(&rx).add(&ry.mul(&ry)); // r_x² + r_y²
+    cross.mul(&cross).sub(&konst(r2).mul(&norm2))
+}
+
+/// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
+/// the final bracket. `None` if no sign change or a pole is hit.
+fn bisect_root<B: Backend>(
+    f: &RatFunc<B>,
+    lo: &Rat<B>,
+    hi: &Rat<B>,
+    iters: usize,
+) -> Option<Rat<B>> {
+    let half = Rat::new(1, 2);
+    let mut a = lo.clone();
+    let mut b = hi.clone();
+    let sa = f.eval(&a)?.sign();
+    if sa == 0 {
+        return Some(a);
+    }
+    if f.eval(&b)?.sign() == sa {
+        return None;
+    }
+    for _ in 0..iters {
+        let m = a.add(&b).mul(&half);
+        let sm = f.eval(&m)?.sign();
+        if sm == 0 {
+            return Some(m);
+        }
+        if sm == sa {
+            a = m; // sign at `a` unchanged
+        } else {
+            b = m;
+        }
+    }
+    Some(a.add(&b).mul(&half))
+}
+
+/// The two tangent-ruling σ of a disk within the gore, as `(σ_lo, σ_hi)`. Scans [`tangent_poly`]
+/// for its two sign changes (outside `+` → inside `−` → outside `+`) and bisects each. `None`
+/// unless the disk subtends exactly one clean two-tangent arc in the gore.
+fn disk_tangents<B: Backend>(
+    chart: &Chart<B>,
+    cx: &Rat<B>,
+    cy: &Rat<B>,
+    r2: &Rat<B>,
+    span: &Interval<B>,
+    scan: usize,
+    iters: usize,
+) -> Option<(Rat<B>, Rat<B>)> {
+    let g = tangent_poly(chart, cx, cy, r2);
+    let n = scan.max(4);
+    let width = span.hi.sub(&span.lo).div(&Rat::from_i128(n as i128));
+    let mut prev: Option<(Rat<B>, i8)> = None;
+    let mut roots: Vec<Rat<B>> = Vec::new();
+    for k in 0..=n {
+        let x = span.lo.add(&width.mul(&Rat::from_i128(k as i128)));
+        let s = g.eval(&x)?.sign();
+        if let Some((px, ps)) = &prev {
+            if *ps != 0 && s != 0 && *ps != s {
+                roots.push(bisect_root(&g, px, &x, iters)?);
+            }
+        }
+        prev = Some((x, s));
+    }
+    if roots.len() == 2 {
+        Some((roots[0].clone(), roots[1].clone()))
+    } else {
+        None
+    }
+}
+
+/// Clone a [`CutSurface`] without a `B: Clone` bound (its own `Clone` is derived, hence bounded;
+/// the `Rat<B>` fields clone for any [`Backend`]). Local mirror of `content.rs`'s manual clones.
+fn clone_surface<B: Backend>(s: &CutSurface<B>) -> CutSurface<B> {
+    match s {
+        CutSurface::Plane { n, d } => CutSurface::Plane {
+            n: [n[0].clone(), n[1].clone(), n[2].clone()],
+            d: d.clone(),
+        },
+        CutSurface::Cylinder {
+            axis_point,
+            axis_dir,
+            r2,
+        } => CutSurface::Cylinder {
+            axis_point: [
+                axis_point[0].clone(),
+                axis_point[1].clone(),
+                axis_point[2].clone(),
+            ],
+            axis_dir: [
+                axis_dir[0].clone(),
+                axis_dir[1].clone(),
+                axis_dir[2].clone(),
+            ],
+            r2: r2.clone(),
+        },
+    }
+}
+
+/// Knobs for fitting + certifying a cut rail: the polynomial fit degree, the σ-subdivision the
+/// certified `sup` distance is taken over (the ε refinement handle), and the dyadic snap bits.
+#[derive(Clone, Copy)]
+pub struct RailFit {
+    /// The degree of the fitted rail polynomial (ignored for an exact plane rail).
+    pub degree: usize,
+    /// The number of equal σ-sub-intervals the certified distance bound is maximized over.
+    pub subdiv: usize,
+    /// The `2^bits` dyadic grid the oracle snaps fitted coefficients to.
+    pub bits: u32,
+}
+
+impl Default for RailFit {
+    fn default() -> Self {
+        // The certified ε is an interval bound whose refinement handle is `subdiv` (the G2
+        // finding), not fit degree. A plane rail is exact and ignores `degree`.
+        RailFit {
+            degree: 6,
+            subdiv: 128,
+            bits: 44,
+        }
+    }
+}
+
+/// A trimming cylinder authored in the cone's physical xy-plane: its 3-D cut [`surface`] (used
+/// to pull it back to a rail), its exact circular footprint `(cx, cy, r²)` (the arrangement
+/// operand), and the [`RootPick`] branch of the cone∩surface cut to trace.
+///
+/// [`surface`]: TrimDisk::surface
+#[derive(Clone)]
+pub struct TrimDisk<B: Backend = Bignum> {
+    /// The 3-D cutting surface (a plane for the concentric case, a cylinder otherwise).
+    pub surface: CutSurface<B>,
+    /// Footprint centre x.
+    pub cx: Rat<B>,
+    /// Footprint centre y.
+    pub cy: Rat<B>,
+    /// Footprint squared radius `R²`.
+    pub r2: Rat<B>,
+    /// Which branch of the cone∩surface cut this disk's rail traces.
+    pub pick: RootPick,
+}
+
+/// An eccentric vertical cylinder of radius `√r2` about `(cx, cy)`. Footprint = the circle
+/// `(cx, cy, r²)`; `pick` selects the cut branch (`Upper` = larger-μ root).
+pub fn eccentric_disk<B: Backend>(
+    cx: Rat<B>,
+    cy: Rat<B>,
+    r2: Rat<B>,
+    pick: RootPick,
+) -> TrimDisk<B> {
+    TrimDisk {
+        surface: CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Rat::from_i128(0)],
+            axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
+            r2: r2.clone(),
+        },
+        cx,
+        cy,
+        r2,
+        pick,
+    }
+}
+
+/// The concentric parallel `{z = d}` (apex-centred), whose rail is the **exact** plane rail
+/// (`ε ≈ 0`). Its footprint `r²` is read off the chart at `σ = 0` (constant along a parallel).
+/// `None` if the plane rail has a pole at `σ = 0` (a ruling parallel to `z`, impossible for a
+/// canonical cone).
+pub fn concentric_disk<B: Backend>(chart: &Chart<B>, d: &Rat<B>) -> Option<TrimDisk<B>> {
+    let n = [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)];
+    let rail = plane_cut_rail(chart, &n, d);
+    let zero = Rat::from_i128(0);
+    let mu0 = rail.eval(&zero)?;
+    let p = chart.surface(&mu0, &zero).eval(&zero)?;
+    let r2 = p[0].mul(&p[0]).add(&p[1].mul(&p[1]));
+    Some(TrimDisk {
+        surface: CutSurface::Plane { n, d: d.clone() },
+        cx: zero.clone(),
+        cy: zero,
+        r2,
+        pick: RootPick::Upper,
+    })
+}
+
+/// Fit **and** certify the ruling-rail `μ̂(σ)` for a trim disk over `span`: the float oracle
+/// proposes, [`cut_fit`] decides. On success returns `(μ̂, ε)` with the certified distance
+/// bound; a loose fit / declined oracle is `Unresolved` (fail-closed), a degenerate surface or
+/// in-span pole is `Refuted`.
+pub fn certified_rail<B: Backend>(
+    chart: &Chart<B>,
+    disk: &TrimDisk<B>,
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
+    let mu_hat = match fit_cut_rail(chart, &disk.surface, span, fit.degree, disk.pick, fit.bits) {
+        Some(m) => m,
+        // The oracle declined (cut not real at a node / singular solve) — fail-closed.
+        None => return Verdict::Unresolved(clearance.clone()),
+    };
+    let cert = CutFitCert {
+        mu_hat: mu_hat.clone(),
+        w: Rat::from_i128(0),
+        surface: clone_surface(&disk.surface),
+        span: span.clone(),
+        subdiv: fit.subdiv,
+        clearance: clearance.clone(),
+        cfg: cfg.clone(),
+    };
+    match cut_fit(chart, &cert) {
+        Verdict::Verified(v) => Verdict::Verified((mu_hat, v.eps)),
+        Verdict::Unresolved(e) => Verdict::Unresolved(e),
+        Verdict::Refuted(f) => Verdict::Refuted(f),
+    }
+}
+
+/// The outer boundary loop of an **eccentric annulus band**: the inner rail `μ̂_in` and outer
+/// rail `μ̂_out` (both spanning the full gore `[σ_lo, σ_hi]`) joined by the two σ-caps. The cap
+/// endpoints are the rails *evaluated* at the cap σ, so the loop chains exactly in `(σ, μ̂)`.
+/// `None` if either rail has a pole at a cap σ.
+pub fn annulus_loop<B: Backend>(
+    mu_in: &RatFunc<B>,
+    mu_out: &RatFunc<B>,
+    span: &Interval<B>,
+    segments: usize,
+) -> Option<Vec<BoundaryArc<B>>> {
+    let (lo, hi) = (&span.lo, &span.hi);
+    let in_lo = mu_in.eval(lo)?;
+    let in_hi = mu_in.eval(hi)?;
+    let out_lo = mu_out.eval(lo)?;
+    let out_hi = mu_out.eval(hi)?;
+    Some(vec![
+        BoundaryArc::Cap {
+            sigma: lo.clone(),
+            mu_start: in_lo.clone(),
+            mu_end: out_lo,
+        },
+        BoundaryArc::Rail {
+            mu: mu_out.clone(),
+            sigma_start: lo.clone(),
+            sigma_end: hi.clone(),
+            segments,
+        },
+        BoundaryArc::Cap {
+            sigma: hi.clone(),
+            mu_start: out_hi,
+            mu_end: in_hi,
+        },
+        BoundaryArc::Rail {
+            mu: mu_in.clone(),
+            sigma_start: hi.clone(),
+            sigma_end: lo.clone(),
+            segments,
+        },
+    ])
+}
+
+/// `|a − b|`.
+fn abs_diff<B: Backend>(a: &Rat<B>, b: &Rat<B>) -> Rat<B> {
+    let d = a.sub(b);
+    if d.sign() < 0 {
+        Rat::from_i128(0).sub(&d)
+    } else {
+        d
+    }
+}
+
+/// A developed interior hole: its boundary loop (near + far cut branches joined by tangent
+/// micro-caps) and the certified rail ε.
+pub struct HoleLoop<B: Backend = Bignum> {
+    /// The ordered boundary arcs of the hole.
+    pub arcs: Vec<BoundaryArc<B>>,
+    /// The larger of the two branch rails' certified distance bounds.
+    pub eps: Rat<B>,
+    /// The larger tangent micro-cap length (in μ̂ units) — the residual of snapping the algebraic
+    /// tangent σ to a rational just inside the disk. A diagnostic on the fail-closed treatment.
+    pub max_microcap: Rat<B>,
+}
+
+/// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: its **near** (Lower) and
+/// **far** (Upper) cut branches over the disk's σ-extent, joined at each tangent ruling by a
+/// **micro-cap** — a radial segment bridging the small μ̂ gap left by snapping the algebraic
+/// tangent σ (a root of [`tangent_poly`]) to a rational `margin` inside the disk. The inset keeps
+/// the polynomial fit clear of the √-branch point *and* makes the loop chain exactly in `(σ, μ̂)`.
+/// Fail-closed: a loose branch fit is `Unresolved`, a degenerate cut `Refuted`.
+#[allow(clippy::too_many_arguments)]
+pub fn hole_loop<B: Backend>(
+    chart: &Chart<B>,
+    cx: &Rat<B>,
+    cy: &Rat<B>,
+    r2: &Rat<B>,
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+    margin: &Rat<B>,
+    segments: usize,
+) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
+    let (t_lo, t_hi) = match disk_tangents(chart, cx, cy, r2, span, 256, 60) {
+        Some(t) => t,
+        None => return Verdict::Unresolved(clearance.clone()),
+    };
+    let inset = t_hi.sub(&t_lo).mul(margin);
+    let s1 = t_lo.add(&inset);
+    let s2 = t_hi.sub(&inset);
+    let sub = Interval {
+        lo: s1.clone(),
+        hi: s2.clone(),
+    };
+    let far = eccentric_disk(cx.clone(), cy.clone(), r2.clone(), RootPick::Upper);
+    let near = eccentric_disk(cx.clone(), cy.clone(), r2.clone(), RootPick::Lower);
+    let (mu_far, e_far) = match certified_rail(chart, &far, &sub, fit, clearance, cfg) {
+        Verdict::Verified(x) => x,
+        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Refuted(f) => return Verdict::Refuted(f),
+    };
+    let (mu_near, e_near) = match certified_rail(chart, &near, &sub, fit, clearance, cfg) {
+        Verdict::Verified(x) => x,
+        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Refuted(f) => return Verdict::Refuted(f),
+    };
+    let (f1, n1, f2, n2) = match (
+        mu_far.eval(&s1),
+        mu_near.eval(&s1),
+        mu_far.eval(&s2),
+        mu_near.eval(&s2),
+    ) {
+        (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+        _ => return Verdict::Refuted(CutFitFault::PoleInEval),
+    };
+    let max_microcap = {
+        let (lo, hi) = (abs_diff(&f1, &n1), abs_diff(&f2, &n2));
+        if lo.cmp(&hi) == core::cmp::Ordering::Less {
+            hi
+        } else {
+            lo
+        }
+    };
+    // far (s1→s2) · micro-cap @ s2 (far→near) · near (s2→s1) · micro-cap @ s1 (near→far).
+    let arcs = vec![
+        BoundaryArc::Rail {
+            mu: mu_far,
+            sigma_start: s1.clone(),
+            sigma_end: s2.clone(),
+            segments,
+        },
+        BoundaryArc::Cap {
+            sigma: s2.clone(),
+            mu_start: f2,
+            mu_end: n2,
+        },
+        BoundaryArc::Rail {
+            mu: mu_near,
+            sigma_start: s2,
+            sigma_end: s1.clone(),
+            segments,
+        },
+        BoundaryArc::Cap {
+            sigma: s1,
+            mu_start: n1,
+            mu_end: f1,
+        },
+    ];
+    let eps = if e_far.cmp(&e_near) == core::cmp::Ordering::Less {
+        e_near
+    } else {
+        e_far
+    };
+    Verdict::Verified(HoleLoop {
+        arcs,
+        eps,
+        max_microcap,
+    })
+}
+
+/// Develop a trim loop to a certified flat outline (thin wrapper over [`unroll_trim_loop`]).
+pub fn unroll_loop<B: Backend>(
+    dev: &ConeDevelopment<B>,
+    arcs: &[BoundaryArc<B>],
+    cfg: &DevConfig<B>,
+    clearance: &Rat<B>,
+) -> Verdict<FlatOutline<B>, UnrollFault, Rat<B>> {
+    unroll_trim_loop(dev, arcs, cfg, clearance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::approx::rat_to_f64;
+    use fixtures::devices::cone;
+
+    type Q = Rat<Bignum>;
+
+    fn f(r: &Q) -> f64 {
+        rat_to_f64(r)
+    }
+
+    /// The eccentric annulus band (concentric outer D1 + eccentric inner D2) develops to a
+    /// certified flat outline. Tuned once from `probe_cone_scale`.
+    #[test]
+    fn eccentric_annulus_unrolls() {
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        let cfg = DevConfig::tight();
+        // A ~180° two-sided gore (σ = ±1 ⇒ ±90° azimuth), crossing σ = 0. Two conditions keep
+        // the certified development tight: (1) the panel is band-scaled — a *cut* (circular)
+        // boundary is a varying-μ̂ rail, so a large radius means a large μ̂ and loose interval
+        // slop everywhere; the constant-μ band is exempt (μ̂ ≈ 2); (2) a moderate gore, since the
+        // full ~300° blows μ̂ ∝ (1+σ²) up at the edges (μ̂ ~ 300 while ρ ~ 0) and interval
+        // arithmetic can't cancel the huge×tiny product. Both are genuine wide-gore/large-radius
+        // cut-rail strains (logged). ("mm" is nominal — the shape/eccentricity/apex-containment
+        // are scale-invariant, so the demo uses band-scale units.)
+        let clearance = Q::from_i128(1);
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let fit = RailFit::default();
+
+        // Outer D1: concentric parallel {z = 3} — exact plane rail, footprint R ≈ 2.7.
+        let d1 = concentric_disk(&chart, &Q::from_i128(3)).unwrap();
+        let (mu_d1, eps1) = match certified_rail(&chart, &d1, &span, fit, &clearance, &cfg) {
+            Verdict::Verified(x) => x,
+            other => panic!("D1 rail not certified: {}", tag(&other)),
+        };
+        println!("D1 (plane):    ε = {:.3e}", f(&eps1));
+
+        // Inner D2: eccentric cylinder R = √2 ≈ 1.41 at (0, 1/2) — contains the apex (0.5 < 1.41),
+        // fits inside D1 (0.5 + 1.41 < 2.7). +y-oriented (the gore centre). Upper (μ>0) branch.
+        let d2 = eccentric_disk(
+            Q::from_i128(0),
+            Q::new(1, 2),
+            Q::from_i128(2),
+            RootPick::Upper,
+        );
+        let (mu_d2, eps2) = match certified_rail(&chart, &d2, &span, fit, &clearance, &cfg) {
+            Verdict::Verified(x) => x,
+            other => panic!("D2 rail not certified: {}", tag(&other)),
+        };
+        println!("D2 (cylinder): ε = {:.3e}", f(&eps2));
+
+        // Sanity: over the gore, inner μ̂_D2 < outer μ̂_D1 and both > 0 (band, no apex).
+        for s in [-3, -1, 0, 1, 3] {
+            let s = Q::new(s, 2);
+            let (a, b) = (mu_d2.eval(&s).unwrap(), mu_d1.eval(&s).unwrap());
+            assert!(
+                a.sign() > 0 && a.cmp(&b) == core::cmp::Ordering::Less,
+                "0 < μ_D2 < μ_D1 at σ={:.3}: {:.4} vs {:.4}",
+                f(&s),
+                f(&a),
+                f(&b)
+            );
+        }
+
+        let arcs = annulus_loop(&mu_d2, &mu_d1, &span, 96).unwrap();
+        match unroll_loop(&dev, &arcs, &cfg, &clearance) {
+            Verdict::Verified(o) => {
+                println!(
+                    "annulus unroll: Verified  ε = {:.3e}  ({} flat verts)",
+                    f(&o.eps),
+                    o.vertices.len()
+                );
+            }
+            other => panic!("annulus unroll not Verified: {}", tag(&other)),
+        }
+    }
+
+    /// An interior circular hole (D4) develops to a certified loop: near + far cut branches
+    /// joined by small tangent micro-caps, unrolling to a Verified flat wire.
+    #[test]
+    fn interior_hole_unrolls() {
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        let cfg = DevConfig::tight();
+        let clearance = Q::from_i128(1);
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let fit = RailFit::default();
+        // The gore develops the UPPER half-plane: σ = 0 ⇒ azimuth 90° (+y), σ = ±1 ⇒ 0°/180°.
+        // So disks live around +y. D4: a small disk R = 0.2 at (0, 2.2) — inside the annulus (D2
+        // exits near r ≈ 1.9, D1 at r ≈ 2.71), apex well outside it.
+        let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
+        let margin = Q::new(1, 200);
+
+        let (tlo, thi) =
+            disk_tangents(&chart, &cx, &cy, &r2, &span, 256, 60).expect("two tangents");
+        println!("D4 tangents: σ ∈ [{:.4}, {:.4}]", f(&tlo), f(&thi));
+        assert!(tlo.cmp(&thi) == core::cmp::Ordering::Less);
+
+        let hole = match hole_loop(
+            &chart, &cx, &cy, &r2, &span, fit, &clearance, &cfg, &margin, 48,
+        ) {
+            Verdict::Verified(h) => h,
+            other => panic!("hole_loop not Verified: {}", tag(&other)),
+        };
+        println!(
+            "D4 hole: rail ε = {:.3e}, max micro-cap = {:.3e} (μ̂ units, hole is ≈0.4 tall)",
+            f(&hole.eps),
+            f(&hole.max_microcap)
+        );
+        // The tangent micro-cap is the √-branch residual (the developed circle's two tangent
+        // points are slightly flattened) — an exact Cap, watertight, small vs the hole height.
+        assert!(
+            hole.max_microcap.cmp(&Q::new(1, 10)) == core::cmp::Ordering::Less,
+            "tangent micro-cap should stay small, got {:.4}",
+            f(&hole.max_microcap)
+        );
+        match unroll_loop(&dev, &hole.arcs, &cfg, &clearance) {
+            Verdict::Verified(o) => println!(
+                "D4 hole unroll: Verified  ε = {:.3e}  ({} flat verts)",
+                f(&o.eps),
+                o.vertices.len()
+            ),
+            other => panic!("hole unroll not Verified: {}", tag(&other)),
+        }
+    }
+
+    fn tag<T, E: core::fmt::Debug, M>(v: &Verdict<T, E, M>) -> String {
+        match v {
+            Verdict::Verified(_) => "Verified".into(),
+            Verdict::Refuted(w) => format!("Refuted({w:?})"),
+            Verdict::Unresolved(_) => "Unresolved".into(),
+        }
+    }
+}
