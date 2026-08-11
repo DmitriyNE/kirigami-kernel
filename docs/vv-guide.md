@@ -1633,8 +1633,113 @@ approximation → `Unresolved`, never a wrong `Verified`), not a shortcut.
   boundary with cutouts (D4.3 + §14 curves).
 
 Sequence: Phase 1 = Stage 1 (start G1, the interval-trig range reduction) · Phase 2 = DEV.3-β closure ·
-Phase 3 = §14 BONDED seam · then the beyond-Stage-2 extensions. **Status: roadmap authored (docs-only,
-`docs/roadmap-flex-pcb.md`); no slice built.**
+Phase 3 = §14 BONDED seam · then the beyond-Stage-2 extensions. **Status: Stage 1 COMPLETE + merged to
+`main` (`480771a`) — the certified cut→unroll→hole→fold→STEP cone gore + the G-C curved-rail STEP builder
+(the xy-trimmed panel → certified STEP I/II) + the ~296° widen; the σ↔azimuth law pinned exactly
+`φ = 2·arctan σ`. Stage 2 authored (S2.0, below); S2 + S3 pending.**
+
+### Stage 2 (BONDED lap seam) acceptance criteria (S2 full-2π closure + S3 §14 BONDED — spike-first, GO-gated)
+
+*Authored before implementation (S2.0).* Stage 2 is the second end-to-end acceptance demo: take the
+Stage-1 rolled cone gore and **close it with a certified BONDED lap seam** — the two radial gore edges
+lap and bond across the full 2π wrap, single-layer (the device's original lap seam,
+`implementation-plan-v1.md:53`). Two gaps, **S3 ⊳ S2**: **S2** the full-2π closure (slot DEV.3-β) and
+**S3** the §14 BONDED lap certificate. Spike-first / GO-gated — the seam is the one place the method
+broadens from closed-form to certified interval subdivision.
+
+**Two framing facts settled at S2.0 (they scope the whole milestone).**
+
+1. **The seam is single-chart *representable*; re-centering only *conditions* the certificate.**
+   `σ ∈ ℝ ↔ φ₃D = 2·arctan σ ∈ (−π,π)` already covers the whole cone except the back ruling — the seam
+   *is* that ruling, at `σ=±∞`. Re-centering adds no representational power; it moves the seam off the
+   coordinate singularity so a *subdivision* certificate can **converge** there (at `σ=±∞` the enclosure
+   widths `µ̂ ∝ 1+σ²` are unbounded / non-refinable). The re-center is a half-turn about the axis
+   (`φ→φ+π`) = the exact rational Möbius `σ'=−1/σ`, giving `q'(σ')=(9σ',4σ',−4,−9)` — still a degree-1
+   rational cone (the quaternion→rotation map is scale-invariant, `R(λq)=R(q)`). **Representation ≠
+   certification-conditioning.**
+
+2. **BONDED requires γ≠0 by design — the *mild* γ≠0.** The lap flap climbs Δ≈0.25 mm to seat on the
+   other edge: the §8 degree-1 constant-slope ramp picks the family where **`n` rides the cone's Gauss
+   circle (shared `q`) while the support `h` ramps** — a nonzero-support (γ≠0) developable. But `ψ` is
+   `h`-independent (`geom::chart::psi_prime` reads only `n,n′,n″,|n′|²`, all from `q`), so `ψ = c·arctan σ`
+   stays **closed-form**. This is **not** DEV.3's interval-integrated curved directrix (that trigger is a
+   complex `q` making `ψ=∫ψ′` non-elementary — a genuinely deferred, different gap).
+
+**Load-bearing consequence: the BONDED certificate is rational and lives in 3D.** `Chart::surface =
+c + µr + wn` is rational in `(σ,µ,w)` for *every* developable (the pedal `c` already carries `h≠0`), so
+the certifier is chart-agnostic and the transcendental `ψ` is confined to the *flat* development
+(emission-only, refinable). The invariant decomposition (spec §7 face identity, §8 ramp, §11 table):
+- **SEP** — separation ≡ bond gap `g` by the face identity `h_A + w_{A,face} + g = h_B + w_{B,face}`
+  (§7); "compares two ring scalars" → **exact rational**.
+- **SLAB** — ramp regularity `R₁ = s·tanβ + (h+h″) > 0`, one-sided (§8/§11 SLAB-S0) → **rational,
+  single-span-Sturm**; reuse `certify1d::{reg_q, slab_s0}`.
+- **SHEAR** (roadmap "MATCH") — Tier-1 identification `J = rigid ∘ ruling-shear`, `κ_g ≡ k`, `k`
+  separated from 0, `Δ ≡ Δ₀`, `δ = −Δ₀/k` (§7); constancy = a rational identity, sign = one sample,
+  separation = one ring compare → **exact rational**.
+- **CLEAR** — the one genuinely new piece: pair/self clearance between the two lapping **rational**
+  sheets over the thin Δφ≈60° ramp box, by **adaptive interval subdivision** of the 3D distance (via
+  `interval::eval_ratfunc_on`); `Unresolved(ε)` fail-closed, mirror `develop::cut::cut_fit`. All prior
+  subdivision is fixed-count / equal-width — this adaptive loop is the new proof technique, and it is
+  **rational**, not transcendental (the roadmap's "single highest-risk unknown", de-risked here).
+- **two-to-one normal projection** — the structural fact over the overlap (§3); the §7 correspondence
+  lemma reduces SEP/CLEAR to a matched-ruling (σ↔σ) comparison.
+
+**General/specific split (both general — the user's decision).** Build **both** the BONDED certifier
+(chart-agnostic, above) **and** the `SeamFrame` reduction (a `Verdict`-shaped abstraction bringing a
+seam into a finite regular parameter box + the exact transition). `SeamFrame` is pinned by two real
+instances now — the cone body (`σ=±∞` → exact Möbius `σ'=−1/σ`) and the γ≠0 ramp tail (already at finite
+σ → near-identity); the DEV.3 curved directrix is the deferred third instance the interface must not
+preclude. **Specific = inputs only** (`q=(9,4,4σ,9σ)`, `c=130/97`, the ramp `h`, `σ'=−1/σ`); no checker
+names "cone" or "−1/σ".
+
+**Geometry & scope locks.** A lap is **doubled material** near the seam → the demo emits **two certified
+solids (cone body + lap flap) + a certified BONDED interface** (§6.2, "two-piece assemblies bond through
+laps"), *not* one self-touching OCCT solid. The **[D11] chart-graph cycle is out of scope** — a lap bond
+is an assembly declaration with gap `g`, not a rigid metric cycle-closure. Single-layer; multilayer
+stackup / multi-panel atlas / complex authored ECAD boundary are **beyond Stage 2**.
+
+Slices (each commits green; additive; the pure `certify-core` TCB grows only by the new BONDED module):
+
+- **S2.0 — this GO-gate (docs).** This section + the `vv-matrix.md` Stage-2 rows + the engineering-log
+  S2 thread. No code. Green via `xtask lint`.
+- **S2 (DEV.3-β) — full-2π closure / the shared seam frame.** **Met when:** (1) a general `SeamFrame`
+  reduction (`Verdict`-shaped) brings a seam to a finite regular parameter box + an *exact* transition;
+  (2) the re-centered cone view `cone_seam() = q'=(9σ',4σ',−4,−9)` is certified an exact reparametrization
+  of `fixtures::cone()` (the transition `σ'=−1/σ` verified float-free); (3) the seam-adjacent cone body
+  develops in the re-centered view at finite σ' (reusing `ConeDevelopment`/`unroll` unchanged — γ=0 there),
+  the two radial edges expressed as rails in one shared finite frame; (4) float-corroborated vs
+  `mesh3d::develop_cone` across the seam neighborhood (oracle ∧ audit). **GO** = the seam edges live at
+  finite, well-conditioned σ' with a converging development. **No-go** = the re-centered development
+  doesn't converge / the transition isn't exact → record the wall + alternative before building S3.
+- **S3 (§14 BONDED) — the bonded seam certificate + demo.** **Met when:** (1) the γ≠0 support-ramp is a
+  `Chart::new(cone_q, ramp_h)` fixture (representable today; the certificate reads `Chart::surface`
+  directly — the flat-γ / pedal-rejection lift is emission-only, done *iff* the flat pattern is in demo
+  scope); (2) a new `certify-core::bonded` module (own `Verdict`-shaped module, transcendental-free →
+  the rational side of the future `develop` split) certifies **SEP** (≡ `g`, exact), **SLAB** (`R₁>0`,
+  reuse `reg_q`/`slab_s0`), **SHEAR** (`δ=−Δ₀/k`, exact), and **CLEAR** (the new adaptive-subdivision
+  clearance, mirror `cut_fit`), threaded by a `gate.rs`-style `valid_bonded_seam` via `conj`; a
+  **refutation** case (too-small gap / interpenetrating ramp) is `Refuted`/`Unresolved`, never `Verified`;
+  (3) the demo emits two certified solids (`brep_trim_solid` cone body + lap flap) + the certified BONDED
+  interface, each corroborated by OCCT `audit_brep` (`brepcheck_valid`, `free_edges==0`). **GO** = the
+  BONDED conjunction `Verified` on the device seam, OCCT-corroborated, refutation fires. **No-go** = the
+  adaptive CLEAR subdivision doesn't converge over the Δφ≈60° box → record the wall.
+
+**Doctrine.** No float in a certificate — SEP/SLAB/SHEAR exact rational, CLEAR a rational-interval `ε`;
+the OCCT/mesh oracles corroborate, never certify. Fail-closed — a loose CLEAR → `Unresolved`, never a
+wrong `Verified`. Oracle ∧ audit, never oracle-instead.
+
+**Generality (hard gate).** The BONDED module is **additive** — a new `certify-core` module + the
+`develop::seam_frame` reduction; it does not touch `arrange2d`, `closure`, the exact `export` path, or
+the DEV transcendental core (except the optional, emission-only flat-γ layer in `develop::cone`). No new
+`Verdict` variant (any extra sub-state is a domain enum lowered via the `EdgeReg::to_verdict` idiom). No
+Kani/Lean TCB change unless a new *combinatorial* claim is introduced — flagged at that point if so.
+
+**Documentation (a merge gate).** Usage-first docs on new public surface under `-D missing_docs`; a short
+S2 spike report (`docs/spike-*.md` mold) recording the closure GO/no-go + the CLEAR-subdivision
+convergence numbers on the device seam.
+
+**Status: S2.0 met** — this section + the `vv-matrix.md` Stage-2 rows + the engineering-log S2 thread,
+authored on `stage-2-seam`. S2 + S3 pending.
 
 ---
 
