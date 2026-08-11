@@ -52,6 +52,12 @@ pub mod mesh3d;
 #[cfg(feature = "diagnostics")]
 pub mod cut_oracle;
 
+/// The **xy → (σ,μ) trim bridge** (G-B): author trimming cylinders in the cone's physical
+/// xy-plane and pull each back to a certified ruling-rail `μ̂(σ)` (via [`cut_oracle`] +
+/// [`develop::cut::cut_fit`]), then assemble the trim-loop boundary for the certified unroll.
+#[cfg(feature = "diagnostics")]
+pub mod trim;
+
 /// Real `.step` export via a `cxx` C++ FFI shim to OpenCASCADE's `STEPControl_Writer`.
 /// Behind the off-by-default `step` feature (needs system OCCT; build under `nix develop`).
 #[cfg(feature = "step")]

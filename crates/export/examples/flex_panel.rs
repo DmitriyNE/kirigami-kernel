@@ -1,192 +1,191 @@
-//! Emit the **Stage-1 flex-PCB panel** end-to-end — the certified pipeline finale (G7).
+//! Emit the **flex-PCB panel** — the cone trimmed by an *arrangement of vertical cylinders*
+//! authored in the physical xy-plane, developed to a certified flat pattern (the Stage-1 flat
+//! deliverable, xy-trimming rebuild).
 //!
-//! Drives the whole Milestone-E development chain over a *wide two-sided* device-cone gore and
-//! prints a per-stage certified verdict, so **running it is a stress report**:
+//! The 300°-ish device-cone gore is trimmed by `(D1 − D2) − D3 − D4` (all disks in xy):
+//! **D1** concentric outer (an exact `{z=d}` plane cut), **D2** eccentric inner containing the
+//! apex (a cone∩cylinder cut → the eccentric annulus), **D3** a boundary **notch** straddling
+//! the rim, **D4** an interior circular **hole**. Each disk is pulled back to a certified
+//! ruling-rail `μ̂(σ)` (G2: float oracle proposes, `cut_fit` decides), the boundary loops are
+//! **unrolled** (`develop::unroll`, ①) to flat polylines, and the panel is stitched together by
+//! the exact `arrange2d` boolean (`BoolOp::Diff`), with a polygon (quad) also cut. Every stage
+//! prints a certified verdict, so **running it is a stress report**.
 //!
-//! 1. **unroll** (`develop::unroll`, ①) — develop the μ-band boundary loop to a flat polyline;
-//! 2. **hole** (`develop::flat::cut_hole`, exact `arrange2d` boolean) — cut the interior hole (the
-//!    development of the authored `(σ,μ)` rectangle, the *same* one STEP II drills);
-//! 3. **fold** (`develop::fold`, ②) — fold the flat outline *and* the hole back to 3-D;
-//! 4. **STEP** (`export::brep_build` + the OCCT bridge) — write the input cone solid (STEP I) and
-//!    the folded panel carrying the hole as a real interior wire (STEP II).
+//! The physical-xy arrangement itself is certified up front (the same `BoolOp::Diff`): the disks
+//! must produce exactly one face with two holes (D2, D4) and a D3 rim notch, else the run stops.
 //!
-//! Artifacts (written under `--out-dir`, default `generated-demos/`, gitignored): `flex_panel.svg`
-//! (the flat pattern with the hole cut out, even-odd fill), and — behind `--features step`, under
-//! `nix develop` — `flex_panel_I.step` (cone solid) and `flex_panel_II.step` (folded holed panel).
+//! Artifacts (under `--out-dir`, default `generated-demos/`, gitignored): `flex_panel.svg` (the
+//! developed trimmed panel, even-odd fill). Behind `--features step` under `nix develop`, the
+//! **legacy** band+rectangle-hole solids `flex_panel_I.step` / `flex_panel_II.step` are still
+//! emitted — the trimmed-geometry STEP export needs the curved-rail B-rep builder (Stage B).
 //!
 //! ```text
-//! cargo run --example flex_panel --features diagnostics                 # pipeline + A2 SVG
-//! nix develop -c cargo run --example flex_panel --features diagnostics,step   # + STEP I/II
+//! cargo run --example flex_panel --features diagnostics                       # panel + SVG
+//! nix develop -c cargo run --example flex_panel --features diagnostics,step    # + legacy STEP
 //! ```
 //!
-//! Flags: `--sigma S` (gore half-span σ∈[−S,S], default `15/4` ≈ 300° 3-D sweep — the wide target;
-//! accepts `n` or `n/d`), `--segments <n>` (rail discretization, default 96), `--iters <n>` (fold
-//! bisection depth, default 64), `--out-dir <dir>`. A rational cone chart sweeps `< 2π`, so the gore
-//! widens with `S`; this is deliberately a *strain* case (see the engineering-log G7 note).
+//! Flags: `--segments <n>` (rail discretization, default 72), `--out-dir <dir>`. The gore is the
+//! moderate `σ ∈ [−1, 1]` (~180°) at band scale — a *cut* (circular) boundary is a varying-μ̂
+//! rail, so a large radius / a wider gore blows μ̂ up and the interval development goes loose (a
+//! logged strain; the constant-μ band is exempt).
 
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
-use develop::flat::cut_hole;
-use develop::fold::{FoldedWire, fold_outline};
-use develop::unroll::unroll_freeboundary;
 use export::approx::rat_to_f64;
+use export::cut_oracle::RootPick;
 use export::svg::{Bounds, polys_svg, region_to_polys};
+use export::trim::{
+    RailFit, assemble_flat, concentric_disk, eccentric_disk, flat_to_poly, hole_loop, outer_loop,
+    unroll_loop,
+};
 use fixtures::devices::cone;
-use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
+use lattice::{Bignum, Interval, Rat};
 
-fn parse_rat(s: &str) -> Rat<Bignum> {
-    match s.split_once('/') {
-        Some((n, d)) => Rat::new(
-            n.trim().parse().expect("--sigma numerator"),
-            d.trim().parse().expect("--sigma denominator"),
-        ),
-        None => Rat::from_i128(s.trim().parse().expect("--sigma integer")),
-    }
+type Q = Rat<Bignum>;
+
+fn e3(r: &Q) -> f64 {
+    rat_to_f64(r)
 }
 
 fn main() {
     // — Arguments —
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut sigma = "15/4".to_string();
-    let mut lo: Option<String> = None;
-    let mut segments = 96usize;
-    let mut iters = 64usize;
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut segments = 72usize;
     let mut out_dir = "generated-demos".to_string();
     let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--sigma" => {
-                i += 1;
-                sigma = args.get(i).cloned().expect("--sigma expects a value");
-            }
-            "--lo" => {
-                i += 1;
-                lo = Some(args.get(i).cloned().expect("--lo expects a value"));
-            }
+    while i < argv.len() {
+        match argv[i].as_str() {
             "--segments" => {
-                i += 1;
-                segments = args
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .expect("--segments expects an integer");
-            }
-            "--iters" => {
-                i += 1;
-                iters = args
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .expect("--iters expects an integer");
+                segments = argv[i + 1].parse().expect("--segments <n>");
+                i += 2;
             }
             "--out-dir" => {
-                i += 1;
-                out_dir = args.get(i).cloned().expect("--out-dir expects a path");
+                out_dir = argv[i + 1].clone();
+                i += 2;
             }
-            other => {
-                eprintln!("unknown argument `{other}`");
-                std::process::exit(1);
-            }
+            other => panic!("unknown flag {other}"),
         }
-        i += 1;
     }
 
-    let s = parse_rat(&sigma);
-    let lo = match &lo {
-        Some(l) => parse_rat(l),
-        None => Rat::from_i128(0).sub(&s), // default: symmetric two-sided gore [−S, S]
-    };
-    let span = Interval {
-        lo: lo.clone(),
-        hi: s.clone(),
-    };
-    let sigma_mid = span.lo.add(&span.hi).mul(&Rat::new(1, 2)); // hole placed at the σ-midpoint
     let chart = cone();
     let dev = ConeDevelopment::new(&chart).expect("the device cone is a canonical arctan cone");
     let cfg = DevConfig::tight();
-    // The retained band: outer rail μ⁻ ≡ −2, inner rail μ⁺ ≡ −1 (negative side ⇒ no apex μ̂=0
-    // crossing). Both constant RatFuncs.
-    let mu_lo = RatFunc::<Bignum>::from_poly(Poly::constant(Rat::from_i128(-2)));
-    let mu_hi = RatFunc::<Bignum>::from_poly(Poly::constant(Rat::from_i128(-1)));
-    // A generous fab clearance so the demo certifies; the report shows the *achieved* ε per stage.
-    let clearance = Rat::from_i128(1);
-
-    // One hole authored in the sheet's `(σ, μ)` domain, centred on the σ-midline at mid-band μ = −3/2.
-    // The *same* rectangle drives both the flat cut (via its development) and the STEP-II drill, so the
-    // two stay coherent — and on a symmetric gore its centre σ = 0 is a positive-weight **station**,
-    // the exact placement the single-slice builder mis-drilled (off-centre, distorted). The general
-    // arrangement construction cuts it per slice and splits its tube at the station.
-    let hole_sigma_half = span.hi.sub(&span.lo).mul(&Rat::new(1, 40));
-    let hole_sigma = Interval {
-        lo: sigma_mid.sub(&hole_sigma_half),
-        hi: sigma_mid.add(&hole_sigma_half),
+    let clearance = Q::from_i128(1);
+    let span = Interval {
+        lo: Q::from_i128(-1),
+        hi: Q::from_i128(1),
     };
-    let hole_mu = Interval {
-        lo: Rat::new(-25, 16),
-        hi: Rat::new(-23, 16),
-    };
+    let fit = RailFit::default();
 
-    println!(
-        "flex-PCB Stage-1 panel — device cone (β≈42°), gore σ∈[{:.4},{:.4}], band μ∈[−2,−1]\n\
-         segments={segments} iters={iters}",
-        rat_to_f64(&span.lo),
-        rat_to_f64(&span.hi)
-    );
+    // — The trimming disks (physical xy, around +y — the gore develops the upper half-plane) —
+    let d1 = concentric_disk(&chart, &Q::from_i128(3)).expect("concentric plane rail"); // outer
+    let d2 = eccentric_disk(
+        Q::from_i128(0),
+        Q::new(1, 2),
+        Q::from_i128(2),
+        RootPick::Upper,
+    ); // inner
+    let d3 = [Q::new(-9, 4), Q::new(9, 4), Q::new(9, 16)]; // boundary notch (straddles D1)
+    let d4 = [Q::from_i128(0), Q::new(11, 5), Q::new(1, 25)]; // interior hole
 
-    // — Stage 1: unroll (develop ①) —
-    let outline = match unroll_freeboundary(&dev, &span, &mu_lo, &mu_hi, segments, &cfg, &clearance)
-    {
+    println!("flex-PCB panel — device cone (β≈42°), gore σ∈[−1,1], trim (D1−D2)−D3−D4 in xy");
+
+    // — Certify the physical-xy arrangement topology (BoolOp::Diff) —
+    certify_arrangement(&d1, &d2, &d3, &d4);
+
+    // — Outer boundary: eccentric annulus + D3 notch → unroll —
+    let outer = match outer_loop(
+        &chart,
+        &d1,
+        &d2,
+        (&d3[0], &d3[1], &d3[2]),
+        &span,
+        fit,
+        &clearance,
+        &cfg,
+        &Q::new(1, 1000),
+        segments,
+    ) {
         Verdict::Verified(o) => {
             println!(
-                "unroll:     Verified    ε≈{:.3e}   ({} flat verts)",
-                rat_to_f64(&o.eps),
+                "outer rail:  Verified   ε≈{:.3e}   D1∩D3 micro-cap≈{:.2e}",
+                e3(&o.eps),
+                e3(&o.max_microcap)
+            );
+            o
+        }
+        v => bail("outer boundary", &v),
+    };
+    let outer_flat = match unroll_loop(&dev, &outer.arcs, &cfg, &clearance) {
+        Verdict::Verified(o) => {
+            println!(
+                "outer unroll:Verified   ε≈{:.3e}   ({} flat verts)",
+                e3(&o.eps),
                 o.vertices.len()
             );
             o
         }
-        Verdict::Unresolved(e) => {
-            println!(
-                "unroll:     Unresolved  ε≈{:.3e} ≥ clearance/2 — raise --segments (finer rails)",
-                rat_to_f64(&e)
-            );
-            std::process::exit(1);
-        }
-        Verdict::Refuted(f) => {
-            println!("unroll:     Refuted     {f:?}");
-            std::process::exit(1);
-        }
+        v => bail("outer unroll", &v),
     };
 
-    // — Stage 2: cut the interior hole (develop::flat + exact arrange2d) —
-    // The flat hole is the **development of the authored (σ,μ) rectangle**: its four corners mapped
-    // through the exact cone development, so the flat cut and the STEP-II drill are one hole.
-    let square: Vec<[Rat<Bignum>; 2]> = [
-        (&hole_sigma.lo, &hole_mu.lo),
-        (&hole_sigma.hi, &hole_mu.lo),
-        (&hole_sigma.hi, &hole_mu.hi),
-        (&hole_sigma.lo, &hole_mu.hi),
+    // — D4 interior hole → unroll —
+    let hole = match hole_loop(
+        &chart,
+        &d4[0],
+        &d4[1],
+        &d4[2],
+        &span,
+        fit,
+        &clearance,
+        &cfg,
+        &Q::new(1, 200),
+        segments / 2,
+    ) {
+        Verdict::Verified(h) => {
+            println!(
+                "D4 hole:     Verified   ε≈{:.3e}   tangent micro-cap≈{:.2e}",
+                e3(&h.eps),
+                e3(&h.max_microcap)
+            );
+            h
+        }
+        v => bail("D4 hole", &v),
+    };
+    let hole_flat = match unroll_loop(&dev, &hole.arcs, &cfg, &clearance) {
+        Verdict::Verified(o) => o,
+        v => bail("D4 hole unroll", &v),
+    };
+
+    // — An authored quad cut (developed from (σ,μ), landing in the band left of D4) —
+    let quad: Vec<[Q; 2]> = [
+        (Q::new(-9, 20), Q::new(43, 20)),
+        (Q::new(-6, 20), Q::new(43, 20)),
+        (Q::new(-6, 20), Q::new(47, 20)),
+        (Q::new(-9, 20), Q::new(47, 20)),
     ]
     .iter()
-    .map(|&(s, m)| {
+    .map(|(s, m)| {
         let (x, y) = dev.point(s, m, &cfg).center();
         [x, y]
     })
     .collect();
-    let holed = match cut_hole(&outline, &square) {
-        Verdict::Verified(h) => {
-            println!("hole:       Verified    (1 face · 1 hole · no pinch)");
-            h
+
+    // — Assemble the flat panel: outer − (D4 ∪ quad) via the exact BoolOp::Diff —
+    let outer_poly = flat_to_poly(&outer_flat);
+    let hole_poly = flat_to_poly(&hole_flat);
+    let region = match assemble_flat(&outer_poly, &[hole_poly, quad]) {
+        Verdict::Verified(r) => {
+            println!(
+                "assemble:    Verified   1 face · {} holes (D4 + quad)",
+                r.faces[0].holes.len()
+            );
+            r
         }
-        Verdict::Unresolved(()) => {
-            println!("hole:       Unresolved");
-            std::process::exit(1);
-        }
-        Verdict::Refuted(f) => {
-            println!("hole:       Refuted     {f:?}");
-            std::process::exit(1);
-        }
+        v => bail("flat assembly", &v),
     };
 
-    // — A2: SVG of the flat pattern with the hole cut out (even-odd fill) —
-    let polys = region_to_polys(&holed.region);
+    // — SVG (even-odd fill; the holes cut out) —
+    let polys = region_to_polys(&region);
     let frame = Bounds::of_points(
         polys
             .faces
@@ -198,127 +197,121 @@ fn main() {
     let svg_path = format!("{out_dir}/flex_panel.svg");
     std::fs::write(&svg_path, &svg).expect("write flex_panel.svg");
     println!(
-        "A2 SVG:     wrote {svg_path}   ({} rings, {} bytes)",
+        "SVG:         wrote {svg_path}   ({} rings, {} bytes)",
         polys.faces.iter().map(|f| f.rings.len()).sum::<usize>(),
         svg.len()
     );
 
-    // — Stage 3: fold the flat outline + the hole back to 3-D (develop ②, σ=0 split) —
-    let flat_outer: Vec<[Rat<Bignum>; 2]> = outline
-        .vertices
-        .iter()
-        .map(|b| {
-            let (x, y) = b.center();
-            [x, y]
-        })
-        .collect();
-    let w0 = Rat::from_i128(0);
-    let do_fold = |label: &str, flat: &[[Rat<Bignum>; 2]]| -> FoldedWire<Bignum> {
-        match fold_outline(&chart, flat, &w0, &span, iters, true, &cfg, &clearance) {
-            Verdict::Verified(w) => {
-                println!(
-                    "{label} Verified    ε≈{:.3e}   ({} wire verts)",
-                    rat_to_f64(&w.eps),
-                    w.points.len()
-                );
-                w
-            }
-            Verdict::Unresolved(e) => {
-                println!(
-                    "{label} Unresolved  ε≈{:.3e} ≥ clearance/2 — raise --iters",
-                    rat_to_f64(&e)
-                );
-                std::process::exit(1);
-            }
-            Verdict::Refuted(f) => {
-                println!("{label} Refuted     {f:?}");
-                std::process::exit(1);
-            }
-        }
-    };
-    let fw_outer = do_fold("fold-outer:", &flat_outer);
-    let fw_hole = do_fold("fold-hole: ", &square);
-
-    // — Stage 4: STEP I (cone solid) + STEP II (folded holed panel) —
+    // — Legacy STEP (band + rectangle hole) — the trimmed-geometry STEP is Stage B (G-C) —
     #[cfg(feature = "step")]
-    emit_step(
-        &chart,
-        &span,
-        &mu_lo,
-        &mu_hi,
-        &hole_sigma,
-        &hole_mu,
-        &fw_outer,
-        &fw_hole,
-        &out_dir,
-    );
+    emit_step_legacy(&chart, &out_dir);
     #[cfg(not(feature = "step"))]
-    {
-        let _ = (&fw_outer, &fw_hole);
-        println!("STEP:       skipped — build `--features step` under `nix develop` for A4/A5");
+    println!("STEP:        skipped — the trimmed-geometry STEP export is Stage B (curved builder)");
+}
+
+/// Certify the physical-xy arrangement `(D1 − D2) − D3 − D4` with the exact `BoolOp::Diff`: the
+/// authored disks must resolve to exactly one face with two holes (D2, D4) and a D3 rim notch.
+fn certify_arrangement(
+    d1: &export::trim::TrimDisk<Bignum>,
+    d2: &export::trim::TrimDisk<Bignum>,
+    d3: &[Q; 3],
+    d4: &[Q; 3],
+) {
+    use arrange2d::boolean::{BoolOp, OperandId, ledge_dom_certified};
+    use geom::content::{Circle, Curve, CurveId, Orient};
+    let disks = [
+        (d1.cx.clone(), d1.cy.clone(), d1.r2.clone()), // A: D1
+        (d2.cx.clone(), d2.cy.clone(), d2.r2.clone()), // B: D2
+        (d3[0].clone(), d3[1].clone(), d3[2].clone()), // B: D3
+        (d4[0].clone(), d4[1].clone(), d4[2].clone()), // B: D4
+    ];
+    let mut edges = Vec::new();
+    for (i, (cx, cy, r2)) in disks.iter().enumerate() {
+        edges.extend(arrange2d::decompose::decompose(&Curve::Circle {
+            circle: Circle {
+                cx: cx.clone(),
+                cy: cy.clone(),
+                r2: r2.clone(),
+            },
+            orient: Orient::Ccw,
+            source: CurveId(i as u32),
+        }));
+    }
+    let operand_of = |c: CurveId| {
+        if c.0 == 0 { OperandId::A } else { OperandId::B }
+    };
+    match ledge_dom_certified(&edges, &operand_of, BoolOp::Diff) {
+        Verdict::Verified(cap) => {
+            let r = cap.region();
+            assert_eq!(r.faces.len(), 1, "arrangement is one face");
+            assert_eq!(r.faces[0].holes.len(), 2, "two holes (D2, D4)");
+            println!("arrangement: Verified   (D1−D2)−D3−D4 = 1 face, 2 holes, D3 rim notch");
+        }
+        other => {
+            println!("arrangement: NOT certified — {}", verdict_tag(&other));
+            std::process::exit(1);
+        }
     }
 }
 
-/// Emit STEP I — the input cone gore as a thin closed solid via [`brep_freeboundary`] — and STEP II
-/// — the **same slab with a real through-hole** via [`brep_freeboundary_holed`]. Both auto-subdivide
-/// σ into positive-weight single-span-Bézier slices (a wide two-sided gore needs it). STEP II drills
-/// the *same* `(σ, μ)` rectangle the flat cut used, at its authored location — on a symmetric gore
-/// that centre σ = 0 is a subdivision station, so the general arrangement construction cuts the hole
-/// per slice (a **notch** into each) and splits its tube at the station. The result is a certified
-/// **genus-1** solid, exported through OCCT `MakeFace` inner wires and written through the OCCT bridge
-/// ([`write_brep`] = write-then-reload-through-BRepCheck), which prints `ok` or `error: <what>` — a
-/// rejection is reported, not hidden.
+fn verdict_tag<T, E: core::fmt::Debug, M>(v: &Verdict<T, E, M>) -> String {
+    match v {
+        Verdict::Verified(_) => "Verified".into(),
+        Verdict::Refuted(w) => format!("Refuted({w:?})"),
+        Verdict::Unresolved(_) => "Unresolved".into(),
+    }
+}
+
+fn bail<T, E: core::fmt::Debug, M>(stage: &str, v: &Verdict<T, E, M>) -> ! {
+    println!("{stage}: {} — stopping", verdict_tag(v));
+    std::process::exit(1);
+}
+
+/// Emit the **legacy** band+rectangle-hole STEP solids (STEP I cone slab, STEP II genus-1
+/// through-hole) — unchanged from the pre-trimming demo. The trimmed-panel STEP export needs the
+/// curved-rail B-rep builder (Stage B / gap G-C); this keeps `--features step` green meanwhile.
 #[cfg(feature = "step")]
-#[allow(clippy::too_many_arguments)]
-fn emit_step(
-    chart: &geom::chart::Chart<Bignum>,
-    span: &Interval<Bignum>,
-    mu_lo: &RatFunc<Bignum>,
-    mu_hi: &RatFunc<Bignum>,
-    hole_sigma: &Interval<Bignum>,
-    hole_mu: &Interval<Bignum>,
-    fw_outer: &FoldedWire<Bignum>,
-    fw_hole: &FoldedWire<Bignum>,
-    out_dir: &str,
-) {
+fn emit_step_legacy(chart: &geom::chart::Chart<Bignum>, out_dir: &str) {
     use export::brep_build::{HoleRect, brep_freeboundary, brep_freeboundary_holed};
     use export::step::write_brep;
-    // The folded wires are the 3-D preview of the flat pattern + hole (Stage 3); the exact solids
-    // below are reconstructed from the chart in (σ, μ), so the wires are only reported here.
-    let _ = (fw_outer, fw_hole);
+    use lattice::{Poly, RatFunc};
 
-    // A thin thickness window w ∈ [0, 1/8]; the hole runs through it.
+    let span = Interval {
+        lo: Q::new(-15, 4),
+        hi: Q::new(15, 4),
+    };
+    let mu_lo = RatFunc::<Bignum>::from_poly(Poly::constant(Q::from_i128(-2)));
+    let mu_hi = RatFunc::<Bignum>::from_poly(Poly::constant(Q::from_i128(-1)));
     let w_iv = Interval {
-        lo: Rat::from_i128(0),
-        hi: Rat::new(1, 8),
+        lo: Q::from_i128(0),
+        hi: Q::new(1, 8),
     };
-
-    // STEP I — the input cone gore as a thin closed solid. `brep_freeboundary` auto-subdivides σ so
-    // every ruled Bézier patch has positive weights (a wide two-sided gore needs it), assembling one
-    // watertight N-slice solid — no σ=0 special case.
-    let solid = brep_freeboundary(chart, span, &w_iv, mu_lo, mu_hi);
+    println!("--- legacy STEP (band + rectangle hole; trimmed-geometry STEP is Stage B) ---");
+    let solid = brep_freeboundary(chart, &span, &w_iv, &mu_lo, &mu_hi);
     let p1 = format!("{out_dir}/flex_panel_I.step");
-    println!("STEP I:     {:<40}   → {p1}", write_brep(&p1, &solid));
+    println!("STEP I:      {:<40}   → {p1}", write_brep(&p1, &solid));
 
-    // STEP II — the same slab with the hole drilled at its authored `(σ, μ)` rectangle (the one the
-    // flat cut developed). On the symmetric gore its centre σ = 0 is a station; the arrangement cuts
-    // it per slice and splits its tube there — the hole lands exactly where the SVG shows it.
+    let sigma_mid = Q::from_i128(0);
     let hole = HoleRect {
-        sigma: hole_sigma.clone(),
-        mu: hole_mu.clone(),
+        sigma: Interval {
+            lo: sigma_mid.sub(&Q::new(3, 16)),
+            hi: sigma_mid.add(&Q::new(3, 16)),
+        },
+        mu: Interval {
+            lo: Q::new(-25, 16),
+            hi: Q::new(-23, 16),
+        },
     };
-    match brep_freeboundary_holed(chart, span, &w_iv, mu_lo, mu_hi, &[hole]) {
+    match brep_freeboundary_holed(chart, &span, &w_iv, &mu_lo, &mu_hi, &[hole]) {
         Some(solid2) => {
             let p2 = format!("{out_dir}/flex_panel_II.step");
-            println!("STEP II:    {:<40}   → {p2}", write_brep(&p2, &solid2));
+            println!("STEP II:     {:<40}   → {p2}", write_brep(&p2, &solid2));
             println!(
-                "            (genus-1 through-hole solid: {} faces, {} free edges)",
+                "             (genus-1 through-hole solid: {} faces, {} free edges)",
                 solid2.faces().len(),
                 solid2.free_edges()
             );
         }
-        None => println!(
-            "STEP II:    refused — the authored hole is not strictly interior to the panel"
-        ),
+        None => println!("STEP II:     refused — hole not strictly interior"),
     }
 }
