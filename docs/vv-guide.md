@@ -1758,6 +1758,112 @@ The BONDED certificate is **3D-rational** — no flat-`γ` needed; the transcend
 
 ---
 
+### Driving Demo (DD) acceptance criteria (the self-lapping cone-with-ramp — full 3D↔2D round-trip; **round-trip-first, GO-gated**)
+
+*Authored before implementation (DD.0).* The Driving Demo is the **culminating acceptance demo** the
+whole flex-PCB spine (`docs/roadmap-flex-pcb.md`, the [[driving-requirement]] bidirectional transform)
+builds toward: a **cone whose scalar support `h` ramps `0 → D ≈ 0.27 mm` over the last ~60°** of its 2π
+wrap, so an offset sector **laps over the base** at the seam, put through the **full bidirectional
+round-trip** — author the construction + **cut boundaries in 3D** → **unwrap/develop** to the flat
+pattern → author **interior ECAD features in 2D** → **fold/wrap back** to 3D. Validated numerically in the
+user's prototype `~/temp/dev-quat-rep-test` (same `(q,h)` chart representation as the kernel). It
+**composes** what is already built — Stage 1 (`cut → unroll → 2D-hole → STEP` per-panel pipeline), Stage 2
+(`develop::bonded` §14 BONDED + `develop::seam_frame`), Milestone E (certified develop ① / fold ②) — and
+lands the **one genuine new frontier the geometry forces: the γ≠0 flat-directrix integrator** (DEV.3
+"method (b)"). It realizes DEV.3's "two product pipelines end-to-end". It **defers** multilayer stackup,
+multi-panel atlas / reflection-mate (D4.4), and complex authored ECAD boundary with cutouts (D4.3 / §14
+curves) — all *Beyond Stage 2*.
+
+**Four framing decisions settled at DD.0 (they scope the whole milestone).**
+
+1. **Representation = body gore + ramp flap + certified bond.** The base-cone gore (`h≡0`, ~300°) and the
+   ramp flap (`h:0→D`, ~60°) together cover the full 2π, the flap lapping the body's head; each is a valid
+   OCCT solid, joined by the Stage-2 `valid_bonded_seam`. This is the §6.2 "two-piece lap" doctrine and the
+   Stage-2 geometry lock — a lap is **doubled material**, so a *single self-touching 2π solid* is
+   OCCT-rejected and out of scope (no single-chart 2π cover, no `[D11]` chart-graph cycle). The
+   self-lapping mental model and the body+flap assembly are the **same geometry**: one ramping-`h` chart
+   whose 2π wrap self-laps, realized as the two-view assembly.
+2. **Boundaries are cut in 3D; only interior ECAD features are authored in 2D and folded back.** The
+   outer/inner/notch boundaries are cut in 3D exactly as today's Stage-1 demo does (`export::trim` /
+   `develop::unroll::unroll_trim_loop`) — **not** re-authored on the flat. The 2D→3D fold leg carries
+   **interior** cuts (an ECAD feature authored in the flat pattern, folded back onto the surface).
+3. **Round-trip first, then the seam** — de-risk the fold-back leg (DD.1) on the plain cone gore before the
+   transcendental γ frontier (DD.2) and the seam device (DD.4).
+4. **Build the γ integrator** — the ramp flap's flat pattern is *certified* (a verified interval
+   enclosure), not emission-only. This is the DEV.3 method-(b) commitment.
+
+**The gaps (from the gap analysis) → the slices.**
+
+1. **The fold-back leg is unwired.** `develop::fold::fold_outline` is built + unit-tested, but the Stage-1
+   driver lifts cuts *forward* (`brep_trim_solid`); it never authors a cut in flat coordinates and folds it
+   back to 3D. → **DD.1**.
+2. **The ramp flap's certified flat pattern needs `γ(σ) = ∫₀^σ e(ψ)·(pedal speed) dσ = ∫(rational ×
+   cos(c·arctan σ))`** — non-elementary for `c = 130/97` (`ψ` *is* closed-form; `γ` is not). `develop::cone`
+   hard-codes the pure-radial polar map `D = µ̂·ρ·e(ψ)` (γ≡0) and rejects `h≠0` (the `cone_angle_coeff`
+   pedal gate); `develop::interval` has **no quadrature**. → **DD.2** (the DEV.3 method-(b) frontier,
+   spike-first).
+3. **The γ≠0 fold** — `fold::invert_sigma` recovers σ from the pure-radial signed area `= µ̂·ρ·e(ψ)`; with
+   γ≠0 the flat point is `γ(σ) + µ̂·ρ·e(ψ)`, a coupled 2-D inversion (subtract `γ(σ*)`, σ unknown). →
+   **DD.3**.
+4. **Full-2π / self-lap = the body+flap+bond assembly.** `brep_trim_solid` spans a finite σ-band; the 2π
+   cover is the two-solid assembly (body chart + re-centered flap chart) + the certified bond. Extend the
+   Stage-2 two-solid stub from the tiny σ'-box to the real device. → **DD.4**.
+
+Slices (each commits green; additive; **round-trip-first**, so the transcendental frontier is isolated to
+DD.2/DD.3 and the plain-cone fold leg is de-risked first):
+
+- **DD.0 — this GO-gate (docs).** This section + the `vv-matrix.md` DD rows + the engineering-log DD
+  thread; lock the scope + the four decisions + the round-trip structure. No code. Green via `xtask lint`.
+- **DD.1 — the round-trip on the cone gore (γ=0, no seam).** **Met when:** (1) a driver keeps the **3D
+  boundary cuts** (reuse `export::trim::{outer_loop,hole_loop}` + `develop::unroll::unroll_trim_loop`) and
+  develops the gore to a flat pattern; (2) an **interior ECAD feature authored in the flat pattern is
+  folded back** via `develop::fold::fold_outline` → a certified `FoldedWire` lifted onto the cone gore (the
+  leg the demo skips today) — closing the "ECAD → fold → solid" pipeline; (3) a round-trip integration test
+  recovers a flat-authored feature to `< ε` per-stage `Verified`, float-corroborated against `mesh3d`
+  (oracle ∧ audit); (4) the driver writes SVG + STEP. **No new frontier** (γ=0 throughout).
+- **DD.2 — the γ≠0 flat-directrix integrator (DEV.3 method b) — SPIKE-FIRST.** **Met when:** (1) a
+  **verified interval integrator** for `γ(σ) = ∫₀^σ e(ψ)·(pedal speed)` lands in `develop::interval`
+  (candidate: Taylor models / verified Riemann sums over the existing `cos_on`/`sin_on` + `eval_ratfunc_on`
+  enclosures; the spike selects + prices the method, `docs/spike-development-report.md` mold); (2)
+  `ConeDevelopment` is **generalized in place** — an optional directrix `γ`, `point`/`point_on` add the
+  `+γ(σ)` term, a `γ≡0` fast path so the cone reproduces today's output **byte-for-byte**, and the
+  `cone_angle_coeff` pedal-nonzero rejection is lifted for the ramp; `unroll`/`anchor` ride unchanged (the
+  single chokepoint is `dev.point`). **GO** = a converging, `Verdict`-typed γ-enclosure with fab-plausible
+  ε on the ramp flap, float-corroborated by a directrix oracle. **No-go** = the enclosure doesn't converge
+  over the ramp box → record the wall + alternative.
+- **DD.3 — the γ≠0 fold.** **Met when:** `fold::fold_point`/`invert_sigma` subtract `γ(σ*)` and solve the
+  coupled 2-D inversion (ψ-monotonicity from `split_domain` stays valid; the 3-D lift already reads
+  `chart.pedal()`), and a flat-authored feature folds onto the ramp flap with a certified round-trip ε that
+  shrinks with iters (too-tight → `Unresolved`, never a wrong `Verified`).
+- **DD.4 — the seam device (the acceptance demo).** **Met when:** the Stage-2 two-solid stub is extended to
+  the **real device** — **body gore** (γ=0, ~300°, 3D-cut boundaries, developed + interior features folded)
+  + **ramp flap** (γ≠0, ~60°, developed via DD.2 + folded via DD.3) + the **certified bond** (Stage-2
+  `valid_bonded_seam`), body ∪ flap covering 2π; two STEP solids + the certified bond + the full
+  round-trip artifacts, each corroborated by OCCT `audit_brep` (`brepcheck_valid`, `free_edges==0`).
+
+**Doctrine.** No float in a certificate — the γ integrator is a **rational-interval enclosure** (shell-tier
+interval arithmetic, like `develop::cut`/`anchor`/`bonded`; no Kani/Lean TCB growth), the OCCT/mesh oracles
+corroborate, never certify. Fail-closed — a loose γ or fold → `Unresolved`, never a wrong `Verified`.
+Oracle ∧ audit, never oracle-instead.
+
+**Generality (hard gate).** Fully general, no goal-specific hacks (the roadmap's standing decision). The γ
+integrator is a general directrix enclosure (`γ` is any developable's flat directrix, the cone-with-ramp is
+one instance); `ConeDevelopment` gains an *optional* γ with a byte-identical γ≡0 fast path (**no interface
+ossification** — one general engine, the γ=0 cone is the thin special case, consumers updated freely). No
+checker names "ramp" or "cone-seam". No new `Verdict` variant (any extra sub-state is a domain enum lowered
+via the `EdgeReg::to_verdict` idiom). No Kani/Lean TCB change unless a new *combinatorial* claim appears —
+flagged at that point if so.
+
+**Documentation (a merge gate).** Usage-first, history-free docs on new public surface under
+`-D missing_docs`, worked doctests on entry points; a DD.2 spike report (`docs/spike-*.md` mold) recording
+the γ method + the certified `ε_γ` on the ramp flap + the float directrix-oracle corroboration + the
+GO/no-go.
+
+**Status: DD.0 met** — on `driving-demo` (branched off `stage-2-seam`). This section + the `vv-matrix.md`
+DD rows + the engineering-log DD thread. DD.1–DD.4 pending.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.
