@@ -921,6 +921,77 @@ mod tests {
         );
     }
 
+    // S2 (Stage-2 seam closure): the SAME physical cone developed in the RE-CENTERED seam
+    // chart (`cone_seam`, σ = −1/σ') is corroborated by the independent float diagnostic over
+    // a σ' grid anchored at the SEAM ruling σ' = 0 (φ₃D = ±π) — the ruling unreachable at
+    // σ = ±∞ in the canonical chart. The certified re-centered development is tight and the
+    // float oracle agrees: the seam neighborhood develops faithfully at finite σ'.
+    #[test]
+    fn certified_seam_development_corroborates_develop_cone() {
+        use develop::cone::{ConeDevelopment, DevConfig};
+        use fixtures::devices::cone_seam;
+        use lattice::{Bignum, Rat};
+
+        let chart = cone_seam();
+        let dev = ConeDevelopment::new(&chart).expect("the re-centered cone is a canonical cone");
+
+        // A fine σ' grid anchored at the seam (row 0 = σ' = 0, θ = 0). Two μ rails at the edges.
+        let nrows = 2001usize; // σ'_i = i/2000; row 0 is the seam ruling σ' = 0
+        let ncols = 2usize;
+        let mus = [Rat::<Bignum>::from_i128(-1), Rat::new(-1, 2)];
+        let w0 = Rat::from_i128(0);
+        let cols: Vec<_> = mus.iter().map(|m| chart.surface(m, &w0)).collect();
+        let sig = |i: usize| Rat::<Bignum>::new(i as i128, (nrows - 1) as i128);
+
+        let mut positions = Vec::with_capacity(nrows * ncols);
+        for i in 0..nrows {
+            let s = sig(i);
+            for col in &cols {
+                positions.push(vec3_to_f64(&col.eval(&s).unwrap()));
+            }
+        }
+        let flat = develop_cone(&positions, nrows, ncols);
+
+        let cfg = DevConfig::<Bignum> {
+            terms: 40,
+            sqrt_eps: Rat::new(1, 100_000_000_000),
+        };
+        let c = 130.0 / 97.0; // 2 sinβ
+        let (mut max_diag, mut max_analytic, mut max_be) = (0.0f64, 0.0f64, 0.0f64);
+        for i in [0usize, 500, 1000, 1500, 2000] {
+            let sp = i as f64 / (nrows - 1) as f64; // σ' at this row
+            let s = sig(i);
+            for (j, m) in mus.iter().enumerate() {
+                let bx = dev.point(&s, m, &cfg);
+                let (cx, cy) = bx.center();
+                let (cxf, cyf) = (rat_to_f64(&cx), rat_to_f64(&cy));
+                // (a) corroboration vs the independent float diagnostic develop_cone
+                let fv = &flat[i * ncols + j];
+                max_diag = max_diag.max(((cxf - fv[0]).powi(2) + (cyf - fv[1]).powi(2)).sqrt());
+                // (b) the certified center matches |μ|ρ·e(c·atan σ'); ρ_seam(σ') = 144/(97(1+σ'²))
+                //     — the same functional form as the canonical chart.
+                let rho = 144.0 / 97.0 / (1.0 + sp * sp);
+                let mag = rat_to_f64(m).abs() * rho;
+                let psi = c * sp.atan();
+                let (ax, ay) = (mag * psi.cos(), mag * psi.sin());
+                max_analytic = max_analytic.max(((cxf - ax).powi(2) + (cyf - ay).powi(2)).sqrt());
+                max_be = max_be.max(rat_to_f64(&bx.backward_error()));
+            }
+        }
+        assert!(max_be < 1e-8, "certified seam backward error {max_be:e} too loose");
+        assert!(max_analytic < 1e-9, "seam analytic residual {max_analytic:e}");
+        assert!(max_diag < 1e-6, "seam corroboration residual {max_diag:e}");
+        // The seam ruling itself (σ' = 0) develops to the finite point (144/97, 0) exactly —
+        // the whole point of the re-centering (unreachable as σ → ±∞ in the canonical chart).
+        let seam0 = dev.point(&Rat::<Bignum>::from_i128(0), &Rat::from_i128(-1), &cfg);
+        let (sx, sy) = seam0.center();
+        assert!((rat_to_f64(&sx) - 144.0 / 97.0).abs() < 1e-9);
+        assert!(rat_to_f64(&sy).abs() < 1e-9);
+        println!(
+            "S2 seam corroboration: max_diag={max_diag:e} max_analytic={max_analytic:e} max_be={max_be:e}"
+        );
+    }
+
     // DEV.2d: the certified *unroll* (direction ①). The developed free-boundary outline
     // (develop::unroll) is corroborated vertex-by-vertex by the independent float diagnostic
     // develop_cone — the assembled flat pattern matches the oracle, no float in the certificate.
