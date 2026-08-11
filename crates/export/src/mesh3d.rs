@@ -978,8 +978,14 @@ mod tests {
                 max_be = max_be.max(rat_to_f64(&bx.backward_error()));
             }
         }
-        assert!(max_be < 1e-8, "certified seam backward error {max_be:e} too loose");
-        assert!(max_analytic < 1e-9, "seam analytic residual {max_analytic:e}");
+        assert!(
+            max_be < 1e-8,
+            "certified seam backward error {max_be:e} too loose"
+        );
+        assert!(
+            max_analytic < 1e-9,
+            "seam analytic residual {max_analytic:e}"
+        );
         assert!(max_diag < 1e-6, "seam corroboration residual {max_diag:e}");
         // The seam ruling itself (σ' = 0) develops to the finite point (144/97, 0) exactly —
         // the whole point of the re-centering (unreachable as σ → ±∞ in the canonical chart).

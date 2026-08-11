@@ -1738,8 +1738,14 @@ Kani/Lean TCB change unless a new *combinatorial* claim is introduced — flagge
 S2 spike report (`docs/spike-*.md` mold) recording the closure GO/no-go + the CLEAR-subdivision
 convergence numbers on the device seam.
 
-**Status: S2.0 met** — this section + the `vv-matrix.md` Stage-2 rows + the engineering-log S2 thread,
-authored on `stage-2-seam`. S2 + S3 pending.
+**Status: S2.0 + S2 met** (decision GO, `docs/spike-seam-closure-report.md`) — on `stage-2-seam`. S2.0
+authored this section + the `vv-matrix.md` rows + engineering-log. **S2** brought the seam to a finite,
+regular parameter, exactly and certified: `fixtures::devices::cone_seam` (the device cone re-centered by
+the axis half-turn `σ=−1/σ'`, seam at `σ'=0`), the general `develop::seam_frame` reduction
+(`seam_frame_exact` — the re-centering discharged as an exact rational identity, refutations fire), the
+existing `ConeDevelopment` develops the seam ruling to the exact `(144/97,0)` unchanged, and the float
+`develop_cone` corroborates the re-centered development to `≈1.5e-8` (backward error `≈6e-12`). The
+seam-ramp frontier is **rational, not transcendental** — scoped to S3's CLEAR. **S3 pending.**
 
 ---
 
