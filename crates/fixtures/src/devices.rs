@@ -29,6 +29,33 @@ pub fn cone() -> Chart<Bignum> {
     Chart::new(q, RatFunc::zero())
 }
 
+/// The device cone **re-centered on the seam** — the same cone [`cone`] reparametrized by the
+/// exact rational Möbius `σ' = −1/σ`, so the lap-seam ruling (`φ₃D = ±π`, at `σ = ±∞` in the
+/// canonical chart) becomes the **regular finite point `σ' = 0`** (Stage-2 S2 / DEV.3-β).
+///
+/// A half-turn about the axis is `φ₃D → φ₃D + π`, i.e. `arctan σ' = arctan σ + π/2 ⇒ σ' = −1/σ`.
+/// Substituting `σ = −1/σ'` into `q = (9, 4, 4σ, 9σ)` and clearing the denominator (the
+/// quaternion→rotation map is scale-invariant, `R(λq) = R(q)`) gives `q'(σ') = (9σ', 4σ', −4, −9)`
+/// — still a degree-1 rational cone, `n·ẑ ≡ 65/97`, same development coefficient `c = 130/97`. The
+/// normal fields coincide exactly under the reparametrization: `cone_seam().normal()(−1/σ) ≡
+/// cone().normal()(σ)`. This is a **certification view**, not a second surface — it conditions the
+/// seam so a subdivision certificate converges at finite σ' rather than the `σ → ±∞` singularity.
+///
+/// ```
+/// use fixtures::devices::cone_seam;
+/// use geom::tags::{classify, Tag};
+/// use lattice::{Bignum, Rat};
+///
+/// // A cone through the origin — regular at the seam σ' = 0 (φ₃D = ±π, the back ruling).
+/// let apex = [Rat::<Bignum>::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)];
+/// assert_eq!(classify(&cone_seam()), Some(Tag::Cone { apex }));
+/// ```
+pub fn cone_seam() -> Chart<Bignum> {
+    let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+    let q = [poly(&[0, 9]), poly(&[0, 4]), poly(&[-4]), poly(&[-9])];
+    Chart::new(q, RatFunc::zero())
+}
+
 /// A **second-angle** rational cone (apex at the origin, `h ≡ 0`, `n·ẑ ≡ 3/5 ≈ sin 36.87°`) —
 /// a generality witness distinct from [`cone`]'s 65/97, so the closure pipe is demonstrably
 /// not locked to one half-angle.
@@ -328,5 +355,42 @@ mod tests {
             diff < tol && diff > tol.neg(),
             "half-angle within ~1° of 42°"
         );
+    }
+
+    #[test]
+    fn cone_seam_is_the_device_cone_recentered_on_the_seam() {
+        // The seam chart is the SAME cone reparametrized by σ' = −1/σ: identical half-angle, and
+        // the normal fields coincide exactly under the reparametrization — n_seam(−1/σ) ≡ n_cone(σ).
+        let (c, cs) = (cone(), cone_seam());
+
+        // A cone through the origin, same exact invariant n·ẑ ≡ 65/97 as the canonical chart.
+        assert_eq!(
+            classify(&cs),
+            Some(Tag::Cone {
+                apex: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)]
+            })
+        );
+        let want = RatFunc::from_poly(Poly::<Bignum>::constant(Rat::new(65, 97)));
+        assert_eq!(cs.normal().comp(2), want);
+        assert_eq!(cs.normal().comp(2), c.normal().comp(2));
+
+        // The reparametrization identity at a sample: σ = 2 ↔ σ' = −1/2, all three components equal.
+        let sigma = Rat::<Bignum>::from_i128(2);
+        let sigma_p = Rat::<Bignum>::new(-1, 2);
+        for i in 0..3 {
+            assert_eq!(
+                cs.normal().comp(i).eval(&sigma_p).unwrap(),
+                c.normal().comp(i).eval(&sigma).unwrap(),
+                "normal component {i} disagrees under σ' = −1/σ"
+            );
+        }
+
+        // The seam ruling (σ = ±∞ canonically) is the REGULAR finite point σ' = 0:
+        // n(0) = [0, 72, 65]/97 finite, and the ruling never stalls there (|n′|² > 0).
+        let zero = Rat::<Bignum>::from_i128(0);
+        assert_eq!(cs.normal().comp(0).eval(&zero).unwrap(), Rat::from_i128(0));
+        assert_eq!(cs.normal().comp(1).eval(&zero).unwrap(), Rat::new(72, 97));
+        assert_eq!(cs.normal().comp(2).eval(&zero).unwrap(), Rat::new(65, 97));
+        assert!(cs.normal_deriv_sq().eval(&zero).unwrap() > Rat::from_i128(0));
     }
 }
