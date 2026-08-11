@@ -430,7 +430,8 @@ mod tests {
 
         // The normal-component of the pedal is exactly the support ramp (c·n ≡ h) — the sheet
         // separation from the base cone (h = 0) that SEP/CLEAR read.
-        let h = RatFunc::<Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(1, 4), Rat::new(-1, 2)]));
+        let h =
+            RatFunc::<Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(1, 4), Rat::new(-1, 2)]));
         assert_eq!(r.pedal().dot(r.normal()).reduce(), h.reduce());
         // Δ = 1/4 at the seam σ' = 0 (lapped); h = 0 at σ' = 1/2 (rejoins the base cone).
         assert_eq!(h.eval(&Rat::from_i128(0)).unwrap(), Rat::new(1, 4));
