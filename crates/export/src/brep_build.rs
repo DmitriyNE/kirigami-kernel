@@ -2383,6 +2383,110 @@ mod tests {
         );
     }
 
+    /// **S3.4b — the BONDED lap seam: two certified solids + a certified bond interface.** The
+    /// device seam is emitted as two independent closed solids — the cone body (base, γ = 0) and
+    /// the γ≠0 lap flap (the ramped chart, `brep_trim_solid` is `chart.pedal()`-aware) — each
+    /// `closed_shell_holed`-certified and OCCT-corroborated (`brepcheck_valid`, `free_edges == 0`),
+    /// because a lap is *doubled material* (§6.2), not one self-touching solid. Their bond is
+    /// certified by the §14 conjunction `develop::bonded::valid_bonded_seam` (SEP ∧ SLAB ∧ SHEAR ∧
+    /// CLEAR): the plateau separation ≡ the gap, the offset slab is regular, the Tier-1
+    /// identification collapses (`δ = 18/65 ≈ 0.28 mm`), and the ramp rails keep clear.
+    #[cfg(feature = "step")]
+    #[test]
+    fn bonded_lap_seam_two_certified_solids_plus_a_bond() {
+        use crate::step::{audit_brep, write_brep};
+        use certify_core::Verdict;
+        use certify_core::shell::closed_shell_holed;
+        use develop::bonded::{LapRail, clear, sep, shear, slab, valid_bonded_seam};
+        use fixtures::devices::{cone_seam, cone_seam_ramp};
+        use lattice::{Bignum, Poly};
+        let k = |n: i128, d: i128| {
+            RatFunc::<Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(n, d)]))
+        };
+
+        // The seam neighbourhood: σ' ∈ [−1/4, 1/4], band µ ∈ [−2, −1], thickness w ∈ [0, 1/8].
+        let sig = Interval {
+            lo: Rat::new(-1, 4),
+            hi: Rat::new(1, 4),
+        };
+        let w = Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::new(1, 8),
+        };
+        let inner = [(sig.clone(), k(-2, 1))];
+        let outer = [(sig.clone(), k(-1, 1))];
+
+        // Two certified solids: the cone body (base, γ = 0) and the γ≠0 lap flap (ramp).
+        let body = brep_trim_solid(&cone_seam(), &w, &inner, &outer, &[]).expect("body solid");
+        let flap = brep_trim_solid(&cone_seam_ramp(), &w, &inner, &outer, &[]).expect("flap solid");
+        for (name, solid) in [("body", &body), ("flap", &flap)] {
+            let c = solid.to_shell_certificate();
+            assert!(
+                matches!(
+                    closed_shell_holed(
+                        c.n_verts,
+                        &c.edge_start,
+                        &c.edge_end,
+                        &c.wire_edge,
+                        &c.wire_reversed,
+                        &c.loop_start,
+                        &c.face_start,
+                    ),
+                    Verdict::Verified(_)
+                ),
+                "{name}: closed_shell_holed certifies a closed 2-manifold"
+            );
+            let audit = audit_brep(solid).expect("OCC audits the bonded solid");
+            assert!(
+                audit.brepcheck_valid,
+                "{name}: OCC accepts the solid: {audit:?}"
+            );
+            assert_eq!(audit.free_edges, 0, "{name}: watertight: {audit:?}");
+            assert_eq!(audit.nonmanifold_edges, 0, "{name}: manifold: {audit:?}");
+        }
+
+        // The bond between the two sheets is certified by the §14 conjunction.
+        let w0 = Rat::from_i128(0);
+        let neg1 = Rat::from_i128(-1);
+        let bond = valid_bonded_seam(
+            // SEP: the bonded plateau separation ≡ the gap Δ = g = 1/4 (base h = 0, plateau h = 1/4).
+            sep(
+                &RatFunc::<Bignum>::zero(),
+                &w0,
+                &k(1, 4),
+                &w0,
+                &Rat::new(1, 4),
+            ),
+            // SLAB: the offset slab stays regular over the seam box at the µ = −1 corner.
+            slab(&cone_seam_ramp(), &neg1, &w0, &sig, &Rat::new(1, 1000)),
+            // SHEAR: κ_g = −65/72 (−tan β), Δ₀ = 1/4 ⇒ δ = 18/65 ≈ 0.28 mm.
+            shear(&k(-65, 72), &k(1, 4), &Rat::new(1, 100)),
+            // CLEAR: the base rail and the ramp rail keep clear over the seam box.
+            clear(
+                &LapRail::from_chart(&cone_seam(), &neg1, &w0),
+                &LapRail::from_chart(&cone_seam_ramp(), &neg1, &w0),
+                &sig,
+                &Rat::new(1, 8),
+                2000,
+            ),
+        );
+        assert!(
+            matches!(bond, Verdict::Verified(_)),
+            "the §14 BONDED conjunction certifies the seam"
+        );
+
+        // Emit the two STEP solids (the acceptance artifact).
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            write_brep(&format!("{}/bonded_body.step", dir.display()), &body),
+            "ok"
+        );
+        assert_eq!(
+            write_brep(&format!("{}/bonded_flap.step", dir.display()), &flap),
+            "ok"
+        );
+    }
+
     /// The genus-1 trim solid (one interior hole drilled through a slice) round-trips through OCCT:
     /// the annular lids (`add_face_with_holes`) and the four-wall tube reload through `BRepCheck`
     /// with no free edges — the certified tunnel is a valid OCCT solid.
