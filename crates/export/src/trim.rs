@@ -87,9 +87,58 @@ fn bisect_root<B: Backend>(
     Some(a.add(&b).mul(&half))
 }
 
+/// All sign-change roots of `f` on `[lo, hi]`, found by scanning `scan` sub-intervals and
+/// bisecting each bracket. `None` if `f` has a pole at a scan node.
+fn scan_roots<B: Backend>(
+    f: &RatFunc<B>,
+    lo: &Rat<B>,
+    hi: &Rat<B>,
+    scan: usize,
+    iters: usize,
+) -> Option<Vec<Rat<B>>> {
+    let n = scan.max(4);
+    let width = hi.sub(lo).div(&Rat::from_i128(n as i128));
+    let mut prev: Option<(Rat<B>, i8)> = None;
+    let mut roots: Vec<Rat<B>> = Vec::new();
+    for k in 0..=n {
+        let x = lo.add(&width.mul(&Rat::from_i128(k as i128)));
+        let s = f.eval(&x)?.sign();
+        if let Some((px, ps)) = &prev {
+            if *ps != 0 && s != 0 && *ps != s {
+                roots.push(bisect_root(f, px, &x, iters)?);
+            }
+        }
+        prev = Some((x, s));
+    }
+    Some(roots)
+}
+
+/// The σ where the (exact) D1 rail point enters/exits a cylinder `(cx, cy, r²)` — the roots of
+/// `h(σ) = (μ̂₁·r_x − cx)² + (μ̂₁·r_y − cy)² − r²`, which is exact-rational in σ. Lets the D1∩D3
+/// crossings be found without ever fitting D3 (so its near branch is then fitted only over the
+/// mid-span crossing range, clear of the √-branch tangents).
+#[allow(clippy::too_many_arguments)]
+fn rail_cylinder_crossings<B: Backend>(
+    chart: &Chart<B>,
+    mu1: &RatFunc<B>,
+    cx: &Rat<B>,
+    cy: &Rat<B>,
+    r2: &Rat<B>,
+    span: &Interval<B>,
+    scan: usize,
+    iters: usize,
+) -> Option<Vec<Rat<B>>> {
+    let (rx, ry) = ruling_xy(chart);
+    let konst = |r: &Rat<B>| RatFunc::from_poly(Poly::constant(r.clone()));
+    let px = mu1.mul(&rx).sub(&konst(cx));
+    let py = mu1.mul(&ry).sub(&konst(cy));
+    let h = px.mul(&px).add(&py.mul(&py)).sub(&konst(r2));
+    scan_roots(&h, &span.lo, &span.hi, scan, iters)
+}
+
 /// The two tangent-ruling σ of a disk within the gore, as `(σ_lo, σ_hi)`. Scans [`tangent_poly`]
-/// for its two sign changes (outside `+` → inside `−` → outside `+`) and bisects each. `None`
-/// unless the disk subtends exactly one clean two-tangent arc in the gore.
+/// for its two sign changes (outside `+` → inside `−` → outside `+`). `None` unless the disk
+/// subtends exactly one clean two-tangent arc in the gore.
 fn disk_tangents<B: Backend>(
     chart: &Chart<B>,
     cx: &Rat<B>,
@@ -100,20 +149,7 @@ fn disk_tangents<B: Backend>(
     iters: usize,
 ) -> Option<(Rat<B>, Rat<B>)> {
     let g = tangent_poly(chart, cx, cy, r2);
-    let n = scan.max(4);
-    let width = span.hi.sub(&span.lo).div(&Rat::from_i128(n as i128));
-    let mut prev: Option<(Rat<B>, i8)> = None;
-    let mut roots: Vec<Rat<B>> = Vec::new();
-    for k in 0..=n {
-        let x = span.lo.add(&width.mul(&Rat::from_i128(k as i128)));
-        let s = g.eval(&x)?.sign();
-        if let Some((px, ps)) = &prev {
-            if *ps != 0 && s != 0 && *ps != s {
-                roots.push(bisect_root(&g, px, &x, iters)?);
-            }
-        }
-        prev = Some((x, s));
-    }
+    let roots = scan_roots(&g, &span.lo, &span.hi, scan, iters)?;
     if roots.len() == 2 {
         Some((roots[0].clone(), roots[1].clone()))
     } else {
@@ -425,6 +461,155 @@ pub fn hole_loop<B: Backend>(
     })
 }
 
+/// A developed panel outer boundary: the notched annulus loop, the max rail ε, and the largest
+/// micro-cap (the D1∩D3-crossing snap residual).
+pub struct OuterLoop<B: Backend = Bignum> {
+    /// The ordered boundary arcs (CCW-ish traversal: cap · D1 · notch · D1 · cap · D2-back).
+    pub arcs: Vec<BoundaryArc<B>>,
+    /// Max over the D1/D2/D3 rails of the certified distance bound.
+    pub eps: Rat<B>,
+    /// The larger D1↔D3 crossing micro-cap (μ̂ units).
+    pub max_microcap: Rat<B>,
+}
+
+/// Build the panel's **outer boundary** loop: the eccentric annulus band (inner rail from `d2`,
+/// outer rail from `d1`) with the outer rail **notched** where `d3` bites across it. The two
+/// D1↔D3 transition σ are the D1∩D3 crossings, found EXACTLY as [`rail_cylinder_crossings`] of
+/// the D1 rail against the D3 cylinder (no D3 fit). The D3 near/Lower branch is then fitted only
+/// over `[σ_nL, σ_nR]` (padded by `d3_margin`), clear of the √-branch tangents, and joined to the
+/// D1 rail at each crossing by a small micro-cap. `d1` is the concentric outer (exact plane
+/// rail), `d2` the eccentric inner (Upper branch). Fail-closed: a loose rail is `Unresolved`.
+#[allow(clippy::too_many_arguments)]
+pub fn outer_loop<B: Backend>(
+    chart: &Chart<B>,
+    d1: &TrimDisk<B>,
+    d2: &TrimDisk<B>,
+    d3: (&Rat<B>, &Rat<B>, &Rat<B>),
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+    d3_margin: &Rat<B>,
+    segments: usize,
+) -> Verdict<OuterLoop<B>, CutFitFault, Rat<B>> {
+    macro_rules! rail {
+        ($disk:expr, $sp:expr, $f:expr) => {
+            match certified_rail(chart, $disk, $sp, $f, clearance, cfg) {
+                Verdict::Verified(x) => x,
+                Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+                Verdict::Refuted(fault) => return Verdict::Refuted(fault),
+            }
+        };
+    }
+    let (lo, hi) = (&span.lo, &span.hi);
+    let (mu_d1, e1) = rail!(d1, span, fit);
+    let (mu_d2, e2) = rail!(d2, span, fit);
+
+    // The D1∩D3 crossings, computed EXACTLY from the D1 rail ∩ D3 cylinder (no D3 fit): the two
+    // σ where the outer boundary switches D1 ↔ D3. They sit mid-span, clear of D3's √-branch
+    // tangents, so the near branch is then fitted only there and certifies tightly.
+    let crossings = match rail_cylinder_crossings(chart, &mu_d1, d3.0, d3.1, d3.2, span, 256, 60) {
+        Some(r) if r.len() == 2 => r,
+        _ => return Verdict::Unresolved(clearance.clone()),
+    };
+    let (snl, snr) = (crossings[0].clone(), crossings[1].clone());
+    let pad = snr.sub(&snl).mul(d3_margin); // small inner pad for the fit endpoints
+    let d3_span = Interval {
+        lo: snl.add(&pad),
+        hi: snr.sub(&pad),
+    };
+    let d3_disk = eccentric_disk(d3.0.clone(), d3.1.clone(), d3.2.clone(), RootPick::Lower);
+    // The notch range is narrow and far from the σ-origin, where the oracle's monomial-basis
+    // Vandermonde fit is ill-conditioned — degree ≥ 4 gives huge coefficients whose interval
+    // evaluation explodes (ε ~ 100s). A low degree (the dip is gentle) certifies tightly.
+    let d3_fit = RailFit { degree: 3, ..fit };
+    let (mu_d3, e3) = rail!(&d3_disk, &d3_span, d3_fit);
+    // The notch rail runs over the padded range; the caps bridge D1(crossing) → D3(padded).
+    let (snl, snr) = (d3_span.lo.clone(), d3_span.hi.clone());
+
+    // Evaluate every needed rail value; any pole ⇒ Refuted.
+    let vals: Option<[Rat<B>; 8]> = (|| {
+        Some([
+            mu_d2.eval(lo)?,
+            mu_d1.eval(lo)?,
+            mu_d1.eval(&snl)?,
+            mu_d3.eval(&snl)?,
+            mu_d3.eval(&snr)?,
+            mu_d1.eval(&snr)?,
+            mu_d1.eval(hi)?,
+            mu_d2.eval(hi)?,
+        ])
+    })();
+    let [d2_lo, d1_lo, d1_l, d3_l, d3_r, d1_r, d1_hi, d2_hi] = match vals {
+        Some(v) => v,
+        None => return Verdict::Refuted(CutFitFault::PoleInEval),
+    };
+    let max_microcap = {
+        let (l, r) = (abs_diff(&d1_l, &d3_l), abs_diff(&d1_r, &d3_r));
+        if l.cmp(&r) == core::cmp::Ordering::Less {
+            r
+        } else {
+            l
+        }
+    };
+
+    let arcs = vec![
+        BoundaryArc::Cap {
+            sigma: lo.clone(),
+            mu_start: d2_lo,
+            mu_end: d1_lo,
+        },
+        BoundaryArc::Rail {
+            mu: mu_d1.clone(),
+            sigma_start: lo.clone(),
+            sigma_end: snl.clone(),
+            segments,
+        },
+        BoundaryArc::Cap {
+            sigma: snl.clone(),
+            mu_start: d1_l,
+            mu_end: d3_l,
+        },
+        BoundaryArc::Rail {
+            mu: mu_d3,
+            sigma_start: snl,
+            sigma_end: snr.clone(),
+            segments,
+        },
+        BoundaryArc::Cap {
+            sigma: snr.clone(),
+            mu_start: d3_r,
+            mu_end: d1_r,
+        },
+        BoundaryArc::Rail {
+            mu: mu_d1,
+            sigma_start: snr,
+            sigma_end: hi.clone(),
+            segments,
+        },
+        BoundaryArc::Cap {
+            sigma: hi.clone(),
+            mu_start: d1_hi,
+            mu_end: d2_hi,
+        },
+        BoundaryArc::Rail {
+            mu: mu_d2,
+            sigma_start: hi.clone(),
+            sigma_end: lo.clone(),
+            segments,
+        },
+    ];
+    let eps = [e1, e2, e3]
+        .into_iter()
+        .max_by(|a, b| a.cmp(b))
+        .unwrap_or_else(|| Rat::from_i128(0));
+    Verdict::Verified(OuterLoop {
+        arcs,
+        eps,
+        max_microcap,
+    })
+}
+
 /// Develop a trim loop to a certified flat outline (thin wrapper over [`unroll_trim_loop`]).
 pub fn unroll_loop<B: Backend>(
     dev: &ConeDevelopment<B>,
@@ -566,6 +751,131 @@ mod tests {
                 o.vertices.len()
             ),
             other => panic!("hole unroll not Verified: {}", tag(&other)),
+        }
+    }
+
+    /// The full demo disk footprints, in the +y upper-half gore: D1 concentric outer, D2
+    /// eccentric inner (contains apex), D3 boundary notch (straddles D1), D4 interior hole.
+    fn demo_disks(chart: &Chart<Bignum>) -> (TrimDisk<Bignum>, TrimDisk<Bignum>, [Q; 3], [Q; 3]) {
+        let d1 = concentric_disk(chart, &Q::from_i128(3)).unwrap();
+        let d2 = eccentric_disk(
+            Q::from_i128(0),
+            Q::new(1, 2),
+            Q::from_i128(2),
+            RootPick::Upper,
+        );
+        // D3 straddles D1 deeply (centre |c|≈3.18 > D1≈2.71, R=0.75) so the D1∩D3 crossings land
+        // mid-span, well clear of the √-branch tangents (a shallow straddle puts them on the
+        // branch points and the near-branch fit goes loose).
+        let d3 = [Q::new(-9, 4), Q::new(9, 4), Q::new(9, 16)];
+        let d4 = [Q::from_i128(0), Q::new(11, 5), Q::new(1, 25)];
+        (d1, d2, d3, d4)
+    }
+
+    /// The panel outer boundary (eccentric annulus + D3 boundary notch) develops to a Verified
+    /// flat outline; the D1↔D3 crossing micro-caps stay small (transverse, not tangent).
+    #[test]
+    fn notched_outer_unrolls() {
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        let cfg = DevConfig::tight();
+        let clearance = Q::from_i128(1);
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let (d1, d2, d3, _d4) = demo_disks(&chart);
+        let outer = match outer_loop(
+            &chart,
+            &d1,
+            &d2,
+            (&d3[0], &d3[1], &d3[2]),
+            &span,
+            RailFit::default(),
+            &clearance,
+            &cfg,
+            &Q::new(1, 1000),
+            96,
+        ) {
+            Verdict::Verified(o) => o,
+            other => panic!("outer_loop not Verified: {}", tag(&other)),
+        };
+        println!(
+            "outer (notched): rail ε = {:.3e}, D1∩D3 micro-cap = {:.3e}",
+            f(&outer.eps),
+            f(&outer.max_microcap)
+        );
+        // Small vs the ≈2.7 panel — the degree-3 notch-fit residual at the transverse crossing
+        // (no √-branch here, unlike the hole tangents).
+        assert!(
+            outer.max_microcap.cmp(&Q::new(1, 20)) == core::cmp::Ordering::Less,
+            "D1∩D3 crossing micro-cap should stay small, got {:.4}",
+            f(&outer.max_microcap)
+        );
+        match unroll_loop(&dev, &outer.arcs, &cfg, &clearance) {
+            Verdict::Verified(o) => println!(
+                "outer unroll: Verified  ε = {:.3e}  ({} flat verts)",
+                f(&o.eps),
+                o.vertices.len()
+            ),
+            other => panic!("outer unroll not Verified: {}", tag(&other)),
+        }
+    }
+
+    /// The physical-xy arrangement `(D1 − D2) − D3 − D4` via the new `BoolOp::Diff` certifies to
+    /// exactly the intended topology: **one face** (the notched annulus) with **two holes** (the
+    /// eccentric inner D2 and the interior D4), and D3 contributes a boundary notch (no hole).
+    #[test]
+    fn arrangement_certifies_topology() {
+        use arrange2d::boolean::{BoolOp, OperandId, ledge_dom_certified};
+        use geom::content::{Circle, CurveId, Orient};
+        let chart = cone();
+        let (d1, _d2, d3, d4) = demo_disks(&chart);
+        let disks = [
+            (d1.cx.clone(), d1.cy.clone(), d1.r2.clone()), // A (source 0)
+            (Q::from_i128(0), Q::new(1, 2), Q::from_i128(2)), // D2  (source 1)
+            (d3[0].clone(), d3[1].clone(), d3[2].clone()), // D3  (source 2)
+            (d4[0].clone(), d4[1].clone(), d4[2].clone()), // D4  (source 3)
+        ];
+        let mut edges = Vec::new();
+        for (i, (cx, cy, r2)) in disks.iter().enumerate() {
+            edges.extend(arrange2d::decompose::decompose(
+                &geom::content::Curve::Circle {
+                    circle: Circle {
+                        cx: cx.clone(),
+                        cy: cy.clone(),
+                        r2: r2.clone(),
+                    },
+                    orient: Orient::Ccw,
+                    source: CurveId(i as u32),
+                },
+            ));
+        }
+        let operand_of = |src: CurveId| {
+            if src.0 == 0 {
+                OperandId::A
+            } else {
+                OperandId::B
+            }
+        };
+        match ledge_dom_certified(&edges, &operand_of, BoolOp::Diff) {
+            Verdict::Verified(cap) => {
+                let r = cap.region();
+                assert_eq!(r.faces.len(), 1, "(D1−D2)−D3−D4 is one connected face");
+                assert_eq!(
+                    r.faces[0].holes.len(),
+                    2,
+                    "two interior holes (D2, D4); D3 only notches the outer boundary"
+                );
+                // D3 (source 2) appears on the OUTER loop (the notch), not as a hole.
+                let outer_has_d3 = r.faces[0].outer.iter().any(|e| match e {
+                    geom::content::Edge::Arc(a) => a.source == CurveId(2),
+                    geom::content::Edge::Seg(_) => false,
+                });
+                assert!(outer_has_d3, "D3 arcs notch the outer boundary");
+                println!("arrangement Diff: Verified — 1 face, 2 holes, D3 notches the rim");
+            }
+            other => panic!("arrangement not certified: {}", tag(&other)),
         }
     }
 
