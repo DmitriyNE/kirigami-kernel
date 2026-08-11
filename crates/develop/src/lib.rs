@@ -15,6 +15,7 @@
 //! `docs/spike-development-report.md` for the method choice and the GO call.
 
 pub mod anchor;
+pub mod bonded;
 pub mod cone;
 pub mod cut;
 pub mod flat;
