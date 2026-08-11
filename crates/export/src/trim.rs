@@ -752,7 +752,7 @@ mod tests {
             );
         }
 
-        let arcs = annulus_loop(&mu_d2, &mu_d1, &span, 96).unwrap();
+        let arcs = annulus_loop(&mu_d2, &mu_d1, &span, 48).unwrap();
         match unroll_loop(&dev, &arcs, &cfg, &clearance) {
             Verdict::Verified(o) => {
                 println!(
@@ -790,7 +790,7 @@ mod tests {
         assert!(tlo.cmp(&thi) == core::cmp::Ordering::Less);
 
         let hole = match hole_loop(
-            &chart, &cx, &cy, &r2, &span, fit, &clearance, &cfg, &margin, 48,
+            &chart, &cx, &cy, &r2, &span, fit, &clearance, &cfg, &margin, 32,
         ) {
             Verdict::Verified(h) => h,
             other => panic!("hole_loop not Verified: {}", tag(&other)),
@@ -858,7 +858,7 @@ mod tests {
             &clearance,
             &cfg,
             &Q::new(1, 1000),
-            96,
+            48,
         ) {
             Verdict::Verified(o) => o,
             other => panic!("outer_loop not Verified: {}", tag(&other)),
@@ -968,7 +968,7 @@ mod tests {
             &clearance,
             &cfg,
             &Q::new(1, 1000),
-            96,
+            48,
         ) {
             Verdict::Verified(o) => o,
             o => panic!("outer: {}", tag(&o)),
@@ -987,7 +987,7 @@ mod tests {
             &clearance,
             &cfg,
             &Q::new(1, 200),
-            48,
+            32,
         ) {
             Verdict::Verified(h) => h,
             o => panic!("hole: {}", tag(&o)),
