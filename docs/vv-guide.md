@@ -1745,7 +1745,16 @@ the axis half-turn `σ=−1/σ'`, seam at `σ'=0`), the general `develop::seam_f
 (`seam_frame_exact` — the re-centering discharged as an exact rational identity, refutations fire), the
 existing `ConeDevelopment` develops the seam ruling to the exact `(144/97,0)` unchanged, and the float
 `develop_cone` corroborates the re-centered development to `≈1.5e-8` (backward error `≈6e-12`). The
-seam-ramp frontier is **rational, not transcendental** — scoped to S3's CLEAR. **S3 pending.**
+seam-ramp frontier is **rational, not transcendental** — scoped to S3's CLEAR. **S3 (§14 BONDED) met
+— Stage 2 COMPLETE.** The `develop::bonded` certifier: **SEP** (plateau separation ≡ gap `g`, exact §7
+identity) · **SLAB-S0** (offset slab regular, `det J ≥ m > 0`, reuses `certify_core::reg_q` Sturm
+positivity) · **SHEAR** (Tier-1 `J = rigid ∘ shear`, `κ_g = −65/72`, `δ = 18/65 ≈ 0.28 mm` — the paper's
+number) · **CLEAR** (the novel **adaptive interval subdivision** of the true 3D lap-rail distance, sound
+despite the §7 tangential shift — Verified in 18 nodes; user-flagged as brute-force tech-debt for a future
+structural rewrite) · **`valid_bonded_seam`** conjoins all four. The **demo** emits **two certified
+solids** (cone body γ=0 + γ≠0 lap flap, each `closed_shell_holed`-Verified + OCCT `brepcheck_valid` /
+`free_edges==0`) **+ a certified bond** (a lap is doubled material, §6.2, not one self-touching solid).
+The BONDED certificate is **3D-rational** — no flat-`γ` needed; the transcendental `ψ` stays in emission.
 
 ---
 
