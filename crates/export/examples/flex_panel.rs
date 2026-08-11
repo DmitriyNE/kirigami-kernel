@@ -15,13 +15,16 @@
 //! must produce exactly one face with two holes (D2, D4) and a D3 rim notch, else the run stops.
 //!
 //! Artifacts (under `--out-dir`, default `generated-demos/`, gitignored): `flex_panel.svg` (the
-//! developed trimmed panel, even-odd fill). Behind `--features step` under `nix develop`, the
-//! **legacy** band+rectangle-hole solids `flex_panel_I.step` / `flex_panel_II.step` are still
-//! emitted — the trimmed-geometry STEP export needs the curved-rail B-rep builder (Stage B).
+//! developed trimmed panel, even-odd fill). Behind `--features step` under `nix develop`, the same
+//! `(σ,μ̂)` panel is folded back to a **certified curved-rail cone solid** and written to
+//! `flex_panel_I.step` (the annulus + D3-notch **blank**) and `flex_panel_II.step` (+ the D4
+//! through-hole + the quad cut) via `brep_trim_solid` — each `closed_shell_holed`-certified and
+//! OCCT-corroborated (`write_brep` "ok", `free_edges == 0`). The D4 hole sits at σ = 0, a
+//! positive-weight **station**, so it exports as a curved cross-ring **notch** (the general G-C path).
 //!
 //! ```text
 //! cargo run --example flex_panel --features diagnostics                       # panel + SVG
-//! nix develop -c cargo run --example flex_panel --features diagnostics,step    # + legacy STEP
+//! nix develop -c cargo run --example flex_panel --features diagnostics,step    # + trimmed STEP
 //! ```
 //!
 //! Flags: `--segments <n>` (rail discretization, default 72), `--out-dir <dir>`. The gore is the
@@ -202,11 +205,13 @@ fn main() {
         svg.len()
     );
 
-    // — Legacy STEP (band + rectangle hole) — the trimmed-geometry STEP is Stage B (G-C) —
+    // — Trimmed STEP: STEP I the annulus+notch blank, STEP II + the D4 hole + the quad —
     #[cfg(feature = "step")]
-    emit_step_legacy(&chart, &out_dir);
+    emit_trimmed_step(
+        &chart, &dev, &d1, &d2, &d3, &d4, &span, &cfg, &clearance, &out_dir,
+    );
     #[cfg(not(feature = "step"))]
-    println!("STEP:        skipped — the trimmed-geometry STEP export is Stage B (curved builder)");
+    println!("STEP:        skipped — build under `nix develop` with `--features diagnostics,step`");
 }
 
 /// Certify the physical-xy arrangement `(D1 − D2) − D3 − D4` with the exact `BoolOp::Diff`: the
@@ -267,51 +272,138 @@ fn bail<T, E: core::fmt::Debug, M>(stage: &str, v: &Verdict<T, E, M>) -> ! {
     std::process::exit(1);
 }
 
-/// Emit the **legacy** band+rectangle-hole STEP solids (STEP I cone slab, STEP II genus-1
-/// through-hole) — unchanged from the pre-trimming demo. The trimmed-panel STEP export needs the
-/// curved-rail B-rep builder (Stage B / gap G-C); this keeps `--features step` green meanwhile.
+/// Emit the **trimmed-panel** STEP solids from the very same `(σ,μ̂)` trim loops the SVG uses: STEP I
+/// the annulus+notch **blank** (the outer boundary, no interior holes), STEP II the finished panel
+/// with the **D4** through-hole and the **quad** cut drilled through (`brep_trim_solid`, gap G-C).
+/// The STEP rails are re-fitted at a **low degree** (4) — the SVG's default degree-6 rails carry too
+/// many Bézier control points for OCCT's `f64` edge tolerance. `w = [0, 1/8]` is the panel thickness.
 #[cfg(feature = "step")]
-fn emit_step_legacy(chart: &geom::chart::Chart<Bignum>, out_dir: &str) {
-    use export::brep_build::{HoleRect, brep_freeboundary, brep_freeboundary_holed};
+#[allow(clippy::too_many_arguments)]
+fn emit_trimmed_step(
+    chart: &geom::chart::Chart<Bignum>,
+    _dev: &ConeDevelopment<Bignum>,
+    d1: &export::trim::TrimDisk<Bignum>,
+    d2: &export::trim::TrimDisk<Bignum>,
+    d3: &[Q; 3],
+    d4: &[Q; 3],
+    span: &Interval<Bignum>,
+    cfg: &DevConfig<Bignum>,
+    clearance: &Q,
+    out_dir: &str,
+) {
+    use certify_core::shell::closed_shell_holed;
+    use export::brep_build::{HoleRail, brep_trim_solid};
     use export::step::write_brep;
+    use export::trim::{hole_rail, trim_rail_chains};
     use lattice::{Poly, RatFunc};
 
-    let span = Interval {
-        lo: Q::new(-15, 4),
-        hi: Q::new(15, 4),
+    // Low-degree fit: a curved cut rail exported to OCCT must stay a handful of control points, or
+    // `MakeEdge`'s f64 endpoints drift off the shared vertices. (The SVG keeps the tighter default.)
+    let lowfit = RailFit {
+        degree: 4,
+        subdiv: 256,
+        bits: 44,
     };
-    let mu_lo = RatFunc::<Bignum>::from_poly(Poly::constant(Q::from_i128(-2)));
-    let mu_hi = RatFunc::<Bignum>::from_poly(Poly::constant(Q::from_i128(-1)));
-    let w_iv = Interval {
+    let w = Interval {
         lo: Q::from_i128(0),
         hi: Q::new(1, 8),
     };
-    println!("--- legacy STEP (band + rectangle hole; trimmed-geometry STEP is Stage B) ---");
-    let solid = brep_freeboundary(chart, &span, &w_iv, &mu_lo, &mu_hi);
-    let p1 = format!("{out_dir}/flex_panel_I.step");
-    println!("STEP I:      {:<40}   → {p1}", write_brep(&p1, &solid));
+    println!("--- trimmed STEP (the same (σ,μ̂) panel, low-degree rails for OCCT) ---");
 
-    let sigma_mid = Q::from_i128(0);
-    let hole = HoleRect {
-        sigma: Interval {
-            lo: sigma_mid.sub(&Q::new(3, 16)),
-            hi: sigma_mid.add(&Q::new(3, 16)),
-        },
-        mu: Interval {
-            lo: Q::new(-25, 16),
-            hi: Q::new(-23, 16),
-        },
-    };
-    match brep_freeboundary_holed(chart, &span, &w_iv, &mu_lo, &mu_hi, &[hole]) {
-        Some(solid2) => {
-            let p2 = format!("{out_dir}/flex_panel_II.step");
-            println!("STEP II:     {:<40}   → {p2}", write_brep(&p2, &solid2));
-            println!(
-                "             (genus-1 through-hole solid: {} faces, {} free edges)",
-                solid2.faces().len(),
-                solid2.free_edges()
-            );
+    let outer = match outer_loop(
+        chart,
+        d1,
+        d2,
+        (&d3[0], &d3[1], &d3[2]),
+        span,
+        lowfit,
+        clearance,
+        cfg,
+        &Q::new(1, 20),
+        8,
+    ) {
+        Verdict::Verified(o) => o,
+        v => {
+            println!("STEP outer:  {} — skipping STEP", verdict_tag(&v));
+            return;
         }
-        None => println!("STEP II:     refused — hole not strictly interior"),
+    };
+    let (inner_ch, outer_ch) = match trim_rail_chains(&outer) {
+        Some(c) => c,
+        None => {
+            println!("STEP:        rail chains empty — skipping");
+            return;
+        }
+    };
+
+    // STEP I — the blank: the annulus + D3 notch, no interior holes.
+    let report = |name: &str, solid: &export::brep::Brep<Bignum>, path: &str| {
+        let sc = solid.to_shell_certificate();
+        let cert = matches!(
+            closed_shell_holed(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.loop_start,
+                &sc.face_start,
+            ),
+            Verdict::Verified(_)
+        );
+        println!(
+            "{name}   cert={}   {:<28}   → {path}   ({} faces, {} free)",
+            if cert { "Verified" } else { "REFUTED" },
+            write_brep(path, solid),
+            solid.faces().len(),
+            solid.free_edges(),
+        );
+    };
+
+    match brep_trim_solid(chart, &w, &inner_ch, &outer_ch, &[]) {
+        Some(blank) => {
+            let p1 = format!("{out_dir}/flex_panel_I.step");
+            report("STEP I: ", &blank, &p1);
+        }
+        None => println!("STEP I:      refused — degenerate band"),
+    }
+
+    // STEP II — the finished panel: the D4 circular hole + the authored quad, both drilled through.
+    let d4_hole = match hole_loop(
+        chart,
+        &d4[0],
+        &d4[1],
+        &d4[2],
+        span,
+        lowfit,
+        clearance,
+        cfg,
+        &Q::new(1, 200),
+        4,
+    ) {
+        Verdict::Verified(h) => hole_rail(&h),
+        v => {
+            println!(
+                "STEP II:     D4 {} — emitting the blank only",
+                verdict_tag(&v)
+            );
+            None
+        }
+    };
+    // The quad is an axis-aligned rectangle in (σ,μ): μ ∈ [43/20, 47/20] over σ ∈ [−9/20, −6/20].
+    let konst = |n: i128, d: i128| RatFunc::<Bignum>::from_poly(Poly::constant(Q::new(n, d)));
+    let quad = HoleRail {
+        near: konst(43, 20),
+        far: konst(47, 20),
+        s1: Q::new(-9, 20),
+        s2: Q::new(-6, 20),
+    };
+    let holes: Vec<HoleRail<Bignum>> = d4_hole.into_iter().chain(core::iter::once(quad)).collect();
+    match brep_trim_solid(chart, &w, &inner_ch, &outer_ch, &holes) {
+        Some(panel) => {
+            let p2 = format!("{out_dir}/flex_panel_II.step");
+            report("STEP II:", &panel, &p2);
+        }
+        None => println!("STEP II:     refused — a hole is not strictly interior / σ-disjoint"),
     }
 }
