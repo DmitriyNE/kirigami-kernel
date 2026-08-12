@@ -1466,6 +1466,216 @@ pub fn brep_trim_solid<B: Backend>(
     Some(bld.into_brep())
 }
 
+/// A **trimmed developable solid** whose surface is **piecewise across σ-regions** that share the
+/// ruling/normal frame (`r`, `n`) but differ in support (pedal `c`) — the self-lapping / offset-tail
+/// device. `charts` are the region charts with their σ-sub-bands (contiguous, ascending); `inner` /
+/// `outer` the piecewise ruling rails; `w` the thickness. Region joins land on σ-stations, and where
+/// the pedal is continuous across a join (matching support *and* slope, so the rails coincide there)
+/// the two adjacent slices share their cross-ring **exactly** — one watertight connected shell, no
+/// internal cap. [`brep_trim_solid`] is the single-region special case.
+///
+/// The per-region intrinsic positive-weight partition (from each chart's own [`sigma_stations`]) and
+/// every region/rail-piece boundary become stations, so each slice lies within one region, one inner
+/// and one outer rail piece; its `c, r, n` are read from that region's chart.
+/// A general `(σ,µ̂)` polygon hole loop as `TrimCorner`s: corner `i` carries the **line** through
+/// `(σ_i,µ̂_i)` and the next vertex (its outgoing edge's rail), or the constant `µ̂_i` for a radial
+/// (`σ=const`) edge. So the lifting reads each edge as a straight `(σ,µ̂)` segment — a round drill or a
+/// polygon cut, not just a near/far µ̂-band.
+fn poly_to_corners<B: Backend>(poly: &[(Rat<B>, Rat<B>)]) -> Vec<TrimCorner<B>> {
+    use core::cmp::Ordering;
+    let m = poly.len();
+    (0..m)
+        .map(|i| {
+            let (s0, m0) = &poly[i];
+            let (s1, m1) = &poly[(i + 1) % m];
+            let rail = if s0.cmp(s1) == Ordering::Equal {
+                RatFunc::from_poly(Poly::constant(m0.clone()))
+            } else {
+                let slope = m1.sub(m0).div(&s1.sub(s0));
+                let intercept = m0.sub(&slope.mul(s0));
+                RatFunc::from_poly(Poly::from_coeffs(vec![intercept, slope]))
+            };
+            (s0.clone(), rail)
+        })
+        .collect()
+}
+
+pub fn brep_trim_solid_regions<B: Backend>(
+    charts: &[(Interval<B>, &Chart<B>)],
+    w: &Interval<B>,
+    inner: &[(Interval<B>, RatFunc<B>)],
+    outer: &[(Interval<B>, RatFunc<B>)],
+    holes: &[HoleRail<B>],
+    poly_holes: &[Vec<(Rat<B>, Rat<B>)>],
+) -> Option<Brep<B>> {
+    use core::cmp::Ordering;
+    if inner.is_empty() || outer.is_empty() || charts.is_empty() {
+        return None;
+    }
+    let sigma = Interval {
+        lo: inner[0].0.lo.clone(),
+        hi: inner.last()?.0.hi.clone(),
+    };
+    let ws = [w.lo.clone(), w.hi.clone()];
+
+    // The piece of a piecewise boundary covering a σ.
+    let piece_at = |pieces: &[(Interval<B>, RatFunc<B>)], smid: &Rat<B>| -> Option<RatFunc<B>> {
+        pieces
+            .iter()
+            .find(|(iv, _)| {
+                iv.lo.cmp(smid) != Ordering::Greater && smid.cmp(&iv.hi) != Ordering::Greater
+            })
+            .map(|(_, mu)| mu.clone())
+    };
+    // The region chart covering σ (by containment).
+    let chart_at = |s: &Rat<B>| -> Option<&Chart<B>> {
+        charts
+            .iter()
+            .find(|(iv, _)| iv.lo.cmp(s) != Ordering::Greater && s.cmp(&iv.hi) != Ordering::Greater)
+            .map(|(_, ch)| *ch)
+    };
+
+    // σ-stations: each region's own positive-weight partition ∪ every region and rail-piece boundary.
+    let mut stations = Vec::new();
+    for (iv, ch) in charts {
+        let rmid = iv.lo.add(&iv.hi).mul(&Rat::new(1, 2));
+        let in_p = piece_at(inner, &rmid)?;
+        let out_p = piece_at(outer, &rmid)?;
+        stations.extend(sigma_stations(ch, iv, w, &in_p, &out_p));
+        stations.push(iv.lo.clone());
+        stations.push(iv.hi.clone());
+    }
+    for (iv, _) in inner.iter().chain(outer.iter()) {
+        stations.push(iv.lo.clone());
+        stations.push(iv.hi.clone());
+    }
+    stations.sort();
+    stations.dedup();
+    let nst = stations.len();
+    if nst < 2 {
+        return None;
+    }
+
+    // Holes: strictly interior in σ, `s1 < s2`, pairwise disjoint in σ (as `brep_trim_solid`).
+    for h in holes {
+        if !(sigma.lo.cmp(&h.s1) == Ordering::Less
+            && h.s1.cmp(&h.s2) == Ordering::Less
+            && h.s2.cmp(&sigma.hi) == Ordering::Less)
+        {
+            return None;
+        }
+    }
+    for i in 0..holes.len() {
+        for j in i + 1..holes.len() {
+            let (a, b) = (&holes[i], &holes[j]);
+            let disjoint =
+                a.s2.cmp(&b.s1) != Ordering::Greater || b.s2.cmp(&a.s1) != Ordering::Greater;
+            if !disjoint {
+                return None;
+            }
+        }
+    }
+
+    // Polygon holes: each must lie strictly interior to a single slice (its whole σ-extent inside one
+    // `[station_k, station_{k+1}]`) — a general `(σ,µ̂)` loop cut from that slice's lid, unlike a
+    // `HoleRail` (which is a near/far µ̂-band and can span slices via the σ-caps).
+    let poly_bounds: Vec<(Rat<B>, Rat<B>)> = poly_holes
+        .iter()
+        .map(|p| {
+            let mut lo = p[0].0.clone();
+            let mut hi = p[0].0.clone();
+            for (s, _) in p {
+                if s.cmp(&lo) == Ordering::Less {
+                    lo = s.clone();
+                }
+                if s.cmp(&hi) == Ordering::Greater {
+                    hi = s.clone();
+                }
+            }
+            (lo, hi)
+        })
+        .collect();
+    for (lo, hi) in &poly_bounds {
+        let inside = (0..nst - 1).any(|k| {
+            stations[k].cmp(lo) == Ordering::Less && hi.cmp(&stations[k + 1]) == Ordering::Less
+        });
+        if !inside {
+            return None; // crosses a σ-station (would need per-slice clipping)
+        }
+    }
+
+    let inner = stitched_poly_chain(inner);
+    let outer = stitched_poly_chain(outer);
+    let holes: Vec<HoleRail<B>> = holes
+        .iter()
+        .map(|h| HoleRail {
+            near: poly_rail(&h.near),
+            far: poly_rail(&h.far),
+            s1: h.s1.clone(),
+            s2: h.s2.clone(),
+        })
+        .collect();
+
+    let interior_station = |s: &Rat<B>| stations[1..nst - 1].iter().any(|st| req(st, s));
+
+    let mut bld = Builder::new();
+    for k in 0..nst - 1 {
+        let (sk, sk1) = (&stations[k], &stations[k + 1]);
+        let smid = sk.add(sk1).mul(&Rat::new(1, 2));
+        // The region's surface fields (only the pedal `c` varies across a shared-frame device).
+        let chart_k = chart_at(&smid)?;
+        let c = chart_k.pedal().reduce();
+        let r = chart_k.ruling().reduce();
+        let n = chart_k.normal().reduce();
+        let surf = |mu_hat: &RatFunc<B>, wl: &Rat<B>| {
+            c.add(&r.scale(mu_hat)).reduce().add(&n.scale_rat(wl))
+        };
+        let mu_in = piece_at(&inner, &smid)?;
+        let mu_out = piece_at(&outer, &smid)?;
+        let mut faces = slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?;
+        // Append the polygon holes interior to this slice as inner loops of its (outer) lid face.
+        let extra: Vec<Vec<TrimCorner<B>>> = poly_holes
+            .iter()
+            .zip(&poly_bounds)
+            .filter(|(_, (lo, hi))| sk.cmp(lo) == Ordering::Less && hi.cmp(sk1) == Ordering::Less)
+            .map(|(p, _)| poly_to_corners(p))
+            .collect();
+        if !extra.is_empty() {
+            if let Some(first) = faces.first_mut() {
+                first.1.extend(extra);
+            }
+        }
+        for (outer_loop, hole_loops) in &faces {
+            let surf_top = ruled_common(&surf(&mu_in, &ws[1]), &surf(&mu_out, &ws[1]), sk, sk1);
+            let surf_bot = ruled_common(&surf(&mu_in, &ws[0]), &surf(&mu_out, &ws[0]), sk, sk1);
+            let top_outer = lift_trim_loop(&mut bld, &c, &r, &n, outer_loop, &ws[1]);
+            let top_holes: Vec<Vec<HalfEdge>> = hole_loops
+                .iter()
+                .map(|h| lift_trim_loop(&mut bld, &c, &r, &n, h, &ws[1]))
+                .collect();
+            let bot_outer = reversed_wire(lift_trim_loop(&mut bld, &c, &r, &n, outer_loop, &ws[0]));
+            let bot_holes: Vec<Vec<HalfEdge>> = hole_loops
+                .iter()
+                .map(|h| reversed_wire(lift_trim_loop(&mut bld, &c, &r, &n, h, &ws[0])))
+                .collect();
+            bld.brep.add_face_with_holes(surf_top, top_outer, top_holes);
+            bld.brep.add_face_with_holes(surf_bot, bot_outer, bot_holes);
+            for corners in core::iter::once(outer_loop).chain(hole_loops.iter()) {
+                let m = corners.len();
+                for i in 0..m {
+                    let a = &corners[i];
+                    let b = &corners[(i + 1) % m];
+                    if req(&a.0, &b.0) && interior_station(&a.0) {
+                        continue;
+                    }
+                    emit_trim_wall(&mut bld, &c, &r, &n, a, b, &ws[0], &ws[1]);
+                }
+            }
+        }
+    }
+    Some(bld.into_brep())
+}
+
 // ============================================================================
 // The general holed construction's `(σ,μ)`→3-D lifting layer. Each slice's lid
 // region comes from the exact `arrange2d` boolean; these free functions lift its

@@ -459,6 +459,80 @@ impl<B: Backend> ConeDevelopment<B> {
         Some([gx, gy])
     }
 
+    /// A certified enclosure of the flat directrix accumulated over a σ-**sub-range**,
+    /// `∫_{lo}^{σ} γ′` — the primitive for gluing a **piecewise-support** development. A region's
+    /// support is a rational whose *global* extension may explode outside its σ-window (a smootherstep
+    /// ramp blows up beyond `[σ_a, σ_b]`); integrating `γ` from `lo = σ_a` rather than `0` keeps the
+    /// enclosure over the region's own domain, where the support is tame. `[0, 0]` when `γ ≡ 0`;
+    /// `None` on a pole. (`directrix_at` is this with `lo = 0`.)
+    pub fn directrix_between(
+        &self,
+        lo: &Rat<B>,
+        sigma: &Rat<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
+        let d = match &self.directrix {
+            None => {
+                let zero = RatIv::point(Rat::from_i128(0));
+                return Some([zero.clone(), zero]);
+            }
+            Some(d) => d,
+        };
+        let gx = integrate_on(
+            |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
+            lo,
+            sigma,
+            self.panels,
+        )?;
+        let gy = integrate_on(
+            |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
+            lo,
+            sigma,
+            self.panels,
+        )?;
+        Some([gx, gy])
+    }
+
+    /// The certified flat point `D = base + ∫_{lo}^{σ} γ′ + µ̂·ρ·e(ψ)` — [`point_signed`] with an
+    /// explicit directrix **base** and **lower limit**, the workhorse for a piecewise-support
+    /// development: each region integrates `γ` only over its own σ-window (from `lo`) on top of the
+    /// running flat-frame `base` carried from the previous region's end, so the pieces butt into one
+    /// connected outline with a tight enclosure. `None` on a directrix pole.
+    ///
+    /// ```
+    /// use develop::cone::{ConeDevelopment, DevConfig};
+    /// use develop::interval::RatIv;
+    /// use fixtures::devices::cone_wrap;
+    /// use lattice::{Bignum, Rat};
+    ///
+    /// // With a zero base and lo = σ, the accumulated γ is empty, so this is the plain signed point.
+    /// let dev = ConeDevelopment::new(&cone_wrap()).unwrap();
+    /// let cfg = DevConfig::<Bignum>::tight();
+    /// let (s, m) = (Rat::new(1, 3), Rat::from_i128(-1));
+    /// let z = RatIv::point(Rat::from_i128(0));
+    /// let a = dev.point_from(&[z.clone(), z], &s, &s, &m, &cfg).unwrap().center();
+    /// let b = dev.point_signed(&s, &m, &cfg).center();
+    /// assert_eq!(a, b);
+    /// ```
+    pub fn point_from(
+        &self,
+        base: &[RatIv<B>; 2],
+        lo: &Rat<B>,
+        sigma: &Rat<B>,
+        mu_hat: &Rat<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<FlatBox<B>> {
+        let g = self.directrix_between(lo, sigma, cfg)?;
+        let psi = self.angle(sigma, cfg.terms);
+        let cos = cos_on(&psi, cfg.terms);
+        let sin = sin_on(&psi, cfg.terms);
+        let radial = self.radius(sigma, &cfg.sqrt_eps).scale(mu_hat).rounded();
+        Some(FlatBox {
+            x: base[0].add(&g[0]).add(&radial.mul(&cos)).rounded(),
+            y: base[1].add(&g[1]).add(&radial.mul(&sin)).rounded(),
+        })
+    }
+
     /// A certified enclosure of `γ(σ)` over an *interval* σ: `γ(σ_lo)` plus the tail `γ′([σ_lo,
     /// σ_hi]) · [0, σ_hi − σ_lo]` — a sound hull, since `γ(σ) = γ(σ_lo) + ∫_{σ_lo}^{σ} γ′` and the
     /// integral lies in `γ′`-enclosure × `[0, width]`. `None` on a pole.
@@ -530,6 +604,47 @@ impl<B: Backend> ConeDevelopment<B> {
                     y: g[1].add(&radial.mul(&sin)).rounded(),
                 }
             }
+        }
+    }
+
+    /// The certified flat point in the **canonical signed development** `D(σ, µ̂) = γ(σ) + µ̂·ρ·e(ψ)`
+    /// — the single isometric formula (spec §Tier C) that holds for **every** support, `γ ≡ 0` on the
+    /// apex cone included. Unlike [`point`], the ruling coordinate `µ̂` is always **signed** (a point
+    /// at `µ̂ < 0` lands on the `ψ + π` side of the flat apex), so a `γ ≡ 0` body and a `γ ≠ 0` ramp
+    /// that share one frame develop into **one continuous flat region** — the self-lapping demo's
+    /// whole requirement. (`point`'s `|µ̂|` fast path places a one-sided gore at angle `ψ` for either
+    /// sign; correct in isolation, but it flips a `µ̂ < 0` gore across the apex relative to this
+    /// formula, so the two must not be mixed along a connected boundary.)
+    ///
+    /// `point(σ, 0, cfg)` and `point_signed(σ, 0, cfg)` both return exactly `γ(σ)` — the demo reads
+    /// that to stitch piecewise-support regions by a constant flat-frame offset.
+    ///
+    /// ```
+    /// use develop::cone::{ConeDevelopment, DevConfig};
+    /// use fixtures::devices::cone_wrap;
+    /// use lattice::{Bignum, Rat};
+    ///
+    /// let dev = ConeDevelopment::new(&cone_wrap()).unwrap();
+    /// let cfg = DevConfig::<Bignum>::tight();
+    /// let (s, m) = (Rat::new(1, 3), Rat::from_i128(-1));
+    /// // On the apex cone (γ ≡ 0) the signed point is the negation of `point`'s |µ̂| point for µ̂ < 0.
+    /// let signed = dev.point_signed(&s, &m, &cfg).center();
+    /// let abs = dev.point(&s, &m, &cfg).center();
+    /// assert_eq!(signed.0, abs.0.neg());
+    /// assert_eq!(signed.1, abs.1.neg());
+    /// ```
+    pub fn point_signed(&self, sigma: &Rat<B>, mu_hat: &Rat<B>, cfg: &DevConfig<B>) -> FlatBox<B> {
+        let psi = self.angle(sigma, cfg.terms);
+        let cos = cos_on(&psi, cfg.terms);
+        let sin = sin_on(&psi, cfg.terms);
+        let g = self.directrix_at(sigma, cfg).unwrap_or_else(|| {
+            let zero = RatIv::point(Rat::from_i128(0));
+            [zero.clone(), zero]
+        });
+        let radial = self.radius(sigma, &cfg.sqrt_eps).scale(mu_hat).rounded();
+        FlatBox {
+            x: g[0].add(&radial.mul(&cos)).rounded(),
+            y: g[1].add(&radial.mul(&sin)).rounded(),
         }
     }
 
@@ -620,7 +735,7 @@ pub fn drc<B: Backend>(eps: &Rat<B>, clearance: &Rat<B>) -> Verdict<Rat<B>, (), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fixtures::devices::{cone, cone_alt, cone_seam, cone_seam_ramp, cylinder};
+    use fixtures::devices::{cone, cone_alt, cone_seam, cone_seam_ramp, cone_wrap, cylinder};
 
     type Q = Rat<Bignum>;
 
@@ -636,6 +751,34 @@ mod tests {
         assert_eq!(cone_angle_coeff(&cone_alt()), Some(Q::new(6, 5)));
         // a cylinder is not an apex cone (ψ′ ≡ 0) → rejected.
         assert_eq!(cone_angle_coeff(&cylinder()), None);
+    }
+
+    #[test]
+    fn wrapping_cone_develops_with_double_the_arctan_coeff_at_finite_seam() {
+        // The degree-2 wrapping cone (traverses the Gauss circle twice) keeps the single-arctan
+        // angle law — with coefficient c = 260/97 = 2·(130/97), the whole point of staying in the
+        // cone's 2-plane. The canonical recognizer accepts it verbatim, no new integrator.
+        assert_eq!(cone_angle_coeff(&cone_wrap()), Some(Q::new(260, 97)));
+        let dev =
+            ConeDevelopment::new(&cone_wrap()).expect("wrapping cone is a canonical arctan cone");
+        assert_eq!(dev.angle_coeff(), &Q::new(260, 97));
+
+        // The seam ruling (φ₃D = ±π) that stranded the degree-1 chart at σ = ±∞ is the FINITE,
+        // regular σ = 1 here: it develops to an ordinary well-conditioned flat point (no blow-up).
+        let seam = dev.point(&Q::from_i128(1), &Q::from_i128(-1), &DevConfig::tight());
+        assert!(seam.backward_error() < Q::new(1, 1_000_000));
+        // ρ(1) = |n′|(1) is a finite positive surd — the stall is gone.
+        let rho1 = dev.radius(&Q::from_i128(1), &Q::new(1, 1_000_000_000_000));
+        assert!(rho1.lo().sign() > 0);
+
+        // One full turn + lap lives in the finite window σ ∈ [−1, 1] (φ₃D ∈ [−π, π]): the flat
+        // angle swept is c·(arctan 1 − arctan(−1)) = c·π/2 = (260/97)·(π/2) ≈ 240.9° — matching the
+        // classic developed-cone sector for a single 2π wrap of the SAME cone.
+        let span = dev
+            .angle(&Q::from_i128(1), 24)
+            .sub(&dev.angle(&Q::from_i128(-1), 24));
+        use std::f64::consts::PI;
+        assert!((to_f64(&span.mid()) - (260.0 / 97.0) * (PI / 2.0)).abs() < 1e-9);
     }
 
     #[test]

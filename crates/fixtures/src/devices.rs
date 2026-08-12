@@ -84,6 +84,55 @@ pub fn cone_seam_ramp() -> Chart<Bignum> {
     Chart::new(q, h)
 }
 
+/// The **wrapping cone** — the *same* device cone surface as [`cone`] (apex at the origin,
+/// `n·ẑ ≡ 65/97`, half-angle ≈ 42°), but parametrized to traverse its Gauss circle **twice** over
+/// `σ ∈ ℝ`, so a single chart covers **more than one full turn** of azimuth. This is the chart the
+/// self-lapping demo needs: the body, the seam, and the lapped tail all live in **one** connected
+/// σ-window, with **no coordinate singularity**.
+///
+/// **Why degree-2.** The device cone [`cone`] is `q(σ) = q_a + σ·q_b` with `q_a = (9,4,0,0)`,
+/// `q_b = (0,0,4,9)` — an affine *line* in the 2-plane `span(q_a, q_b)` (`|q_a|² = |q_b|² = 97`,
+/// `q_a·q_b = 0`). Its Hopf image sweeps azimuth `φ₃D = 2·arctan σ`, exactly **one** `2π` turn as
+/// `σ: −∞→∞`, with the seam (`φ₃D = ±π`) stranded at `σ = ±∞` where `n′ → 0` *stalls* (a removable
+/// coordinate singularity, not geometric). Any curve confined to that **same 2-plane** Hopf-maps to
+/// the **same** latitude circle regardless of how fast it moves; the degree-2 curve
+///
+/// > `q(σ) = (1 − σ²)·q_a + 2σ·q_b = (9 − 9σ², 4 − 4σ², 8σ, 18σ)`
+///
+/// stays in the plane (so `n·ẑ ≡ 65/97` still holds, `|q|² = 97(1+σ²)²`) but sweeps
+/// `φ₃D = 4·arctan σ` — a full `4π`, **two** turns, as `σ: −∞→∞`. One turn-plus-lap therefore fits a
+/// **finite** window straddling `σ = 0` (e.g. `σ ∈ [−1.14, 1.14]` → ≈ 390° = one turn + 30° lap),
+/// the seam rulings sitting at the **finite, regular** `σ = ±1` (`φ₃D = ±π`) where `|n′|` is bounded
+/// away from zero (`min |n′| ≈ 1.29` on the window). No `σ → ∞`, no stall.
+///
+/// **The angle stays closed-form.** Because the normal still rides the same circle, the textbook cone
+/// law `ψ = sinβ·φ₃D` gives `ψ = (65/97)·4·arctan σ = (260/97)·arctan σ` — the exact same single-
+/// arctangent shape as [`cone`], only with coefficient `c = 260/97` (twice the degree-1 `130/97`).
+/// `develop::cone::cone_angle_coeff` recognises it verbatim (`ψ′ = (260/97)/(1+σ²)`), so the whole
+/// `ConeDevelopment` machinery develops the wrapping cone with **no new angle integrator**; only the
+/// tail's support ramp needs the DD.2 flat-directrix quadrature.
+///
+/// ```
+/// use fixtures::devices::cone_wrap;
+/// use geom::tags::{classify, Tag};
+/// use lattice::{Bignum, Rat};
+///
+/// // Still a cone with apex at the origin (h ≡ 0) — the same surface, wrapped.
+/// let apex = [Rat::<Bignum>::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)];
+/// assert_eq!(classify(&cone_wrap()), Some(Tag::Cone { apex }));
+/// ```
+pub fn cone_wrap() -> Chart<Bignum> {
+    let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
+    // q = (1−σ²)·q_a + 2σ·q_b, q_a = (9,4,0,0), q_b = (0,0,4,9).
+    let q = [
+        poly(&[9, 0, -9]),
+        poly(&[4, 0, -4]),
+        poly(&[0, 8]),
+        poly(&[0, 18]),
+    ];
+    Chart::new(q, RatFunc::zero())
+}
+
 /// A **second-angle** rational cone (apex at the origin, `h ≡ 0`, `n·ẑ ≡ 3/5 ≈ sin 36.87°`) —
 /// a generality witness distinct from [`cone`]'s 65/97, so the closure pipe is demonstrably
 /// not locked to one half-angle.
@@ -248,6 +297,26 @@ mod tests {
             RatFunc::from_poly(poly(&[3])).div(&RatFunc::from_poly(poly(&[5])))
         );
         assert_ne!(nz, cone().normal().comp(2));
+    }
+
+    #[test]
+    fn cone_wrap_is_the_same_cone_traversed_twice() {
+        // Still a cone with apex at the origin — the same surface as `cone`, only wrapped.
+        let apex = [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)];
+        assert_eq!(classify(&cone_wrap()), Some(Tag::Cone { apex }));
+        // n·ẑ ≡ 65/97 — identical to the device cone (the normal rides the same latitude circle).
+        assert_eq!(cone_wrap().normal().comp(2), cone().normal().comp(2));
+        assert_eq!(
+            cone_wrap().normal().comp(2),
+            RatFunc::from_poly(poly(&[65])).div(&RatFunc::from_poly(poly(&[97]))),
+        );
+        // The ruling is non-degenerate on the whole finite window — no σ=∞ stall: |n′|² > 0 at the
+        // seam ruling σ = 1 (φ₃D = π), where the degree-1 chart would have stalled at σ = ∞.
+        let n1_sq_at_1 = cone_wrap()
+            .normal_deriv_sq()
+            .eval(&Rat::from_i128(1))
+            .unwrap();
+        assert!(n1_sq_at_1.sign() > 0);
     }
 
     #[test]
