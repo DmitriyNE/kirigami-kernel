@@ -21,8 +21,8 @@
 //! *corroborates* it (see `docs/spike-development-report.md`).
 
 use crate::interval::{
-    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on, log, pi, pi_half,
-    sin_on, sqrt, sqrt_on,
+    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on_slope, log, pi,
+    pi_half, sin_on, sqrt, sqrt_on,
 };
 use certify_core::Verdict;
 use geom::chart::Chart;
@@ -290,6 +290,10 @@ impl<B: Backend> FlatBox<B> {
 pub struct ConeDevelopment<B: Backend = Bignum> {
     c: Rat<B>,
     rho_sq: RatFunc<B>,
+    /// `(ρ²)′` — the exact derivative of the ruling-speed field, precomputed for the flat directrix
+    /// *acceleration* `γ″` (the slope-remainder integrand of [`integrate_on_slope`]); unused when
+    /// `γ ≡ 0`. `ρ′ = (ρ²)′/(2ρ)` (spec §Tier C).
+    rho_sq_prime: RatFunc<B>,
     /// `Some` for a curved-support developable (`γ ≠ 0`); `None` for the apex cone (`γ ≡ 0`), whose
     /// development is the byte-identical polar map [`ConeDevelopment::new`] produced before DD.2.
     directrix: Option<Directrix<B>>,
@@ -303,8 +307,10 @@ pub struct ConeDevelopment<B: Backend = Bignum> {
 /// tangent pair `(r/ρ, −n′/ρ)` to `(e(ψ), e⊥(ψ))`). `ρ = √ρ²` is the shared surd atom.
 #[derive(Debug)]
 struct Directrix<B: Backend> {
-    cr: RatFunc<B>, // c′·r
-    cn: RatFunc<B>, // c′·n′
+    cr: RatFunc<B>,       // c′·r
+    cn: RatFunc<B>,       // c′·n′
+    cr_prime: RatFunc<B>, // (c′·r)′  — for the acceleration γ″
+    cn_prime: RatFunc<B>, // (c′·n′)′ — for the acceleration γ″
 }
 
 // Hand-written so `B` need not be `Clone` (the backend markers are not).
@@ -313,6 +319,8 @@ impl<B: Backend> Clone for Directrix<B> {
         Directrix {
             cr: self.cr.clone(),
             cn: self.cn.clone(),
+            cr_prime: self.cr_prime.clone(),
+            cn_prime: self.cn_prime.clone(),
         }
     }
 }
@@ -323,6 +331,7 @@ impl<B: Backend> Clone for ConeDevelopment<B> {
         ConeDevelopment {
             c: self.c.clone(),
             rho_sq: self.rho_sq.clone(),
+            rho_sq_prime: self.rho_sq_prime.clone(),
             directrix: self.directrix.clone(),
             panels: self.panels,
         }
@@ -334,9 +343,12 @@ impl<B: Backend> ConeDevelopment<B> {
     /// (see [`cone_angle_coeff`]). The apex-cone development (`γ ≡ 0`).
     pub fn new(chart: &Chart<B>) -> Option<Self> {
         let c = cone_angle_coeff(chart)?;
+        let rho_sq = chart.normal_deriv_sq().reduce();
+        let rho_sq_prime = rho_sq.derivative();
         Some(ConeDevelopment {
             c,
-            rho_sq: chart.normal_deriv_sq().reduce(),
+            rho_sq,
+            rho_sq_prime,
             directrix: None,
             panels: 0,
         })
@@ -370,18 +382,26 @@ impl<B: Backend> ConeDevelopment<B> {
     pub fn new_developable(chart: &Chart<B>, panels: usize) -> Option<Self> {
         let c = arctan_coeff(&chart.psi_prime())?;
         let rho_sq = chart.normal_deriv_sq().reduce();
+        let rho_sq_prime = rho_sq.derivative();
         let directrix = if chart.pedal().is_zero() {
             None
         } else {
             let cp = chart.pedal().derivative();
+            let cr = cp.dot(chart.ruling()).reduce();
+            let cn = cp.dot(chart.normal_deriv()).reduce();
+            let cr_prime = cr.derivative();
+            let cn_prime = cn.derivative();
             Some(Directrix {
-                cr: cp.dot(chart.ruling()).reduce(),
-                cn: cp.dot(chart.normal_deriv()).reduce(),
+                cr,
+                cn,
+                cr_prime,
+                cn_prime,
             })
         };
         Some(ConeDevelopment {
             c,
             rho_sq,
+            rho_sq_prime,
             directrix,
             panels,
         })
@@ -408,6 +428,58 @@ impl<B: Backend> ConeDevelopment<B> {
         Some([
             a.mul(&cos).sub(&b.mul(&sin)).rounded(),
             a.mul(&sin).add(&b.mul(&cos)).rounded(),
+        ])
+    }
+
+    /// The flat directrix **acceleration** `γ″(s) = A·e(ψ) + B·e⊥(ψ)` enclosed over a σ-*panel* — the
+    /// slope-remainder integrand of the quadratic quadrature [`integrate_on_slope`]. `γ″` shares `γ′`'s
+    /// rotating-frame structure (spec §Tier C) with coefficients
+    ///
+    /// ```text
+    ///   A = a′ − b·ψ′ ,   B = a·ψ′ + b′ ,
+    /// ```
+    ///
+    /// where `a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`, `ψ′ = c/(1+σ²)`, and `a′,b′` are formed from the exact
+    /// derivatives `cr′,cn′,(ρ²)′` via `a′ = (cr′ − cr·(ρ²)′/(2ρ²))/ρ`, `b′ = (−cn′ + cn·(ρ²)′/(2ρ²))/ρ`
+    /// (using `ρ′ = (ρ²)′/(2ρ)`). Enclosing `γ″` *soundly* is what licenses the slope remainder
+    /// `R ∈ [−(h²/8)·width(γ″), (h²/8)·width(γ″)]` — a `γ″` that under-bounds the true second derivative
+    /// would make the quadrature certificate unsound. `None` on a pole (never on a nondegenerate cone
+    /// span, where `ρ² > 0` and `1+σ² ≥ 1`).
+    fn directrix_accel(
+        &self,
+        d: &Directrix<B>,
+        panel: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
+        let half = Rat::new(1, 2);
+        let cr = eval_ratfunc_on(&d.cr, panel)?;
+        let cn = eval_ratfunc_on(&d.cn, panel)?;
+        let cr_p = eval_ratfunc_on(&d.cr_prime, panel)?;
+        let cn_p = eval_ratfunc_on(&d.cn_prime, panel)?;
+        let rho2 = eval_ratfunc_on(&self.rho_sq, panel)?;
+        let rho2_p = eval_ratfunc_on(&self.rho_sq_prime, panel)?;
+        let inv_rho = sqrt_on(&rho2, &cfg.sqrt_eps).recip_pos()?; // 1/ρ
+        let inv_rho2 = rho2.recip_pos()?; // 1/ρ²
+        // a = (c′·r)/ρ, b = −(c′·n′)/ρ — the same flat-frame coefficients as γ′.
+        let a = cr.mul(&inv_rho);
+        let b = cn.neg().mul(&inv_rho);
+        // a′ = (cr′ − cr·(ρ²)′/(2ρ²))/ρ,  b′ = (−cn′ + cn·(ρ²)′/(2ρ²))/ρ.
+        let corr_a = cr.mul(&rho2_p).mul(&inv_rho2).scale(&half);
+        let corr_b = cn.mul(&rho2_p).mul(&inv_rho2).scale(&half);
+        let a_p = cr_p.sub(&corr_a).mul(&inv_rho);
+        let b_p = cn_p.neg().add(&corr_b).mul(&inv_rho);
+        // ψ′ = c/(1+σ²); `1+σ²` computed via |σ|² so it never dips below 1 on a 0-straddling panel.
+        let abs_s = abs_on(panel);
+        let one_plus_s2 = abs_s.mul(&abs_s).add(&RatIv::point(Rat::from_i128(1)));
+        let psi_p = one_plus_s2.recip_pos()?.scale(&self.c);
+        let am = a_p.sub(&b.mul(&psi_p)); // A = a′ − b·ψ′
+        let bm = a.mul(&psi_p).add(&b_p); // B = a·ψ′ + b′
+        let psi = self.angle_on(panel, cfg.terms);
+        let cos = cos_on(&psi, cfg.terms);
+        let sin = sin_on(&psi, cfg.terms);
+        Some([
+            am.mul(&cos).sub(&bm.mul(&sin)).rounded(),
+            am.mul(&sin).add(&bm.mul(&cos)).rounded(),
         ])
     }
 
@@ -444,14 +516,16 @@ impl<B: Backend> ConeDevelopment<B> {
             Some(d) => d,
         };
         let zero = Rat::from_i128(0);
-        let gx = integrate_on(
+        let gx = integrate_on_slope(
             |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
+            |p| self.directrix_accel(d, p, cfg).map(|f| f[0].clone()),
             &zero,
             sigma,
             self.panels,
         )?;
-        let gy = integrate_on(
+        let gy = integrate_on_slope(
             |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
+            |p| self.directrix_accel(d, p, cfg).map(|f| f[1].clone()),
             &zero,
             sigma,
             self.panels,
@@ -478,14 +552,16 @@ impl<B: Backend> ConeDevelopment<B> {
             }
             Some(d) => d,
         };
-        let gx = integrate_on(
+        let gx = integrate_on_slope(
             |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
+            |p| self.directrix_accel(d, p, cfg).map(|f| f[0].clone()),
             lo,
             sigma,
             self.panels,
         )?;
-        let gy = integrate_on(
+        let gy = integrate_on_slope(
             |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
+            |p| self.directrix_accel(d, p, cfg).map(|f| f[1].clone()),
             lo,
             sigma,
             self.panels,
@@ -1060,6 +1136,89 @@ mod tests {
         assert!(
             fine.cmp(&Q::new(1, 100)) == core::cmp::Ordering::Less,
             "the ramp develops to a fab-plausible ε (< 0.01) at 1024 panels, got {fine:?}"
+        );
+    }
+
+    /// SOUNDNESS (task #216): the certified acceleration `directrix_accel` (`γ″`) genuinely encloses
+    /// the derivative of the velocity `γ′` — the exact property the slope-remainder quadrature relies
+    /// on (a `γ″` that under-bounds `dγ′/ds` would make the enclosure unsound, not merely loose).
+    /// Checked against an **independent** central finite-difference of the analytic float `γ′`; a wrong
+    /// frame or sign in `γ″` (the §Tier C failure mode) lands the finite-difference outside the box.
+    #[test]
+    fn directrix_accel_encloses_the_derivative_of_velocity() {
+        let chart = cone_seam_ramp();
+        let dev = ConeDevelopment::new_developable(&chart, 64).unwrap();
+        let d = dev.directrix.as_ref().unwrap();
+        let cfg = DevConfig::tight();
+        let c = to_f64(dev.angle_coeff());
+        let cp = chart.pedal().derivative(); // c′
+        let rho_sq = chart.normal_deriv_sq();
+        let eval3 = |v: &lattice::Vec3Rat<Bignum>, s: &Q| -> [f64; 3] {
+            let p = v.eval(s).unwrap();
+            [to_f64(&p[0]), to_f64(&p[1]), to_f64(&p[2])]
+        };
+        let dot3 = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        // The analytic float velocity γ′(s) = a·e(ψ) + b·e⊥(ψ), rebuilt independently of the kernel.
+        let gp = |s: &Q| -> [f64; 2] {
+            let sf = to_f64(s);
+            let cpv = eval3(&cp, s);
+            let rv = eval3(chart.ruling(), s);
+            let npv = eval3(chart.normal_deriv(), s);
+            let rho = to_f64(&rho_sq.eval(s).unwrap()).sqrt();
+            let a = dot3(cpv, rv) / rho;
+            let b = -dot3(cpv, npv) / rho;
+            let psi = c * sf.atan();
+            [a * psi.cos() - b * psi.sin(), a * psi.sin() + b * psi.cos()]
+        };
+        let delta = Q::new(1, 10_000);
+        let two_delta = 2.0 * to_f64(&delta);
+        for &(sn, sd) in &[(1i128, 8i128), (1, 4), (3, 8), (1, 2)] {
+            let s = Q::new(sn, sd);
+            let (sp, sm) = (s.add(&delta), s.sub(&delta));
+            let acc = dev
+                .directrix_accel(d, &RatIv::point(s.clone()), &cfg)
+                .unwrap();
+            let (dsp, dsm) = (gp(&sp), gp(&sm));
+            for (i, acc_i) in acc.iter().enumerate() {
+                let fd = (dsp[i] - dsm[i]) / two_delta;
+                let (lo, hi) = (to_f64(acc_i.lo()), to_f64(acc_i.hi()));
+                assert!(
+                    lo - 1e-3 <= fd && fd <= hi + 1e-3,
+                    "γ″[{i}] enclosure [{lo:e},{hi:e}] must contain the finite-diff {fd:e} at σ={sn}/{sd}"
+                );
+            }
+        }
+    }
+
+    /// The slope-remainder quadrature (task #216) converges **quadratically** on the ramp flap — the
+    /// win over the DD.2 first-order Riemann sum (linear). Doubling panels shrinks the certified `γ`
+    /// enclosure ≈ 4×, and at just 64 panels it is already ~250× tighter than the old rule's 1.45e-3
+    /// (16 panels here beat the old 1024). The absolute floor stays fab-plausible throughout.
+    #[test]
+    fn the_directrix_quadrature_is_quadratic() {
+        let chart = cone_seam_ramp();
+        let cfg = DevConfig::tight();
+        let s = Q::new(1, 4); // mid-ramp
+        let width = |panels: usize| {
+            let g = ConeDevelopment::new_developable(&chart, panels)
+                .unwrap()
+                .directrix_at(&s, &cfg)
+                .unwrap();
+            to_f64(&g[0].width()).max(to_f64(&g[1].width()))
+        };
+        let ws: Vec<f64> = [32usize, 64, 128, 256].iter().map(|&n| width(n)).collect();
+        for pair in ws.windows(2) {
+            let ratio = pair[0] / pair[1];
+            assert!(
+                (3.5..=4.5).contains(&ratio),
+                "expected ≈4× per doubling (quadratic), got {ratio}"
+            );
+        }
+        // 64 panels already ≥100× tighter than the first-order rule's documented 1.45e-3.
+        assert!(
+            width(64) < 1.45e-3 / 100.0,
+            "64-panel γ width={:e}",
+            width(64)
         );
     }
 }

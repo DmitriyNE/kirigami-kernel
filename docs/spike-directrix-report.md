@@ -59,6 +59,14 @@ isometry and a fab-plausible ε on the ramp flap. DD.3 (the γ≠0 fold — the 
 - **Convergence is linear** (the naive interval Riemann sum). It clears the fab tolerance comfortably
   at 1024 panels; a higher-order rule (midpoint + curvature-bounded remainder, or adaptive panels)
   would tighten it if ever needed — logged, not built (mirrors the CLEAR-subdivision tech-debt note).
+  **RESOLVED (task #216, 2026-08-12):** replaced by the **verified midpoint-slope quadrature**
+  `develop::interval::integrate_on_slope` — `∫f = f(m)·h + R`, `R ∈ [−(h²/8)·w, (h²/8)·w]` with
+  `w = width(γ″(panel))`, giving **O(h²)** convergence (exactly 4× per panel-doubling on the ramp) and,
+  because the main term reads the integrand at a *thin* midpoint, killing the interval-dependency
+  blowup on large-coefficient integrands. `γ″` is enclosed soundly by `ConeDevelopment::directrix_accel`
+  (the same rotating-frame form as `γ′`, coefficients `A=a′−bψ′`, `B=aψ′+b′` from the exact
+  `cr′,cn′,(ρ²)′`). Measured γ-width: **9.3e-5 at 16 panels** (already beating the old rule's 1024) →
+  **9.1e-8 at 512**; a `γ″`-soundness guard (finite-diff of `γ′`) and the isometry check both hold.
 - **`point_on` over an interval σ** uses the sound hull `γ(σ_lo) + γ′([σ_lo,σ_hi])·[0,width]` and
   re-integrates from 0 per call — correct, not optimized.
 - **Two-sided σ** (σ < 0) is out of scope here (the ramp flap is one-sided `σ′ ∈ [0, 1/2]`); the

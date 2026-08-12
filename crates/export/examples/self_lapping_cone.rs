@@ -68,9 +68,18 @@ impl WrapDemo {
 
 /// The cubic smoothstep support `h(σ)=D·(3t²−2t³)`, `t=(σ−σ_a)/(σ_b−σ_a)`: `h(σ_a)=0`, `h(σ_b)=D`,
 /// `h′=0` at *both* ends — the C¹ §8 ramp joining the `h≡0` body and `h≡D` plateau with matching pedal
-/// (gap-free development). Cubic (not quintic smootherstep) keeps the global-σ polynomial well-
-/// conditioned, so the interval γ-quadrature stays tight; the price is a curvature (`h″`) jump at the
-/// joins — a mild crease, not a gap.
+/// (gap-free development). The price is a curvature (`h″`) jump at the joins — a mild crease, not a gap.
+///
+/// A **quintic smootherstep** `6t⁵−15t⁴+10t³` (C², crease-free) was tried once the task-#216
+/// [`develop::interval::integrate_on_slope`] quadrature removed the γ-looseness that first blocked it
+/// (the old first-order rule went to ε≈6.6 at 32 panels on the quintic's large global-σ coefficients;
+/// the slope rule reads the integrand at a *thin* midpoint and develops it tightly). The **quadrature**
+/// side now handles the quintic — but the quintic reshapes the ramp surface so the fixed outer/inner
+/// trim cylinders no longer cut a smooth low-degree rail over the ramp region (region 1's D1-outer fit
+/// went to ε≈14.7, and *raising* the fit degree made it — and the unchanged `h≡0` body region — worse:
+/// the Runge signature of a geometry/branch wall, not a conditioning one). Restoring the C² ramp in the
+/// demo therefore needs re-tuning the trim-cylinder placement, a demo-geometry follow-up tracked in the
+/// engineering log; the cubic keeps the acceptance demo certified end-to-end.
 fn ramp_support(demo: &WrapDemo) -> RatFunc<Bignum> {
     let inv = Q::from_i128(1).div(&demo.sigma_b.sub(&demo.sigma_a));
     let tp = Poly::from_coeffs(vec![demo.sigma_a.neg(), Q::from_i128(1)]).scale(&inv);

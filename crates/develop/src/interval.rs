@@ -706,6 +706,81 @@ where
     Some(acc)
 }
 
+/// A certified enclosure of `∫_lo^σ f(s) ds` by a **verified midpoint rule with a first-derivative
+/// (slope) remainder** — the higher-order successor to [`integrate_on`]. On each panel `[a, b]`
+/// (`h = b − a`, midpoint `m`),
+///
+/// ```text
+///   ∫_a^b f ds  =  f(m)·h  +  R ,      R = ∫_a^b (f(s) − f(m)) ds .
+/// ```
+///
+/// The **main term** `f(m)·h` evaluates the integrand at the *thin point* `m` (`f` applied to the
+/// degenerate interval `[m, m]`), so it carries none of the interval-*dependency* overestimation that
+/// makes [`integrate_on`]'s panel-wide `f([a,b])` loose for a high-degree / large-coefficient
+/// integrand — the exact failure that forced the self-lapping ramp down from a quintic to a cubic
+/// support. The **remainder** is bounded rigorously from the mean-value theorem: for every `s ∈ [a,b]`,
+/// `f(s) − f(m) = f′(ξ)(s − m)` with `ξ ∈ [a,b]`, so `f(s) − f(m) ∈ F′·(s − m)` where
+/// `F′ = fprime([a,b])` encloses `f′` over the whole panel; integrating the set-valued bound (and using
+/// `∫_a^b (s − m) ds = 0`, which cancels the leading term) gives the closed enclosure
+///
+/// ```text
+///   R  ∈  [ −(h²/8)·w ,  (h²/8)·w ] ,      w = width(F′) .
+/// ```
+///
+/// Since `w ≈ |f″|·h`, the per-panel remainder is `O(h³)` and the composite error is **`O(h²)`** —
+/// quadratic, versus [`integrate_on`]'s `O(1/panels)`. `fprime` need only be a *sound* enclosure of
+/// `f′` over a panel (it is multiplied by `h²/8`, so looseness there barely matters); the derivative
+/// is supplied by the caller (e.g. via interval automatic differentiation), keeping this primitive
+/// integrand-agnostic. Returns `None` if `panels == 0`, `σ < lo`, or either evaluation is `None`
+/// (a pole).
+///
+/// ```
+/// use develop::interval::{RatIv, cos_on, sin_on, integrate_on_slope};
+/// use lattice::{Bignum, Rat};
+///
+/// // ∫₀¹ cos s ds = sin 1. f = cos, f′ = −sin — the slope rule brackets it and, at matched panels,
+/// // is dramatically tighter than the first-order Riemann sum.
+/// let cos = |iv: &RatIv<Bignum>| Some(cos_on(iv, 24));
+/// let dcos = |iv: &RatIv<Bignum>| Some(sin_on(iv, 24).neg());
+/// let iv = integrate_on_slope(cos, dcos, &Rat::from_i128(0), &Rat::from_i128(1), 64).unwrap();
+/// assert!(iv.contains(&Rat::new(841_470, 1_000_000))); // ≈ sin 1 = 0.841471
+/// assert!(iv.width() < Rat::new(1, 10_000)); // O(h²): ~6e-5 at 64 panels
+/// ```
+pub fn integrate_on_slope<B, F, D>(
+    f: F,
+    fprime: D,
+    lo: &Rat<B>,
+    sigma: &Rat<B>,
+    panels: usize,
+) -> Option<RatIv<B>>
+where
+    B: Backend,
+    F: Fn(&RatIv<B>) -> Option<RatIv<B>>,
+    D: Fn(&RatIv<B>) -> Option<RatIv<B>>,
+{
+    use core::cmp::Ordering::Less;
+    if panels == 0 || sigma.cmp(lo) == Less {
+        return None;
+    }
+    let width = sigma.sub(lo).div(&Rat::from_i128(panels as i128));
+    let two = Rat::from_i128(2);
+    // h²/8 — the remainder scale; `∫_a^b (s−m) ds = 0` cancels the linear term, leaving this.
+    let coeff = width.mul(&width).div(&Rat::from_i128(8));
+    let mut acc = RatIv::point(Rat::from_i128(0));
+    let mut a = lo.clone();
+    for _ in 0..panels {
+        let b = a.add(&width);
+        let m = a.add(&b).div(&two);
+        let fm = f(&RatIv::point(m))?; // thin midpoint value — no dependency overestimation
+        let w = fprime(&RatIv::new(a.clone(), b.clone()))?.width();
+        let bound = coeff.mul(&w);
+        let rem = RatIv::new(bound.neg(), bound);
+        acc = acc.add(&fm.scale(&width)).add(&rem).rounded();
+        a = b;
+    }
+    Some(acc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,6 +816,82 @@ mod tests {
         assert!(
             to_f64(&fine.width()) < 1e-2,
             "512 panels give a tight enclosure"
+        );
+    }
+
+    /// SPIKE (task #216): the midpoint-slope rule converges **quadratically** and, at matched panels,
+    /// is orders tighter than the first-order Riemann sum — the two properties that unlock the quintic
+    /// ramp and the tighter γ. Integrand `∫₀¹ cos = sin 1`, with `f′ = −sin` supplied directly.
+    #[test]
+    fn integrate_on_slope_is_quadratic_and_beats_riemann() {
+        let cos = |iv: &RatIv<Bignum>| Some(cos_on(iv, 24));
+        let dcos = |iv: &RatIv<Bignum>| Some(sin_on(iv, 24).neg());
+        let (lo, hi) = (Q::from_i128(0), Q::from_i128(1));
+        let want = 1.0f64.sin();
+
+        // Widths at a doubling panel ladder.
+        let ws: Vec<f64> = [16usize, 32, 64, 128]
+            .iter()
+            .map(|&n| {
+                let iv = integrate_on_slope(cos, dcos, &lo, &hi, n).unwrap();
+                assert!(
+                    close(&iv, want, 1e-12),
+                    "slope rule must bracket sin 1 at {n}"
+                );
+                to_f64(&iv.width())
+            })
+            .collect();
+
+        // Quadratic: doubling panels shrinks the width ≈ 4× (allow 3×–5× for rounding slack).
+        for pair in ws.windows(2) {
+            let ratio = pair[0] / pair[1];
+            assert!(
+                (3.0..=5.0).contains(&ratio),
+                "expected ≈4× per doubling (quadratic), got {ratio}"
+            );
+        }
+
+        // At matched panels the slope rule crushes the first-order Riemann sum.
+        let riemann = integrate_on(cos, &lo, &hi, 64).unwrap();
+        let slope = integrate_on_slope(cos, dcos, &lo, &hi, 64).unwrap();
+        assert!(
+            to_f64(&slope.width()) * 50.0 < to_f64(&riemann.width()),
+            "slope ≥50× tighter at 64 panels: slope={} riemann={}",
+            to_f64(&slope.width()),
+            to_f64(&riemann.width())
+        );
+    }
+
+    /// SPIKE (task #216): the dependency-taming that matters for the ramp. A large-coefficient
+    /// polynomial integrand `f(s) = 200 s⁴ − 400 s³ + 210 s² − 10 s` (quintic-support-like magnitudes)
+    /// is enclosed far tighter by the slope rule — its main term reads `f` at a *thin* midpoint, so the
+    /// interval-Horner blowup that wrecks the Riemann panel enclosure never enters.
+    #[test]
+    fn integrate_on_slope_tames_large_coefficient_integrand() {
+        let p = Poly::from_coeffs(
+            [0, -10, 210, -400, 200]
+                .iter()
+                .map(|&c| Q::from_i128(c))
+                .collect(),
+        );
+        let dp = p.derivative();
+        let f = |iv: &RatIv<Bignum>| Some(eval_poly_on(&p, iv));
+        let fp = |iv: &RatIv<Bignum>| Some(eval_poly_on(&dp, iv));
+        let (lo, hi) = (Q::from_i128(0), Q::from_i128(1));
+        // ∫₀¹ = 40 − 100 + 70 − 5 = 5.
+        let want = 5.0;
+        let n = 64;
+        let riemann = integrate_on(f, &lo, &hi, n).unwrap();
+        let slope = integrate_on_slope(f, fp, &lo, &hi, n).unwrap();
+        assert!(
+            close(&riemann, want, 1e-9) && close(&slope, want, 1e-9),
+            "both bracket 5"
+        );
+        assert!(
+            to_f64(&slope.width()) * 20.0 < to_f64(&riemann.width()),
+            "slope ≥20× tighter on the big-coefficient integrand: slope={} riemann={}",
+            to_f64(&slope.width()),
+            to_f64(&riemann.width())
         );
     }
 
