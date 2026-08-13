@@ -49,6 +49,23 @@ pub struct AnchorDevCert<B: Backend = Bignum> {
     pub clearance: Rat<B>,
     /// The transcendental-enclosure budget (`terms`, `sqrt_eps`).
     pub cfg: DevConfig<B>,
+    /// The piecewise-support frame this anchor rides in, or `None` for the plain single-region
+    /// development (the original [`ConeDevelopment::point_on`] path, byte-identical).
+    pub frame: Option<AnchorFrame<B>>,
+}
+
+/// The piecewise-support frame an anchored edge rides in: the running flat-frame `base`
+/// accumulated over the regions before this one, and the σ lower limit `lo` its region's γ
+/// integrates from (the region's own window, where the support is tame — integrating a region's
+/// support from `0` crosses its blow-up zone, which is exactly what this field avoids). With a
+/// frame the checker develops via [`ConeDevelopment::point_from_on`] — the **signed**-µ̂ canonical
+/// development, the piecewise gluing's requirement.
+#[derive(Clone)]
+pub struct AnchorFrame<B: Backend = Bignum> {
+    /// The running flat-frame offset carried from the previous region's end.
+    pub base: [RatIv<B>; 2],
+    /// The σ lower limit the region's directrix integrates from (`lo ≤ σ` on the span).
+    pub lo: Rat<B>,
 }
 
 /// The evidence a valid ANCHOR T-part carries: the certified `t`-span and the uniform lift
@@ -123,8 +140,14 @@ pub fn anchor_dev<B: Backend>(
             Some(m) => m,
             None => return Verdict::Refuted(AnchorDevFault::PoleInEval),
         };
-        // The developed anchor box D(â([a,b])) and the authored target box g([a,b]).
-        let d = match cert.dev.point_on(&sig, &mu, &cert.cfg) {
+        // The developed anchor box D(â([a,b])) and the authored target box g([a,b]) — through
+        // the piecewise frame when one is given (base + from-`lo` γ, signed µ̂), else the plain
+        // single-region development (byte-identical to the pre-frame checker).
+        let d = match &cert.frame {
+            None => cert.dev.point_on(&sig, &mu, &cert.cfg),
+            Some(f) => cert.dev.point_from_on(&f.base, &f.lo, &sig, &mu, &cert.cfg),
+        };
+        let d = match d {
             Some(d) => d,
             None => return Verdict::Refuted(AnchorDevFault::PoleInEval),
         };
@@ -291,6 +314,7 @@ mod tests {
             subdiv,
             clearance,
             cfg: DevConfig::tight(),
+            frame: None,
         }
     }
 
@@ -449,5 +473,66 @@ mod tests {
         let box_iv: FlatBox<Bignum> = dev.point_on(&sig, &mu, &cfg).unwrap();
         let pt = dev.point(&Q::new(1, 2), &Q::from_i128(-1), &cfg);
         assert!(box_iv.x.contains(&pt.x.mid()) && box_iv.y.contains(&pt.y.mid()));
+    }
+
+    /// A γ≠0 anchor cert on the ramp flap (σ ∈ [0, 1/2], µ̂ ≡ 1): σ(t) = t identity, a zero
+    /// target, and a permissive clearance, so the returned ε is the raw sup |D|.
+    fn ramp_anchor(frame: Option<AnchorFrame<Bignum>>) -> AnchorDevCert<Bignum> {
+        use fixtures::devices::cone_seam_ramp;
+        AnchorDevCert {
+            dev: ConeDevelopment::new_developable(&cone_seam_ramp(), 64).unwrap(),
+            sigma: ratf(&[0, 1], &[1]), // σ(t) = t
+            mu: ratf(&[1], &[1]),       // μ̂(t) = 1
+            target: [ratf(&[0], &[1]), ratf(&[0], &[1])],
+            span: ivl(Q::from_i128(0), Q::new(1, 2)),
+            subdiv: 8,
+            clearance: Q::from_i128(1_000_000),
+            cfg: DevConfig::tight(),
+            frame,
+        }
+    }
+
+    #[test]
+    fn a_zero_frame_matches_the_frameless_gamma_anchor() {
+        // frame = Some{base 0, lo 0} routes through `point_from_on`, which must reproduce the
+        // frameless γ≠0 path (`point_on`'s signed branch: γ from 0 + the velocity-tail hull)
+        // exactly — same integrals, same rounding, same ε.
+        let z = RatIv::point(Q::from_i128(0));
+        let framed = ramp_anchor(Some(AnchorFrame {
+            base: [z.clone(), z],
+            lo: Q::from_i128(0),
+        }));
+        let frameless = ramp_anchor(None);
+        let (a, b) = match (anchor_dev(&framed), anchor_dev(&frameless)) {
+            (Verdict::Verified(a), Verdict::Verified(b)) => (a.eps, b.eps),
+            _ => panic!("both γ≠0 anchors certify under the permissive clearance"),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn the_anchor_frame_is_translation_equivariant() {
+        // The piecewise gluing's soundness core: shifting the frame base by an exact integer
+        // offset and the authored target by the same offset leaves ε unchanged (the developed
+        // box and the target box shift together; integer offsets live on the dyadic rounding
+        // grid, so even the outward rounding commutes).
+        let z = RatIv::point(Q::from_i128(0));
+        let zero_frame = ramp_anchor(Some(AnchorFrame {
+            base: [z.clone(), z],
+            lo: Q::from_i128(0),
+        }));
+        let mut shifted = ramp_anchor(Some(AnchorFrame {
+            base: [
+                RatIv::point(Q::from_i128(2)),
+                RatIv::point(Q::from_i128(-3)),
+            ],
+            lo: Q::from_i128(0),
+        }));
+        shifted.target = [ratf(&[2], &[1]), ratf(&[-3], &[1])];
+        let (a, b) = match (anchor_dev(&zero_frame), anchor_dev(&shifted)) {
+            (Verdict::Verified(a), Verdict::Verified(b)) => (a.eps, b.eps),
+            _ => panic!("both framed anchors certify under the permissive clearance"),
+        };
+        assert_eq!(a, b);
     }
 }

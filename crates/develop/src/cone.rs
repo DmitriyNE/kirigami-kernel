@@ -609,6 +609,68 @@ impl<B: Backend> ConeDevelopment<B> {
         })
     }
 
+    /// The certified flat point `D = base + ∫_{lo}^{σ} γ′ + µ̂·ρ·e(ψ)` for *interval* σ and µ̂ —
+    /// [`point_from`](Self::point_from) lifted to intervals, the ANCHOR-side workhorse for a
+    /// **piecewise-support** development: the γ-tail integrates only from `lo` (the region's own
+    /// σ-window, where the support is tame) on top of the running flat-frame `base` carried from
+    /// the previous region's end. The γ enclosure over the interval is the sound hull
+    /// `γ(σ_lo) + γ′([σ_lo, σ_hi])·[0, σ_hi − σ_lo]` with `γ(σ_lo)` accumulated from `lo`. The
+    /// ruling coordinate is **signed** (the canonical development, [`point_signed`](Self::point_signed))
+    /// — the piecewise gluing's requirement. Requires `lo ≤ σ_lo`; `None` on a pole.
+    ///
+    /// ```
+    /// use develop::cone::{ConeDevelopment, DevConfig};
+    /// use develop::interval::RatIv;
+    /// use fixtures::devices::cone_wrap;
+    /// use lattice::{Bignum, Rat};
+    ///
+    /// // With a zero base, lo = 0, and a thin σ-interval, it encloses the plain signed point.
+    /// let dev = ConeDevelopment::new(&cone_wrap()).unwrap();
+    /// let cfg = DevConfig::<Bignum>::tight();
+    /// let (s, m) = (Rat::new(1, 3), Rat::from_i128(-1));
+    /// let z = RatIv::point(Rat::from_i128(0));
+    /// let (si, mi) = (RatIv::point(s.clone()), RatIv::point(m.clone()));
+    /// let a = dev
+    ///     .point_from_on(&[z.clone(), z], &Rat::from_i128(0), &si, &mi, &cfg)
+    ///     .unwrap();
+    /// let b = dev.point_signed(&s, &m, &cfg);
+    /// assert!(a.x.contains(&b.x.mid()) && a.y.contains(&b.y.mid()));
+    /// ```
+    pub fn point_from_on(
+        &self,
+        base: &[RatIv<B>; 2],
+        lo: &Rat<B>,
+        sigma: &RatIv<B>,
+        mu_hat: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<FlatBox<B>> {
+        let psi = self.angle_on(sigma, cfg.terms);
+        let cos = cos_on(&psi, cfg.terms);
+        let sin = sin_on(&psi, cfg.terms);
+        let radial = self.radius_on(sigma, &cfg.sqrt_eps)?.mul(mu_hat).rounded();
+        // γ over the interval, accumulated from `lo`: γ(σ_lo) + γ′(σ)·[0, width] (the same sound
+        // hull as the from-0 interval directrix, with the from-`lo` lower limit).
+        let g = match &self.directrix {
+            None => {
+                let z = RatIv::point(Rat::from_i128(0));
+                [z.clone(), z]
+            }
+            Some(d) => {
+                let at_lo = self.directrix_between(lo, sigma.lo(), cfg)?;
+                let vel = self.directrix_velocity(d, sigma, cfg)?;
+                let tail = RatIv::new(Rat::from_i128(0), sigma.hi().sub(sigma.lo()));
+                [
+                    at_lo[0].add(&vel[0].mul(&tail)).rounded(),
+                    at_lo[1].add(&vel[1].mul(&tail)).rounded(),
+                ]
+            }
+        };
+        Some(FlatBox {
+            x: base[0].add(&g[0]).add(&radial.mul(&cos)).rounded(),
+            y: base[1].add(&g[1]).add(&radial.mul(&sin)).rounded(),
+        })
+    }
+
     /// A certified enclosure of `γ(σ)` over an *interval* σ: `γ(σ_lo)` plus the tail `γ′([σ_lo,
     /// σ_hi]) · [0, σ_hi − σ_lo]` — a sound hull, since `γ(σ) = γ(σ_lo) + ∫_{σ_lo}^{σ} γ′` and the
     /// integral lies in `γ′`-enclosure × `[0, width]`. `None` on a pole.

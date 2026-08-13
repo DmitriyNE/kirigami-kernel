@@ -146,6 +146,7 @@ fn rail_edge_eps<B: Backend>(
         // Permissive: we want the computed ε back, then apply one outline-level DRC.
         clearance: Rat::from_i128(1_000_000),
         cfg: cfg.clone(),
+        frame: None,
     };
     match anchor_dev(&cert) {
         Verdict::Verified(v) => Ok(v.eps),
