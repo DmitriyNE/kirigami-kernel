@@ -694,6 +694,13 @@ impl<B: Backend> ConeDevelopment<B> {
         &self.c
     }
 
+    /// The exact ruling-speed field `ρ²(σ)` — with [`angle_coeff`](Self::angle_coeff) it pins the
+    /// development's *frame* (`ρ`, `ψ` are support-independent), which is how a piecewise-support
+    /// gluing validates that its regions share one frame.
+    pub(crate) fn rho_sq(&self) -> &RatFunc<B> {
+        &self.rho_sq
+    }
+
     /// A certified enclosure of the flat angle `ψ(σ) = c·arctan(σ)`.
     pub fn angle(&self, sigma: &Rat<B>, terms: usize) -> RatIv<B> {
         arctan(sigma, terms).scale(&self.c).rounded()

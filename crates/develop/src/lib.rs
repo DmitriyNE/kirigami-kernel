@@ -21,5 +21,6 @@ pub mod cut;
 pub mod flat;
 pub mod fold;
 pub mod interval;
+pub mod part;
 pub mod seam_frame;
 pub mod unroll;
