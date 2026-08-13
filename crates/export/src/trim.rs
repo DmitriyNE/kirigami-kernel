@@ -44,8 +44,10 @@ fn ruling_xy<B: Backend>(chart: &Chart<B>) -> (RatFunc<B>, RatFunc<B>) {
 }
 
 /// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
-/// the final bracket. `None` if no sign change or a pole is hit.
-fn bisect_root<B: Backend>(
+/// the final bracket — exact sign evaluation, rational midpoints. `None` if no sign change or a
+/// pole is hit. (Public for the authoring layer's corner refinement — the same primitive
+/// [`outer_loop`] uses to collapse notch corners to clean joins.)
+pub fn bisect_root<B: Backend>(
     f: &RatFunc<B>,
     lo: &Rat<B>,
     hi: &Rat<B>,
@@ -125,29 +127,21 @@ fn rail_cylinder_crossings<B: Backend>(
     scan_roots(&h, &span.lo, &span.hi, scan, iters)
 }
 
-/// The two tangent-ruling σ of a disk within the gore, as `(σ_lo, σ_hi)` — the two sign changes
-/// of the **true-surface** cone∩cylinder discriminant ([`MuCut::disc`], positive where the ruling
-/// crosses the disk). It reads the real chart fields (pedal *with* support), so it is correct on
-/// offset tails and under wrapping parametrizations; the apex-ray shortcut it replaces (the A2
-/// finding) silently assumed a cone through the origin and mis-located tangents once `h ≠ 0`.
-/// `None` unless the disk subtends exactly one clean two-tangent arc in the gore.
-///
-/// [`MuCut::disc`]: develop::cut::MuCut::disc
-fn disk_tangents<B: Backend>(
+/// The two tangent-ruling σ where a **solid quadric cutter** (today: a cylinder of any axis)
+/// grazes the surface within `span` — the two sign changes of the true-surface discriminant
+/// ([`MuCut::disc`](develop::cut::MuCut::disc)); between them the ruling crosses the cutter (two
+/// real µ̂ branches), the σ-extent of an interior hole. Pedal-general — it reads the real chart
+/// fields (pedal *with* support), so it is correct on offset tails and under wrapping
+/// parametrizations; the apex-ray shortcut it replaces (the A2 finding) silently assumed a cone
+/// through the origin. `None` unless the cutter subtends exactly one clean two-tangent arc.
+pub fn surface_tangents<B: Backend>(
     chart: &Chart<B>,
-    cx: &Rat<B>,
-    cy: &Rat<B>,
-    r2: &Rat<B>,
+    surface: &CutSurface<B>,
     span: &Interval<B>,
     scan: usize,
     iters: usize,
 ) -> Option<(Rat<B>, Rat<B>)> {
-    let surface = CutSurface::Cylinder {
-        axis_point: [cx.clone(), cy.clone(), Rat::from_i128(0)],
-        axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
-        r2: r2.clone(),
-    };
-    let g = cut_mu_form(chart, &surface, &Rat::from_i128(0))?.disc();
+    let g = cut_mu_form(chart, surface, &Rat::from_i128(0))?.disc();
     let roots = scan_roots(&g, &span.lo, &span.hi, scan, iters)?;
     if roots.len() == 2 {
         Some((roots[0].clone(), roots[1].clone()))
@@ -426,12 +420,8 @@ pub struct HoleLoop<B: Backend = Bignum> {
     pub max_microcap: Rat<B>,
 }
 
-/// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: its **near** (Lower) and
-/// **far** (Upper) cut branches over the disk's σ-extent, joined at each tangent ruling by a
-/// **micro-cap** — a radial segment bridging the small μ̂ gap left by snapping the algebraic
-/// tangent σ (a root of [`tangent_poly`]) to a rational `margin` inside the disk. The inset keeps
-/// the polynomial fit clear of the √-branch point *and* makes the loop chain exactly in `(σ, μ̂)`.
-/// Fail-closed: a loose branch fit is `Unresolved`, a degenerate cut `Refuted`.
+/// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: the vertical-cylinder
+/// idiom of [`surface_hole_loop`].
 #[allow(clippy::too_many_arguments)]
 pub fn hole_loop<B: Backend>(
     chart: &Chart<B>,
@@ -445,7 +435,34 @@ pub fn hole_loop<B: Backend>(
     margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
-    let (t_lo, t_hi) = match disk_tangents(chart, cx, cy, r2, span, 256, 60) {
+    let surface = CutSurface::Cylinder {
+        axis_point: [cx.clone(), cy.clone(), Rat::from_i128(0)],
+        axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
+        r2: r2.clone(),
+    };
+    surface_hole_loop(chart, &surface, span, fit, clearance, cfg, margin, segments)
+}
+
+/// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: its
+/// **near** (Lower) and **far** (Upper) cut branches over the cutter's σ-extent
+/// ([`surface_tangents`]), joined at each tangent ruling by a **micro-cap** — a radial segment
+/// bridging the small μ̂ gap left by snapping the algebraic tangent σ to a rational `margin`
+/// inside the cutter. The inset keeps the polynomial fit clear of the √-branch point *and* makes
+/// the loop chain exactly in `(σ, μ̂)`. Pedal-general (reads the true surface — correct on offset
+/// supports and wrapped charts). Fail-closed: a loose branch fit is `Unresolved`, a degenerate
+/// cut `Refuted`.
+#[allow(clippy::too_many_arguments)]
+pub fn surface_hole_loop<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+    margin: &Rat<B>,
+    segments: usize,
+) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
+    let (t_lo, t_hi) = match surface_tangents(chart, surface, span, 256, 60) {
         Some(t) => t,
         None => return Verdict::Unresolved(clearance.clone()),
     };
@@ -456,18 +473,18 @@ pub fn hole_loop<B: Backend>(
         lo: s1.clone(),
         hi: s2.clone(),
     };
-    let far = eccentric_disk(cx.clone(), cy.clone(), r2.clone(), RootPick::Upper);
-    let near = eccentric_disk(cx.clone(), cy.clone(), r2.clone(), RootPick::Lower);
-    let (mu_far, e_far) = match certified_rail(chart, &far, &sub, fit, clearance, cfg) {
-        Verdict::Verified(x) => x,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-        Verdict::Refuted(f) => return Verdict::Refuted(f),
-    };
-    let (mu_near, e_near) = match certified_rail(chart, &near, &sub, fit, clearance, cfg) {
-        Verdict::Verified(x) => x,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-        Verdict::Refuted(f) => return Verdict::Refuted(f),
-    };
+    let (mu_far, e_far) =
+        match certified_rail_surface(chart, surface, RootPick::Upper, &sub, fit, clearance, cfg) {
+            Verdict::Verified(x) => x,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        };
+    let (mu_near, e_near) =
+        match certified_rail_surface(chart, surface, RootPick::Lower, &sub, fit, clearance, cfg) {
+            Verdict::Verified(x) => x,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        };
     let (f1, n1, f2, n2) = match (
         mu_far.eval(&s1),
         mu_near.eval(&s1),
@@ -967,8 +984,13 @@ mod tests {
         let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
         let margin = Q::new(1, 200);
 
+        let d4_surface = CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r2.clone(),
+        };
         let (tlo, thi) =
-            disk_tangents(&chart, &cx, &cy, &r2, &span, 256, 60).expect("two tangents");
+            surface_tangents(&chart, &d4_surface, &span, 256, 60).expect("two tangents");
         println!("D4 tangents: σ ∈ [{:.4}, {:.4}]", f(&tlo), f(&thi));
         assert!(tlo.cmp(&thi) == core::cmp::Ordering::Less);
 
@@ -1011,7 +1033,12 @@ mod tests {
             hi: Q::from_i128(1),
         };
         let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
-        let (t_lo, t_hi) = disk_tangents(&chart, &cx, &cy, &r2, &span, 256, 60).unwrap();
+        let d4 = CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r2.clone(),
+        };
+        let (t_lo, t_hi) = surface_tangents(&chart, &d4, &span, 256, 60).unwrap();
         // The old apex-ray residual: (cx·r_y − cy·r_x)² − R²·(r_x² + r_y²).
         let (rx, ry) = ruling_xy(&chart);
         let konst = |r: &Q| RatFunc::from_poly(Poly::constant(r.clone()));
@@ -1043,7 +1070,12 @@ mod tests {
             lo: Q::from_i128(0),
             hi: Q::new(1, 2),
         };
-        let (t_lo, t_hi) = disk_tangents(&chart, &cx, &cy, &r2, &span, 512, 60)
+        let drill = CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r2.clone(),
+        };
+        let (t_lo, t_hi) = surface_tangents(&chart, &drill, &span, 512, 60)
             .expect("the true-surface disc brackets the disk");
         assert!(
             t_lo < Q::new(1, 4) && Q::new(1, 4) < t_hi,
