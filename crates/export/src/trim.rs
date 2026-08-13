@@ -18,7 +18,7 @@
 
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
-use develop::cut::{CutFitCert, CutFitFault, CutSurface, cut_fit, plane_cut_rail};
+use develop::cut::{CutFitCert, CutFitFault, CutSurface, cut_fit, cut_mu_form, plane_cut_rail};
 use develop::unroll::{BoundaryArc, FlatOutline, UnrollFault, unroll_trim_loop};
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Vec3Rat};
@@ -41,17 +41,6 @@ fn ruling_xy<B: Backend>(chart: &Chart<B>) -> (RatFunc<B>, RatFunc<B>) {
         chart.ruling().dot(&basis3(0)),
         chart.ruling().dot(&basis3(1)),
     )
-}
-
-/// `g(σ) = (cx·r_y − cy·r_x)² − R²·(r_x² + r_y²)` — the (rational) tangency residual of the apex
-/// ray to the disk `(cx, cy, R)`: **negative** where the ray crosses the disk (two real cut
-/// branches), **zero** at the two tangent rulings, **positive** outside.
-fn tangent_poly<B: Backend>(chart: &Chart<B>, cx: &Rat<B>, cy: &Rat<B>, r2: &Rat<B>) -> RatFunc<B> {
-    let (rx, ry) = ruling_xy(chart);
-    let konst = |r: &Rat<B>| RatFunc::from_poly(Poly::constant(r.clone()));
-    let cross = ry.mul(&konst(cx)).sub(&rx.mul(&konst(cy))); // cx·r_y − cy·r_x
-    let norm2 = rx.mul(&rx).add(&ry.mul(&ry)); // r_x² + r_y²
-    cross.mul(&cross).sub(&konst(r2).mul(&norm2))
 }
 
 /// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
@@ -136,9 +125,14 @@ fn rail_cylinder_crossings<B: Backend>(
     scan_roots(&h, &span.lo, &span.hi, scan, iters)
 }
 
-/// The two tangent-ruling σ of a disk within the gore, as `(σ_lo, σ_hi)`. Scans [`tangent_poly`]
-/// for its two sign changes (outside `+` → inside `−` → outside `+`). `None` unless the disk
-/// subtends exactly one clean two-tangent arc in the gore.
+/// The two tangent-ruling σ of a disk within the gore, as `(σ_lo, σ_hi)` — the two sign changes
+/// of the **true-surface** cone∩cylinder discriminant ([`MuCut::disc`], positive where the ruling
+/// crosses the disk). It reads the real chart fields (pedal *with* support), so it is correct on
+/// offset tails and under wrapping parametrizations; the apex-ray shortcut it replaces (the A2
+/// finding) silently assumed a cone through the origin and mis-located tangents once `h ≠ 0`.
+/// `None` unless the disk subtends exactly one clean two-tangent arc in the gore.
+///
+/// [`MuCut::disc`]: develop::cut::MuCut::disc
 fn disk_tangents<B: Backend>(
     chart: &Chart<B>,
     cx: &Rat<B>,
@@ -148,7 +142,12 @@ fn disk_tangents<B: Backend>(
     scan: usize,
     iters: usize,
 ) -> Option<(Rat<B>, Rat<B>)> {
-    let g = tangent_poly(chart, cx, cy, r2);
+    let surface = CutSurface::Cylinder {
+        axis_point: [cx.clone(), cy.clone(), Rat::from_i128(0)],
+        axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
+        r2: r2.clone(),
+    };
+    let g = cut_mu_form(chart, &surface, &Rat::from_i128(0))?.disc();
     let roots = scan_roots(&g, &span.lo, &span.hi, scan, iters)?;
     if roots.len() == 2 {
         Some((roots[0].clone(), roots[1].clone()))
@@ -937,6 +936,104 @@ mod tests {
             ),
             other => panic!("hole unroll not Verified: {}", tag(&other)),
         }
+    }
+
+    /// On an **apex cone** (`h ≡ 0`) the true-surface discriminant tangents coincide EXACTLY with
+    /// the old apex-ray formula (they differ by the factor `−4·|r_xy|²` via the Lagrange identity,
+    /// so the sign scans walk identical brackets) — the A2 fix is a strict generalization.
+    #[test]
+    fn true_surface_tangents_match_the_apex_ray_on_the_cone() {
+        let chart = cone();
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
+        let (t_lo, t_hi) = disk_tangents(&chart, &cx, &cy, &r2, &span, 256, 60).unwrap();
+        // The old apex-ray residual: (cx·r_y − cy·r_x)² − R²·(r_x² + r_y²).
+        let (rx, ry) = ruling_xy(&chart);
+        let konst = |r: &Q| RatFunc::from_poly(Poly::constant(r.clone()));
+        let cross = ry.mul(&konst(&cx)).sub(&rx.mul(&konst(&cy)));
+        let norm2 = rx.mul(&rx).add(&ry.mul(&ry));
+        let old = cross.mul(&cross).sub(&konst(&r2).mul(&norm2));
+        let roots = scan_roots(&old, &span.lo, &span.hi, 256, 60).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(t_lo, roots[0], "identical bisection on the apex cone");
+        assert_eq!(t_hi, roots[1]);
+    }
+
+    /// On an **offset support** (`h ≠ 0` — the seam-ramp fixture) the apex-ray shortcut mislocates
+    /// the tangents, while the true-surface discriminant brackets the disk correctly and the whole
+    /// hole loop still certifies — the A2 correctness fix, end to end.
+    #[test]
+    fn offset_support_hole_certifies_with_true_tangents() {
+        use fixtures::devices::cone_seam_ramp;
+        let chart = cone_seam_ramp();
+        let cfg = DevConfig::tight();
+        // Drop the disk exactly onto the ramp surface: its centre is the (exact) xy of the
+        // surface point at σ = 1/4, µ̂ = −2 — the ruling provably pierces it.
+        let p = chart
+            .surface(&Q::from_i128(-2), &Q::from_i128(0))
+            .eval(&Q::new(1, 4))
+            .unwrap();
+        let (cx, cy, r2) = (p[0].clone(), p[1].clone(), Q::new(1, 25));
+        let span = Interval {
+            lo: Q::from_i128(0),
+            hi: Q::new(1, 2),
+        };
+        let (t_lo, t_hi) = disk_tangents(&chart, &cx, &cy, &r2, &span, 512, 60)
+            .expect("the true-surface disc brackets the disk");
+        assert!(
+            t_lo < Q::new(1, 4) && Q::new(1, 4) < t_hi,
+            "extent straddles the pierce"
+        );
+        // The apex-ray shortcut on the SAME disk: its bracket differs (or fails outright) —
+        // quantify the mislocation when it does return two roots.
+        let (rx, ry) = ruling_xy(&chart);
+        let konst = |r: &Q| RatFunc::from_poly(Poly::constant(r.clone()));
+        let cross = ry.mul(&konst(&cx)).sub(&rx.mul(&konst(&cy)));
+        let norm2 = rx.mul(&rx).add(&ry.mul(&ry));
+        let old = cross.mul(&cross).sub(&konst(&r2).mul(&norm2));
+        let tol = Q::new(1, 1000);
+        match scan_roots(&old, &span.lo, &span.hi, 512, 60) {
+            Some(r) if r.len() == 2 => {
+                let d0 = r[0].sub(&t_lo);
+                let d1 = r[1].sub(&t_hi);
+                assert!(
+                    d0.mul(&d0).cmp(&tol.mul(&tol)) == core::cmp::Ordering::Greater
+                        || d1.mul(&d1).cmp(&tol.mul(&tol)) == core::cmp::Ordering::Greater,
+                    "the apex-ray tangents must be visibly wrong on the offset support"
+                );
+            }
+            _ => {} // failing to bracket at all is the bug too
+        }
+        // End to end: the hole loop over the true extent certifies against the REAL surface.
+        let hole = match hole_loop(
+            &chart,
+            &cx,
+            &cy,
+            &r2,
+            &span,
+            RailFit {
+                degree: 3,
+                subdiv: 160,
+                bits: 44,
+            },
+            &Q::from_i128(1),
+            &cfg,
+            &Q::new(1, 20),
+            16,
+        ) {
+            Verdict::Verified(h) => h,
+            other => panic!("ramp hole_loop not Verified: {}", tag(&other)),
+        };
+        assert_eq!(hole.arcs.len(), 4, "far rail · cap · near rail · cap");
+        println!(
+            "ramp hole: ε = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
+            f(&hole.eps),
+            f(&t_lo),
+            f(&t_hi)
+        );
     }
 
     /// The full demo disk footprints, in the +y upper-half gore: D1 concentric outer, D2
