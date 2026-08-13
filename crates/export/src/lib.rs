@@ -9,9 +9,12 @@
 //! Planar trims of ruled faces, rational patches with IDEALIZED flags, the mesh
 //! size field `min(s_max, 1/κ₁)`, dimension/mark layers, and the GRID-closure
 //! rounding ledger. Every export carries the two-field stamp
-//! `{semantics, status}`. Floats live only in this crate behind the
-//! `diagnostics` feature (plots and viewers) — never in a value that carries a
-//! certificate.
+//! `{semantics, status}`. Floats are permitted in this crate for *solution
+//! search* and display (the pure/quarantine tier covers only `lattice`,
+//! `certify-core`, and `arrange2d`) — never in a value that carries a
+//! certificate: the float cut oracle *proposes*, the exact `cut_fit`
+//! certificate *decides*. Heavy interactive viewers stay behind the
+//! `diagnostics` feature.
 
 /// The neutral exact shell record (triangulated boundary of a certified one-joint
 /// closure) — always compiled and float-free; the geometry the STEP writer consumes.
@@ -31,14 +34,12 @@ pub mod brep;
 /// Always compiled and float-free; the geometry the STEP surface bridge emits.
 pub mod brep_build;
 
-/// Exact→`f64` approximation for diagnostics rendering and the STEP writer — the
-/// single, quarantined bridge from the certified-exact number types to display floats.
-#[cfg(any(feature = "diagnostics", feature = "step"))]
+/// Exact→`f64` approximation for oracle proposals, rendering, and the STEP writer — the
+/// single bridge from the certified-exact number types to search/display floats.
 pub mod approx;
 
 /// 2D SVG rendering of certified boolean regions (extractor + `<svg>` + gallery page).
 /// Builds on [`approx`] — floats touch the display only, never a predicate.
-#[cfg(feature = "diagnostics")]
 pub mod svg;
 
 /// 3D rendering of the certified cone strip (surface sampler + Three.js viewer page).
@@ -49,13 +50,13 @@ pub mod mesh3d;
 /// The float **cut-curve oracle** (G2): proposes a rational cut-rail `μ̂(σ)` for a
 /// cone∩surface cut by fitting the algebraic curve. Floats propose; the exact
 /// [`develop::cut::cut_fit`] certificate is the sole arbiter — never a predicate here.
-#[cfg(feature = "diagnostics")]
 pub mod cut_oracle;
 
 /// The **xy → (σ,μ) trim bridge** (G-B): author trimming cylinders in the cone's physical
 /// xy-plane and pull each back to a certified ruling-rail `μ̂(σ)` (via [`cut_oracle`] +
 /// [`develop::cut::cut_fit`]), then assemble the trim-loop boundary for the certified unroll.
-#[cfg(feature = "diagnostics")]
+/// In the **default build** — a bare `export` can cut and develop a boundary (the authoring
+/// layer is float-*proposal* only; `diagnostics` gates viewers, not authoring).
 pub mod trim;
 
 /// Real `.step` export via a `cxx` C++ FFI shim to OpenCASCADE's `STEPControl_Writer`.

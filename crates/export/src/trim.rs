@@ -208,6 +208,20 @@ impl Default for RailFit {
     }
 }
 
+impl RailFit {
+    /// The **low-degree STEP re-fit** profile: a curved rail exported to OCCT must stay a
+    /// handful of Bézier control points, or `MakeEdge`'s `f64` endpoints drift off the shared
+    /// vertices (the G7 finding). Every STEP emission site uses this; the SVG/flat side keeps
+    /// the tighter [`default`](RailFit::default).
+    pub fn occt_low() -> Self {
+        RailFit {
+            degree: 4,
+            subdiv: 256,
+            bits: 44,
+        }
+    }
+}
+
 /// A trimming cylinder authored in the cone's physical xy-plane: its 3-D cut [`surface`] (used
 /// to pull it back to a rail), its exact circular footprint `(cx, cy, r²)` (the arrangement
 /// operand), and the [`RootPick`] branch of the cone∩surface cut to trace.
@@ -280,7 +294,22 @@ pub fn certified_rail<B: Backend>(
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
 ) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
-    let mu_hat = match fit_cut_rail(chart, &disk.surface, span, fit.degree, disk.pick, fit.bits) {
+    certified_rail_surface(chart, &disk.surface, disk.pick, span, fit, clearance, cfg)
+}
+
+/// Fit **and** certify the ruling-rail of a bare [`CutSurface`] branch over `span` — the
+/// footprint-free core of [`certified_rail`] (a [`TrimDisk`] just bundles the surface with its
+/// xy footprint). The float oracle proposes, [`cut_fit`] decides; fail-closed as ever.
+pub fn certified_rail_surface<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    pick: RootPick,
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
+    let mu_hat = match fit_cut_rail(chart, surface, span, fit.degree, pick, fit.bits) {
         Some(m) => m,
         // The oracle declined (cut not real at a node / singular solve) — fail-closed.
         None => return Verdict::Unresolved(clearance.clone()),
@@ -288,7 +317,7 @@ pub fn certified_rail<B: Backend>(
     let cert = CutFitCert {
         mu_hat: mu_hat.clone(),
         w: Rat::from_i128(0),
-        surface: clone_surface(&disk.surface),
+        surface: clone_surface(surface),
         span: span.clone(),
         subdiv: fit.subdiv,
         clearance: clearance.clone(),
@@ -299,6 +328,39 @@ pub fn certified_rail<B: Backend>(
         Verdict::Unresolved(e) => Verdict::Unresolved(e),
         Verdict::Refuted(f) => Verdict::Refuted(f),
     }
+}
+
+/// The **piecewise-region** certified rail: one rail per region band, each fitted and certified
+/// against **its own region's chart** (supports differ per region; the frame is shared). This is
+/// the flat-side sibling of `brep_trim_solid_regions`' piecewise boundaries — the self-lapping
+/// demo's per-region `cyl_rails` lifted into the engine (A4). `charts` are the ordered,
+/// contiguous region bands. Returns the ordered `(band, rail)` pieces (the shape
+/// [`crate::brep_build::brep_trim_solid_regions`] and the piecewise develop consume) and the max
+/// certified ε over the pieces. Fail-closed on the first piece that does not certify.
+#[allow(clippy::type_complexity)]
+pub fn certified_rail_piecewise<B: Backend>(
+    charts: &[(Interval<B>, &Chart<B>)],
+    surface: &CutSurface<B>,
+    pick: RootPick,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<(Vec<(Interval<B>, RatFunc<B>)>, Rat<B>), CutFitFault, Rat<B>> {
+    let mut pieces = Vec::with_capacity(charts.len());
+    let mut eps = Rat::from_i128(0);
+    for (band, chart) in charts {
+        let (mu, e) = match certified_rail_surface(chart, surface, pick, band, fit, clearance, cfg)
+        {
+            Verdict::Verified(x) => x,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        };
+        if eps.cmp(&e) == core::cmp::Ordering::Less {
+            eps = e;
+        }
+        pieces.push((band.clone(), mu));
+    }
+    Verdict::Verified((pieces, eps))
 }
 
 /// The outer boundary loop of an **eccentric annulus band**: the inner rail `μ̂_in` and outer
@@ -1033,6 +1095,69 @@ mod tests {
             f(&hole.eps),
             f(&t_lo),
             f(&t_hi)
+        );
+    }
+
+    /// A piecewise rail certifies **per region against its own chart** (A4): the device cone on
+    /// `[0, 1/4]` glued to the seam-ramp flap on `[1/4, 1/2]` (the PR-1 `PiecewiseDevelopment`
+    /// pair), cut by one apex-containing cylinder — two contiguous pieces, one max ε, and the
+    /// pieces nearly agree at the join (both approximate the same cut within the DRC bound).
+    #[test]
+    fn a_piecewise_rail_certifies_per_region() {
+        use develop::cut::CutSurface;
+        use fixtures::devices::cone_seam_ramp;
+        let body = cone();
+        let ramp = cone_seam_ramp();
+        let bands = [
+            (
+                Interval {
+                    lo: Q::from_i128(0),
+                    hi: Q::new(1, 4),
+                },
+                &body,
+            ),
+            (
+                Interval {
+                    lo: Q::new(1, 4),
+                    hi: Q::new(1, 2),
+                },
+                &ramp,
+            ),
+        ];
+        let surface = CutSurface::Cylinder {
+            axis_point: [Q::from_i128(0), Q::new(1, 2), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: Q::from_i128(2),
+        };
+        let clearance = Q::from_i128(1);
+        let (pieces, eps) = match certified_rail_piecewise(
+            &bands,
+            &surface,
+            RootPick::Upper,
+            RailFit::occt_low(),
+            &clearance,
+            &DevConfig::tight(),
+        ) {
+            Verdict::Verified(x) => x,
+            other => panic!("piecewise rail not certified: {}", tag(&other)),
+        };
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].0.hi, pieces[1].0.lo, "contiguous bands");
+        assert!(
+            eps.sign() >= 0 && eps < Q::new(1, 2),
+            "ε under the DRC gate"
+        );
+        // At the join both rails approximate the same cut curve — the µ̂ mismatch stays within
+        // the fab clearance (the micro-cap the loop assembly would bridge).
+        let j = &pieces[0].0.hi;
+        let gap = pieces[0]
+            .1
+            .eval(j)
+            .unwrap()
+            .sub(&pieces[1].1.eval(j).unwrap());
+        assert!(
+            gap.mul(&gap).cmp(&clearance.mul(&clearance)) == core::cmp::Ordering::Less,
+            "join gap within clearance"
         );
     }
 

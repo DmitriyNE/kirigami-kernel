@@ -412,6 +412,71 @@ pub fn audit_brep<B: Backend>(b: &Brep<B>) -> Result<ShellAudit, String> {
     ))
 }
 
+/// The report of one certified STEP emission ([`emit_certified_step`]): the internal shell
+/// certificate verdict, the OCCT write status, and the audit facts a caller prints or gates on.
+pub struct StepReport {
+    /// Whether the solid's shell certificate passed `closed_shell_holed` (the internal
+    /// certified closed-2-manifold check) — the *audit*, never replaced by OCCT.
+    pub certified: bool,
+    /// The OCCT `write_brep` status: `"ok"` or the shim's error message.
+    pub occt: String,
+    /// The number of faces in the emitted solid.
+    pub faces: usize,
+    /// The number of free (incidence-1) edges — `0` for a watertight solid.
+    pub free_edges: usize,
+}
+
+impl StepReport {
+    /// One-line human-readable summary (the format the demos print per solid).
+    pub fn summary(&self) -> String {
+        format!(
+            "cert={}   occt={}   ({} faces, {} free)",
+            if self.certified {
+                "Verified"
+            } else {
+                "REFUTED"
+            },
+            self.occt,
+            self.faces,
+            self.free_edges,
+        )
+    }
+
+    /// Whether the emission is fully green: internally certified, OCCT `"ok"`, watertight.
+    pub fn ok(&self) -> bool {
+        self.certified && self.occt == "ok" && self.free_edges == 0
+    }
+}
+
+/// **One-call certified STEP emission** (A3): run the internal closed-shell certificate over the
+/// solid (`certify_core::shell::closed_shell_holed` on its shell certificate), write the `.step`
+/// via OCCT, and report both together — the `to_shell_certificate → closed_shell_holed →
+/// write_brep → audit` sequence every demo used to copy-paste. Oracle ∧ audit: the OCCT status
+/// corroborates, the internal certificate decides.
+pub fn emit_certified_step<B: Backend>(path: &str, solid: &Brep<B>) -> StepReport {
+    use certify_core::Verdict;
+    use certify_core::shell::closed_shell_holed;
+    let sc = solid.to_shell_certificate();
+    let certified = matches!(
+        closed_shell_holed(
+            sc.n_verts,
+            &sc.edge_start,
+            &sc.edge_end,
+            &sc.wire_edge,
+            &sc.wire_reversed,
+            &sc.loop_start,
+            &sc.face_start,
+        ),
+        Verdict::Verified(_)
+    );
+    StepReport {
+        certified,
+        occt: write_brep(path, solid),
+        faces: solid.faces().len(),
+        free_edges: solid.free_edges(),
+    }
+}
+
 /// Parse the shim's one-line `key=val` audit summary into a [`ShellAudit`]. An
 /// `"error: …"` summary (malformed buffer / OCCT failure) is returned verbatim as
 /// `Err`; a missing or non-numeric field is a parse `Err`.
