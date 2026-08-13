@@ -25,7 +25,8 @@
 //! the band expressed as the 4-arc loop `[Rail μ⁻, Cap, Rail μ⁺, Cap]` through that engine.
 
 use crate::anchor::{AnchorDevCert, AnchorDevFault, anchor_dev};
-use crate::cone::{ConeDevelopment, DevConfig, FlatBox};
+use crate::cone::{DevConfig, FlatBox};
+use crate::part::Development;
 use certify_core::Verdict;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
 
@@ -111,10 +112,14 @@ fn linear_through<B: Backend>(t0: &Rat<B>, v0: &Rat<B>, t1: &Rat<B>, v1: &Rat<B>
 /// The certified lift bound of one rail edge `[σ_a, σ_b]`: the true developed rail vs the
 /// straight chord between its developed endpoints, via [`anchor_dev`](crate::anchor::anchor_dev)
 /// with the parameter `t = σ` (identity reparam) and a permissive clearance (so the raw `ε` is
-/// read back). Returns the edge's `ε`, or the propagated fault.
+/// read back). The edge anchors piece-by-piece through the development's
+/// [`anchor_pieces`](Development::anchor_pieces) decomposition — one frameless piece for a
+/// single-region development (the original path, byte-identical), one framed piece per region
+/// for a piecewise gluing — and the edge's `ε` is the max over its pieces (the chord is one
+/// function of σ across all of them). Returns the edge's `ε`, or the propagated fault.
 #[allow(clippy::too_many_arguments)]
 fn rail_edge_eps<B: Backend>(
-    dev: &ConeDevelopment<B>,
+    dev: &impl Development<B>,
     mu_rail: &RatFunc<B>,
     sigma_a: &Rat<B>,
     sigma_b: &Rat<B>,
@@ -123,6 +128,7 @@ fn rail_edge_eps<B: Backend>(
     subdiv: usize,
     cfg: &DevConfig<B>,
 ) -> Result<Rat<B>, UnrollFault> {
+    use core::cmp::Ordering;
     // Chord g(t) between the developed endpoint centers, parametrized by t = σ on [σ_a, σ_b].
     let (ax, ay) = p_a.center();
     let (bx, by) = p_b.center();
@@ -130,32 +136,46 @@ fn rail_edge_eps<B: Backend>(
         linear_through(sigma_a, &ax, sigma_b, &bx),
         linear_through(sigma_a, &ay, sigma_b, &by),
     ];
-    let cert = AnchorDevCert {
-        dev: dev.clone(),
-        sigma: RatFunc::new(
-            Poly::from_coeffs(vec![Rat::from_i128(0), Rat::from_i128(1)]), // σ(t) = t
-            Poly::from_coeffs(vec![Rat::from_i128(1)]),
-        ),
-        mu: mu_rail.clone(),
-        target,
-        span: Interval {
-            lo: sigma_a.clone(),
-            hi: sigma_b.clone(),
-        },
-        subdiv,
-        // Permissive: we want the computed ε back, then apply one outline-level DRC.
-        clearance: Rat::from_i128(1_000_000),
-        cfg: cfg.clone(),
-        frame: None,
+    let span = Interval {
+        lo: sigma_a.clone(),
+        hi: sigma_b.clone(),
     };
-    match anchor_dev(&cert) {
-        Verdict::Verified(v) => Ok(v.eps),
-        // Only DegenerateSpan / PoleInEval are refutations; the huge clearance rules out
-        // Unresolved. A degenerate edge cannot occur here (σ_a < σ_b by construction).
-        Verdict::Refuted(AnchorDevFault::PoleInEval) => Err(UnrollFault::PoleInEval),
-        Verdict::Refuted(AnchorDevFault::DegenerateSpan) => Err(UnrollFault::DegenerateSpan),
-        Verdict::Unresolved(_) => Err(UnrollFault::PoleInEval),
+    let pieces = dev
+        .anchor_pieces(&span, cfg)
+        .ok_or(UnrollFault::PoleInEval)?;
+    let mut eps = Rat::from_i128(0);
+    for piece in pieces {
+        let cert = AnchorDevCert {
+            dev: piece.dev.clone(),
+            sigma: RatFunc::new(
+                Poly::from_coeffs(vec![Rat::from_i128(0), Rat::from_i128(1)]), // σ(t) = t
+                Poly::from_coeffs(vec![Rat::from_i128(1)]),
+            ),
+            mu: mu_rail.clone(),
+            target: target.clone(),
+            span: piece.span,
+            subdiv,
+            // Permissive: we want the computed ε back, then apply one outline-level DRC.
+            clearance: Rat::from_i128(1_000_000),
+            cfg: cfg.clone(),
+            frame: piece.frame,
+        };
+        match anchor_dev(&cert) {
+            Verdict::Verified(v) => {
+                if v.eps.cmp(&eps) == Ordering::Greater {
+                    eps = v.eps;
+                }
+            }
+            // Only DegenerateSpan / PoleInEval are refutations; the huge clearance rules out
+            // Unresolved. A degenerate edge cannot occur here (σ_a < σ_b by construction).
+            Verdict::Refuted(AnchorDevFault::PoleInEval) => return Err(UnrollFault::PoleInEval),
+            Verdict::Refuted(AnchorDevFault::DegenerateSpan) => {
+                return Err(UnrollFault::DegenerateSpan);
+            }
+            Verdict::Unresolved(_) => return Err(UnrollFault::PoleInEval),
+        }
     }
+    Ok(eps)
 }
 
 /// Develop a free-boundary μ-band into a certified flat pattern outline (direction ①).
@@ -168,7 +188,7 @@ fn rail_edge_eps<B: Backend>(
 /// yet within tolerance (refine `segments`), or `Refuted(`[`UnrollFault`]`)` for a degenerate
 /// span / pole.
 pub fn unroll_freeboundary<B: Backend>(
-    dev: &ConeDevelopment<B>,
+    dev: &impl Development<B>,
     sigma: &Interval<B>,
     mu_lo: &RatFunc<B>,
     mu_hi: &RatFunc<B>,
@@ -239,7 +259,7 @@ fn sm_eq<B: Backend>(a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)) -> bool {
 /// Develop one [`BoundaryArc`] to its [`ArcData`], or a fault: a rail with `sigma_start ==
 /// sigma_end` is `DegenerateSpan`, and a rail `μ̂` with a pole at a station is `PoleInEval`.
 fn develop_arc<B: Backend>(
-    dev: &ConeDevelopment<B>,
+    dev: &impl Development<B>,
     arc: &BoundaryArc<B>,
     cfg: &DevConfig<B>,
 ) -> Result<ArcData<B>, UnrollFault> {
@@ -261,7 +281,7 @@ fn develop_arc<B: Backend>(
             for k in 0..=n {
                 let s = sigma_start.add(&step.mul(&Rat::from_i128(k as i128)));
                 let m = mu.eval(&s).ok_or(UnrollFault::PoleInEval)?;
-                points.push(dev.point(&s, &m, cfg));
+                points.push(dev.point(&s, &m, cfg).ok_or(UnrollFault::PoleInEval)?);
                 sigmas.push(s);
             }
             // k=0 and k=n land exactly on σ_start and σ_end (ℚ arithmetic), so the endpoint μ̂'s
@@ -284,8 +304,10 @@ fn develop_arc<B: Backend>(
             start_sm: (sigma.clone(), mu_start.clone()),
             end_sm: (sigma.clone(), mu_end.clone()),
             points: vec![
-                dev.point(sigma, mu_start, cfg),
-                dev.point(sigma, mu_end, cfg),
+                dev.point(sigma, mu_start, cfg)
+                    .ok_or(UnrollFault::PoleInEval)?,
+                dev.point(sigma, mu_end, cfg)
+                    .ok_or(UnrollFault::PoleInEval)?,
             ],
             sigmas: vec![sigma.clone(), sigma.clone()],
             rail_mu: None,
@@ -332,7 +354,7 @@ fn develop_arc<B: Backend>(
 /// assert!(matches!(v, Verdict::Verified(_)));
 /// ```
 pub fn unroll_trim_loop<B: Backend>(
-    dev: &ConeDevelopment<B>,
+    dev: &impl Development<B>,
     arcs: &[BoundaryArc<B>],
     cfg: &DevConfig<B>,
     clearance: &Rat<B>,
@@ -414,6 +436,7 @@ pub fn unroll_trim_loop<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cone::ConeDevelopment;
     use fixtures::devices::cone;
 
     type Q = Rat<Bignum>;
@@ -839,6 +862,57 @@ mod tests {
             assert!(v0.x.contains(&Q::new(144, 97)) && v0.y.contains(&Q::from_i128(0)));
         } else {
             panic!("must certify under a generous clearance");
+        }
+    }
+
+    #[test]
+    fn a_piecewise_band_unrolls_with_chord_certified_edges() {
+        // The first chord-certified piecewise flat outline: the device cone (γ≡0) on [0, 1/4]
+        // glued to the ramp flap (γ≠0) on [1/4, 1/2], unrolled over σ ∈ [1/8, 3/8] with
+        // segments = 3 — so the middle rail edge [5/24, 7/24] genuinely straddles the region
+        // join at 1/4 and its ε comes from TWO framed anchor pieces (one per region), not from
+        // a pointwise backward error.
+        use crate::part::PiecewiseDevelopment;
+        use fixtures::devices::cone_seam_ramp;
+        let pw = PiecewiseDevelopment::new(vec![
+            (
+                Interval {
+                    lo: Q::from_i128(0),
+                    hi: Q::new(1, 4),
+                },
+                ConeDevelopment::new(&cone()).unwrap(),
+            ),
+            (
+                Interval {
+                    lo: Q::new(1, 4),
+                    hi: Q::new(1, 2),
+                },
+                ConeDevelopment::new_developable(&cone_seam_ramp(), 32).unwrap(),
+            ),
+        ])
+        .unwrap();
+        let span = Interval {
+            lo: Q::new(1, 8),
+            hi: Q::new(3, 8),
+        };
+        match unroll_freeboundary(
+            &pw,
+            &span,
+            &ratf(&[-2]),
+            &ratf(&[-1]),
+            3,
+            &DevConfig::tight(),
+            &Q::from_i128(1000),
+        ) {
+            Verdict::Verified(o) => {
+                // 4-arc loop, 2·(segments+1) + 2·2 stations − 3 shared corners − 1 closing dup.
+                assert_eq!(o.vertices.len(), 2 * (3 + 1));
+                // A real (positive) chord-lift bound, comfortably finite.
+                assert!(o.eps.cmp(&Q::from_i128(0)) == core::cmp::Ordering::Greater);
+                assert!(o.eps.cmp(&Q::from_i128(1)) == core::cmp::Ordering::Less);
+            }
+            Verdict::Refuted(f) => panic!("piecewise unroll refuted: {f:?}"),
+            Verdict::Unresolved(e) => panic!("piecewise unroll unresolved: eps = {e:?}"),
         }
     }
 }

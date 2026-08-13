@@ -656,9 +656,25 @@ impl<B: Backend> ConeDevelopment<B> {
                 [z.clone(), z]
             }
             Some(d) => {
-                let at_lo = self.directrix_between(lo, sigma.lo(), cfg)?;
+                // `sigma` can be an outward-rounded enclosure whose `lo()` dips *below* the
+                // window start `lo` (e.g. the ANCHOR checker's rounded σ(t) image at a
+                // non-dyadic `lo` like 7/24). True rail points never lie below `lo`, so clamp
+                // the γ base point: the enclosure then covers `sigma ∩ [lo, ∞)` — sound for
+                // every caller, since the from-`lo` development is only defined there.
+                let glo = if sigma.lo().cmp(lo) == core::cmp::Ordering::Less {
+                    lo.clone()
+                } else {
+                    sigma.lo().clone()
+                };
+                let width = sigma.hi().sub(&glo);
+                let width = if width.sign() < 0 {
+                    Rat::from_i128(0)
+                } else {
+                    width
+                };
+                let at_lo = self.directrix_between(lo, &glo, cfg)?;
                 let vel = self.directrix_velocity(d, sigma, cfg)?;
-                let tail = RatIv::new(Rat::from_i128(0), sigma.hi().sub(sigma.lo()));
+                let tail = RatIv::new(Rat::from_i128(0), width);
                 [
                     at_lo[0].add(&vel[0].mul(&tail)).rounded(),
                     at_lo[1].add(&vel[1].mul(&tail)).rounded(),
@@ -680,9 +696,19 @@ impl<B: Backend> ConeDevelopment<B> {
         sigma: &RatIv<B>,
         cfg: &DevConfig<B>,
     ) -> Option<[RatIv<B>; 2]> {
-        let base = self.directrix_at(sigma.lo(), cfg)?;
+        // An outward-rounded σ enclosure can dip below the domain start 0 (where `directrix_at`
+        // is undefined); clamp — sound, the development covers `sigma ∩ [0, ∞)`.
+        let zero = Rat::from_i128(0);
+        let glo = if sigma.lo().sign() < 0 {
+            zero.clone()
+        } else {
+            sigma.lo().clone()
+        };
+        let width = sigma.hi().sub(&glo);
+        let width = if width.sign() < 0 { zero } else { width };
+        let base = self.directrix_at(&glo, cfg)?;
         let vel = self.directrix_velocity(d, sigma, cfg)?;
-        let tail = RatIv::new(Rat::from_i128(0), sigma.hi().sub(sigma.lo()));
+        let tail = RatIv::new(Rat::from_i128(0), width);
         Some([
             base[0].add(&vel[0].mul(&tail)).rounded(),
             base[1].add(&vel[1].mul(&tail)).rounded(),
