@@ -21,7 +21,7 @@
 use crate::part::{BuiltRegions, Cutter, OpKind, OpRole, Part, PartFault, RegionPick};
 use develop::cut::{MuCut, cut_mu_form};
 use export::approx::rat_to_f64;
-use export::trim::surface_tangents;
+use export::trim::surface_disc_roots;
 use lattice::{Backend, Interval, Rat};
 
 /// Which µ̂-root of an op's pullback a boundary label refers to.
@@ -41,9 +41,6 @@ pub(crate) type Label = (usize, BranchSide);
 /// A labeled µ̂ endpoint (float position, exact label) — `None` at ±∞.
 type End = Option<(f64, Label)>;
 
-/// A per-op exact σ-extent, tagged with the region it lies in.
-type OpExtent<B> = Option<(usize, Rat<B>, Rat<B>)>;
-
 /// One maximal σ-run of constant boundary structure.
 pub(crate) struct Run<B: Backend> {
     /// The first sample σ of the run.
@@ -60,8 +57,8 @@ pub(crate) struct Run<B: Backend> {
 pub(crate) struct Structure<B: Backend> {
     /// The boundary runs, in σ order, covering the declared domain.
     pub runs: Vec<Run<B>>,
-    /// Ops classified as interior holes, each with the region index its extent lies in.
-    pub holes: Vec<(usize, usize)>,
+    /// Ops classified as interior holes: `(op, region, the disc-positive σ-window)`.
+    pub holes: Vec<(usize, usize, Interval<B>)>,
     /// The derived role per op.
     pub roles: Vec<OpRole>,
 }
@@ -88,10 +85,15 @@ struct Comp {
     hi: End,
 }
 
-/// The per-op pullbacks on one region's chart.
+/// The per-op pullbacks on one region's chart, plus the chart's **singular rail** — the µ̂ where
+/// `det J = 0` at `w = 0` (`µ̂ₛ(σ) = −(c′·n′)/(r′·n′)`, exact rational; the apex line on a cone).
+/// Material components on opposite sides of it lie on different sheets of the parametrization,
+/// so a gap crossing it is never an interior hole.
 pub(crate) struct RegionForms<B: Backend> {
     pub band: Interval<B>,
     pub forms: Vec<MuCut<B>>,
+    pub detj_c: lattice::RatFunc<B>,
+    pub detj_m: lattice::RatFunc<B>,
 }
 
 /// The op's µ̂-shadow at σ, from its pullback coefficients (exact eval, float roots).
@@ -212,12 +214,16 @@ struct SampleRec<B: Backend> {
     hole_ops: Vec<usize>,
 }
 
-/// The witness µ̂ nearest a 3-D point `p` along the ruling at σ:
-/// `µ̂* = ⟨p − pedal(σ), r(σ)⟩ / |r(σ)|²` (exact, then float).
-fn witness_mu<B: Backend>(
+/// The 3-D distance² from the witness point `p` to the material of one µ̂-component at σ —
+/// the quadratic `|X(σ, µ̂) − p|²` minimized over the component (`µ̂* = ⟨p − c, r⟩/|r|²`,
+/// clamped into the component). The honest "keep the material near p" metric: a µ̂-midpoint
+/// comparison ties on symmetric sheets, the 3-D distance does not.
+fn comp_dist2<B: Backend>(
     chart: &geom::chart::Chart<B>,
     p: &[Rat<B>; 3],
     sigma: &Rat<B>,
+    lo: f64,
+    hi: f64,
 ) -> Option<f64> {
     let c = chart.pedal().eval(sigma)?;
     let r = chart.ruling().eval(sigma)?;
@@ -227,7 +233,18 @@ fn witness_mu<B: Backend>(
     if den.sign() <= 0 {
         return None;
     }
-    Some(rat_to_f64(&num.div(&den)))
+    let mu = rat_to_f64(&num.div(&den)).clamp(lo, hi);
+    let (cf, rf, pf) = (
+        [rat_to_f64(&c[0]), rat_to_f64(&c[1]), rat_to_f64(&c[2])],
+        [rat_to_f64(&r[0]), rat_to_f64(&r[1]), rat_to_f64(&r[2])],
+        [rat_to_f64(&p[0]), rat_to_f64(&p[1]), rat_to_f64(&p[2])],
+    );
+    let mut acc = 0.0;
+    for i in 0..3 {
+        let dx = cf[i] + mu * rf[i] - pf[i];
+        acc += dx * dx;
+    }
+    Some(acc)
 }
 
 /// Resolve one sample σ within region `ri`.
@@ -267,7 +284,17 @@ fn resolve_sample<B: Backend>(
             .partial_cmp(&b.lo.as_ref().unwrap().0)
             .unwrap_or(core::cmp::Ordering::Equal)
     });
-    // Merge across gaps carved by ONE subtract op — those are interior holes.
+    // Merge across gaps carved by ONE subtract op — those are interior holes — UNLESS the gap
+    // crosses the chart's singular rail (`det J = 0`): components on opposite sides of it lie
+    // on different sheets of the parametrization (the apex line on a cone), never one face.
+    let sing: Option<f64> = {
+        let m = forms[ri].detj_m.eval(&sigma).map(|v| rat_to_f64(&v));
+        let c = forms[ri].detj_c.eval(&sigma).map(|v| rat_to_f64(&v));
+        match (m, c) {
+            (Some(m), Some(c)) if m.abs() > 1e-12 * (1.0 + c.abs()) => Some(-c / m),
+            _ => None,
+        }
+    };
     let mut hole_ops: Vec<usize> = Vec::new();
     let mut merged: Vec<Comp> = vec![comps[0]];
     for k in comps.into_iter().skip(1) {
@@ -275,7 +302,9 @@ fn resolve_sample<B: Backend>(
         let (gap_hi_lab, gap_lo_lab) = (prev.hi.as_ref().unwrap().1, k.lo.as_ref().unwrap().1);
         let same_sub_op =
             gap_hi_lab.0 == gap_lo_lab.0 && matches!(part.ops[gap_hi_lab.0].0, OpKind::Subtract);
-        if same_sub_op {
+        let gap = (prev.hi.as_ref().unwrap().0, k.lo.as_ref().unwrap().0);
+        let crosses_sing = sing.is_some_and(|s| gap.0 < s && s < gap.1);
+        if same_sub_op && !crosses_sing {
             if !hole_ops.contains(&gap_hi_lab.0) {
                 hole_ops.push(gap_hi_lab.0);
             }
@@ -290,18 +319,22 @@ fn resolve_sample<B: Backend>(
     } else {
         match &part.pick {
             Some(RegionPick::KeepNear(p)) => {
-                let target = witness_mu(&built.charts[ri], p, &sigma).ok_or(PartFault::Pole)?;
-                merged
-                    .into_iter()
-                    .min_by(|a, b| {
-                        let mid =
-                            |k: &Comp| (k.lo.as_ref().unwrap().0 + k.hi.as_ref().unwrap().0) / 2.0;
-                        (mid(a) - target)
-                            .abs()
-                            .partial_cmp(&(mid(b) - target).abs())
-                            .unwrap_or(core::cmp::Ordering::Equal)
-                    })
-                    .expect("nonempty")
+                let mut best: Option<(f64, Comp)> = None;
+                for k in merged {
+                    let d2 = comp_dist2(
+                        &built.charts[ri],
+                        p,
+                        &sigma,
+                        k.lo.as_ref().unwrap().0,
+                        k.hi.as_ref().unwrap().0,
+                    )
+                    .ok_or(PartFault::Pole)?;
+                    best = match best {
+                        Some((bd, bk)) if bd <= d2 => Some((bd, bk)),
+                        _ => Some((d2, k)),
+                    };
+                }
+                best.expect("nonempty").1
             }
             None => {
                 // Attribute to the op whose rail separates the first two components.
@@ -336,16 +369,22 @@ pub(crate) fn sweep<B: Backend>(
                     .ok_or(PartFault::CutUnresolved { op })?,
             );
         }
+        let dj = chart.det_j();
         regions.push(RegionForms {
             band: r.band.clone(),
             forms,
+            detj_c: dj.constant,
+            detj_m: dj.mu,
         });
     }
 
-    // The sample grid: mid-cell stations per region, plus targeted stations inside each
-    // subtract-cylinder's exact σ-extent (so a small hole is never missed between cells).
+    // The sample grid: mid-cell stations per region, plus targeted stations inside every
+    // disc-positive σ-window of each subtract cylinder (so a small hole is never missed between
+    // cells — and a wide gore meets a cylinder along several windows, one per ruling sheet).
     let mut samples: Vec<(usize, Rat<B>)> = Vec::new();
-    let mut extents: Vec<OpExtent<B>> = vec![None; part.ops.len()];
+    // windows[op] = the disc-positive windows seen, tagged by region.
+    type TaggedWindow<B> = (usize, Rat<B>, Rat<B>);
+    let mut windows: Vec<Vec<TaggedWindow<B>>> = vec![Vec::new(); part.ops.len()];
     for (ri, rf) in regions.iter().enumerate() {
         let width = rf.band.hi.sub(&rf.band.lo);
         for k in 0..CELLS {
@@ -356,23 +395,26 @@ pub(crate) fn sweep<B: Backend>(
             if !matches!(kind, OpKind::Subtract) || !matches!(cutter, Cutter::Cylinder { .. }) {
                 continue;
             }
-            if let Some((t1, t2)) =
-                surface_tangents(&built.charts[ri], &cutter.surface(), &rf.band, 256, 60)
-            {
-                let mid = t1.add(&t2).mul(&Rat::new(1, 2));
+            let roots = surface_disc_roots(&built.charts[ri], &cutter.surface(), &rf.band, 256, 60)
+                .unwrap_or_default();
+            for w in roots.windows(2) {
+                let (t1, t2) = (&w[0], &w[1]);
+                let mid = t1.add(t2).mul(&Rat::new(1, 2));
+                // Only windows where the cutter is real (disc > 0 at the midpoint).
+                let real = regions[ri].forms[op]
+                    .disc()
+                    .eval(&mid)
+                    .map(|v| v.sign() > 0)
+                    .unwrap_or(false);
+                if !real {
+                    continue;
+                }
                 let q1 = t1.add(&mid).mul(&Rat::new(1, 2));
-                let q3 = mid.add(&t2).mul(&Rat::new(1, 2));
+                let q3 = mid.add(t2).mul(&Rat::new(1, 2));
                 samples.push((ri, q1));
                 samples.push((ri, mid));
                 samples.push((ri, q3));
-                match &extents[op] {
-                    None => extents[op] = Some((ri, t1, t2)),
-                    // An extent seen in two regions → the hole crosses a join.
-                    Some((prev_ri, _, _)) if *prev_ri != ri => {
-                        return Err(PartFault::HoleCrossesRegions { op });
-                    }
-                    _ => {}
-                }
+                windows[op].push((ri, t1.clone(), t2.clone()));
             }
         }
     }
@@ -403,7 +445,7 @@ pub(crate) fn sweep<B: Backend>(
 
     // Derive roles; an op both holing and bounding is beyond this resolver — fault, don't guess.
     let mut roles = vec![OpRole::Inactive; part.ops.len()];
-    let mut holes: Vec<(usize, usize)> = Vec::new();
+    let mut holes: Vec<(usize, usize, Interval<B>)> = Vec::new();
     for (op, _) in part.ops.iter().enumerate() {
         let bounds_lower = runs.iter().any(|r| r.lower.0 == op);
         let bounds_upper = runs.iter().any(|r| r.upper.0 == op);
@@ -412,11 +454,41 @@ pub(crate) fn sweep<B: Backend>(
             if bounds_lower || bounds_upper {
                 return Err(PartFault::AmbiguousRegion { op });
             }
-            let ri = extents[op]
-                .as_ref()
-                .map(|(ri, _, _)| *ri)
-                .ok_or(PartFault::CutUnresolved { op })?;
-            holes.push((op, ri));
+            // Every disc-positive window of this op with a hole-active sample inside it is one
+            // through-hole (a wrapped chart's drill can pierce the kept sheet more than once).
+            // A window straddling a region join never forms (the per-band scans truncate it),
+            // so an unattributable hole-active sample is refused.
+            let mut attributed = 0usize;
+            let mut orphaned = false;
+            for rec in recs.iter().filter(|r| r.hole_ops.contains(&op)) {
+                if !windows[op].iter().any(|(_, t1, t2)| {
+                    t1.cmp(&rec.sigma) == core::cmp::Ordering::Less
+                        && rec.sigma.cmp(t2) == core::cmp::Ordering::Less
+                }) {
+                    orphaned = true;
+                }
+            }
+            for (ri, t1, t2) in &windows[op] {
+                let active = recs.iter().any(|r| {
+                    r.hole_ops.contains(&op)
+                        && t1.cmp(&r.sigma) == core::cmp::Ordering::Less
+                        && r.sigma.cmp(t2) == core::cmp::Ordering::Less
+                });
+                if active {
+                    holes.push((
+                        op,
+                        *ri,
+                        Interval {
+                            lo: t1.clone(),
+                            hi: t2.clone(),
+                        },
+                    ));
+                    attributed += 1;
+                }
+            }
+            if orphaned || attributed == 0 {
+                return Err(PartFault::HoleCrossesRegions { op });
+            }
             OpRole::Hole
         } else {
             // A bound reaches a domain end; an op bounding only interior runs bites across

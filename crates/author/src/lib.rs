@@ -19,4 +19,4 @@ pub(crate) mod realize;
 pub(crate) mod resolve;
 
 pub use develop::place::Placement;
-pub use part::{Cutter, FlatPattern, OpKind, Part, PartFault, RegionPick, SupportFn};
+pub use part::{Cutter, FlatPattern, OpKind, Part, PartFault, PartSolid, RegionPick, SupportFn};

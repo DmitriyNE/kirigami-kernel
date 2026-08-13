@@ -608,6 +608,8 @@ fine — this is a log, not a schema.
 
 ## Tech debt / sketchy
 
+- **γ≠0 chord-certified unroll re-runs the verified quadrature per rail edge — needs the perf pass before multilayer.** The piecewise unroll's anchor frames call `gamma_at(edge.lo)` and the checker's `point_from_on` integrates `∫γ′` from the region window start per edge/subdivision point, each at the region's full `panels` count regardless of span width. `PiecewiseDevelopment` now memoizes the cumulative-γ prefixes (budget-keyed `RefCell` — the dominant cross-region re-integration is gone), but the per-edge own-window integrals remain O(edges × panels × interval-transcendental evals) — a γ-heavy part at fab segment counts takes minutes in debug builds. Candidate fixes, in order of principle: **(a)** scale the quadrature panel count with the integration span (the midpoint-slope rule's error is O((w/panels)²·w), so short spans need few panels — soundness is panel-count-independent); **(b)** an incremental frame walk in the unroll (edges march monotonically; each frame extends the previous by one short increment, the demo's old `gamma_grid` shape); **(c)** release-profile evaluation for authoring workflows. *2026-08-14 · open · `develop::part` (`gamma_at`/`anchor_pieces`), `develop::cone::directrix_between` · surfaced by the `author` facade's piecewise tests (budgets right-sized there in the meantime).*
+
 - **The self-lapping demo keeps a C¹ cubic ramp; the C² quintic is blocked by the trim geometry, not the γ-quadrature.** As of task #216 the `integrate_on_slope` quadrature develops the quintic smootherstep tightly (the original blocker is gone), but restoring it in `crates/export/examples/self_lapping_cone.rs::ramp_support` fails at the **trim rail**: the quintic reshapes the ramp surface so the fixed outer/inner cylinder cuts (tuned for the cubic) no longer produce a smooth low-degree rail over region 1 (D1-outer ε≈14.7; raising the fit degree makes it *and* the unchanged body region worse — Runge, i.e. a geometry/branch wall). **To restore C²:** re-tune the trim-cylinder placement/radii (and/or sub-band region 1) for the steeper quintic surface, then regenerate the SVG/STEP artifacts. Purely a demo-geometry task — the kernel quadrature is done. *2026-08-12 · open · `self_lapping_cone.rs` (`ramp_support`, `cyl_rails`)*
 
 - **CLEAR (`develop::bonded::clear`) is a brute-force adaptive-AABB min-distance search — sound, but the user flagged it as unsatisfying (2026-08-11); resolve in future.** It de-risks the seam-ramp subdivision *technique* (S3.2, `4ff425a`) and is correct/fail-closed, but it is inelegant on several axes: **(1) rails-only** — it certifies the sheets' `(µ,w)`-rails, not the full-band *surface* (a world-AABB over a whole ruling is dominated by its length, so µ must also be subdivided — an O(more) mechanical extension, unbuilt); **(2) AABB-loose** — world-axis boxes of a rotating ruled arc are slack, forcing extra subdivision; **(3) linearly-convergent** — interval subdivision tightens linearly, so certifying a keep-out *near* the true min is deep/slow (fine when the clearance is comfortable, which is the physical case, but brittle otherwise); **(4) ignores the shared-frame structure** — the two lapping sheets differ by *exactly* the pedal-offset field `c_B(σ') − c_A(σ')` (µ,w-**independent**, a σ'-only rational vector), so the true min-distance is really a **1-parameter** problem (support gap + a correspondence residual bounded by the ruling regularity), not a blind 2-parameter box search. **A better future certificate** should exploit that structure — reduce to the support scalar plus an exact/Sturm residual bound (the §7 correspondence-lemma "stationary support ⇒ same-ruling" made quantitative), i.e. closer to the rejected "normal-gap + residual" option but made rigorous — giving an *exact/structural* CLEAR (no linear-convergence brute force) that also covers full surfaces. Keep the current `clear` as the honest baseline + the technique-of-record until then. Owner: S3 follow-up / a `develop`-split-time revisit.
@@ -645,6 +647,34 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **Construction-API PR 2 — the `author` facade, and what deriving roles flushed out.** The new
+  `author` crate evaluates declarative `Part` recipes (regions + solid-cutter material ops) by an
+  in-domain resolution sweep (float mechanism, conclusive-or-fault) + certified realization, gated by
+  a **topology-coherence check**: the exact flat boolean must reproduce the resolved structure, so a
+  mis-resolution is refused, never shipped. Three findings from making roles *derived* instead of
+  authored: **(1) the antipodal sheet is real** — on the full 296° gore the four demo solids
+  genuinely keep material on *both* sheets of the cone (the antipodal ray crosses the disks too);
+  the old pipeline never saw it because `RootPick::Upper` hard-picked the branch per call. The facade
+  surfaces it as `AmbiguousRegion`, resolved by an exact `keep_near` witness (the D2 doctrine working
+  as designed), with the chart's **singular rail** (`det J = 0` at `w=0`, `µ̂ₛ = −(c′·n′)/(r′·n′)`,
+  exact rational) guarding hole-merges across sheets. **(2) Cutter windows, not tangent pairs** — a
+  wide gore meets a solid cylinder along *several* disc-positive σ-windows (one per ruling sheet), so
+  the 2-root `surface_tangents` shape is a special case; rail-fit spans clamp to the window
+  *containing* their usage (fitting past a window's √-branch ends makes the oracle rightly decline),
+  and hole extents are per-window — which is also the shape the self-lapping seam drill (one cutter,
+  two pierces) needs in PR 3. **(3) γ≠0 unroll cost is per-edge** — chord-certifying a piecewise
+  outline runs the verified γ quadrature per rail edge (`gamma_at` + the checker's from-`lo`
+  integrals); memoizing `PiecewiseDevelopment`'s cumulative-γ prefixes (a `RefCell` cache keyed by
+  the budget) removed the dominant re-integration, but the per-edge own-window integrals remain
+  O(edges × panels) — logged under Tech debt for the perf pass (adaptive panel counts by span width,
+  or an incremental frame walk). Deliberately deferred from PR 2: the `flat_tolerance`/
+  `step_tolerance` product knobs (no principled mapping to `DevConfig`/`RailFit` yet — the exact
+  `budget`/`fit` hatches shipped instead), the `keep_hit` ray pick, and `hole_flat` (needs the PR 3
+  fold extension). The old 415-line `flex_panel` demo is now ~60 recipe lines in
+  `author/examples/flex_panel.rs` (same geometry; Verified at ε ≈ 0.488 vs the old demo's documented
+  ≈ 0.49), corroborated against the legacy `outer_loop` pipeline by exact-polygon shoelace area in
+  the integration suite.
 
 - **Construction-API PR 1 — the piecewise chord-certificate gap (found + closed) and `develop::part`.**
   **The finding:** the codebase had **two rigor levels masquerading as one** — `flex_panel`'s

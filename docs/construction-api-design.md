@@ -449,14 +449,18 @@ flat.report();   // echoes the snapped exact σ per region + the resolved picks
 
 ## Build steps (concrete)
 
-**PR 1 — the core** (decision-independent, in `develop`):
+**PR 1 — the core** (decision-independent, in `develop`) — **SHIPPED** (merged to main `c5eeec6`):
 1. `Development` trait + `impl for ConeDevelopment` (delegation).
 2. Generalize `unroll_{freeboundary,trim_loop}` (and later `fold_*`) to `&impl Development` —
    byte-for-byte regression on the single-region path.
 3. `develop::part::PiecewiseDevelopment` (`new` + `gamma_at` + `impl Development`), with tests that
    reproduce `self_lapping_cone`'s `gamma_grid`/`point_at` outputs.
 
-**PR 2 — the `author` crate** (D4: day-one crate): the `construct` module + the `Part` recipe +
+**PR 2 — the `author` crate** (D4: day-one crate) — **SHIPPED** (branch `construction-api`; the
+resolver surfaced two design-relevant facts recorded in the engineering log: the antipodal sheet is a
+*genuine* ambiguity `keep_near` resolves — the chart's singular rail `det J = 0` guards hole-merges
+across sheets — and cutter extents are per-window, not per-op; deferred to later PRs:
+`flat_tolerance`/`step_tolerance` product knobs, `keep_hit`, `hole_flat`): the `construct` module + the `Part` recipe +
 `Placement` (minimal: type, `apply_chart`, `snap` — in `develop::place`) + material ops with the v1
 HalfSpace/Cylinder cutters + the **in-domain classification** (arrangement → derived roles) + the D2
 resolution (infer / `AmbiguousRegion` / `keep`) + `.develop()`/`.solid()`, validated by rewriting

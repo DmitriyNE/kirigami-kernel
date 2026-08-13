@@ -141,13 +141,28 @@ pub fn surface_tangents<B: Backend>(
     scan: usize,
     iters: usize,
 ) -> Option<(Rat<B>, Rat<B>)> {
-    let g = cut_mu_form(chart, surface, &Rat::from_i128(0))?.disc();
-    let roots = scan_roots(&g, &span.lo, &span.hi, scan, iters)?;
+    let roots = surface_disc_roots(chart, surface, span, scan, iters)?;
     if roots.len() == 2 {
         Some((roots[0].clone(), roots[1].clone()))
     } else {
         None
     }
+}
+
+/// **All** sign-change roots of the true-surface discriminant within `span`, in σ order — the
+/// tangent rulings of every arc the cutter subtends in the gore (a wide gore meets a solid
+/// cylinder along *two* windows, one per sheet of the ruling line; [`surface_tangents`] is the
+/// single-window special case). Consecutive pairs with a positive discriminant between them are
+/// the cutter's real σ-windows. `None` on a pole at a scan node.
+pub fn surface_disc_roots<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    span: &Interval<B>,
+    scan: usize,
+    iters: usize,
+) -> Option<Vec<Rat<B>>> {
+    let g = cut_mu_form(chart, surface, &Rat::from_i128(0))?.disc();
+    scan_roots(&g, &span.lo, &span.hi, scan, iters)
 }
 
 /// Clone a [`CutSurface`] without a `B: Clone` bound (its own `Clone` is derived, hence bounded;

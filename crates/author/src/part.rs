@@ -266,6 +266,9 @@ pub enum PartFault {
     /// The assembled boundary loop failed the unroll's exact chaining check — an internal
     /// realization invariant, refused rather than shipped.
     LoopBroken,
+    /// The solid builder refused the certified chains (degenerate band, or a hole not strictly
+    /// interior / σ-disjoint — the `brep_trim_solid_regions` preconditions).
+    SolidRefused,
 }
 
 /// One declared σ-region: the (snapped) band, its support recipe, and the requested azimuth
@@ -442,6 +445,30 @@ impl<B: Backend> Part<B> {
         realize::flat_pattern(self, &built, structure)
     }
 
+    /// Certify and build the part's **watertight solid**: the same resolution as
+    /// [`develop`](Part::develop), re-certified at the internal low-degree STEP rail profile,
+    /// extruded through the configured [`thickness`](Part::thickness) window `[0, t]` and sewn
+    /// by the certified curved-rail builder (`brep_trim_solid_regions`) — derived holes become
+    /// through-holes, domain-authored polygons become polygon cuts. Write it with
+    /// [`PartSolid::write_step`] (behind the `step` feature).
+    pub fn solid(&self) -> Verdict<PartSolid<B>, PartFault, Rat<B>> {
+        let built = match self.build_regions() {
+            Ok(b) => b,
+            Err(f) => return Verdict::Refuted(f),
+        };
+        let structure = match resolve::sweep(self, &built) {
+            Ok(s) => s,
+            Err(f) => return Verdict::Refuted(f),
+        };
+        match realize::solid_brep(self, &built, structure) {
+            Verdict::Verified((brep, eps, report)) => {
+                Verdict::Verified(PartSolid { brep, eps, report })
+            }
+            Verdict::Unresolved(e) => Verdict::Unresolved(e),
+            Verdict::Refuted(f) => Verdict::Refuted(f),
+        }
+    }
+
     /// Validate and build the per-region charts + developments and the glued piecewise
     /// development (shared by the evaluators).
     pub(crate) fn build_regions(&self) -> Result<BuiltRegions<B>, PartFault> {
@@ -537,6 +564,37 @@ impl<B: Backend> FlatPattern<B> {
                 .flat_map(|f| f.rings.iter().flatten().copied()),
         );
         export::svg::polys_svg(&polys, &frame, px)
+    }
+}
+
+/// A certified part solid: the exact watertight B-rep (curved rails, lids, walls, drilled
+/// holes), the max certified rail bound, and the resolution echo.
+pub struct PartSolid<B: Backend = Bignum> {
+    pub(crate) brep: export::brep::Brep<B>,
+    pub(crate) eps: Rat<B>,
+    pub(crate) report: ResolveReport<B>,
+}
+
+impl<B: Backend> PartSolid<B> {
+    /// The exact boundary representation (shared vertex/edge tables, curved rail Béziers).
+    pub fn brep(&self) -> &export::brep::Brep<B> {
+        &self.brep
+    }
+    /// The max certified rail bound of the STEP re-fit.
+    pub fn eps(&self) -> &Rat<B> {
+        &self.eps
+    }
+    /// The resolution echo (same shape as the flat evaluator's).
+    pub fn report(&self) -> &ResolveReport<B> {
+        &self.report
+    }
+
+    /// Certify the closed shell, write the `.step` via OCCT, and report both — one call
+    /// ([`emit_certified_step`](export::step::emit_certified_step)). Needs the `step` feature
+    /// (build under `nix develop`).
+    #[cfg(feature = "step")]
+    pub fn write_step(&self, path: &str) -> export::step::StepReport {
+        export::step::emit_certified_step(path, &self.brep)
     }
 }
 
