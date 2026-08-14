@@ -380,7 +380,14 @@ fn certify_boundary<B: Backend>(
     })
 }
 
-/// Certify each hole op's loop (extent, both branch rails, micro-caps) at the given fit.
+/// Certify each hole op's loop (extent, both branch rails, micro-caps).
+///
+/// A hole's window is a **narrow span**, so the fit degree caps at 3 (the G2 narrow-span
+/// finding: higher degrees are Vandermonde-catastrophic off-origin, and the certified ε refines
+/// by `subdiv`, not degree). The ladder escalates the tangent inset (a thin inset leaves the
+/// near-tangent `∂s/∂µ̂ → 0` region inside the fit span, which blows the certified bound on a
+/// fast-turning chart) and then the subdivision, starting from the user's knobs; the first
+/// verified rung wins, and a dry ladder reports the tightest ε reached (fail-closed).
 fn certify_holes<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
@@ -388,6 +395,7 @@ fn certify_holes<B: Backend>(
     fit: RailFit,
     segments: usize,
 ) -> Result<Vec<HoleLoop<B>>, RErr<B>> {
+    use core::cmp::Ordering;
     let mut out = Vec::with_capacity(structure.holes.len());
     for (op, ri, window) in &structure.holes {
         let (op, ri) = (*op, *ri);
@@ -398,23 +406,58 @@ fn certify_holes<B: Backend>(
             lo: rmax(&window.lo.sub(&pad), &part.regions[ri].band.lo),
             hi: rmin(&window.hi.add(&pad), &part.regions[ri].band.hi),
         };
-        let loop_v = surface_hole_loop(
-            &built.charts[ri],
-            &part.ops[op].1.surface(),
-            &span,
-            fit,
-            &part.clearance,
-            &part.cfg,
-            &Rat::new(1, 200),
-            segments,
-        );
-        match loop_v {
-            Verdict::Verified(h) => out.push(h),
-            Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
-            Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
-                return Err(RErr::Fault(PartFault::Pole));
+        let base = RailFit {
+            degree: fit.degree.min(3),
+            ..fit
+        };
+        let mut certified: Option<HoleLoop<B>> = None;
+        let mut tightest: Option<Rat<B>> = None;
+        // NOTE: escalating the tangent inset (1/200 → 1/20) trades hole-shape fidelity near the
+        // tangents — the bridged micro-caps (`HoleLoop::max_microcap`, µ̂ units) are NOT folded
+        // into ε (the flat-length bound needs a certified ρ conversion; logged V&V gap, with
+        // the fit-basis rework).
+        'ladder: for margin_den in [200i128, 20] {
+            for mult in [1usize, 4, 16] {
+                let rung = RailFit {
+                    subdiv: base.subdiv.saturating_mul(mult),
+                    ..base
+                };
+                match surface_hole_loop(
+                    &built.charts[ri],
+                    &part.ops[op].1.surface(),
+                    &span,
+                    rung,
+                    &part.clearance,
+                    &part.cfg,
+                    &Rat::new(1, margin_den),
+                    segments,
+                ) {
+                    Verdict::Verified(h) => {
+                        certified = Some(h);
+                        break 'ladder;
+                    }
+                    Verdict::Unresolved(e) => {
+                        tightest = Some(match tightest {
+                            Some(t) if t.cmp(&e) == Ordering::Less => t,
+                            _ => e,
+                        });
+                    }
+                    Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+                        return Err(RErr::Fault(PartFault::Pole));
+                    }
+                    Verdict::Refuted(_) => {
+                        return Err(RErr::Fault(PartFault::CutUnresolved { op }));
+                    }
+                }
             }
-            Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
+        }
+        match certified {
+            Some(h) => out.push(h),
+            None => {
+                return Err(RErr::Loose(
+                    tightest.unwrap_or_else(|| part.clearance.clone()),
+                ));
+            }
         }
     }
     Ok(out)
@@ -567,9 +610,13 @@ pub(crate) fn flat_pattern<B: Backend>(
     }
 
     // — 8. The exact flat boolean + the topology coherence gate. —
+    // Flat-authored holes are already flat data: they cut directly (their fold-back is the
+    // solid evaluator's job). The coherence gate covers them too — a flat hole outside the
+    // pattern breaks the expected topology and refuses the evaluation.
     let outer_poly = flat_to_poly(&outline);
     let mut hole_polys: Vec<Vec<[Rat<B>; 2]>> = hole_outlines.iter().map(flat_to_poly).collect();
     hole_polys.extend(domain_polys.iter().cloned());
+    hole_polys.extend(part.flat_holes.iter().cloned());
     let expected_holes = hole_polys.len();
     let region = match assemble_flat(&outer_poly, &hole_polys) {
         Verdict::Verified(r) => r,
@@ -596,6 +643,7 @@ pub(crate) fn flat_pattern<B: Backend>(
         outline,
         holes: hole_outlines,
         domain_holes: domain_polys,
+        flat_holes: part.flat_holes.clone(),
         region,
         eps: eps_all,
         report,
@@ -652,17 +700,64 @@ pub(crate) fn solid_brep<B: Backend>(
         }
     }
 
+    // Flat-authored holes: fold each vertex back to `(σ, µ̂)` (the certified piecewise fold, the
+    // µ̂-side derived from the resolution), snap to the STEP dyadic grid, and drill them as
+    // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
+    // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
+    let mut poly_holes = part.domain_holes.clone();
+    // A polygon cut needs at least a triangle — the builder indexes vertices unchecked, and
+    // this evaluator must stay fail-closed even without the flat gate (defense in depth for
+    // both authored hole classes).
+    if poly_holes.iter().any(|p| p.len() < 3) {
+        return Verdict::Refuted(PartFault::EmptyFeature);
+    }
+    if !part.flat_holes.is_empty() {
+        let side = match structure.mu_negative {
+            Some(s) => s,
+            None => return Verdict::Refuted(PartFault::SideAmbiguous),
+        };
+        let zero = Rat::from_i128(0);
+        for poly in &part.flat_holes {
+            if poly.len() < 3 {
+                return Verdict::Refuted(PartFault::EmptyFeature);
+            }
+            let mut folded: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(poly.len());
+            for p in poly {
+                match develop::fold::fold_point_pw(
+                    &built.pw,
+                    &built.charts,
+                    &p[0],
+                    &p[1],
+                    &zero,
+                    crate::part::FOLD_ITERS,
+                    side,
+                    &part.cfg,
+                    &part.clearance,
+                ) {
+                    Verdict::Verified(f) => {
+                        eps_all = rmax(&eps_all, &f.eps);
+                        folded.push((snap30(&f.sigma.mid()), snap30(&f.mu.mid())));
+                    }
+                    Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+                    Verdict::Refuted(fault) => {
+                        return Verdict::Refuted(crate::part::map_fold_fault(fault));
+                    }
+                }
+            }
+            poly_holes.push(folded);
+        }
+    }
+
     let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> =
         bands.iter().cloned().zip(built.charts.iter()).collect();
     let w = Interval {
         lo: Rat::from_i128(0),
         hi: part.thickness.clone(),
     };
-    let solid =
-        match brep_trim_solid_regions(&charts, &w, &inner, &outer, &holes, &part.domain_holes) {
-            Some(s) => s,
-            None => return Verdict::Refuted(PartFault::SolidRefused),
-        };
+    let solid = match brep_trim_solid_regions(&charts, &w, &inner, &outer, &holes, &poly_holes) {
+        Some(s) => s,
+        None => return Verdict::Refuted(PartFault::SolidRefused),
+    };
     let report = build_report(part, &structure);
     Verdict::Verified((solid, eps_all, report))
 }

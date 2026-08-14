@@ -468,8 +468,20 @@ resolution (infer / `AmbiguousRegion` / `keep`) + `.develop()`/`.solid()`, valid
 targets ride where first needed: A2 pedal-general hole (a correctness fix) + A3 `emit_certified_step` +
 A4 `certified_rail_piecewise` land here.
 
-**PR 3 — v1.1**: the piecewise/side fold extension in `develop::fold` + `.fold()`; rewrite
-`self_lapping_cone` on the facade — **the 918-line collapse is the acceptance test** of the whole phase.
+**PR 3 — v1.1** — **SHIPPED** (branch `construction-api`; the acceptance rewrite passed — the
+918-line `self_lapping_cone` is a ~75-line recipe with derived structure, incl. the seam drill's
+one-cutter-two-holes shape): the piecewise/side fold (`fold_point_pw`/`fold_outline_pw` — signed µ̂,
+per-region running frames, certified-ψ-span faithfulness pieces so a wrapping `c ≥ 2` chart folds
+soundly) + `.fold()` (µ̂-side derived from the resolution) + `hole_flat` (flat boolean as-is; folded
+back + drilled at solid time). Three general-engine upgrades it forced (engineering log, Findings):
+the resolver's **seeded continuity-propagated pick** (a fixed witness alone flips to the mirror
+nappe past ~half a turn), per-chosen-component hole attribution, and the **hole-fit escalation
+ladder** in `certify_holes` (degree cap 3 + inset/subdiv rungs; the #220 basis change would remove
+the cap). A pre-merge adversarial review sweep then closed four fail-open paths (engineering log,
+Findings): the fold's chart pairing is verified by re-derivation (not length), σ-disjoint dual
+preimages on a > 360° flat sector refuse as `AmbiguousPreimage`, `solid()` gates authored polygon
+holes through the same exact flat boolean as `develop()`, and 0-overlap resolver junctions fault
+instead of re-trusting the witness.
 
 **PR 4 — `Cutter::Extrude`** (lines+arcs sketches in a placed frame): the flagship authoring primitive;
 after the acceptance test so PR 2 stays lean. Cone/Sphere/Quadric cutter variants follow as demand

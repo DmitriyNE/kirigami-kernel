@@ -407,6 +407,28 @@ impl<B: Backend> ConeDevelopment<B> {
         })
     }
 
+    /// Whether this development's exact flat data re-derives from `chart` — the piecewise fold's
+    /// chart-pairing guard: the angle coefficient `c`, the ruling-speed field `ρ²`, and the
+    /// directrix dot products `c′·r`, `c′·n′` must all re-derive equal (value equality, so
+    /// reduced and unreduced forms agree). Necessary, not sufficient: data the development never
+    /// reads (a pedal component along the surface normal) is the chart's alone — but any
+    /// mispairing that alters the *flat* map is refused.
+    pub(crate) fn derives_from(&self, chart: &Chart<B>) -> bool {
+        let Some(c) = arctan_coeff(&chart.psi_prime()) else {
+            return false;
+        };
+        if c != self.c || *chart.normal_deriv_sq() != self.rho_sq {
+            return false;
+        }
+        match &self.directrix {
+            None => chart.pedal().is_zero(),
+            Some(d) => {
+                let cp = chart.pedal().derivative();
+                cp.dot(chart.ruling()) == d.cr && cp.dot(chart.normal_deriv()) == d.cn
+            }
+        }
+    }
+
     /// The flat directrix velocity `γ′(s) = a·e(ψ) + b·e⊥(ψ)` enclosed over a σ-*panel*, with
     /// `a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`, `e(ψ) = (cos ψ, sin ψ)`, `e⊥(ψ) = (−sin ψ, cos ψ)`. `None`
     /// on a pole (`ρ²` or a component denominator straddles zero — never on a nondegenerate span).
@@ -648,12 +670,29 @@ impl<B: Backend> ConeDevelopment<B> {
         let cos = cos_on(&psi, cfg.terms);
         let sin = sin_on(&psi, cfg.terms);
         let radial = self.radius_on(sigma, &cfg.sqrt_eps)?.mul(mu_hat).rounded();
+        let g = self.directrix_between_on(lo, sigma, cfg)?;
+        Some(FlatBox {
+            x: base[0].add(&g[0]).add(&radial.mul(&cos)).rounded(),
+            y: base[1].add(&g[1]).add(&radial.mul(&sin)).rounded(),
+        })
+    }
+
+    /// γ accumulated **from `lo`** over an *interval* σ: the sound hull
+    /// `γ_lo(σ_lo⁺) + γ′(σ)·[0, width]` — the from-`lo` counterpart of [`directrix_on`], shared by
+    /// the piecewise interval development ([`point_from_on`](Self::point_from_on)) and the
+    /// piecewise fold's directrix residual. `[0, 0]` when `γ ≡ 0`. `None` on a pole.
+    pub(crate) fn directrix_between_on(
+        &self,
+        lo: &Rat<B>,
+        sigma: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
         // γ over the interval, accumulated from `lo`: γ(σ_lo) + γ′(σ)·[0, width] (the same sound
         // hull as the from-0 interval directrix, with the from-`lo` lower limit).
-        let g = match &self.directrix {
+        match &self.directrix {
             None => {
                 let z = RatIv::point(Rat::from_i128(0));
-                [z.clone(), z]
+                Some([z.clone(), z])
             }
             Some(d) => {
                 // `sigma` can be an outward-rounded enclosure whose `lo()` dips *below* the
@@ -675,16 +714,12 @@ impl<B: Backend> ConeDevelopment<B> {
                 let at_lo = self.directrix_between(lo, &glo, cfg)?;
                 let vel = self.directrix_velocity(d, sigma, cfg)?;
                 let tail = RatIv::new(Rat::from_i128(0), width);
-                [
+                Some([
                     at_lo[0].add(&vel[0].mul(&tail)).rounded(),
                     at_lo[1].add(&vel[1].mul(&tail)).rounded(),
-                ]
+                ])
             }
-        };
-        Some(FlatBox {
-            x: base[0].add(&g[0]).add(&radial.mul(&cos)).rounded(),
-            y: base[1].add(&g[1]).add(&radial.mul(&sin)).rounded(),
-        })
+        }
     }
 
     /// A certified enclosure of `γ(σ)` over an *interval* σ: `γ(σ_lo)` plus the tail `γ′([σ_lo,

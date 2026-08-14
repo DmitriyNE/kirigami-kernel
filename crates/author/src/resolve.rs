@@ -53,6 +53,18 @@ pub(crate) struct Run<B: Backend> {
     pub upper: Label,
 }
 
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Run<B> {
+    fn clone(&self) -> Self {
+        Run {
+            lo: self.lo.clone(),
+            hi: self.hi.clone(),
+            lower: self.lower,
+            upper: self.upper,
+        }
+    }
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
     /// The boundary runs, in σ order, covering the declared domain.
@@ -61,6 +73,22 @@ pub(crate) struct Structure<B: Backend> {
     pub holes: Vec<(usize, usize, Interval<B>)>,
     /// The derived role per op.
     pub roles: Vec<OpRole>,
+    /// The kept material's µ̂-side, when it is uniform across every sample: `Some(true)` = all
+    /// µ̂ < 0, `Some(false)` = all µ̂ > 0, `None` = mixed or 0-straddling. The fold's side
+    /// convention (derived, never authored — the seam-#3 doctrine).
+    pub mu_negative: Option<bool>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Structure<B> {
+    fn clone(&self) -> Self {
+        Structure {
+            runs: self.runs.clone(),
+            holes: self.holes.clone(),
+            roles: self.roles.clone(),
+            mu_negative: self.mu_negative,
+        }
+    }
 }
 
 /// The resolver's sample-grid density per region (also the realizer's corner pad unit).
@@ -206,12 +234,15 @@ fn comp_subtract(k: &Comp, sh: &Shadow) -> Vec<Comp> {
     out
 }
 
-/// One sample's resolved record: the hull boundary labels plus the ops holing here.
+/// One sample's resolved record: the hull boundary labels, the ops holing here, and the kept
+/// component's µ̂-ends (float — the side consensus input).
 struct SampleRec<B: Backend> {
     sigma: Rat<B>,
     lower: Label,
     upper: Label,
     hole_ops: Vec<usize>,
+    mu_lo: f64,
+    mu_hi: f64,
 }
 
 /// The 3-D distance² from the witness point `p` to the material of one µ̂-component at σ —
@@ -247,17 +278,25 @@ fn comp_dist2<B: Backend>(
     Some(acc)
 }
 
-/// Resolve one sample σ within region `ri`.
-fn resolve_sample<B: Backend>(
+/// One merged material component at a sample: its µ̂-ends plus the subtract ops whose interior
+/// gaps were merged **inside it** (its own hole record — a gap in some other component is not a
+/// hole of the part).
+struct MergedComp {
+    comp: Comp,
+    hole_ops: Vec<usize>,
+}
+
+/// The merged material components at one sample σ within region `ri` (the op-shadow interval
+/// algebra + the singular-rail-guarded hole merge — no pick yet; choosing is the sweep's job).
+fn sample_comps<B: Backend>(
     part: &Part<B>,
-    built: &BuiltRegions<B>,
     forms: &[RegionForms<B>],
     ri: usize,
-    sigma: Rat<B>,
-) -> Result<SampleRec<B>, PartFault> {
+    sigma: &Rat<B>,
+) -> Result<Vec<MergedComp>, PartFault> {
     let mut comps = vec![Comp { lo: None, hi: None }];
     for (op, (kind, _)) in part.ops.iter().enumerate() {
-        let sh = shadow_at(&forms[ri].forms[op], op, &sigma).ok_or(PartFault::Pole)?;
+        let sh = shadow_at(&forms[ri].forms[op], op, sigma).ok_or(PartFault::Pole)?;
         let mut next = Vec::new();
         for k in &comps {
             match kind {
@@ -288,68 +327,155 @@ fn resolve_sample<B: Backend>(
     // crosses the chart's singular rail (`det J = 0`): components on opposite sides of it lie
     // on different sheets of the parametrization (the apex line on a cone), never one face.
     let sing: Option<f64> = {
-        let m = forms[ri].detj_m.eval(&sigma).map(|v| rat_to_f64(&v));
-        let c = forms[ri].detj_c.eval(&sigma).map(|v| rat_to_f64(&v));
+        let m = forms[ri].detj_m.eval(sigma).map(|v| rat_to_f64(&v));
+        let c = forms[ri].detj_c.eval(sigma).map(|v| rat_to_f64(&v));
         match (m, c) {
             (Some(m), Some(c)) if m.abs() > 1e-12 * (1.0 + c.abs()) => Some(-c / m),
             _ => None,
         }
     };
-    let mut hole_ops: Vec<usize> = Vec::new();
-    let mut merged: Vec<Comp> = vec![comps[0]];
+    let mut merged: Vec<MergedComp> = vec![MergedComp {
+        comp: comps[0],
+        hole_ops: Vec::new(),
+    }];
     for k in comps.into_iter().skip(1) {
         let prev = merged.last_mut().expect("nonempty");
-        let (gap_hi_lab, gap_lo_lab) = (prev.hi.as_ref().unwrap().1, k.lo.as_ref().unwrap().1);
+        let (gap_hi_lab, gap_lo_lab) = (prev.comp.hi.as_ref().unwrap().1, k.lo.as_ref().unwrap().1);
         let same_sub_op =
             gap_hi_lab.0 == gap_lo_lab.0 && matches!(part.ops[gap_hi_lab.0].0, OpKind::Subtract);
-        let gap = (prev.hi.as_ref().unwrap().0, k.lo.as_ref().unwrap().0);
+        let gap = (prev.comp.hi.as_ref().unwrap().0, k.lo.as_ref().unwrap().0);
         let crosses_sing = sing.is_some_and(|s| gap.0 < s && s < gap.1);
         if same_sub_op && !crosses_sing {
-            if !hole_ops.contains(&gap_hi_lab.0) {
-                hole_ops.push(gap_hi_lab.0);
+            if !prev.hole_ops.contains(&gap_hi_lab.0) {
+                prev.hole_ops.push(gap_hi_lab.0);
             }
-            prev.hi = k.hi;
+            prev.comp.hi = k.hi;
         } else {
-            merged.push(k);
+            merged.push(MergedComp {
+                comp: k,
+                hole_ops: Vec::new(),
+            });
         }
     }
-    // Multiple genuinely separate components: a pick chooses, else fault.
-    let chosen = if merged.len() == 1 {
-        merged.remove(0)
-    } else {
-        match &part.pick {
-            Some(RegionPick::KeepNear(p)) => {
-                let mut best: Option<(f64, Comp)> = None;
-                for k in merged {
-                    let d2 = comp_dist2(
-                        &built.charts[ri],
-                        p,
-                        &sigma,
-                        k.lo.as_ref().unwrap().0,
-                        k.hi.as_ref().unwrap().0,
-                    )
-                    .ok_or(PartFault::Pole)?;
-                    best = match best {
-                        Some((bd, bk)) if bd <= d2 => Some((bd, bk)),
-                        _ => Some((d2, k)),
-                    };
-                }
-                best.expect("nonempty").1
-            }
-            None => {
-                // Attribute to the op whose rail separates the first two components.
-                let op = merged[0].hi.as_ref().unwrap().1.0;
-                return Err(PartFault::AmbiguousRegion { op });
-            }
+    Ok(merged)
+}
+
+/// Choose the kept component at every sample: **seed** where the designation is most decisive,
+/// then **propagate by continuity** (σ-adjacent kept intervals of one connected face overlap).
+///
+/// A fixed 3-D witness alone is not enough on a wrapping window: past ~half a turn the mirror
+/// nappe of a cone comes *closer* to the witness than the kept sheet that has rotated away — a
+/// per-sample nearest pick flips mid-domain. The kept material is one connected face, so its
+/// µ̂-component varies continuously in σ; the witness designates it **once** (at the sample with
+/// the widest distance margin — right where the witness point actually lies), and overlap
+/// carries the choice outward. Where several candidates overlap (a hole opening) the witness
+/// re-decides among them; where **none** overlaps (a support discontinuity, or a cutter
+/// outrunning the sample grid) the junction is refused as [`PartFault::AmbiguousRegion`] —
+/// re-trusting the raw witness metric there is exactly the mirror-nappe hazard the seeded
+/// propagation exists to avoid. With no pick at all, any multi-component sample faults
+/// [`PartFault::AmbiguousRegion`] as before.
+fn choose_comps<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    at: &[(usize, Rat<B>, Vec<MergedComp>)],
+) -> Result<Vec<usize>, PartFault> {
+    let ends = |m: &MergedComp| -> (f64, f64) {
+        (m.comp.lo.as_ref().unwrap().0, m.comp.hi.as_ref().unwrap().0)
+    };
+    if at.iter().all(|(_, _, comps)| comps.len() == 1) {
+        return Ok(vec![0; at.len()]);
+    }
+    let witness = match &part.pick {
+        Some(RegionPick::KeepNear(p)) => p,
+        None => {
+            let (_, _, comps) = at
+                .iter()
+                .find(|(_, _, comps)| comps.len() > 1)
+                .expect("a multi-component sample exists");
+            // Attribute to the op whose rail separates the first two components.
+            let op = comps[0].comp.hi.as_ref().unwrap().1.0;
+            return Err(PartFault::AmbiguousRegion { op });
         }
     };
-    hole_ops.sort_unstable();
-    Ok(SampleRec {
-        sigma,
-        lower: chosen.lo.unwrap().1,
-        upper: chosen.hi.unwrap().1,
-        hole_ops,
-    })
+    // Witness distances per sample, and the seed = the widest-margin sample (single-component
+    // samples are perfect anchors).
+    let mut dists: Vec<Vec<f64>> = Vec::with_capacity(at.len());
+    for (ri, sigma, comps) in at {
+        let mut row = Vec::with_capacity(comps.len());
+        for m in comps {
+            let (lo, hi) = ends(m);
+            row.push(
+                comp_dist2(&built.charts[*ri], witness, sigma, lo, hi).ok_or(PartFault::Pole)?,
+            );
+        }
+        dists.push(row);
+    }
+    let margin_of = |row: &[f64]| -> (usize, f64) {
+        let mut best = (0usize, f64::MAX);
+        let mut second = f64::MAX;
+        for (i, d) in row.iter().enumerate() {
+            if *d < best.1 {
+                second = best.1;
+                best = (i, *d);
+            } else if *d < second {
+                second = *d;
+            }
+        }
+        (best.0, second - best.1)
+    };
+    let mut seed = 0usize;
+    let mut seed_margin = f64::MIN;
+    for (i, row) in dists.iter().enumerate() {
+        let margin = if row.len() == 1 {
+            f64::INFINITY
+        } else {
+            margin_of(row).1
+        };
+        if margin > seed_margin {
+            seed_margin = margin;
+            seed = i;
+        }
+    }
+    let mut chosen = vec![usize::MAX; at.len()];
+    chosen[seed] = margin_of(&dists[seed]).0;
+    // Propagate outward from the seed, right then left. Several overlapping candidates (a hole
+    // opening) → the witness re-decides among them; **none** → refuse the junction rather than
+    // re-trust the raw witness metric far from the witness (the mirror-nappe hazard).
+    let step = |chosen: &[usize], from: usize, to: usize| -> Result<usize, PartFault> {
+        let prev = ends(&at[from].2[chosen[from]]);
+        let comps = &at[to].2;
+        let overlapping: Vec<usize> = (0..comps.len())
+            .filter(|&i| {
+                let (lo, hi) = ends(&comps[i]);
+                lo < prev.1 && prev.0 < hi
+            })
+            .collect();
+        match overlapping.len() {
+            1 => Ok(overlapping[0]),
+            0 => {
+                // Attribute to the op whose rail bounds the junction sample's first component.
+                let op = comps[0].comp.hi.as_ref().unwrap().1.0;
+                Err(PartFault::AmbiguousRegion { op })
+            }
+            _ => Ok(overlapping
+                .into_iter()
+                .min_by(|a, b| {
+                    dists[to][*a]
+                        .partial_cmp(&dists[to][*b])
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                })
+                .expect("nonempty components")),
+        }
+    };
+    for i in seed + 1..at.len() {
+        let pick = step(&chosen, i - 1, i)?;
+        chosen[i] = pick;
+    }
+    for i in (0..seed).rev() {
+        let pick = step(&chosen, i + 1, i)?;
+        chosen[i] = pick;
+    }
+    Ok(chosen)
 }
 
 /// The in-domain sweep: pull every op back on every region, resolve the sample grid, and fold
@@ -421,10 +547,28 @@ pub(crate) fn sweep<B: Backend>(
     samples.sort_by(|a, b| a.1.cmp(&b.1));
     samples.dedup_by(|a, b| a.1.cmp(&b.1) == core::cmp::Ordering::Equal);
 
-    // Resolve every sample.
-    let mut recs: Vec<SampleRec<B>> = Vec::with_capacity(samples.len());
+    // Resolve every sample: the component algebra everywhere first, then the seeded
+    // continuity-propagated choice (see [`choose_comps`]).
+    let mut at: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
     for (ri, sigma) in samples {
-        recs.push(resolve_sample(part, built, &regions, ri, sigma)?);
+        let comps = sample_comps(part, &regions, ri, &sigma)?;
+        at.push((ri, sigma, comps));
+    }
+    let chosen = choose_comps(part, built, &at)?;
+    let mut recs: Vec<SampleRec<B>> = Vec::with_capacity(at.len());
+    for ((_, sigma, comps), pick) in at.into_iter().zip(chosen) {
+        let m = &comps[pick];
+        let (lo_end, hi_end) = (m.comp.lo.as_ref().unwrap(), m.comp.hi.as_ref().unwrap());
+        let mut hole_ops = m.hole_ops.clone();
+        hole_ops.sort_unstable();
+        recs.push(SampleRec {
+            sigma,
+            lower: lo_end.1,
+            upper: hi_end.1,
+            hole_ops,
+            mu_lo: lo_end.0,
+            mu_hi: hi_end.0,
+        });
     }
 
     // Fold into runs of constant boundary labels.
@@ -518,5 +662,19 @@ pub(crate) fn sweep<B: Backend>(
         };
     }
 
-    Ok(Structure { runs, holes, roles })
+    // The side consensus: uniform µ̂-sign across every kept sample, else undetermined.
+    let mu_negative = if recs.iter().all(|r| r.mu_hi < 0.0) {
+        Some(true)
+    } else if recs.iter().all(|r| r.mu_lo > 0.0) {
+        Some(false)
+    } else {
+        None
+    };
+
+    Ok(Structure {
+        runs,
+        holes,
+        roles,
+        mu_negative,
+    })
 }

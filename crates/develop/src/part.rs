@@ -177,6 +177,12 @@ impl<B: Backend> PiecewiseDevelopment<B> {
         })
     }
 
+    /// The glued regions `(σ-band, development)` in σ order — the piecewise fold's iteration
+    /// surface (each region is inverted in its own running frame).
+    pub(crate) fn regions(&self) -> &[(Interval<B>, ConeDevelopment<B>)] {
+        &self.regions
+    }
+
     /// The glued σ-domain `[first.lo, last.hi]`.
     pub fn span(&self) -> Interval<B> {
         Interval {
@@ -196,7 +202,7 @@ impl<B: Backend> PiecewiseDevelopment<B> {
 
     /// The cumulative γ over the full windows of the regions **before** `k` (memoized — see
     /// [`PiecewiseDevelopment::cum_cache`]).
-    fn cum_before(&self, k: usize, cfg: &DevConfig<B>) -> Option<[RatIv<B>; 2]> {
+    pub(crate) fn cum_before(&self, k: usize, cfg: &DevConfig<B>) -> Option<[RatIv<B>; 2]> {
         {
             let cache = self.cum_cache.borrow();
             if let Some(c) = cache.as_ref()
