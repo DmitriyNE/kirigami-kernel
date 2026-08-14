@@ -143,6 +143,22 @@ fn an_overlapping_flat_hole_refuses_the_solid_too() {
     ));
 }
 
+/// **A known, temporary limitation, pinned so it cannot pass silently.** Interior cuts are now
+/// p-curve loops that pass through their tangent rulings, and the solid builder drills them as
+/// exact `(σ, µ̂)` polygons — which it requires to sit inside a single σ-slice. A hole straddling
+/// a station is therefore refused with a typed fault (never a wrong solid, never a panic) until
+/// the builder learns per-slice curve clipping. Flip this to an equality on `Verified` when that
+/// lands; the flat pattern is unaffected and already carries the good geometry.
+#[test]
+fn a_derived_hole_across_a_station_is_refused_by_the_solid_for_now() {
+    match panel().solid() {
+        Verdict::Refuted(PartFault::SolidRefused) => {}
+        Verdict::Verified(_) => { /* clipping landed — this test should now assert success */ }
+        Verdict::Refuted(f) => panic!("expected SolidRefused, got {f:?}"),
+        Verdict::Unresolved(e) => panic!("expected a typed refusal, got Unresolved({e:?})"),
+    }
+}
+
 /// A degenerate authored polygon (here: empty) is refused as a typed fault on the solid path —
 /// never handed to the builder's unchecked vertex indexing.
 #[test]

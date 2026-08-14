@@ -28,7 +28,7 @@ use export::brep::Brep;
 use export::brep_build::{HoleRail, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
-    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_rail,
+    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly,
     surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
@@ -689,13 +689,25 @@ pub(crate) fn solid_brep<B: Backend>(
         Err(f) => return Verdict::Refuted(f),
     };
 
-    // Interior holes as near/far HoleRails (the tangent σ dyadic-snapped inside `hole_rail`).
-    let hole_loops = bail!(certify_holes(part, built, &structure, fit, 4));
-    let mut holes: Vec<HoleRail<B>> = Vec::new();
+    // Interior holes are p-curve loops now (they pass through their tangent rulings rather than
+    // being two graphs bridged by a chord), so they are drilled as exact `(σ, µ̂)` polygons — the
+    // builder's general hole cut — instead of the near/far `HoleRail` band, which cannot express
+    // a curve that turns around in σ. The band's one remaining advantage is that it may span
+    // σ-stations; a polygon may not, so a hole straddling a station is refused here until the
+    // builder learns per-slice curve clipping (PC.5).
+    let hole_loops = bail!(certify_holes(
+        part,
+        built,
+        &structure,
+        fit,
+        part.segments.max(8)
+    ));
+    let holes: Vec<HoleRail<B>> = Vec::new();
+    let mut hole_polys: Vec<Vec<(Rat<B>, Rat<B>)>> = Vec::new();
     for h in &hole_loops {
         eps_all = rmax(&eps_all, &h.eps);
-        match hole_rail(h) {
-            Some(r) => holes.push(r),
+        match loop_to_domain_poly(h) {
+            Some(p) => hole_polys.push(p),
             None => return Verdict::Refuted(PartFault::LoopBroken),
         }
     }
@@ -705,6 +717,7 @@ pub(crate) fn solid_brep<B: Backend>(
     // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
     // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
     let mut poly_holes = part.domain_holes.clone();
+    poly_holes.extend(hole_polys);
     // A polygon cut needs at least a triangle — the builder indexes vertices unchecked, and
     // this evaluator must stay fail-closed even without the flat gate (defense in depth for
     // both authored hole classes).
@@ -785,13 +798,32 @@ fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> Resolve
     }
 }
 
+/// A certified interior-cut loop as an exact `(σ, µ̂)` polygon — the corner of each arc, in
+/// traversal order. `None` if the loop carries an arc kind that is not a domain curve.
+fn loop_to_domain_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
+    let mut out = Vec::with_capacity(hole.arcs.len());
+    for arc in &hole.arcs {
+        match arc {
+            BoundaryArc::Curve { curve, .. } => {
+                let [s, m] = curve.eval(&curve.domain.lo)?;
+                out.push((s, m));
+            }
+            _ => return None,
+        }
+    }
+    (out.len() >= 3).then_some(out)
+}
+
 /// The `(σ, µ̂)` endpoint of the last arc pushed so far.
 fn last_end<B: Backend>(arcs: &[BoundaryArc<B>]) -> Option<(Rat<B>, Rat<B>)> {
-    arcs.last().map(|arc| match arc {
-        BoundaryArc::Rail { mu, sigma_end, .. } => (
+    arcs.last().and_then(|arc| match arc {
+        BoundaryArc::Rail { mu, sigma_end, .. } => Some((
             sigma_end.clone(),
             mu.eval(sigma_end).expect("rail evaluable at its own end"),
-        ),
-        BoundaryArc::Cap { sigma, mu_end, .. } => (sigma.clone(), mu_end.clone()),
+        )),
+        BoundaryArc::Cap { sigma, mu_end, .. } => Some((sigma.clone(), mu_end.clone())),
+        // The boundary chain this walks is built from rails and caps; a p-curve arc appears only
+        // in an interior cut loop, which is assembled whole rather than chained corner by corner.
+        BoundaryArc::Curve { curve, .. } => curve.eval(&curve.domain.hi).map(|[s, m]| (s, m)),
     })
 }

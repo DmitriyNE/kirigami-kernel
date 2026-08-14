@@ -404,14 +404,19 @@ pub fn hole_loop<B: Backend>(
     surface_hole_loop(chart, &surface, span, fit, clearance, cfg, margin, segments)
 }
 
-/// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: its
-/// **near** (Lower) and **far** (Upper) cut branches over the cutter's σ-extent
-/// ([`surface_tangents`]), joined at each tangent ruling by a **micro-cap** — a radial segment
-/// bridging the small μ̂ gap left by snapping the algebraic tangent σ to a rational `margin`
-/// inside the cutter. The inset keeps the polynomial fit clear of the √-branch point *and* makes
-/// the loop chain exactly in `(σ, μ̂)`. Pedal-general (reads the true surface — correct on offset
-/// supports and wrapped charts). Fail-closed: a loose branch fit is `Unresolved`, a degenerate
-/// cut `Refuted`.
+/// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: the
+/// closed **p-curve loop** through both of the cutter's tangent rulings
+/// ([`develop::cut::quadric_cut_loop`]).
+///
+/// This used to fit the cut's near and far branches as graphs `µ̂ = f(σ)`. A graph cannot reach a
+/// tangent ruling — the cut turns around in σ there — so each branch stopped an inset short and
+/// the leftover gap was bridged by a straight radial chord, which no fit quality could shrink
+/// below ~30% of the hole's height. The loop now walks the branches to where they meet, so
+/// `fit` and `margin` are vestigial (kept for call-site compatibility until PC.6 removes them)
+/// and `max_microcap` reports the residual tangent gap, which is *inside* `eps` rather than
+/// unaccounted. Pedal-general as before (reads the true surface, so it is correct on offset
+/// supports and wrapped charts); fail-closed on a coarse loop (`Unresolved`) or a degenerate
+/// window (`Refuted`).
 #[allow(clippy::too_many_arguments)]
 pub fn surface_hole_loop<B: Backend>(
     chart: &Chart<B>,
@@ -423,81 +428,32 @@ pub fn surface_hole_loop<B: Backend>(
     margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
+    let _ = (fit, margin); // vestigial: no rail is fitted and no inset is taken (see below)
     let (t_lo, t_hi) = match surface_tangents(chart, surface, span, 256, 60) {
         Some(t) => t,
         None => return Verdict::Unresolved(clearance.clone()),
     };
-    let inset = t_hi.sub(&t_lo).mul(margin);
-    let s1 = t_lo.add(&inset);
-    let s2 = t_hi.sub(&inset);
-    let sub = Interval {
-        lo: s1.clone(),
-        hi: s2.clone(),
-    };
-    let (mu_far, e_far) =
-        match certified_rail_surface(chart, surface, RootPick::Upper, &sub, fit, clearance, cfg) {
-            Verdict::Verified(x) => x,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-            Verdict::Refuted(f) => return Verdict::Refuted(f),
-        };
-    let (mu_near, e_near) =
-        match certified_rail_surface(chart, surface, RootPick::Lower, &sub, fit, clearance, cfg) {
-            Verdict::Verified(x) => x,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-            Verdict::Refuted(f) => return Verdict::Refuted(f),
-        };
-    let (f1, n1, f2, n2) = match (
-        mu_far.eval(&s1),
-        mu_near.eval(&s1),
-        mu_far.eval(&s2),
-        mu_near.eval(&s2),
+    match develop::cut::quadric_cut_loop(
+        chart,
+        surface,
+        &Interval { lo: t_lo, hi: t_hi },
+        &Rat::from_i128(0),
+        segments.max(8),
+        clearance,
+        cfg,
     ) {
-        (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
-        _ => return Verdict::Refuted(CutFitFault::PoleInEval),
-    };
-    let max_microcap = {
-        let (lo, hi) = (abs_diff(&f1, &n1), abs_diff(&f2, &n2));
-        if lo.cmp(&hi) == core::cmp::Ordering::Less {
-            hi
-        } else {
-            lo
-        }
-    };
-    // far (s1→s2) · micro-cap @ s2 (far→near) · near (s2→s1) · micro-cap @ s1 (near→far).
-    let arcs = vec![
-        BoundaryArc::Rail {
-            mu: mu_far,
-            sigma_start: s1.clone(),
-            sigma_end: s2.clone(),
-            segments,
-        },
-        BoundaryArc::Cap {
-            sigma: s2.clone(),
-            mu_start: f2,
-            mu_end: n2,
-        },
-        BoundaryArc::Rail {
-            mu: mu_near,
-            sigma_start: s2,
-            sigma_end: s1.clone(),
-            segments,
-        },
-        BoundaryArc::Cap {
-            sigma: s1,
-            mu_start: n1,
-            mu_end: f1,
-        },
-    ];
-    let eps = if e_far.cmp(&e_near) == core::cmp::Ordering::Less {
-        e_near
-    } else {
-        e_far
-    };
-    Verdict::Verified(HoleLoop {
-        arcs,
-        eps,
-        max_microcap,
-    })
+        Verdict::Verified(l) => Verdict::Verified(HoleLoop {
+            arcs: l
+                .pieces
+                .into_iter()
+                .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
+                .collect(),
+            eps: l.eps,
+            max_microcap: l.tangent_gap,
+        }),
+        Verdict::Unresolved(e) => Verdict::Unresolved(e),
+        Verdict::Refuted(f) => Verdict::Refuted(f),
+    }
 }
 
 /// A developed panel outer boundary: the notched annulus loop, the max rail ε, and the largest
@@ -1082,10 +1038,31 @@ mod tests {
             Verdict::Verified(h) => h,
             other => panic!("ramp hole_loop not Verified: {}", tag(&other)),
         };
-        assert_eq!(hole.arcs.len(), 4, "far rail · cap · near rail · cap");
+        // The loop is a closed chain of p-curve pieces through both tangent rulings — no
+        // near/far graphs and no straight bridge, so there is no fixed arc count to assert.
+        assert!(hole.arcs.len() >= 8, "a closed loop of p-curve pieces");
+        assert!(
+            hole.arcs
+                .iter()
+                .all(|a| matches!(a, BoundaryArc::Curve { .. })),
+            "every piece is a domain curve"
+        );
+        // What used to be a straight chord across the tangents is now the residual gap where the
+        // two branches meet, and it is small against the hole itself.
+        let mc = develop::cut::cut_mu_form(&chart, &drill, &Q::from_i128(0)).unwrap();
+        let (_, h_mid) = mc
+            .branch_at(&t_lo.add(&t_hi).mul(&Q::new(1, 2)), &cfg.sqrt_eps)
+            .expect("the mid ruling cuts the drill");
+        assert!(
+            hole.max_microcap.mul(&Q::from_i128(100)) < h_mid.mul(&Q::from_i128(2)),
+            "the tangent gap must be far below the graph model's floor: gap {:.3e} vs height {:.3e}",
+            f(&hole.max_microcap),
+            f(&h_mid.mul(&Q::from_i128(2)))
+        );
         println!(
-            "ramp hole: ε = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
+            "ramp hole: ε = {:.3e}, tangent gap = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
             f(&hole.eps),
+            f(&hole.max_microcap),
             f(&t_lo),
             f(&t_hi)
         );

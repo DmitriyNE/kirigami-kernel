@@ -84,6 +84,17 @@ pub enum BoundaryArc<B: Backend = Bignum> {
         /// The number of chord segments the rail is discretized into (`≥ 1`).
         segments: usize,
     },
+    /// A **p-curve** arc: the boundary follows a parametric domain curve `t ↦ (σ(t), µ̂(t))`
+    /// over the curve's own domain. Unlike a [`Rail`](BoundaryArc::Rail) it may turn around in σ,
+    /// which is what a closed cut does at a solid cutter's tangent rulings — so a cut that a
+    /// graph must split in two and bridge is one arc here. Develops to `segments` chords,
+    /// certified by the same lift bound (which has always been stated over a parameter).
+    Curve {
+        /// The domain curve.
+        curve: crate::pcurve::PCurve<B>,
+        /// The number of chord segments the curve is discretized into (`≥ 1`).
+        segments: usize,
+    },
     /// A ruling **cap** at fixed σ: the boundary follows the ruling as μ̂ runs
     /// `mu_start → mu_end`. It develops to a *single exact* straight radial edge, so it carries
     /// no curve-fidelity bound.
@@ -178,6 +189,72 @@ fn rail_edge_eps<B: Backend>(
     Ok(eps)
 }
 
+/// The certified lift bound of one **p-curve** chord `[t_a, t_b]`: the true developed curve vs
+/// the straight chord between its developed endpoints. Identical in substance to
+/// [`rail_edge_eps`] — the lift certificate has always been parametric — except that `σ(t)` is
+/// the curve's own component instead of the identity, and the anchor frame is selected by the
+/// σ-*range* the chord covers rather than by the parameter span.
+///
+/// A chord spanning more than one region of a piecewise gluing is refused
+/// ([`UnrollFault::PoleInEval`]): the running frame differs across the join, and a p-curve may
+/// re-enter a region, so the σ↦frame correspondence is not a simple split. Interior cuts sit
+/// inside one region by construction (the facade refuses a hole that crosses a join).
+#[allow(clippy::too_many_arguments)]
+fn curve_edge_eps<B: Backend>(
+    dev: &impl Development<B>,
+    curve: &crate::pcurve::PCurve<B>,
+    t_a: &Rat<B>,
+    t_b: &Rat<B>,
+    p_a: &FlatBox<B>,
+    p_b: &FlatBox<B>,
+    subdiv: usize,
+    cfg: &DevConfig<B>,
+) -> Result<Rat<B>, UnrollFault> {
+    use core::cmp::Ordering;
+    let (ax, ay) = p_a.center();
+    let (bx, by) = p_b.center();
+    // The chord, parametrized by the curve's own t.
+    let target = [
+        linear_through(t_a, &ax, t_b, &bx),
+        linear_through(t_a, &ay, t_b, &by),
+    ];
+    let span = Interval {
+        lo: t_a.clone(),
+        hi: t_b.clone(),
+    };
+    // Which region does this chord live in? Ask by σ-range, not by parameter.
+    let [s_a, _] = curve.eval(t_a).ok_or(UnrollFault::PoleInEval)?;
+    let [s_b, _] = curve.eval(t_b).ok_or(UnrollFault::PoleInEval)?;
+    let sigma_span = if s_a.cmp(&s_b) == Ordering::Greater {
+        Interval { lo: s_b, hi: s_a }
+    } else {
+        Interval { lo: s_a, hi: s_b }
+    };
+    let pieces = dev
+        .anchor_pieces(&sigma_span, cfg)
+        .ok_or(UnrollFault::PoleInEval)?;
+    if pieces.len() != 1 {
+        return Err(UnrollFault::PoleInEval);
+    }
+    let piece = pieces.into_iter().next().ok_or(UnrollFault::PoleInEval)?;
+    let cert = AnchorDevCert {
+        dev: piece.dev.clone(),
+        sigma: curve.sigma.clone(),
+        mu: curve.mu.clone(),
+        target,
+        span,
+        subdiv,
+        clearance: Rat::from_i128(1_000_000),
+        cfg: cfg.clone(),
+        frame: piece.frame,
+    };
+    match anchor_dev(&cert) {
+        Verdict::Verified(v) => Ok(v.eps),
+        Verdict::Refuted(AnchorDevFault::DegenerateSpan) => Err(UnrollFault::DegenerateSpan),
+        _ => Err(UnrollFault::PoleInEval),
+    }
+}
+
 /// Develop a free-boundary μ-band into a certified flat pattern outline (direction ①).
 ///
 /// The band `μ⁻(σ), μ⁺(σ)` over `[σ_lo, σ_hi]` is the 4-arc [trim loop](unroll_trim_loop)
@@ -247,6 +324,9 @@ struct ArcData<B: Backend> {
     points: Vec<FlatBox<B>>,
     sigmas: Vec<Rat<B>>,
     rail_mu: Option<RatFunc<B>>,
+    /// For a [`BoundaryArc::Curve`]: the curve and the parameter of each sampled node, so each
+    /// chord's lift bound can be taken over the curve's own parameter.
+    curve: Option<(crate::pcurve::PCurve<B>, Vec<Rat<B>>)>,
 }
 
 /// Whether two `(σ, μ̂)` corners are exactly equal (development is injective on the gore, so this
@@ -294,6 +374,35 @@ fn develop_arc<B: Backend>(
                 points,
                 sigmas,
                 rail_mu: Some(mu.clone()),
+                curve: None,
+            })
+        }
+        BoundaryArc::Curve { curve, segments } => {
+            let (t_lo, t_hi) = (&curve.domain.lo, &curve.domain.hi);
+            if t_lo.cmp(t_hi) != Ordering::Less {
+                return Err(UnrollFault::DegenerateSpan);
+            }
+            let n = (*segments).max(1);
+            let step = t_hi.sub(t_lo).div(&Rat::from_i128(n as i128));
+            let mut points = Vec::with_capacity(n + 1);
+            let mut sigmas = Vec::with_capacity(n + 1);
+            let mut ts = Vec::with_capacity(n + 1);
+            for k in 0..=n {
+                let t = t_lo.add(&step.mul(&Rat::from_i128(k as i128)));
+                let [s, m] = curve.eval(&t).ok_or(UnrollFault::PoleInEval)?;
+                points.push(dev.point(&s, &m, cfg).ok_or(UnrollFault::PoleInEval)?);
+                sigmas.push(s);
+                ts.push(t);
+            }
+            let [s0, m0] = curve.eval(t_lo).ok_or(UnrollFault::PoleInEval)?;
+            let [s1, m1] = curve.eval(t_hi).ok_or(UnrollFault::PoleInEval)?;
+            Ok(ArcData {
+                start_sm: (s0, m0),
+                end_sm: (s1, m1),
+                points,
+                sigmas,
+                rail_mu: None,
+                curve: Some((curve.clone(), ts)),
             })
         }
         BoundaryArc::Cap {
@@ -311,6 +420,7 @@ fn develop_arc<B: Backend>(
             ],
             sigmas: vec![sigma.clone(), sigma.clone()],
             rail_mu: None,
+            curve: None,
         }),
     }
 }
@@ -395,6 +505,20 @@ pub fn unroll_trim_loop<B: Backend>(
                     (&sw[1], &pw[1], &sw[0], &pw[0])
                 };
                 match rail_edge_eps(dev, mu, s_lo, s_hi, p_lo, p_hi, edge_subdiv, cfg) {
+                    Ok(e) => {
+                        if e.cmp(&eps) == Ordering::Greater {
+                            eps = e;
+                        }
+                    }
+                    Err(f) => return Verdict::Refuted(f),
+                }
+            }
+        }
+
+        // ε from p-curve chords — the same lift bound, taken over the curve's own parameter.
+        if let Some((curve, ts)) = &data.curve {
+            for (tw, pw) in ts.windows(2).zip(data.points.windows(2)) {
+                match curve_edge_eps(dev, curve, &tw[0], &tw[1], &pw[0], &pw[1], edge_subdiv, cfg) {
                     Ok(e) => {
                         if e.cmp(&eps) == Ordering::Greater {
                             eps = e;

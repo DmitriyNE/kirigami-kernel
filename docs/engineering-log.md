@@ -681,6 +681,26 @@ fine — this is a log, not a schema.
   why the facade replaced it. The milestone's point is to have both. *2026-08-14 · PC.0 GO ·
   branch `pcurve` · tasks #221–#227*
 
+- **Interior cuts are p-curve loops on the flat path — measured (PC.4).** `surface_hole_loop` no
+  longer fits two graphs and bridges them; it returns the closed p-curve loop of
+  `quadric_cut_loop`, and `unroll` grew a `BoundaryArc::Curve` whose chords are certified by the
+  *same* lift bound (which was always parametric — only the identity reparametrization was
+  hard-coded). On the acceptance demo, measured on the emitted flat pattern: each drill hole went
+  from 27 vertices with two anomalous 0.14 edges — **31% of the hole**, 2.3× any other edge — to
+  49 vertices whose longest edge is 0.029, i.e. **7%, and no longer an outlier at all** but simply
+  the uniform chord spacing of a smooth loop. Develop ε fell 3.688e-1 → **2.687e-1** (the hole
+  ladder's 0.33 contribution is gone; the boundary rails now dominate) and the refold defect
+  1.779e-3 → **5.803e-4**. On the offset-support ramp fixture the hole certifies at ε 9.1e-3 with
+  a tangent gap of 2.7e-5. **Known limitation, pinned by a test rather than left to be
+  discovered:** the solid builder consumes interior holes as either a near/far `HoleRail` band —
+  which cannot express a curve that turns around in σ — or an exact `(σ, µ̂)` polygon, which it
+  requires to sit inside one σ-slice. Derived holes are drilled as polygons now, so a hole
+  straddling a station is refused with a typed fault until per-slice clipping lands (PC.5); the
+  flat pattern, which is the manufacturing artifact, is unaffected and already carries the good
+  geometry. Worth recording how that was caught: the whole 205-test suite passed after the switch
+  because **no test exercised `solid()` with a derived hole expecting success** — the gap was
+  found by probing the path deliberately, not by the gate. *2026-08-14 · PC.4 · branch `pcurve`*
+
 - **The p-curve cut certificate must enclose in the domain, not compose into the parameter — and
   its bound is first-order (PC.2/PC.3).** The tidy way to state "this curve traces the surface" is
   to compose the chart fields into the curve's parameter and enclose the resulting residual, as
