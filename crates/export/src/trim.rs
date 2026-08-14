@@ -376,9 +376,10 @@ pub struct HoleLoop<B: Backend = Bignum> {
     pub arcs: Vec<BoundaryArc<B>>,
     /// The larger of the two branch rails' certified distance bounds.
     pub eps: Rat<B>,
-    /// The larger tangent micro-cap length (in μ̂ units) — the residual of snapping the algebraic
-    /// tangent σ to a rational just inside the disk. A diagnostic on the fail-closed treatment.
-    pub max_microcap: Rat<B>,
+    /// The residual µ̂ gap where the two branches meet at a tangent ruling — the loop closes to a
+    /// single vertex there, and this is how far that vertex sits from the true tangent point. It
+    /// is included in `eps`, so it is a bound the caller already honours, not a loose diagnostic.
+    pub tangent_gap: Rat<B>,
 }
 
 /// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: the vertical-cylinder
@@ -390,10 +391,8 @@ pub fn hole_loop<B: Backend>(
     cy: &Rat<B>,
     r2: &Rat<B>,
     span: &Interval<B>,
-    fit: RailFit,
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
-    margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
     let surface = CutSurface::Cylinder {
@@ -401,7 +400,7 @@ pub fn hole_loop<B: Backend>(
         axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
         r2: r2.clone(),
     };
-    surface_hole_loop(chart, &surface, span, fit, clearance, cfg, margin, segments)
+    surface_hole_loop(chart, &surface, span, clearance, cfg, segments)
 }
 
 /// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: the
@@ -413,7 +412,7 @@ pub fn hole_loop<B: Backend>(
 /// the leftover gap was bridged by a straight radial chord, which no fit quality could shrink
 /// below ~30% of the hole's height. The loop now walks the branches to where they meet, so
 /// `fit` and `margin` are vestigial (kept for call-site compatibility until PC.6 removes them)
-/// and `max_microcap` reports the residual tangent gap, which is *inside* `eps` rather than
+/// and `tangent_gap` reports the residual gap where the branches meet, which is *inside* `eps` rather than
 /// unaccounted. Pedal-general as before (reads the true surface, so it is correct on offset
 /// supports and wrapped charts); fail-closed on a coarse loop (`Unresolved`) or a degenerate
 /// window (`Refuted`).
@@ -422,13 +421,10 @@ pub fn surface_hole_loop<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
     span: &Interval<B>,
-    fit: RailFit,
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
-    margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
-    let _ = (fit, margin); // vestigial: no rail is fitted and no inset is taken (see below)
     let (t_lo, t_hi) = match surface_tangents(chart, surface, span, 256, 60) {
         Some(t) => t,
         None => return Verdict::Unresolved(clearance.clone()),
@@ -449,7 +445,7 @@ pub fn surface_hole_loop<B: Backend>(
                 .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
                 .collect(),
             eps: l.eps,
-            max_microcap: l.tangent_gap,
+            tangent_gap: l.tangent_gap,
         }),
         Verdict::Unresolved(e) => Verdict::Unresolved(e),
         Verdict::Refuted(f) => Verdict::Refuted(f),
@@ -872,6 +868,7 @@ mod tests {
     /// certified flat outline. Tuned once from `probe_cone_scale`.
     #[test]
     fn eccentric_annulus_unrolls() {
+        let fit = RailFit::default();
         let chart = cone();
         let dev = ConeDevelopment::new(&chart).unwrap();
         let cfg = DevConfig::tight();
@@ -888,7 +885,6 @@ mod tests {
             lo: Q::from_i128(-1),
             hi: Q::from_i128(1),
         };
-        let fit = RailFit::default();
 
         // Outer D1: concentric parallel {z = 3} — exact plane rail, footprint R ≈ 2.7.
         let d1 = concentric_disk(&chart, &Q::from_i128(3)).unwrap();
@@ -950,12 +946,10 @@ mod tests {
             lo: Q::from_i128(-1),
             hi: Q::from_i128(1),
         };
-        let fit = RailFit::default();
         // The gore develops the UPPER half-plane: σ = 0 ⇒ azimuth 90° (+y), σ = ±1 ⇒ 0°/180°.
         // So disks live around +y. D4: a small disk R = 0.2 at (0, 2.2) — inside the annulus (D2
         // exits near r ≈ 1.9, D1 at r ≈ 2.71), apex well outside it.
         let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
-        let margin = Q::new(1, 200);
 
         let d4_surface = CutSurface::Cylinder {
             axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
@@ -967,23 +961,21 @@ mod tests {
         println!("D4 tangents: σ ∈ [{:.4}, {:.4}]", f(&tlo), f(&thi));
         assert!(tlo.cmp(&thi) == core::cmp::Ordering::Less);
 
-        let hole = match hole_loop(
-            &chart, &cx, &cy, &r2, &span, fit, &clearance, &cfg, &margin, 32,
-        ) {
+        let hole = match hole_loop(&chart, &cx, &cy, &r2, &span, &clearance, &cfg, 32) {
             Verdict::Verified(h) => h,
             other => panic!("hole_loop not Verified: {}", tag(&other)),
         };
         println!(
             "D4 hole: rail ε = {:.3e}, max micro-cap = {:.3e} (μ̂ units, hole is ≈0.4 tall)",
             f(&hole.eps),
-            f(&hole.max_microcap)
+            f(&hole.tangent_gap)
         );
         // The tangent micro-cap is the √-branch residual (the developed circle's two tangent
         // points are slightly flattened) — an exact Cap, watertight, small vs the hole height.
         assert!(
-            hole.max_microcap.cmp(&Q::new(1, 10)) == core::cmp::Ordering::Less,
+            hole.tangent_gap.cmp(&Q::new(1, 10)) == core::cmp::Ordering::Less,
             "tangent micro-cap should stay small, got {:.4}",
-            f(&hole.max_microcap)
+            f(&hole.tangent_gap)
         );
         match unroll_loop(&dev, &hole.arcs, &cfg, &clearance) {
             Verdict::Verified(o) => println!(
@@ -1075,22 +1067,7 @@ mod tests {
             _ => {} // failing to bracket at all is the bug too
         }
         // End to end: the hole loop over the true extent certifies against the REAL surface.
-        let hole = match hole_loop(
-            &chart,
-            &cx,
-            &cy,
-            &r2,
-            &span,
-            RailFit {
-                degree: 3,
-                subdiv: 160,
-                bits: 44,
-            },
-            &Q::from_i128(1),
-            &cfg,
-            &Q::new(1, 20),
-            16,
-        ) {
+        let hole = match hole_loop(&chart, &cx, &cy, &r2, &span, &Q::from_i128(1), &cfg, 16) {
             Verdict::Verified(h) => h,
             other => panic!("ramp hole_loop not Verified: {}", tag(&other)),
         };
@@ -1110,15 +1087,15 @@ mod tests {
             .branch_at(&t_lo.add(&t_hi).mul(&Q::new(1, 2)), &cfg.sqrt_eps)
             .expect("the mid ruling cuts the drill");
         assert!(
-            hole.max_microcap.mul(&Q::from_i128(100)) < h_mid.mul(&Q::from_i128(2)),
+            hole.tangent_gap.mul(&Q::from_i128(100)) < h_mid.mul(&Q::from_i128(2)),
             "the tangent gap must be far below the graph model's floor: gap {:.3e} vs height {:.3e}",
-            f(&hole.max_microcap),
+            f(&hole.tangent_gap),
             f(&h_mid.mul(&Q::from_i128(2)))
         );
         println!(
             "ramp hole: ε = {:.3e}, tangent gap = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
             f(&hole.eps),
-            f(&hole.max_microcap),
+            f(&hole.tangent_gap),
             f(&t_lo),
             f(&t_hi)
         );
@@ -1317,6 +1294,7 @@ mod tests {
     /// `Region` — one face, two holes (D4 + the quad).
     #[test]
     fn full_panel_assembles() {
+        let fit = RailFit::default();
         let chart = cone();
         let dev = ConeDevelopment::new(&chart).unwrap();
         let cfg = DevConfig::tight();
@@ -1325,7 +1303,6 @@ mod tests {
             lo: Q::from_i128(-1),
             hi: Q::from_i128(1),
         };
-        let fit = RailFit::default();
         let (d1, d2, d3, d4) = demo_disks(&chart);
 
         let outer = match outer_loop(
@@ -1347,18 +1324,7 @@ mod tests {
             Verdict::Verified(o) => o,
             o => panic!("outer unroll: {}", tag(&o)),
         };
-        let hole = match hole_loop(
-            &chart,
-            &d4[0],
-            &d4[1],
-            &d4[2],
-            &span,
-            fit,
-            &clearance,
-            &cfg,
-            &Q::new(1, 200),
-            32,
-        ) {
+        let hole = match hole_loop(&chart, &d4[0], &d4[1], &d4[2], &span, &clearance, &cfg, 32) {
             Verdict::Verified(h) => h,
             o => panic!("hole: {}", tag(&o)),
         };

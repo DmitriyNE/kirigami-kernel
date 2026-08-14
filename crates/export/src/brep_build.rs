@@ -1814,15 +1814,15 @@ pub fn brep_trim_solid_regions<B: Backend>(
         for (outer_loop, hole_loops) in &faces {
             let surf_top = ruled_common(&surf(&mu_in, &ws[1]), &surf(&mu_out, &ws[1]), sk, sk1);
             let surf_bot = ruled_common(&surf(&mu_in, &ws[0]), &surf(&mu_out, &ws[0]), sk, sk1);
-            let top_outer = lift_trim_loop(&mut bld, &c, &r, &n, outer_loop, &ws[1]);
+            let top_outer = lift_trim_loop(&mut bld, c, r, n, outer_loop, &ws[1]);
             let top_holes: Vec<Vec<HalfEdge>> = hole_loops
                 .iter()
-                .map(|h| lift_trim_loop(&mut bld, &c, &r, &n, h, &ws[1]))
+                .map(|h| lift_trim_loop(&mut bld, c, r, n, h, &ws[1]))
                 .collect();
-            let bot_outer = reversed_wire(lift_trim_loop(&mut bld, &c, &r, &n, outer_loop, &ws[0]));
+            let bot_outer = reversed_wire(lift_trim_loop(&mut bld, c, r, n, outer_loop, &ws[0]));
             let bot_holes: Vec<Vec<HalfEdge>> = hole_loops
                 .iter()
-                .map(|h| reversed_wire(lift_trim_loop(&mut bld, &c, &r, &n, h, &ws[0])))
+                .map(|h| reversed_wire(lift_trim_loop(&mut bld, c, r, n, h, &ws[0])))
                 .collect();
             bld.brep.add_face_with_holes(surf_top, top_outer, top_holes);
             bld.brep.add_face_with_holes(surf_bot, bot_outer, bot_holes);
@@ -1834,7 +1834,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
                     if req(&a.0, &b.0) && interior_station(&a.0) {
                         continue;
                     }
-                    emit_trim_wall(&mut bld, &c, &r, &n, a, b, &ws[0], &ws[1]);
+                    emit_trim_wall(&mut bld, c, r, n, a, b, &ws[0], &ws[1]);
                 }
             }
         }

@@ -392,10 +392,8 @@ fn certify_holes<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
     structure: &Structure<B>,
-    fit: RailFit,
     segments: usize,
 ) -> Result<Vec<HoleLoop<B>>, RErr<B>> {
-    use core::cmp::Ordering;
     let mut out = Vec::with_capacity(structure.holes.len());
     for (op, ri, window) in &structure.holes {
         let (op, ri) = (*op, *ri);
@@ -406,58 +404,20 @@ fn certify_holes<B: Backend>(
             lo: rmax(&window.lo.sub(&pad), &part.regions[ri].band.lo),
             hi: rmin(&window.hi.add(&pad), &part.regions[ri].band.hi),
         };
-        let base = RailFit {
-            degree: fit.degree.min(3),
-            ..fit
-        };
-        let mut certified: Option<HoleLoop<B>> = None;
-        let mut tightest: Option<Rat<B>> = None;
-        // NOTE: escalating the tangent inset (1/200 → 1/20) trades hole-shape fidelity near the
-        // tangents — the bridged micro-caps (`HoleLoop::max_microcap`, µ̂ units) are NOT folded
-        // into ε (the flat-length bound needs a certified ρ conversion; logged V&V gap, with
-        // the fit-basis rework).
-        'ladder: for margin_den in [200i128, 20] {
-            for mult in [1usize, 4, 16] {
-                let rung = RailFit {
-                    subdiv: base.subdiv.saturating_mul(mult),
-                    ..base
-                };
-                match surface_hole_loop(
-                    &built.charts[ri],
-                    &part.ops[op].1.surface(),
-                    &span,
-                    rung,
-                    &part.clearance,
-                    &part.cfg,
-                    &Rat::new(1, margin_den),
-                    segments,
-                ) {
-                    Verdict::Verified(h) => {
-                        certified = Some(h);
-                        break 'ladder;
-                    }
-                    Verdict::Unresolved(e) => {
-                        tightest = Some(match tightest {
-                            Some(t) if t.cmp(&e) == Ordering::Less => t,
-                            _ => e,
-                        });
-                    }
-                    Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
-                        return Err(RErr::Fault(PartFault::Pole));
-                    }
-                    Verdict::Refuted(_) => {
-                        return Err(RErr::Fault(PartFault::CutUnresolved { op }));
-                    }
-                }
+        match surface_hole_loop(
+            &built.charts[ri],
+            &part.ops[op].1.surface(),
+            &span,
+            &part.clearance,
+            &part.cfg,
+            segments,
+        ) {
+            Verdict::Verified(h) => out.push(h),
+            Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
+            Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+                return Err(RErr::Fault(PartFault::Pole));
             }
-        }
-        match certified {
-            Some(h) => out.push(h),
-            None => {
-                return Err(RErr::Loose(
-                    tightest.unwrap_or_else(|| part.clearance.clone()),
-                ));
-            }
+            Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
         }
     }
     Ok(out)
@@ -576,7 +536,6 @@ pub(crate) fn flat_pattern<B: Backend>(
         part,
         built,
         &structure,
-        part.fit,
         (part.segments / 2).max(4),
     ));
     let mut hole_outlines: Vec<FlatOutline<B>> = Vec::new();
@@ -703,7 +662,6 @@ pub(crate) fn solid_brep<B: Backend>(
         part,
         built,
         &structure,
-        fit,
         part.segments.clamp(8, 16)
     ));
     let mut holes: Vec<HoleRail<B>> = Vec::new();
