@@ -648,6 +648,26 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Stein / binary GCD benchmarked head-to-head and rejected on evidence — it is not faster here, on
+  either operand mix.** The earlier rejection was an argument about proof cost; since OPT.3 already
+  owes a re-proof, the question was legitimately reopened and settled by measurement instead.
+  *On the harvested mix:* pure Stein **243.4 ns/call — 1.08×**, essentially no better than the plain
+  Euclidean loop it would replace. The reason is the same fact that made strip-twos win: 84.7% of
+  calls have a power-of-two operand, whose odd part is 1, and Stein walks ~bit-length shift/subtract
+  iterations to discover `gcd(m, 1) = 1` where one comparison settles it. Add that trivial exit and
+  Stein lands at **44.6 ns — identical to the shipped strip-twos (1.00×)**, because the exit is
+  doing all the work and the algorithm underneath is irrelevant.
+  *On general operands only* (the power-of-two share removed, to test whether the conclusion is an
+  artifact of this device's dyadic grids): current 399.7 ns, **shipped 283.2 ns (1.41×)**, Stein
+  336.5 ns (1.19×) — **Stein is 0.84× the shipped speed, i.e. 16% slower**. The `u64` narrowing puts
+  the general case on a *hardware* divide, which beats an O(bit-length) shift/subtract loop; Stein's
+  advantage only materializes where no divide is fast at any width.
+  **Conclusion: no case for Stein at any point in the mix, and it carries the larger proof burden
+  (new measure + invariant) — so the strip-twos shape stands.** Worth keeping because the intuition
+  is genuinely misleading: "the divide is slow, so use the division-free algorithm" is exactly the
+  wrong inference when the real win is an early exit and a narrower divide.
+  *2026-08-14 · resolved · OPT.3 (#239)*
+
 - **OPT.3 shipped — 1.7× on `develop`, 2.9× on `fold`, and the hot spot is gone.** `gcd_u128` is now
   strip-twos + `u64`-narrowed Euclidean (see step 0/1 below for the harvest, the benchmark and why
   this shape rather than a binary gcd). **Measured end-to-end** on `scale_probe` at the demo's

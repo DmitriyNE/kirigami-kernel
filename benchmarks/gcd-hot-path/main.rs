@@ -100,6 +100,57 @@ fn gcd_strip2(a: u128, b: u128) -> u128 {
     x << shift
 }
 
+/// (E) Pure Stein / binary GCD: shifts, comparisons and subtraction only — **no division at all**,
+/// which is the appeal on a target whose 128-bit divide is a software routine.
+fn gcd_stein(mut a: u128, mut b: u128) -> u128 {
+    if a == 0 {
+        return b;
+    }
+    if b == 0 {
+        return a;
+    }
+    let shift = a.trailing_zeros().min(b.trailing_zeros());
+    a >>= a.trailing_zeros();
+    loop {
+        b >>= b.trailing_zeros();
+        if a > b {
+            core::mem::swap(&mut a, &mut b);
+        }
+        b -= a;
+        if b == 0 {
+            return a << shift;
+        }
+    }
+}
+
+/// (F) Stein with the trivial odd-part exit the harvested mix makes dominant. A power-of-two
+/// operand has odd part 1, and pure Stein still walks ~bit-length iterations to discover that,
+/// where one comparison settles it.
+fn gcd_stein_fast1(a: u128, b: u128) -> u128 {
+    if a == 0 {
+        return b;
+    }
+    if b == 0 {
+        return a;
+    }
+    let (ia, ib) = (a.trailing_zeros(), b.trailing_zeros());
+    let shift = ia.min(ib);
+    let (mut x, mut y) = (a >> ia, b >> ib);
+    if x == 1 || y == 1 {
+        return 1u128 << shift;
+    }
+    loop {
+        y >>= y.trailing_zeros();
+        if x > y {
+            core::mem::swap(&mut x, &mut y);
+        }
+        y -= x;
+        if y == 0 {
+            return x << shift;
+        }
+    }
+}
+
 /// Operand pairs matching the harvested mix.
 fn corpus(n: usize) -> Vec<(u128, u128)> {
     let mut s: u128 = 0x2545_F491_4F6C_DD1D;
@@ -142,6 +193,8 @@ fn main() {
         assert_eq!(gcd_pow2(a, b), want, "pow2 disagrees on ({a}, {b})");
         assert_eq!(gcd_pow2_u64(a, b), want, "pow2+u64 disagrees on ({a}, {b})");
         assert_eq!(gcd_strip2(a, b), want, "strip2 disagrees on ({a}, {b})");
+        assert_eq!(gcd_stein(a, b), want, "stein disagrees on ({a}, {b})");
+        assert_eq!(gcd_stein_fast1(a, b), want, "stein_fast1 disagrees on ({a}, {b})");
     }
     println!("agreement: ok (200k pairs)");
 
@@ -164,10 +217,52 @@ fn main() {
     let b = run("pow2", gcd_pow2);
     let c = run("pow2+u64", gcd_pow2_u64);
     let d = run("strip2+u64", gcd_strip2);
+    let e = run("stein", gcd_stein);
+    let f = run("stein+exit1", gcd_stein_fast1);
     println!(
-        "speedup: pow2 {:.2}x   pow2+u64 {:.2}x   strip2+u64 {:.2}x",
-        base / b,
-        base / c,
-        base / d
+        "speedup vs current: pow2 {:.2}x  pow2+u64 {:.2}x  strip2+u64 {:.2}x (SHIPPED)  stein {:.2}x  stein+exit1 {:.2}x",
+        base / b, base / c, base / d, base / e, base / f
+    );
+    println!("stein+exit1 vs shipped: {:.2}x", d / f);
+
+    // Robustness: the 84.7% power-of-two share is a property of *this* device's dyadic grids. If a
+    // future chart produced general denominators, would the choice of odd-part algorithm start to
+    // matter? Re-run on a corpus with the power-of-two cases removed entirely.
+    println!("\n-- general operands only (no power-of-two share) --");
+    let mut s2: u128 = 0xD1B5_4A32_D192_ED03;
+    let mut gen = Vec::with_capacity(1_000_000);
+    for i in 0..1_000_000 {
+        s2 ^= s2 << 13;
+        s2 ^= s2 >> 7;
+        s2 ^= s2 << 17;
+        let a = if i % 3 == 0 { s2 >> 64 } else { s2 } | 3;
+        s2 ^= s2 << 13;
+        s2 ^= s2 >> 7;
+        s2 ^= s2 << 17;
+        let b = if i % 2 == 0 { s2 >> 64 } else { s2 } | 3;
+        gen.push((a, b));
+    }
+    let run2 = |name: &str, f: fn(u128, u128) -> u128| {
+        let t = Instant::now();
+        let mut acc = 0u128;
+        for &(a, b) in &gen {
+            acc = acc.wrapping_add(f(a, b));
+        }
+        let el = t.elapsed().as_secs_f64();
+        println!(
+            "{name:14} {el:6.3}s  {:6.1} ns/call  (checksum {})",
+            el / gen.len() as f64 * 1e9,
+            acc % 1000
+        );
+        el
+    };
+    let g0 = run2("current", gcd_current);
+    let g1 = run2("strip2+u64", gcd_strip2);
+    let g2 = run2("stein+exit1", gcd_stein_fast1);
+    println!(
+        "general-only: strip2+u64 {:.2}x   stein+exit1 {:.2}x   (stein vs shipped {:.2}x)",
+        g0 / g1,
+        g0 / g2,
+        g1 / g2
     );
 }
