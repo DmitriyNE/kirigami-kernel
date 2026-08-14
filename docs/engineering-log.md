@@ -690,6 +690,26 @@ fine — this is a log, not a schema.
   wrong inference when the real win is an early exit and a narrower divide.
   *2026-08-14 · resolved · OPT.3 (#239)*
 
+- **OPT.3's proof debt is discharged — `gcd_u128` re-proven, same axiom footprint.**
+  `CertifyCheck.gcd_u128_spec` is green at **`[propext, Classical.choice, Quot.sound]`**, identical
+  to what the original Euclidean proof carried, and `Lattice/FunsExternal.lean` gained a *faithful
+  `def`* for `trailing_zeros` rather than an axiom — so nothing leaked into any downstream
+  `#print axioms`. `check-externals.sh` green at 13 modelled items, full `lake build` green.
+  **The pricing done up front held exactly.** The plan was: reuse the loop argument, add the
+  strip-twos identity, mirror the loop at `u64` width. That is what shipped —
+  `gcd_u128_loop0_loop0_spec` is the original `loop.spec_decr_nat` argument transplanted verbatim
+  to `u64`, and `gcd_two_pow_mul` (`gcd(2^i·m, 2^j·n) = 2^min(i,j)·gcd(m,n)`, via `Nat.gcd_mul_left`
+  plus coprime cancellation on the odd parts) is the only genuinely new mathematics. This is the
+  concrete reason a binary/Stein gcd was the wrong choice even before the benchmark said it was
+  slower: it would have discarded that reusable loop argument.
+  **Two things that cost time and are worth knowing.** *(1)* Aeneas's `<<<` **wraps** mod `2^128`
+  and carries a `shift < 128` side condition — it does not fail on value overflow — so the
+  no-wrap fact has to be threaded as a hypothesis (`hfit`) through the loop invariant rather than
+  discharged locally. *(2)* `simp`/`scalar_tac` hit `maxRecDepth` on the 39-digit `u128` literal in
+  the zero branches, the same hazard `FunsExternal`'s `irreducible_def i128FitBound` is sealed
+  against; targeted `rw` with `Nat.gcd_zero_left/right` avoids it.
+  *2026-08-15 · resolved · OPT.3-proof (#240)*
+
 - **OPT.3 shipped — 1.7× on `develop`, 2.9× on `fold`, and the hot spot is gone.** `gcd_u128` is now
   strip-twos + `u64`-narrowed Euclidean (see step 0/1 below for the harvest, the benchmark and why
   this shape rather than a binary gcd). **Measured end-to-end** on `scale_probe` at the demo's
@@ -704,10 +724,9 @@ fine — this is a log, not a schema.
   every chord golden unchanged (3.0/9.4/10.1%), every VV.1 work counter unchanged (2256 γ cells,
   4096 cut evals). That was the whole point of picking a value-preserving optimization: correctness
   evidence is exact equality, not a tolerance.
-  **⚠️ It ships with a proof debt.** `GcdReduce.lean` proves the *old* Euclidean loop and no longer
-  applies to what runs; `docs/proofs/ledger.md` is marked ⚠️ STALE and OPT.3-proof (#240) blocks
-  merge to main. Interim Rust-side evidence is a differential test against the Euclidean reference
-  over ~80k pairs (powers of two, `u64`-boundary straddles, `2^127`) plus the bit-identical pins.
+  **It shipped with a proof debt, now discharged** — see the OPT.3-proof entry above. Rust-side
+  evidence remains a differential test against the Euclidean reference over ~80k pairs (powers of
+  two, `u64`-boundary straddles, `2^127`) plus the bit-identical pins.
   *2026-08-14 · open (proof debt) · OPT.3 (#239)*
 
 - **OPT.3 step 0/1 — the gcd operand mix is 85% powers of two, and ~6× is available for one
