@@ -700,17 +700,23 @@ fine — this is a log, not a schema.
   cut the doctest panel's solid from ~21s to 8.2s. The general lesson for this builder: anything
   expensive that depends only on the *region* must not sit inside the *slice* loop, because the
   slice count is now driven by authored fidelity rather than by the chart.
-  **STILL OPEN (measured 2026-08-14, current branch):** the device's STEP is `cert=REFUTED`,
-  `occt=reloaded shape failed BRepCheck`, 516 faces, **0 free edges**, 10.5 min wall clock. The
-  zero-length-edge failure is gone and the shell *closes*; OCCT now judges the closed shell
-  invalid. The likely cause is the grading itself: √-graded nodes put the first σ-interval at
-  `(1/16)²` of the half-window — around 1e-4 in σ — and since every chain-piece boundary becomes a
-  station, the solid inherits **sliver slices** whose faces are far thinner than anything the
-  builder produced before. The grading that is right for *shape* is wrong for *slicing*. Fix
-  direction: stop the solid's station partition from inheriting the hole's grading — either give
-  the solid a σ-uniform loop (coarser at the tangents, which the low-degree STEP profile can
-  afford) or merge chain pieces whose stations fall closer than a slice-thickness floor. The flat
-  pattern, which carries the manufacturing geometry, is unaffected either way. *2026-08-14 · PC.5 · branch `pcurve`*
+  **The sliver-slice defect and its fix.** Making every chain-piece boundary a σ-station worked but
+  was the wrong coupling: √-graded nodes sit ~1e-4 apart in σ, so the whole panel inherited sliver
+  slices, OCCT rejected the reloaded shape's `BRepCheck`, and the build took 10.5 min at 516 faces.
+  Resolving a hole and partitioning a panel are different concerns. The partition went back to what
+  it was, and the footprint now emits a corner at each chain-piece boundary along a hole's rail
+  runs (each carrying the piece covering the span ahead, which is the rail `lift_trim_edge` already
+  uses) — so a hole's fidelity buys hole *edges* and nothing else. Result: **`occt=ok`**, faces
+  516 → 148, and the per-slice hole projection deleted (net −36 lines).
+  **STILL OPEN:** our own shell certificate refuses it — `cert=REFUTED` with **0 free edges** but
+  **4 non-manifold edges**, exactly 2 per hole. Each has incidence *4* while being listed by only
+  *3* faces, so one face's wire traverses it **twice** — a spike, where the loop goes out and back
+  along one edge. It sits at the hole's tangent, i.e. where the cap collapsed: the far run ends and
+  the near run begins at the same vertex, and something there is emitting the pair of adjacent
+  rail edges as one traversed twice rather than two distinct ones. Next step is to dump the wire
+  of the offending face (18/19 on the doctest panel) and see which corner pair degenerates —
+  suspects are the snap making the tangent-adjacent `h` vanish, so the last far vertex and the
+  first near vertex coincide and the Builder's edge dedup merges the two rail edges into one. *2026-08-14 · PC.5 · branch `pcurve`*
 
 - **Interior cuts are p-curve loops on the flat path — measured (PC.4).** `surface_hole_loop` no
   longer fits two graphs and bridges them; it returns the closed p-curve loop of
