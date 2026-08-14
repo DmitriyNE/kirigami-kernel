@@ -1,5 +1,23 @@
 # Construction API — core + facade design (as decided)
 
+> **DEPRECATED 2026-08-14 — superseded by [`atlas-transform-design.md`](atlas-transform-design.md).**
+>
+> This document answered *how do you author one part*, and that answer shipped: PRs 1–3 are merged
+> (the `Development` trait, `develop::part::PiecewiseDevelopment`, the `author` crate, material ops,
+> the piecewise fold). It is **kept, not deleted**, because its *Decisions (record)* section is the
+> rationale of record for D1–D5 and is cited elsewhere.
+>
+> What changed: the full product flow (atlas → ECAD → bulk transform → fold → mesh/strain/optimize)
+> reframes the kernel around a **frozen atlas and a certified embedding map**, where transforming a
+> point is an evaluation rather than a solve. Per-part evaluation is no longer the shape of the
+> problem. See the new document for the flow, the derived performance targets, and the milestones.
+>
+> Still live from here, carried forward verbatim: **D2** (witness doctrine, product coordinates, the
+> covariance/Möbius rider), **D3** (material ops with solid cutters — its PR 4 `Cutter::Extrude` is
+> now milestone **AUTH.1**, extended with draft angles), and D1/D4/D5 as shipped.
+>
+> Superseded here: the *Build steps* section and the framing of the pipeline as per-part evaluation.
+
 *Design pass (task #218), 2026-08-12/13. Follows `construction-api-inventory.md`. Red-lining is
 **complete**: D1–D5 DECIDED, D6 (naming) deferred-by-design with accumulated constraints. The coherence
 pass (2026-08-13) rewrote the facade spec to the as-decided state and ground-truthed names against the
