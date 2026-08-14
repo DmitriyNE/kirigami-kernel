@@ -47,8 +47,18 @@ fn the_flex_panel_develops_with_derived_roles() {
     assert!(roles[0] != roles[1], "D1 and D2 bound opposite sides");
     assert_eq!(roles[2], OpRole::Notch);
     assert_eq!(roles[3], OpRole::Hole);
-    // Certified end to end under the DRC.
-    assert!(flat.eps().cmp(&q(1, 2)) == core::cmp::Ordering::Less);
+    // Certified end to end — and **pinned** (VV.2), not merely under the DRC gate. This is the
+    // γ ≡ 0 companion to the self-lapping device's budget: the apex cone has no flat directrix, so
+    // a bound that moves here did *not* move because of the γ quadrature. Keeping both pinned is
+    // what turns "some ε got worse" into "the γ path got worse".
+    // Measured 2.7573e-1 (2026-08-14); budget 0.3, headroom 1.09×. The DRC gate is 1/2, so this
+    // part certifies at 55% of its ceiling — roomier than the self-lapping device's 83%.
+    println!("[budget] flex develop {:.4e}", rat_to_f64(flat.eps()));
+    assert!(
+        flat.eps().cmp(&q(3, 10)) != core::cmp::Ordering::Greater,
+        "flex develop ε {:.4e} exceeds its budget 3.0000e-1",
+        rat_to_f64(flat.eps())
+    );
     // The SVG renders.
     let svg = flat.svg(400);
     assert!(svg.starts_with("<svg") && svg.len() > 200);

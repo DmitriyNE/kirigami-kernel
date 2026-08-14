@@ -157,3 +157,126 @@ fn the_flat_pattern_folds_back_isometrically() {
         "gross isometry breakage: chord defect {worst:.3e}"
     );
 }
+
+/// **The ε budget (VV.2).** Every other test here asks only whether a stage *certifies* — but a
+/// `Verified` verdict means "ε is under the clearance", and the clearance is 1, so a change that
+/// made every bound ten times worse would still pass the whole suite. These are the quality
+/// bounds: each stage's certified ε, pinned just above its measured value. **A failure here is
+/// not unsoundness** — the geometry is still certified — it means an edit moved a bound, and the
+/// budget line says by how much. Tighten the constants whenever a change legitimately improves
+/// one; that is the ratchet.
+///
+/// Measured on this device (`segments(16)`, `support_panels(8)`, 2026-08-14):
+///
+/// | stage   | measured  | budget | headroom |
+/// |---------|-----------|--------|----------|
+/// | develop | 4.1481e-1 | 0.45   | 1.08×    |
+/// | fold    | 1.3878e-1 | 0.2    | 1.44×    |
+/// | refold  | 5.9975e-3 | 0.01   | 1.67×    |
+/// | solid   | 5.7663e-2 | 0.1    | 1.73×    |
+///
+/// `develop` gets the least headroom because it has the least to give: the DRC gate is
+/// `clearance/2 = 1/2`, so at 4.15e-1 this device already certifies at **83% of its ceiling** and
+/// a 21% degradation would stop certifying at all. That is worth knowing on its own — it is why
+/// `segments(12)` on the demo device returns `Unresolved` (see the OPT.0 entry in the engineering
+/// log) — and it means `develop` has no room to absorb a bound-loosening optimization.
+#[test]
+fn the_certified_bounds_stay_within_budget() {
+    // Pinned bounds. Raise ONLY with a recorded reason; lower freely when a change earns it.
+    let develop_max = q(45, 100);
+    let solid_max = q(1, 10);
+    let fold_max = q(1, 5);
+    let refold_max = q(1, 100);
+
+    let part = device(true);
+    let flat = match part.develop() {
+        Verdict::Verified(f) => f,
+        Verdict::Unresolved(e) => panic!("develop unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+        Verdict::Refuted(f) => panic!("develop refuted: {f:?}"),
+    };
+    let develop_eps = flat.eps().clone();
+
+    // The fold leg, sampled across all three support regions (body γ ≡ 0, ramp and tail γ ≠ 0):
+    // the worst certified round-trip bound over the sample.
+    let verts = &flat.outline().vertices;
+    let n = verts.len();
+    let mut fold_eps = q(0, 1);
+    for k in 0..6 {
+        let i = (k * n) / 6;
+        let (x, y) = verts[i].center();
+        match part.fold(&[[x, y]], &qi(0)) {
+            Verdict::Verified(w) => {
+                if w.eps.cmp(&fold_eps) == core::cmp::Ordering::Greater {
+                    fold_eps = w.eps.clone();
+                }
+            }
+            Verdict::Unresolved(e) => panic!("fold unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+            Verdict::Refuted(f) => panic!("fold refuted at outline vertex {i}: {f:?}"),
+        }
+    }
+
+    // The round trip that actually matters to the device: the two flat drill holes, far apart in
+    // the pattern, must fold back onto the ONE drill cylinder they were cut from.
+    let (dcx, dcy, dr2) = (-0.5f64, 2.7f64, 1.0 / 40.0);
+    let mut refold = 0.0f64;
+    for hole in flat.holes() {
+        let hv = &hole.vertices;
+        for j in (0..hv.len()).step_by(8) {
+            let (x, y) = hv[j].center();
+            match part.fold(&[[x, y]], &qi(0)) {
+                Verdict::Verified(w) => {
+                    let p = &w.points[0];
+                    let (px, py) = (rat_to_f64(&p[0].mid()), rat_to_f64(&p[1].mid()));
+                    let d = ((px - dcx).powi(2) + (py - dcy).powi(2) - dr2).abs();
+                    refold = refold.max(d);
+                }
+                Verdict::Unresolved(e) => panic!("refold unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+                Verdict::Refuted(f) => panic!("refold refuted: {f:?}"),
+            }
+        }
+    }
+
+    let solid = match part.solid() {
+        Verdict::Verified(s) => s,
+        Verdict::Unresolved(e) => panic!("solid unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+        Verdict::Refuted(f) => panic!("solid refuted: {f:?}"),
+    };
+    let solid_eps = solid.eps().clone();
+
+    println!(
+        "[budget] develop {:.4e}/{:.4e}  fold {:.4e}/{:.4e}  refold {:.4e}/{:.4e}  solid {:.4e}/{:.4e}",
+        rat_to_f64(&develop_eps),
+        rat_to_f64(&develop_max),
+        rat_to_f64(&fold_eps),
+        rat_to_f64(&fold_max),
+        refold,
+        rat_to_f64(&refold_max),
+        rat_to_f64(&solid_eps),
+        rat_to_f64(&solid_max),
+    );
+
+    let within = |got: &Q, max: &Q| got.cmp(max) != core::cmp::Ordering::Greater;
+    assert!(
+        within(&develop_eps, &develop_max),
+        "develop ε {:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&develop_eps),
+        rat_to_f64(&develop_max)
+    );
+    assert!(
+        within(&fold_eps, &fold_max),
+        "fold ε {:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&fold_eps),
+        rat_to_f64(&fold_max)
+    );
+    assert!(
+        refold < rat_to_f64(&refold_max),
+        "refold defect {refold:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&refold_max)
+    );
+    assert!(
+        within(&solid_eps, &solid_max),
+        "solid ε {:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&solid_eps),
+        rat_to_f64(&solid_max)
+    );
+}

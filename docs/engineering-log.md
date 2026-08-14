@@ -648,6 +648,20 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The acceptance device certifies at 83% of its DRC ceiling — `develop` has no room to absorb a
+  looser bound (VV.2).** Pinning the ε budget (`the_certified_bounds_stay_within_budget`) measured
+  the self-lapping device at `segments(16)`/`support_panels(8)`: **develop 4.1481e-1 · fold
+  1.3878e-1 · refold 5.9975e-3 · solid 5.7663e-2**, and the γ≡0 flex panel at **develop 2.7573e-1**.
+  The DRC gate is `clearance/2 = 1/2`, so the self-lapping `develop` sits at **83%** of the value
+  that would stop it certifying at all (the flex panel is at 55%). A 21% degradation turns the
+  acceptance demo red — which is exactly what `segments(12)` already does (`Unresolved` at 5.737e-1,
+  see the OPT.0 entry). **Consequence:** OPT.1's prefix-table change to γ *repartitions* `[0, σ]` and
+  will move ε; if it moves `develop` the wrong way by even a fifth, the device stops certifying. So
+  the budget is not bureaucracy here, it is the only thing standing between an optimization and a
+  silently un-shippable part. Both parts are pinned so a moved bound can be *localized*: the flex
+  panel has no flat directrix, so if it moves too, the cause is not the γ quadrature.
+  *2026-08-14 · resolved · VV.2 (#230)*
+
 - **The post-p-curve 10× slowdown is the γ quadrature re-run per point, not the p-curve subdivision
   (OPT.0 triage).** The demo went ~1 min → 10.5 min across the p-curve milestone, and the standing
   suspicion was the certificate's first-order bound forcing node count up. **Measured, and that is
