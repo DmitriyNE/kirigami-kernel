@@ -718,7 +718,16 @@ fine — this is a log, not a schema.
   the real far edge. Identical geometry, so the builder's edge dedup merged the two into one and
   the wire walked it twice. Keeping the outgoing rail on collapse fixes it: non-manifold edges
   **4 → 0**, the shell is a closed 2-manifold. The general rule: when merging coincident corners,
-  position comes from either but the rail must come from the *later* one. *2026-08-14 · PC.5 · branch `pcurve`*
+  position comes from either but the rail must come from the *later* one.
+  **Device green (2026-08-14):** `cert=Verified  occt=ok  (148 faces, 0 free)`. Note the shape of
+  this milestone's bug tail — every one of the three solid-path defects was *caused by the geometry
+  getting better*, and each had been invisible while a hole was two graphs bridged by a 30–48%
+  chord: a zero-length edge where the cap used to be, sliver slices from tying hole resolution to
+  panel partitioning, and a wrong-branch rail at the collapsed corner. Coarse approximations hide
+  degeneracies; improving them is what exposes the assumptions built on top.
+  **Remaining cost:** the device's demo takes ~10.5 min wall clock (against ~1 min before the
+  milestone) — the flat pattern's fine hole loops, not the solid, now dominate. Untriaged; the
+  γ-quadrature per-edge item is the standing suspect. *2026-08-14 · PC.5 · branch `pcurve`*
 
 - **Interior cuts are p-curve loops on the flat path — measured (PC.4).** `surface_hole_loop` no
   longer fits two graphs and bridges them; it returns the closed p-curve loop of
