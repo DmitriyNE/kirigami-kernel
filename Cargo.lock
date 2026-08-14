@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "acceptance"
+version = "0.0.0"
+dependencies = [
+ "author",
+ "develop",
+ "export",
+ "fixtures",
+ "lattice",
+]
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22,6 +33,7 @@ dependencies = [
 name = "author"
 version = "0.0.0"
 dependencies = [
+ "acceptance",
  "arrange2d",
  "certify-core",
  "develop",

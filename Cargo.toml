@@ -37,3 +37,4 @@ export = { path = "crates/export" }
 fixtures = { path = "crates/fixtures" }
 difftest = { path = "crates/difftest" }
 author = { path = "crates/author" }
+acceptance = { path = "crates/acceptance" }

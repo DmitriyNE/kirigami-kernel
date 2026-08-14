@@ -4,12 +4,9 @@
 //! roles, the **per-window seam drill** (one cylinder, two derived holes — head and tail flap),
 //! a flat-authored hexagon, and the certified fold closing the round trip.
 
-use author::construct;
-use author::part::{Cutter, OpRole, Part, SupportFn};
+use author::part::{OpRole, Part};
 use certify_core::Verdict;
 use export::approx::rat_to_f64;
-use export::trim::RailFit;
-use fixtures::devices::cone_wrap;
 use lattice::{Bignum, Rat};
 
 mod common;
@@ -23,42 +20,10 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// The device: `D = 1/10` lap offset, regions body `[−5/4, 1/2]` (`h ≡ 0`), ramp `[1/2, 1]`
-/// (smoothstep `0 → D`), tail `[1, 5/4]` (`h ≡ D`); concentric outer D1 (intersect), eccentric
-/// apex-containing inner D2 (subtract), and the seam drill over the lap (subtract — pierces the
-/// head at σ ≈ −0.9 and the tail flap at σ ≈ 1.1: one cutter, two derived holes).
+/// The acceptance device at the suite's lean budget — the same recipe the demo runs at higher
+/// fidelity, from the one shared definition (see the `acceptance` crate).
 fn device(with_drill: bool) -> Part<Bignum> {
-    let d = q(1, 10);
-    // A witness on the kept sheet: the σ = 0 ruling's point at z = −3 (mid-annulus). The wrap
-    // chart keeps material on both sheets of the double cover (the antipodal ray crosses the
-    // disks too), so the recipe must designate the component — exactly the PR 2 finding.
-    let rz0 = cone_wrap().ruling().comp(2).eval(&qi(0)).unwrap();
-    let mu_w = q(-3, 1).div(&rz0);
-    let witness = cone_wrap().surface(&mu_w, &qi(0)).eval(&qi(0)).unwrap();
-    let mut part = construct::from_chart::<Bignum>(&cone_wrap())
-        .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
-        .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
-        .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
-        .keep_near(witness)
-        .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
-        .clearance(qi(1))
-        .thickness(q(1, 20))
-        .fit(RailFit {
-            degree: 4,
-            subdiv: 160,
-            bits: 44,
-        })
-        .segments(16)
-        .support_panels(8)
-        .budget(develop::cone::DevConfig {
-            terms: 14,
-            sqrt_eps: q(1, 1_000_000_000),
-        });
-    if with_drill {
-        part = part.subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)));
-    }
-    part
+    acceptance::self_lapping_cone(16, 8, with_drill)
 }
 
 /// The flat sector sweeps more than one full 3-D turn (2π·sinβ ≈ 240.9°) yet stays under 360° —

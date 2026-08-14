@@ -20,3 +20,4 @@ export.workspace = true
 
 [dev-dependencies]
 fixtures.workspace = true
+acceptance.workspace = true

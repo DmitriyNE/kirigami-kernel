@@ -20,16 +20,9 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// The Stage-1 demo cutter set on the `[−1, 1]` gore (the trim-test geometry): D1 the `z ≤ 3`
-/// half-space bound, D2 the eccentric apex cylinder, D3 the rim notch, D4 the interior drill.
+/// The Stage-1 flex panel, from the one shared definition (see the `acceptance` crate).
 fn flex_part() -> author::Part<Bignum> {
-    construct::from_chart::<Bignum>(&cone())
-        .region_sigma(qi(-1), qi(1), SupportFn::inherit())
-        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
-        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(11, 5), q(1, 25)))
-        .clearance(qi(1))
+    acceptance::flex_panel()
 }
 
 #[test]
