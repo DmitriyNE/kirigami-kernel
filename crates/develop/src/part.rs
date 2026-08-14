@@ -34,6 +34,7 @@
 use crate::anchor::AnchorFrame;
 use crate::cone::{ConeDevelopment, DevConfig, FlatBox};
 use crate::interval::RatIv;
+use core::cell::RefCell;
 use core::cmp::Ordering;
 use lattice::{Backend, Bignum, Interval, Rat};
 
@@ -134,6 +135,19 @@ impl<B: Backend> Development<B> for ConeDevelopment<B> {
 pub struct PiecewiseDevelopment<B: Backend = Bignum> {
     /// σ-band → the region's development; validated sorted, contiguous, frame-shared.
     regions: Vec<(Interval<B>, ConeDevelopment<B>)>,
+    /// Memoized cumulative-γ prefixes (the full-window integral of every region), keyed by the
+    /// [`DevConfig`] that computed them — the certified quadrature is the dominant cost, and a
+    /// consumer (unroll, anchor) calls [`cum_before`](Self::cum_before) once per *edge*.
+    /// Enclosure reuse is sound (an enclosure is an enclosure); a changed budget recomputes.
+    cum_cache: RefCell<Option<CumCache<B>>>,
+}
+
+/// The memoized cumulative-γ prefixes plus the budget that produced them.
+struct CumCache<B: Backend> {
+    terms: usize,
+    sqrt_eps: Rat<B>,
+    /// `cum[k]` = Σ over regions `< k` of the full-window γ integral.
+    cum: Vec<[RatIv<B>; 2]>,
 }
 
 impl<B: Backend> PiecewiseDevelopment<B> {
@@ -157,7 +171,10 @@ impl<B: Backend> PiecewiseDevelopment<B> {
                 return None;
             }
         }
-        Some(Self { regions })
+        Some(Self {
+            regions,
+            cum_cache: RefCell::new(None),
+        })
     }
 
     /// The glued σ-domain `[first.lo, last.hi]`.
@@ -177,15 +194,34 @@ impl<B: Backend> PiecewiseDevelopment<B> {
         })
     }
 
-    /// The cumulative γ over the full windows of the regions **before** `k`.
+    /// The cumulative γ over the full windows of the regions **before** `k` (memoized — see
+    /// [`PiecewiseDevelopment::cum_cache`]).
     fn cum_before(&self, k: usize, cfg: &DevConfig<B>) -> Option<[RatIv<B>; 2]> {
+        {
+            let cache = self.cum_cache.borrow();
+            if let Some(c) = cache.as_ref()
+                && c.terms == cfg.terms
+                && c.sqrt_eps.cmp(&cfg.sqrt_eps) == Ordering::Equal
+            {
+                return Some(c.cum[k].clone());
+            }
+        }
         let zero = RatIv::point(Rat::from_i128(0));
         let mut acc = [zero.clone(), zero];
-        for (band, dev) in &self.regions[..k] {
+        let mut cum = Vec::with_capacity(self.regions.len() + 1);
+        cum.push(acc.clone());
+        for (band, dev) in &self.regions {
             let g = dev.directrix_between(&band.lo, &band.hi, cfg)?;
             acc = [acc[0].add(&g[0]).rounded(), acc[1].add(&g[1]).rounded()];
+            cum.push(acc.clone());
         }
-        Some(acc)
+        let out = cum[k].clone();
+        *self.cum_cache.borrow_mut() = Some(CumCache {
+            terms: cfg.terms,
+            sqrt_eps: cfg.sqrt_eps.clone(),
+            cum,
+        });
+        Some(out)
     }
 
     /// The **cumulative running directrix** `γ(σ)`: the full-window γ of every region before the

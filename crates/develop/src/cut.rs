@@ -129,6 +129,106 @@ pub fn plane_cut_rail<B: Backend>(chart: &Chart<B>, n: &[Rat<B>; 3], d: &Rat<B>)
     num.div(&g_mu)
 }
 
+/// The **µ̂-pullback** of a cut surface onto a chart: the implicit residual of the surface along
+/// the ruling, `s(σ, µ̂) = a(σ)·µ̂² + b(σ)·µ̂ + c(σ)`, with σ-rational coefficients — every
+/// [`CutSurface`] is degree ≤ 2 in µ̂ because the chart is ruled (`X = pedal + µ̂·ruling + w·normal`
+/// is affine in µ̂). Reads the **true** chart fields, so it is correct on offset supports (`h ≠ 0`)
+/// and under wrapping parametrizations — never an apex-ray shortcut. Built by [`cut_mu_form`].
+///
+/// Sign semantics: for a [`CutSurface::Cylinder`] the residual is `perp² − R²` — **negative
+/// strictly inside** the solid cylinder; for a [`CutSurface::Plane`] it is `n·X − d` (`a ≡ 0`) —
+/// negative on the `n·X < d` side. So `s < 0` is the natural "inside the solid cutter" predicate.
+pub struct MuCut<B: Backend = Bignum> {
+    /// The µ̂² coefficient (`0` for a plane; `≥ 0` pointwise for a cylinder, by Cauchy–Schwarz).
+    pub a: RatFunc<B>,
+    /// The µ̂ coefficient.
+    pub b: RatFunc<B>,
+    /// The µ̂⁰ term.
+    pub c: RatFunc<B>,
+}
+
+impl<B: Backend> MuCut<B> {
+    /// The residual `s(σ, µ̂)` at a rational point, or `None` on a coefficient pole.
+    pub fn eval(&self, sigma: &Rat<B>, mu_hat: &Rat<B>) -> Option<Rat<B>> {
+        let a = self.a.eval(sigma)?;
+        let b = self.b.eval(sigma)?;
+        let c = self.c.eval(sigma)?;
+        Some(a.mul(mu_hat).add(&b).mul(mu_hat).add(&c))
+    }
+
+    /// The discriminant `b² − 4ac` — for a cylinder cut, **positive exactly where the ruling
+    /// crosses the cylinder** (two real µ̂ branches); its roots are the true tangent rulings, the
+    /// σ-extent of an interior hole. (For a plane, `a ≡ 0` and this degenerates to `b²`.)
+    pub fn disc(&self) -> RatFunc<B> {
+        self.b.mul(&self.b).sub(
+            &self
+                .a
+                .mul(&self.c)
+                .mul(&RatFunc::from_poly(Poly::constant(Rat::from_i128(4)))),
+        )
+    }
+}
+
+/// Pull a [`CutSurface`] back to its µ̂-form [`MuCut`] on `chart` at layer offset `w` (the
+/// residual along `X(σ, µ̂) = pedal + µ̂·ruling + w·normal`). `None` for a degenerate surface
+/// (zero plane normal / zero cylinder axis).
+///
+/// This is the single pedal-general pullback the trim/authoring layer composes on: plane rails
+/// come from the linear root (`µ̂ = −c/b`, see [`plane_cut_rail`]), cylinder branches from the
+/// quadratic roots, hole σ-extents from [`MuCut::disc`].
+pub fn cut_mu_form<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    w: &Rat<B>,
+) -> Option<MuCut<B>> {
+    let base = chart.pedal().add(&chart.normal().scale_rat(w)); // pedal + w·normal
+    let u = chart.ruling();
+    match surface {
+        CutSurface::Plane { n, d } => {
+            if dot3(n, n).sign() <= 0 {
+                return None;
+            }
+            let nv = const_vec3(n);
+            Some(MuCut {
+                a: RatFunc::zero(),
+                b: u.dot(&nv),
+                c: base
+                    .dot(&nv)
+                    .sub(&RatFunc::from_poly(Poly::constant(d.clone()))),
+            })
+        }
+        CutSurface::Cylinder {
+            axis_point,
+            axis_dir,
+            r2,
+        } => {
+            let a2 = dot3(axis_dir, axis_dir);
+            if a2.sign() <= 0 {
+                return None;
+            }
+            let inv_a2 = a2.recip();
+            let ax = const_vec3(axis_dir);
+            let v0 = base.sub(&const_vec3(axis_point)); // pedal + w·n − p
+            let ua = u.dot(&ax);
+            let va = v0.dot(&ax);
+            let a = u.dot(u).sub(&ua.mul(&ua).scale(&inv_a2));
+            let b = v0
+                .dot(u)
+                .sub(&va.mul(&ua).scale(&inv_a2))
+                .scale(&Rat::from_i128(2));
+            let c = v0
+                .dot(&v0)
+                .sub(&va.mul(&va).scale(&inv_a2))
+                .sub(&RatFunc::from_poly(Poly::constant(r2.clone())));
+            Some(MuCut {
+                a: a.reduce(),
+                b: b.reduce(),
+                c: c.reduce(),
+            })
+        }
+    }
+}
+
 /// The σ-sub-interval `[σ_lo + k·width, σ_lo + (k+1)·width]`.
 fn subiv<B: Backend>(lo: &Rat<B>, width: &Rat<B>, k: usize) -> RatIv<B> {
     let a = lo.add(&width.mul(&Rat::from_i128(k as i128)));
@@ -404,6 +504,60 @@ mod tests {
             Verdict::Refuted(CutFitFault::PoleInEval) => {}
             other => panic!("expected PoleInEval, got {:?}", verdict_tag(&other)),
         }
+    }
+
+    /// The plane µ̂-form vanishes identically on the exact plane rail: `b·µ̂₁ + c ≡ 0`.
+    #[test]
+    fn the_plane_mu_form_vanishes_on_the_exact_rail() {
+        let chart = cone();
+        let n = [Q::from_i128(1), Q::new(-1, 2), Q::from_i128(2)]; // a generic plane
+        let d = Q::new(3, 4);
+        let rail = plane_cut_rail(&chart, &n, &d);
+        let form = cut_mu_form(&chart, &CutSurface::Plane { n, d }, &Q::from_i128(0)).unwrap();
+        assert!(form.a.is_zero(), "a plane is affine in µ̂");
+        let residual = form.b.mul(&rail).add(&form.c).reduce();
+        assert!(residual.is_zero(), "s(σ, µ̂₁(σ)) ≡ 0 exactly");
+    }
+
+    /// The cylinder µ̂-form classifies inside/outside by sign, and its discriminant is positive
+    /// exactly where the ruling crosses the cylinder — on the true surface, at a layer offset too.
+    #[test]
+    fn the_cylinder_mu_form_classifies_by_sign() {
+        let chart = cone();
+        // The demo D4 disk: a small vertical cylinder at (0, 11/5), R² = 1/25.
+        let surface = CutSurface::Cylinder {
+            axis_point: [Q::from_i128(0), Q::new(11, 5), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: Q::new(1, 25),
+        };
+        let form = cut_mu_form(&chart, &surface, &Q::from_i128(0)).unwrap();
+        // At σ = 0 the +y ruling passes through the disk: the surface point at the certified
+        // annulus band µ̂ ≈ 2.2 lies inside (s < 0); µ̂ = 1 is well inside the disk radially? No —
+        // µ̂ = 1 sits at xy-radius ≈ 0.9 from the origin, far outside the disk (s > 0).
+        let s_in = form.eval(&Q::from_i128(0), &Q::new(11, 5)).unwrap();
+        let s_out = form.eval(&Q::from_i128(0), &Q::from_i128(1)).unwrap();
+        // Corroborate the signs against the actual 3-D distance (exact arithmetic).
+        let check = |mu: &Q, want_inside: bool| {
+            let p = chart
+                .surface(mu, &Q::from_i128(0))
+                .eval(&Q::from_i128(0))
+                .unwrap();
+            let dy = p[1].sub(&Q::new(11, 5));
+            let perp2 = p[0].mul(&p[0]).add(&dy.mul(&dy));
+            assert_eq!(
+                perp2.cmp(&Q::new(1, 25)) == core::cmp::Ordering::Less,
+                want_inside
+            );
+        };
+        assert!(s_in.sign() < 0, "µ̂ on the ruling chord is inside");
+        check(&Q::new(11, 5), true);
+        assert!(s_out.sign() > 0, "µ̂ = 1 is outside the disk");
+        check(&Q::from_i128(1), false);
+        // The discriminant: positive at σ = 0 (the ruling crosses the disk), negative at σ = 1
+        // (azimuth 90° away — the ruling misses it).
+        let disc = form.disc();
+        assert!(disc.eval(&Q::from_i128(0)).unwrap().sign() > 0);
+        assert!(disc.eval(&Q::from_i128(1)).unwrap().sign() < 0);
     }
 
     /// The cylinder metric: the certified ε upper-bounds the float distance-to-cylinder

@@ -18,7 +18,7 @@
 
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
-use develop::cut::{CutFitCert, CutFitFault, CutSurface, cut_fit, plane_cut_rail};
+use develop::cut::{CutFitCert, CutFitFault, CutSurface, cut_fit, cut_mu_form, plane_cut_rail};
 use develop::unroll::{BoundaryArc, FlatOutline, UnrollFault, unroll_trim_loop};
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Vec3Rat};
@@ -43,20 +43,11 @@ fn ruling_xy<B: Backend>(chart: &Chart<B>) -> (RatFunc<B>, RatFunc<B>) {
     )
 }
 
-/// `g(σ) = (cx·r_y − cy·r_x)² − R²·(r_x² + r_y²)` — the (rational) tangency residual of the apex
-/// ray to the disk `(cx, cy, R)`: **negative** where the ray crosses the disk (two real cut
-/// branches), **zero** at the two tangent rulings, **positive** outside.
-fn tangent_poly<B: Backend>(chart: &Chart<B>, cx: &Rat<B>, cy: &Rat<B>, r2: &Rat<B>) -> RatFunc<B> {
-    let (rx, ry) = ruling_xy(chart);
-    let konst = |r: &Rat<B>| RatFunc::from_poly(Poly::constant(r.clone()));
-    let cross = ry.mul(&konst(cx)).sub(&rx.mul(&konst(cy))); // cx·r_y − cy·r_x
-    let norm2 = rx.mul(&rx).add(&ry.mul(&ry)); // r_x² + r_y²
-    cross.mul(&cross).sub(&konst(r2).mul(&norm2))
-}
-
 /// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
-/// the final bracket. `None` if no sign change or a pole is hit.
-fn bisect_root<B: Backend>(
+/// the final bracket — exact sign evaluation, rational midpoints. `None` if no sign change or a
+/// pole is hit. (Public for the authoring layer's corner refinement — the same primitive
+/// [`outer_loop`] uses to collapse notch corners to clean joins.)
+pub fn bisect_root<B: Backend>(
     f: &RatFunc<B>,
     lo: &Rat<B>,
     hi: &Rat<B>,
@@ -136,25 +127,42 @@ fn rail_cylinder_crossings<B: Backend>(
     scan_roots(&h, &span.lo, &span.hi, scan, iters)
 }
 
-/// The two tangent-ruling σ of a disk within the gore, as `(σ_lo, σ_hi)`. Scans [`tangent_poly`]
-/// for its two sign changes (outside `+` → inside `−` → outside `+`). `None` unless the disk
-/// subtends exactly one clean two-tangent arc in the gore.
-fn disk_tangents<B: Backend>(
+/// The two tangent-ruling σ where a **solid quadric cutter** (today: a cylinder of any axis)
+/// grazes the surface within `span` — the two sign changes of the true-surface discriminant
+/// ([`MuCut::disc`](develop::cut::MuCut::disc)); between them the ruling crosses the cutter (two
+/// real µ̂ branches), the σ-extent of an interior hole. Pedal-general — it reads the real chart
+/// fields (pedal *with* support), so it is correct on offset tails and under wrapping
+/// parametrizations; the apex-ray shortcut it replaces (the A2 finding) silently assumed a cone
+/// through the origin. `None` unless the cutter subtends exactly one clean two-tangent arc.
+pub fn surface_tangents<B: Backend>(
     chart: &Chart<B>,
-    cx: &Rat<B>,
-    cy: &Rat<B>,
-    r2: &Rat<B>,
+    surface: &CutSurface<B>,
     span: &Interval<B>,
     scan: usize,
     iters: usize,
 ) -> Option<(Rat<B>, Rat<B>)> {
-    let g = tangent_poly(chart, cx, cy, r2);
-    let roots = scan_roots(&g, &span.lo, &span.hi, scan, iters)?;
+    let roots = surface_disc_roots(chart, surface, span, scan, iters)?;
     if roots.len() == 2 {
         Some((roots[0].clone(), roots[1].clone()))
     } else {
         None
     }
+}
+
+/// **All** sign-change roots of the true-surface discriminant within `span`, in σ order — the
+/// tangent rulings of every arc the cutter subtends in the gore (a wide gore meets a solid
+/// cylinder along *two* windows, one per sheet of the ruling line; [`surface_tangents`] is the
+/// single-window special case). Consecutive pairs with a positive discriminant between them are
+/// the cutter's real σ-windows. `None` on a pole at a scan node.
+pub fn surface_disc_roots<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    span: &Interval<B>,
+    scan: usize,
+    iters: usize,
+) -> Option<Vec<Rat<B>>> {
+    let g = cut_mu_form(chart, surface, &Rat::from_i128(0))?.disc();
+    scan_roots(&g, &span.lo, &span.hi, scan, iters)
 }
 
 /// Clone a [`CutSurface`] without a `B: Clone` bound (its own `Clone` is derived, hence bounded;
@@ -204,6 +212,20 @@ impl Default for RailFit {
         RailFit {
             degree: 6,
             subdiv: 128,
+            bits: 44,
+        }
+    }
+}
+
+impl RailFit {
+    /// The **low-degree STEP re-fit** profile: a curved rail exported to OCCT must stay a
+    /// handful of Bézier control points, or `MakeEdge`'s `f64` endpoints drift off the shared
+    /// vertices (the G7 finding). Every STEP emission site uses this; the SVG/flat side keeps
+    /// the tighter [`default`](RailFit::default).
+    pub fn occt_low() -> Self {
+        RailFit {
+            degree: 4,
+            subdiv: 256,
             bits: 44,
         }
     }
@@ -281,7 +303,22 @@ pub fn certified_rail<B: Backend>(
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
 ) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
-    let mu_hat = match fit_cut_rail(chart, &disk.surface, span, fit.degree, disk.pick, fit.bits) {
+    certified_rail_surface(chart, &disk.surface, disk.pick, span, fit, clearance, cfg)
+}
+
+/// Fit **and** certify the ruling-rail of a bare [`CutSurface`] branch over `span` — the
+/// footprint-free core of [`certified_rail`] (a [`TrimDisk`] just bundles the surface with its
+/// xy footprint). The float oracle proposes, [`cut_fit`] decides; fail-closed as ever.
+pub fn certified_rail_surface<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    pick: RootPick,
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
+    let mu_hat = match fit_cut_rail(chart, surface, span, fit.degree, pick, fit.bits) {
         Some(m) => m,
         // The oracle declined (cut not real at a node / singular solve) — fail-closed.
         None => return Verdict::Unresolved(clearance.clone()),
@@ -289,7 +326,7 @@ pub fn certified_rail<B: Backend>(
     let cert = CutFitCert {
         mu_hat: mu_hat.clone(),
         w: Rat::from_i128(0),
-        surface: clone_surface(&disk.surface),
+        surface: clone_surface(surface),
         span: span.clone(),
         subdiv: fit.subdiv,
         clearance: clearance.clone(),
@@ -300,6 +337,39 @@ pub fn certified_rail<B: Backend>(
         Verdict::Unresolved(e) => Verdict::Unresolved(e),
         Verdict::Refuted(f) => Verdict::Refuted(f),
     }
+}
+
+/// The **piecewise-region** certified rail: one rail per region band, each fitted and certified
+/// against **its own region's chart** (supports differ per region; the frame is shared). This is
+/// the flat-side sibling of `brep_trim_solid_regions`' piecewise boundaries — the self-lapping
+/// demo's per-region `cyl_rails` lifted into the engine (A4). `charts` are the ordered,
+/// contiguous region bands. Returns the ordered `(band, rail)` pieces (the shape
+/// [`crate::brep_build::brep_trim_solid_regions`] and the piecewise develop consume) and the max
+/// certified ε over the pieces. Fail-closed on the first piece that does not certify.
+#[allow(clippy::type_complexity)]
+pub fn certified_rail_piecewise<B: Backend>(
+    charts: &[(Interval<B>, &Chart<B>)],
+    surface: &CutSurface<B>,
+    pick: RootPick,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<(Vec<(Interval<B>, RatFunc<B>)>, Rat<B>), CutFitFault, Rat<B>> {
+    let mut pieces = Vec::with_capacity(charts.len());
+    let mut eps = Rat::from_i128(0);
+    for (band, chart) in charts {
+        let (mu, e) = match certified_rail_surface(chart, surface, pick, band, fit, clearance, cfg)
+        {
+            Verdict::Verified(x) => x,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        };
+        if eps.cmp(&e) == core::cmp::Ordering::Less {
+            eps = e;
+        }
+        pieces.push((band.clone(), mu));
+    }
+    Verdict::Verified((pieces, eps))
 }
 
 /// The outer boundary loop of an **eccentric annulus band**: the inner rail `μ̂_in` and outer
@@ -365,12 +435,8 @@ pub struct HoleLoop<B: Backend = Bignum> {
     pub max_microcap: Rat<B>,
 }
 
-/// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: its **near** (Lower) and
-/// **far** (Upper) cut branches over the disk's σ-extent, joined at each tangent ruling by a
-/// **micro-cap** — a radial segment bridging the small μ̂ gap left by snapping the algebraic
-/// tangent σ (a root of [`tangent_poly`]) to a rational `margin` inside the disk. The inset keeps
-/// the polynomial fit clear of the √-branch point *and* makes the loop chain exactly in `(σ, μ̂)`.
-/// Fail-closed: a loose branch fit is `Unresolved`, a degenerate cut `Refuted`.
+/// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: the vertical-cylinder
+/// idiom of [`surface_hole_loop`].
 #[allow(clippy::too_many_arguments)]
 pub fn hole_loop<B: Backend>(
     chart: &Chart<B>,
@@ -384,7 +450,34 @@ pub fn hole_loop<B: Backend>(
     margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
-    let (t_lo, t_hi) = match disk_tangents(chart, cx, cy, r2, span, 256, 60) {
+    let surface = CutSurface::Cylinder {
+        axis_point: [cx.clone(), cy.clone(), Rat::from_i128(0)],
+        axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
+        r2: r2.clone(),
+    };
+    surface_hole_loop(chart, &surface, span, fit, clearance, cfg, margin, segments)
+}
+
+/// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: its
+/// **near** (Lower) and **far** (Upper) cut branches over the cutter's σ-extent
+/// ([`surface_tangents`]), joined at each tangent ruling by a **micro-cap** — a radial segment
+/// bridging the small μ̂ gap left by snapping the algebraic tangent σ to a rational `margin`
+/// inside the cutter. The inset keeps the polynomial fit clear of the √-branch point *and* makes
+/// the loop chain exactly in `(σ, μ̂)`. Pedal-general (reads the true surface — correct on offset
+/// supports and wrapped charts). Fail-closed: a loose branch fit is `Unresolved`, a degenerate
+/// cut `Refuted`.
+#[allow(clippy::too_many_arguments)]
+pub fn surface_hole_loop<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    span: &Interval<B>,
+    fit: RailFit,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+    margin: &Rat<B>,
+    segments: usize,
+) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
+    let (t_lo, t_hi) = match surface_tangents(chart, surface, span, 256, 60) {
         Some(t) => t,
         None => return Verdict::Unresolved(clearance.clone()),
     };
@@ -395,18 +488,18 @@ pub fn hole_loop<B: Backend>(
         lo: s1.clone(),
         hi: s2.clone(),
     };
-    let far = eccentric_disk(cx.clone(), cy.clone(), r2.clone(), RootPick::Upper);
-    let near = eccentric_disk(cx.clone(), cy.clone(), r2.clone(), RootPick::Lower);
-    let (mu_far, e_far) = match certified_rail(chart, &far, &sub, fit, clearance, cfg) {
-        Verdict::Verified(x) => x,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-        Verdict::Refuted(f) => return Verdict::Refuted(f),
-    };
-    let (mu_near, e_near) = match certified_rail(chart, &near, &sub, fit, clearance, cfg) {
-        Verdict::Verified(x) => x,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-        Verdict::Refuted(f) => return Verdict::Refuted(f),
-    };
+    let (mu_far, e_far) =
+        match certified_rail_surface(chart, surface, RootPick::Upper, &sub, fit, clearance, cfg) {
+            Verdict::Verified(x) => x,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        };
+    let (mu_near, e_near) =
+        match certified_rail_surface(chart, surface, RootPick::Lower, &sub, fit, clearance, cfg) {
+            Verdict::Verified(x) => x,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        };
     let (f1, n1, f2, n2) = match (
         mu_far.eval(&s1),
         mu_near.eval(&s1),
@@ -906,8 +999,13 @@ mod tests {
         let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
         let margin = Q::new(1, 200);
 
+        let d4_surface = CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r2.clone(),
+        };
         let (tlo, thi) =
-            disk_tangents(&chart, &cx, &cy, &r2, &span, 256, 60).expect("two tangents");
+            surface_tangents(&chart, &d4_surface, &span, 256, 60).expect("two tangents");
         println!("D4 tangents: σ ∈ [{:.4}, {:.4}]", f(&tlo), f(&thi));
         assert!(tlo.cmp(&thi) == core::cmp::Ordering::Less);
 
@@ -937,6 +1035,177 @@ mod tests {
             ),
             other => panic!("hole unroll not Verified: {}", tag(&other)),
         }
+    }
+
+    /// On an **apex cone** (`h ≡ 0`) the true-surface discriminant tangents coincide EXACTLY with
+    /// the old apex-ray formula (they differ by the factor `−4·|r_xy|²` via the Lagrange identity,
+    /// so the sign scans walk identical brackets) — the A2 fix is a strict generalization.
+    #[test]
+    fn true_surface_tangents_match_the_apex_ray_on_the_cone() {
+        let chart = cone();
+        let span = Interval {
+            lo: Q::from_i128(-1),
+            hi: Q::from_i128(1),
+        };
+        let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
+        let d4 = CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r2.clone(),
+        };
+        let (t_lo, t_hi) = surface_tangents(&chart, &d4, &span, 256, 60).unwrap();
+        // The old apex-ray residual: (cx·r_y − cy·r_x)² − R²·(r_x² + r_y²).
+        let (rx, ry) = ruling_xy(&chart);
+        let konst = |r: &Q| RatFunc::from_poly(Poly::constant(r.clone()));
+        let cross = ry.mul(&konst(&cx)).sub(&rx.mul(&konst(&cy)));
+        let norm2 = rx.mul(&rx).add(&ry.mul(&ry));
+        let old = cross.mul(&cross).sub(&konst(&r2).mul(&norm2));
+        let roots = scan_roots(&old, &span.lo, &span.hi, 256, 60).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(t_lo, roots[0], "identical bisection on the apex cone");
+        assert_eq!(t_hi, roots[1]);
+    }
+
+    /// On an **offset support** (`h ≠ 0` — the seam-ramp fixture) the apex-ray shortcut mislocates
+    /// the tangents, while the true-surface discriminant brackets the disk correctly and the whole
+    /// hole loop still certifies — the A2 correctness fix, end to end.
+    #[test]
+    fn offset_support_hole_certifies_with_true_tangents() {
+        use fixtures::devices::cone_seam_ramp;
+        let chart = cone_seam_ramp();
+        let cfg = DevConfig::tight();
+        // Drop the disk exactly onto the ramp surface: its centre is the (exact) xy of the
+        // surface point at σ = 1/4, µ̂ = −2 — the ruling provably pierces it.
+        let p = chart
+            .surface(&Q::from_i128(-2), &Q::from_i128(0))
+            .eval(&Q::new(1, 4))
+            .unwrap();
+        let (cx, cy, r2) = (p[0].clone(), p[1].clone(), Q::new(1, 25));
+        let span = Interval {
+            lo: Q::from_i128(0),
+            hi: Q::new(1, 2),
+        };
+        let drill = CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r2.clone(),
+        };
+        let (t_lo, t_hi) = surface_tangents(&chart, &drill, &span, 512, 60)
+            .expect("the true-surface disc brackets the disk");
+        assert!(
+            t_lo < Q::new(1, 4) && Q::new(1, 4) < t_hi,
+            "extent straddles the pierce"
+        );
+        // The apex-ray shortcut on the SAME disk: its bracket differs (or fails outright) —
+        // quantify the mislocation when it does return two roots.
+        let (rx, ry) = ruling_xy(&chart);
+        let konst = |r: &Q| RatFunc::from_poly(Poly::constant(r.clone()));
+        let cross = ry.mul(&konst(&cx)).sub(&rx.mul(&konst(&cy)));
+        let norm2 = rx.mul(&rx).add(&ry.mul(&ry));
+        let old = cross.mul(&cross).sub(&konst(&r2).mul(&norm2));
+        let tol = Q::new(1, 1000);
+        match scan_roots(&old, &span.lo, &span.hi, 512, 60) {
+            Some(r) if r.len() == 2 => {
+                let d0 = r[0].sub(&t_lo);
+                let d1 = r[1].sub(&t_hi);
+                assert!(
+                    d0.mul(&d0).cmp(&tol.mul(&tol)) == core::cmp::Ordering::Greater
+                        || d1.mul(&d1).cmp(&tol.mul(&tol)) == core::cmp::Ordering::Greater,
+                    "the apex-ray tangents must be visibly wrong on the offset support"
+                );
+            }
+            _ => {} // failing to bracket at all is the bug too
+        }
+        // End to end: the hole loop over the true extent certifies against the REAL surface.
+        let hole = match hole_loop(
+            &chart,
+            &cx,
+            &cy,
+            &r2,
+            &span,
+            RailFit {
+                degree: 3,
+                subdiv: 160,
+                bits: 44,
+            },
+            &Q::from_i128(1),
+            &cfg,
+            &Q::new(1, 20),
+            16,
+        ) {
+            Verdict::Verified(h) => h,
+            other => panic!("ramp hole_loop not Verified: {}", tag(&other)),
+        };
+        assert_eq!(hole.arcs.len(), 4, "far rail · cap · near rail · cap");
+        println!(
+            "ramp hole: ε = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
+            f(&hole.eps),
+            f(&t_lo),
+            f(&t_hi)
+        );
+    }
+
+    /// A piecewise rail certifies **per region against its own chart** (A4): the device cone on
+    /// `[0, 1/4]` glued to the seam-ramp flap on `[1/4, 1/2]` (the PR-1 `PiecewiseDevelopment`
+    /// pair), cut by one apex-containing cylinder — two contiguous pieces, one max ε, and the
+    /// pieces nearly agree at the join (both approximate the same cut within the DRC bound).
+    #[test]
+    fn a_piecewise_rail_certifies_per_region() {
+        use develop::cut::CutSurface;
+        use fixtures::devices::cone_seam_ramp;
+        let body = cone();
+        let ramp = cone_seam_ramp();
+        let bands = [
+            (
+                Interval {
+                    lo: Q::from_i128(0),
+                    hi: Q::new(1, 4),
+                },
+                &body,
+            ),
+            (
+                Interval {
+                    lo: Q::new(1, 4),
+                    hi: Q::new(1, 2),
+                },
+                &ramp,
+            ),
+        ];
+        let surface = CutSurface::Cylinder {
+            axis_point: [Q::from_i128(0), Q::new(1, 2), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: Q::from_i128(2),
+        };
+        let clearance = Q::from_i128(1);
+        let (pieces, eps) = match certified_rail_piecewise(
+            &bands,
+            &surface,
+            RootPick::Upper,
+            RailFit::occt_low(),
+            &clearance,
+            &DevConfig::tight(),
+        ) {
+            Verdict::Verified(x) => x,
+            other => panic!("piecewise rail not certified: {}", tag(&other)),
+        };
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].0.hi, pieces[1].0.lo, "contiguous bands");
+        assert!(
+            eps.sign() >= 0 && eps < Q::new(1, 2),
+            "ε under the DRC gate"
+        );
+        // At the join both rails approximate the same cut curve — the µ̂ mismatch stays within
+        // the fab clearance (the micro-cap the loop assembly would bridge).
+        let j = &pieces[0].0.hi;
+        let gap = pieces[0]
+            .1
+            .eval(j)
+            .unwrap()
+            .sub(&pieces[1].1.eval(j).unwrap());
+        assert!(
+            gap.mul(&gap).cmp(&clearance.mul(&clearance)) == core::cmp::Ordering::Less,
+            "join gap within clearance"
+        );
     }
 
     /// The full demo disk footprints, in the +y upper-half gore: D1 concentric outer, D2

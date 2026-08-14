@@ -1,0 +1,22 @@
+[package]
+name = "author"
+description = "The construction facade: declarative Part recipes (regions + material ops) over the certified develop/export engine — product coordinates in, certified flat patterns and solids out (shell tier)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Pass-through to the OCCT-backed STEP writer (build under `nix develop`).
+step = ["export/step"]
+
+[dependencies]
+lattice.workspace = true
+certify-core.workspace = true
+geom.workspace = true
+arrange2d.workspace = true
+develop.workspace = true
+export.workspace = true
+
+[dev-dependencies]
+fixtures.workspace = true
