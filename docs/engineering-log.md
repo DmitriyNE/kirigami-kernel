@@ -648,6 +648,37 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **60% of the kernel's runtime is 128-bit software division inside the i128 rational tier — and no
+  amount of algorithmic work upstream would have found it.** Profiled (`sample`, macOS) on the new
+  fold-heavy `scale_probe`, 43 757 top-of-stack samples: `compiler_builtins::…::u128_div_rem`
+  **23 320 (53%)**, plus `__umodti3` 2 065, `__udivti3` 508, `__divti3` 250 — together **~60%**.
+  The callers are not the bignum path: `lattice::small::div` 5 518, `::mul` 4 025, `::add` 3 378,
+  `::sub` 207, `SmallRat::reduce` 100, against ~600 for all of `dashu` combined. The reason is
+  visible in `small.rs`: every `add`/`sub` computes `i128_gcd(x.den, y.den)`, divides both
+  denominators by it, and then calls `SmallRat::reduce`, which computes a **second** gcd — and
+  `i128_gcd` is Euclidean, so each gcd is a chain of `u128 %`, which on ARM64 is a *software*
+  routine (no hardware 128-bit divide).
+  **Why this matters more than anything else on the list:** it is not specific to fold. Every
+  certificate, every enclosure, every boolean, in every crate, pays this tax on every rational
+  operation. It also explains why OPT.1 and MAP.1 returned so much less than their operation-count
+  reductions suggested — they removed *operations*, but each surviving operation still pays a
+  software-division tax that dominates it. And uniquely among the levers considered, **a faster gcd
+  is semantically identical**: it computes the same rational, so ε does not move, no certificate
+  changes, and no enclosure structure is touched. Compare the float filter, which changes what the
+  enclosures *are*.
+  **Candidate levers, cheapest first:** *(a)* a **u64 fast path** — the common operands are dyadic
+  (`2^-30`, `2^-50` grids) and small integers, and ARM64 *does* have hardware 64-bit divide, so
+  gcd-and-divide on values that fit in `u64` skips the software routine entirely; *(b)* **fewer
+  reductions** — `add` currently reduces twice, once via the lcm trick and once in `reduce`;
+  *(c)* **binary (Stein) gcd**, shifts and subtractions only, no division at all.
+  **The catch, stated plainly:** this hot spot is in `lattice` — the **pure tier / TCB**, where Lean
+  owns gcd/reduce correctness. Changing it is not free the way a shell-tier change is, and a
+  binary-GCD was previously *rejected* — but that rejection was about using it as a bandage for a
+  **verification** gap, not a response to a profile. The performance case is new evidence, and the
+  decision should be re-taken on its own terms rather than assumed either way.
+  *2026-08-14 · open · profile (follows MAP.1 #234); supersedes the float-filter-first
+  recommendation in `docs/atlas-transform-design.md` §"levers"*
+
 - **A "fast path" that mostly did not fire, and the counter that caught it (MAP.1).** The
   search/certificate split landed with every certificate green and every pinned ε *identical* —
   `develop` 4.1481e-1, `fold` 1.3879e-1, `refold` 5.9982e-3, `solid` 5.7663e-2, chord goldens
