@@ -681,38 +681,94 @@ pub fn trim_rail_chains<B: Backend>(
     Some((inner_ch, outer_ch))
 }
 
-/// Adapt a developed [`HoleLoop`] to a [`HoleRail`](crate::brep_build::HoleRail) for the curved-rail
-/// solid builder: its far (Upper, `s1→s2` forward) and near (Lower, `s2→s1` backward) branch rails,
-/// with the two tangent σ **dyadic-snapped** — exactly like [`trim_rail_chains`]'s notch crossings,
-/// so the exported Bézier control points stay small-denominator and OCCT's `f64` endpoints do not
-/// drift. `None` unless the loop is the canonical far-rail/near-rail pair.
+/// Adapt a developed [`HoleLoop`] to a [`HoleRail`](crate::brep_build::HoleRail) for the
+/// curved-rail solid builder: the loop's **near** and **far** branches as contiguous `(band,
+/// rail)` chains over the hole's σ-extent.
+///
+/// The loop is a closed p-curve through both tangent rulings, traversed left tangent → far branch
+/// → right tangent → near branch. Each piece is straight in `(σ, µ̂)` with distinct endpoint σ, so
+/// it is exactly a linear rail over its own σ-band — the branches *are* functions of σ (that was
+/// never the problem); what they are not is polynomials near the tangents, which is why they
+/// arrive as many short pieces rather than one fitted graph. Splitting the loop at its two σ-
+/// extremes recovers the near/far band the slice builder consumes, so a hole may still span
+/// σ-stations.
+///
+/// σ are dyadic-snapped as before, so exported Bézier control points stay small-denominator.
+/// `None` if the loop is not a single σ-extreme-to-σ-extreme traversal.
 pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
-    use core::cmp::Ordering::{Greater, Less};
-    let mut far: Option<(RatFunc<B>, Rat<B>, Rat<B>)> = None;
-    let mut near: Option<RatFunc<B>> = None;
+    use core::cmp::Ordering::{Equal, Greater, Less};
+    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    // The loop's corners in traversal order.
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
     for arc in &hole.arcs {
-        if let BoundaryArc::Rail {
-            mu,
-            sigma_start,
-            sigma_end,
-            ..
-        } = arc
-        {
-            match sigma_start.cmp(sigma_end) {
-                Less => far = Some((mu.clone(), sigma_start.clone(), sigma_end.clone())),
-                Greater => near = Some(mu.clone()),
-                _ => {}
+        match arc {
+            BoundaryArc::Curve { curve, .. } => {
+                let [sg, m] = curve.eval(&curve.domain.lo)?;
+                pts.push((snap(&sg), m));
             }
+            _ => return None,
         }
     }
-    let (far, s1, s2) = far?;
-    let near = near?;
-    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    if pts.len() < 4 {
+        return None;
+    }
+    // The two σ-extremes are the tangent rulings; they split the loop into its two branches.
+    let idx_min = (0..pts.len()).min_by(|&a, &b| pts[a].0.cmp(&pts[b].0))?;
+    let idx_max = (0..pts.len()).max_by(|&a, &b| pts[a].0.cmp(&pts[b].0))?;
+    let n = pts.len();
+    let walk = |from: usize, to: usize| -> Vec<(Rat<B>, Rat<B>)> {
+        let mut out = Vec::new();
+        let mut i = from;
+        loop {
+            out.push(pts[i].clone());
+            if i == to {
+                break;
+            }
+            i = (i + 1) % n;
+        }
+        out
+    };
+    // One branch runs min→max in traversal order, the other max→min.
+    let branch_a = walk(idx_min, idx_max);
+    let branch_b = walk(idx_max, idx_min);
+    // Turn a σ-monotone vertex run into a chain of linear rails over its σ-bands.
+    let chain = |run: &[(Rat<B>, Rat<B>)]| -> Option<Vec<(Interval<B>, RatFunc<B>)>> {
+        let mut out = Vec::with_capacity(run.len().saturating_sub(1));
+        for w in run.windows(2) {
+            let ((sa, ma), (sb, mb)) = (&w[0], &w[1]);
+            let (lo, hi, va, vb) = match sa.cmp(sb) {
+                Less => (sa, sb, ma, mb),
+                Greater => (sb, sa, mb, ma),
+                Equal => return None, // a vertical piece is not a rail
+            };
+            let slope = vb.sub(va).div(&hi.sub(lo));
+            let intercept = va.sub(&lo.mul(&slope));
+            out.push((
+                Interval {
+                    lo: lo.clone(),
+                    hi: hi.clone(),
+                },
+                RatFunc::from_poly(Poly::from_coeffs(vec![intercept, slope])),
+            ));
+        }
+        out.sort_by(|x, y| x.0.lo.cmp(&y.0.lo));
+        (!out.is_empty()).then_some(out)
+    };
+    let (chain_a, chain_b) = (chain(&branch_a)?, chain(&branch_b)?);
+    // Which branch is the far (larger µ̂) one? Compare them where both are defined.
+    let probe = pts[idx_min].0.add(&pts[idx_max].0).mul(&Rat::new(1, 2));
+    let va = crate::brep_build::chain_eval(&chain_a, &probe)?;
+    let vb = crate::brep_build::chain_eval(&chain_b, &probe)?;
+    let (near, far) = if va.cmp(&vb) == Less {
+        (chain_a, chain_b)
+    } else {
+        (chain_b, chain_a)
+    };
     Some(crate::brep_build::HoleRail {
         near,
         far,
-        s1: snap(&s1),
-        s2: snap(&s2),
+        s1: pts[idx_min].0.clone(),
+        s2: pts[idx_max].0.clone(),
     })
 }
 

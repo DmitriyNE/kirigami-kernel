@@ -28,7 +28,7 @@ use export::brep::Brep;
 use export::brep_build::{HoleRail, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
-    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly,
+    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_rail,
     surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
@@ -690,24 +690,27 @@ pub(crate) fn solid_brep<B: Backend>(
     };
 
     // Interior holes are p-curve loops now (they pass through their tangent rulings rather than
-    // being two graphs bridged by a chord), so they are drilled as exact `(σ, µ̂)` polygons — the
-    // builder's general hole cut — instead of the near/far `HoleRail` band, which cannot express
-    // a curve that turns around in σ. The band's one remaining advantage is that it may span
-    // σ-stations; a polygon may not, so a hole straddling a station is refused here until the
-    // builder learns per-slice curve clipping (PC.5).
+    // being two graphs bridged by a chord). The solid builder still consumes them as a near/far
+    // band — which they are: the branches are functions of σ, just not polynomials near the
+    // tangents — so `hole_rail` splits each loop at its two σ-extremes into contiguous rail
+    // chains, and the hole may still span σ-stations.
+    // Fewer hole segments than the flat pattern uses: every piece boundary of a hole's chains
+    // becomes a σ-station, so segment count drives the solid's face count directly (48 segments
+    // cost ~770 faces on the doctest panel, 16 cost ~250). The solid is already emitted at the
+    // low-degree STEP profile, so it takes the coarser loop; the flat pattern — the artifact that
+    // is actually manufactured — keeps the fine one.
     let hole_loops = bail!(certify_holes(
         part,
         built,
         &structure,
         fit,
-        part.segments.max(8)
+        part.segments.clamp(8, 16)
     ));
-    let holes: Vec<HoleRail<B>> = Vec::new();
-    let mut hole_polys: Vec<Vec<(Rat<B>, Rat<B>)>> = Vec::new();
+    let mut holes: Vec<HoleRail<B>> = Vec::new();
     for h in &hole_loops {
         eps_all = rmax(&eps_all, &h.eps);
-        match loop_to_domain_poly(h) {
-            Some(p) => hole_polys.push(p),
+        match hole_rail(h) {
+            Some(r) => holes.push(r),
             None => return Verdict::Refuted(PartFault::LoopBroken),
         }
     }
@@ -717,7 +720,6 @@ pub(crate) fn solid_brep<B: Backend>(
     // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
     // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
     let mut poly_holes = part.domain_holes.clone();
-    poly_holes.extend(hole_polys);
     // A polygon cut needs at least a triangle — the builder indexes vertices unchecked, and
     // this evaluator must stay fail-closed even without the flat gate (defense in depth for
     // both authored hole classes).
@@ -796,22 +798,6 @@ fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> Resolve
             })
             .collect(),
     }
-}
-
-/// A certified interior-cut loop as an exact `(σ, µ̂)` polygon — the corner of each arc, in
-/// traversal order. `None` if the loop carries an arc kind that is not a domain curve.
-fn loop_to_domain_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
-    let mut out = Vec::with_capacity(hole.arcs.len());
-    for arc in &hole.arcs {
-        match arc {
-            BoundaryArc::Curve { curve, .. } => {
-                let [s, m] = curve.eval(&curve.domain.lo)?;
-                out.push((s, m));
-            }
-            _ => return None,
-        }
-    }
-    (out.len() >= 3).then_some(out)
 }
 
 /// The `(σ, µ̂)` endpoint of the last arc pushed so far.

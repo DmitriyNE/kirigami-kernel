@@ -716,7 +716,15 @@ fine — this is a log, not a schema.
   (unchanged, still ε ≈ 0); the p-curve path is for curves the graph cannot express at all; and
   composition stays, tested and exact, for the *export* lift, where a p-curve's 3-D image being
   rational in `t` is what gives an exact Bézier. **Tightening is a known follow-up** — a
-  mean-value/centred form would restore second order. A second lesson from the same stage: curve
+  mean-value/centred form would restore second order. To be precise about what is and is not
+  avoidable (user, 2026-08-14): *subdivision itself is not avoidable* — certifying a curve of any
+  real complexity means resolving it, and no formulation escapes that. What the formulation does
+  decide is the **order**: at first order, halving ε costs twice the work forever; at second, four
+  times the resolution per halving. That is the difference between a boundary that certifies at a
+  few hundred sub-intervals and one that needs tens of thousands, and it is the reason this is
+  tracked rather than shrugged off. It becomes load-bearing the moment p-curves carry *outer*
+  boundaries (`Cutter::Extrude`), where a single curve spans the whole part instead of a hole's
+  short pieces. A second lesson from the same stage: curve
   vertices derived from surds and 60-step bisected roots carry thousand-digit numerators, and the
   residual polynomials built from them stop being evaluable at all; every emitted coordinate is
   snapped to a 2⁻³⁰ grid and the accumulated ε rounded *up* onto it (sound — a larger upper bound
