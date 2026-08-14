@@ -12,6 +12,8 @@ use export::trim::RailFit;
 use fixtures::devices::cone_wrap;
 use lattice::{Bignum, Rat};
 
+mod common;
+
 type Q = Rat<Bignum>;
 
 fn q(n: i128, d: i128) -> Q {
@@ -93,6 +95,29 @@ fn the_seam_drill_derives_two_holes_across_the_lap() {
         2,
         "ONE drill cutter, TWO derived holes: the head and the lapping tail flap"
     );
+
+    // **The chord golden (VV.3).** The holes must not just exist, they must be *round*. This is
+    // the metric that caught the reported defect: while a closed cut was represented as two
+    // µ̂ = f(σ) graphs bridged by a straight radial chord, each hole's longest emitted edge spanned
+    // 30–48% of its own diameter. Measured on the polylines the SVG actually draws.
+    let faces = common::emitted_hole_rings(flat.region());
+    for (h, ring) in faces[0].iter().enumerate() {
+        let frac = common::longest_edge_fraction(ring);
+        // Measured 9.4% and 10.1% (2026-08-14); the graph model gave 30–48% on this very drill.
+        // 15% is a *structural* gate, not a ratchet: it separates "chord spacing" from "a bridge
+        // across the tangent rulings" without being brittle to a resolution change (the metric
+        // scales as ~1/n).
+        println!(
+            "[golden] self-lapping hole {h}: longest edge {:.1}% of diameter",
+            frac * 100.0
+        );
+        assert!(
+            frac < 0.15,
+            "hole {h}: longest emitted edge is {:.1}% of the hole diameter — a chord that large is \
+             the graph-model tangent bridge coming back, not chord spacing",
+            frac * 100.0
+        );
+    }
 }
 
 /// The certified round trip: outline vertices developed by `develop()` fold back through
@@ -155,6 +180,46 @@ fn the_flat_pattern_folds_back_isometrically() {
     assert!(
         worst < 1e-1,
         "gross isometry breakage: chord defect {worst:.3e}"
+    );
+}
+
+/// **The chord golden detects the defect it was built for.** A quality gate nobody has seen fail
+/// is a guess. This reconstructs the shape the graph model actually emitted — a round hole with a
+/// run of samples missing, so one straight edge bridges what used to be the tangent gap — and
+/// checks the metric both scores it in the historically observed 30–48% band and rejects it at the
+/// 15% gate. Pure geometry, no pipeline: it pins the *instrument*, not the kernel.
+#[test]
+fn the_chord_golden_rejects_a_bridged_hole() {
+    let (n, r) = (32usize, 0.5f64);
+    // A unit-diameter circle missing samples 1..4 — the gap spans 5/32 of a turn, so the bridging
+    // chord is 2r·sin(5π/32) ≈ 0.48 of the diameter.
+    let bridged: Vec<[f64; 2]> = (0..n)
+        .filter(|i| !(1..4).contains(i))
+        .map(|i| {
+            let t = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+            [r * t.cos(), r * t.sin()]
+        })
+        .collect();
+    let frac = common::longest_edge_fraction(&bridged);
+    assert!(
+        (0.30..0.50).contains(&frac),
+        "the reconstructed defect must land in the observed 30–48% band, got {:.1}%",
+        frac * 100.0
+    );
+    assert!(frac >= 0.15, "and the 15% gate must reject it");
+
+    // The same circle intact scores as ordinary chord spacing and passes.
+    let intact: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let t = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+            [r * t.cos(), r * t.sin()]
+        })
+        .collect();
+    let clean = common::longest_edge_fraction(&intact);
+    assert!(
+        clean < 0.15,
+        "an evenly sampled circle must pass the gate, got {:.1}%",
+        clean * 100.0
     );
 }
 

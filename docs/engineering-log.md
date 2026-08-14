@@ -648,6 +648,24 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **`flex_part` — a part with a *derived* hole — had no `solid()` test at all (VV.3).** Building the
+  golden metric turned up the coverage gap directly: `solid()` on the Stage-1 flex panel was only
+  ever exercised by an *example*, never by a test, even though it carries a derived interior hole
+  (D4). That is precisely the shape of the PC.4 regression, where `solid()` broke for every part
+  with a derived hole and all 205 tests still passed — the flat path was covered and the solid path
+  was not. Now closed, and asserted with `free_edges == 0` ∧ `nonmanifold_edges == 0` rather than a
+  face count, because those are the two conditions the PC.5 defects actually violated (a zero-length
+  edge at a collapsed tangent cap; a corner inheriting the wrong rail, giving an edge incidence 4).
+  A face count would have passed through both. **The chord golden itself:** longest emitted edge as
+  a fraction of the hole's own diameter, measured on the polylines `region_to_polys` hands the SVG —
+  self-lapping holes **9.4%** and **10.1%**, flex D4 **3.0%**, against the **30–48%** the graph model
+  produced on this very drill. Gated at 15%, deliberately a *structural* threshold (does a chord
+  bridge the tangent rulings?) rather than an ε-style ratchet, since the metric scales as ~1/n and
+  would otherwise be brittle to any resolution change. The gate is proved live by
+  `the_chord_golden_rejects_a_bridged_hole`, which reconstructs the defect shape from a circle with
+  a run of samples removed and checks the metric both scores it in the observed band and rejects it.
+  *2026-08-14 · resolved · VV.3 (#231)*
+
 - **The acceptance device certifies at 83% of its DRC ceiling — `develop` has no room to absorb a
   looser bound (VV.2).** Pinning the ε budget (`the_certified_bounds_stay_within_budget`) measured
   the self-lapping device at `segments(16)`/`support_panels(8)`: **develop 4.1481e-1 · fold

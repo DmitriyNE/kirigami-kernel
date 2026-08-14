@@ -9,6 +9,8 @@ use export::approx::rat_to_f64;
 use fixtures::devices::cone;
 use lattice::{Bignum, Interval, Rat};
 
+mod common;
+
 type Q = Rat<Bignum>;
 
 fn q(n: i128, d: i128) -> Q {
@@ -62,6 +64,57 @@ fn the_flex_panel_develops_with_derived_roles() {
     // The SVG renders.
     let svg = flat.svg(400);
     assert!(svg.starts_with("<svg") && svg.len() > 200);
+
+    // **The chord golden (VV.3)** on D4, the interior drill — see the self-lapping suite for what
+    // this metric is for. Measured on the polylines the SVG actually draws.
+    let faces = common::emitted_hole_rings(flat.region());
+    let frac = common::longest_edge_fraction(&faces[0][0]);
+    // Measured 3.0% (2026-08-14). Same 15% structural gate as the self-lapping suite.
+    println!(
+        "[golden] flex D4 hole: longest edge {:.1}% of diameter",
+        frac * 100.0
+    );
+    assert!(
+        frac < 0.15,
+        "D4: longest emitted edge is {:.1}% of the hole diameter — the graph-model tangent bridge",
+        frac * 100.0
+    );
+}
+
+/// **Derived-hole solid coverage (VV.3).** `flex_part` carries a *derived* interior hole (D4), and
+/// until now no test built its solid — `solid()` on this part was only ever exercised by the
+/// example. That is the exact shape of the PC.4 regression, where `solid()` broke for every part
+/// with a derived hole and all 205 tests still passed: the flat path was covered, the solid path
+/// was not. Building the shell here closes it for the second acceptance part.
+#[test]
+fn the_flex_panel_builds_a_solid_through_its_derived_hole() {
+    let solid = match flex_part().solid() {
+        Verdict::Verified(s) => s,
+        Verdict::Refuted(f) => panic!("solid refuted: {f:?}"),
+        Verdict::Unresolved(e) => panic!("solid unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+    };
+    println!("[budget] flex solid {:.4e}", rat_to_f64(solid.eps()));
+    assert!(
+        solid.eps().cmp(&q(1, 2)) != core::cmp::Ordering::Greater,
+        "flex solid ε {:.4e} exceeds its budget",
+        rat_to_f64(solid.eps())
+    );
+    // A shell that actually closes. `free_edges` and `nonmanifold_edges` are the two conditions
+    // the PC.5 solid-path defects violated — a zero-length edge at a collapsed tangent cap left
+    // free edges, and a corner that inherited the wrong rail made an edge incident to four faces.
+    // A face count alone would have passed through both.
+    let brep = solid.brep();
+    assert!(
+        brep.faces().len() > 4,
+        "a drilled panel shell has lids, outer walls and the hole tube, got {} faces",
+        brep.faces().len()
+    );
+    assert_eq!(brep.free_edges(), 0, "the shell must be watertight");
+    assert_eq!(
+        brep.nonmanifold_edges(),
+        0,
+        "every edge is shared by exactly two faces"
+    );
 }
 
 /// The facade's flat panel corroborates the legacy hand-wired pipeline: same outer area (the
