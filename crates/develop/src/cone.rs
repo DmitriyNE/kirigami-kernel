@@ -644,6 +644,7 @@ impl<B: Backend> ConeDevelopment<B> {
         };
         // One cell of the grid, by the same rule the direct quadrature applies to a subinterval.
         let cell = |a: &Rat<B>, b: &Rat<B>| -> Option<[RatIv<B>; 2]> {
+            crate::counters::bump_gamma_cell();
             let gx = integrate_on_slope(
                 |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
                 |p| self.directrix_accel(d, p, cfg).map(|f| f[0].clone()),

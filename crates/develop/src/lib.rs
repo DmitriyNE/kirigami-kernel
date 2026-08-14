@@ -17,6 +17,7 @@
 pub mod anchor;
 pub mod bonded;
 pub mod cone;
+pub mod counters;
 pub mod cut;
 pub mod flat;
 pub mod fold;

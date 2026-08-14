@@ -648,6 +648,24 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The perf gate counts operations, not seconds (VV.1) — and it is proven to fire.** There was no
+  performance regression detection for the geometry pipeline at all; the only benchmarks in the tree
+  measure algebra backends, which is why a 10× slowdown survived a whole milestone and was found by
+  accident. A committed wall-clock baseline would have been a flaky gate — it moves with machine
+  speed and load, so it is either too loose to catch a real regression or it cries wolf — and the
+  regression in question was a *complexity* change, `N × panels` where `N + cells` was available.
+  So `develop::counters` counts **γ cells integrated** and **cut-certificate sub-interval
+  evaluations**, thread-local (parallel tests cannot perturb each other) and always compiled in (a
+  `Cell<u64>` bump is free beside exact-rational interval arithmetic). Measured on the acceptance
+  device at `segments(16)`/`support_panels(8)`: **2 256 γ cells · 4 096 cut evaluations**, budgeted
+  at 3 200 / 5 800. **Verified live by sabotage:** forcing every cache lookup to miss — exactly what
+  deleting the memoization does — makes the sweep cost **512 = 32 × 16 cells**, the naive `N ×
+  panels` shape on the nose, with no reuse on repeat, and drives `develop` to 4 160 γ cells, failing
+  the budget with the message that names the cause. The second test asserts the property directly
+  rather than inferring it from a total: *asking for γ again costs nothing*. Wall-clock is
+  deliberately not asserted anywhere; the demo's `[time]` lines carry it for humans.
+  *2026-08-14 · resolved · VV.1 (#229)*
+
 - **The γ prefix table buys 2.7× overall and 14.8× on the fold — and shows the remaining cost is
   *not* γ (OPT.1).** `γ` is an integral, so it is additive; memoizing prefix sums over a grid
   anchored at the integration origin turns `N` queries × `panels` subintervals into `cells + N`.

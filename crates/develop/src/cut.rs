@@ -547,6 +547,7 @@ pub fn pcurve_cut_fit<B: Backend>(
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
     let mut eps = Rat::from_i128(0);
     for k in 0..n_sub {
+        crate::counters::bump_cut_eval();
         let t = subiv(lo, &width, k);
         // Enclose the curve in the DOMAIN, then evaluate the chart's own fields on the enclosed
         // σ. Composing the fields into `t` first would be the tidier expression but is numerically
