@@ -407,6 +407,28 @@ impl<B: Backend> ConeDevelopment<B> {
         })
     }
 
+    /// Whether this development's exact flat data re-derives from `chart` — the piecewise fold's
+    /// chart-pairing guard: the angle coefficient `c`, the ruling-speed field `ρ²`, and the
+    /// directrix dot products `c′·r`, `c′·n′` must all re-derive equal (value equality, so
+    /// reduced and unreduced forms agree). Necessary, not sufficient: data the development never
+    /// reads (a pedal component along the surface normal) is the chart's alone — but any
+    /// mispairing that alters the *flat* map is refused.
+    pub(crate) fn derives_from(&self, chart: &Chart<B>) -> bool {
+        let Some(c) = arctan_coeff(&chart.psi_prime()) else {
+            return false;
+        };
+        if c != self.c || *chart.normal_deriv_sq() != self.rho_sq {
+            return false;
+        }
+        match &self.directrix {
+            None => chart.pedal().is_zero(),
+            Some(d) => {
+                let cp = chart.pedal().derivative();
+                cp.dot(chart.ruling()) == d.cr && cp.dot(chart.normal_deriv()) == d.cn
+            }
+        }
+    }
+
     /// The flat directrix velocity `γ′(s) = a·e(ψ) + b·e⊥(ψ)` enclosed over a σ-*panel*, with
     /// `a = (c′·r)/ρ`, `b = −(c′·n′)/ρ`, `e(ψ) = (cos ψ, sin ψ)`, `e⊥(ψ) = (−sin ψ, cos ψ)`. `None`
     /// on a pole (`ρ²` or a component denominator straddles zero — never on a nondegenerate span).

@@ -74,9 +74,16 @@ pub enum FoldFault {
     PoleInEval,
     /// A [`fold_outline`] loop was handed no vertices.
     EmptyLoop,
-    /// The chart slice handed to the piecewise fold is not parallel to the gluing's regions
-    /// ([`fold_point_pw`] needs one chart per region for the 3-D lift).
+    /// The chart slice handed to the piecewise fold is not parallel to the gluing's regions:
+    /// wrong count, or a chart whose exact flat data (angle coefficient, ruling speed,
+    /// directrix dot products) does not re-derive the paired region's development
+    /// ([`fold_point_pw`] needs the owning region's chart for the 3-D lift).
     ChartMismatch,
+    /// Two **disjoint** σ-enclosures both round-trip within the DRC: the flat point lies where
+    /// the development overlaps itself (a gluing whose flat span exceeds 2π — the self-lap
+    /// wedge), so the preimage is not unique and no certified choice exists. Author the feature
+    /// outside the wedge, or fold through a narrower gluing.
+    AmbiguousPreimage,
 }
 
 /// The signed area `cos ψ(σ)·(y − γ_y(σ)) − sin ψ(σ)·(x − γ_x(σ))` at a rational σ — the
@@ -586,9 +593,12 @@ fn faithful_pieces<B: Backend>(
 ///   ([`faithful_pieces`]) — the σ=0 split alone is not enough on a wrapping chart (`c ≥ 2`).
 ///
 /// `charts` are the per-region charts, parallel to the gluing's regions (the 3-D lift needs the
-/// owning region's surface; refused as [`FoldFault::ChartMismatch`] if not parallel). Returns
-/// `Verified` under the DRC `ε < clearance/2`, `Unresolved(ε)` to refine (`iters`, `cfg`), or
-/// `Refuted` when no region develops to the point's direction (`OutOfGore`) or a field poles.
+/// owning region's surface; refused as [`FoldFault::ChartMismatch`] unless each chart
+/// re-derives its region's exact flat data — count alone is not trusted). Returns `Verified`
+/// under the DRC `ε < clearance/2`, `Unresolved(ε)` to refine (`iters`, `cfg`), or `Refuted`
+/// when no region develops to the point's direction (`OutOfGore`), a field poles, or two
+/// σ-disjoint preimages both pass the DRC ([`FoldFault::AmbiguousPreimage`] — the lap wedge of
+/// a gluing whose flat span exceeds 2π, where the development is genuinely 2-to-1).
 ///
 /// ```
 /// use certify_core::Verdict;
@@ -626,14 +636,61 @@ pub fn fold_point_pw<B: Backend>(
     clearance: &Rat<B>,
 ) -> Verdict<Fold3D<B>, FoldFault, Rat<B>> {
     use core::cmp::Ordering;
-    if charts.len() != pw.regions().len() {
+    if !charts_paired(pw, charts) {
         return Verdict::Refuted(FoldFault::ChartMismatch);
     }
+    match fold_point_pw_at(pw, charts, x, y, w, iters, mu_negative, cfg, clearance) {
+        Err(f) => Verdict::Refuted(f),
+        Ok(f) => {
+            let half = clearance.mul(&Rat::new(1, 2));
+            if f.eps.cmp(&half) == Ordering::Less {
+                Verdict::Verified(f)
+            } else {
+                Verdict::Unresolved(f.eps)
+            }
+        }
+    }
+}
+
+/// The [`fold_point_pw`] pairing guard: one chart per region, each re-deriving the region's
+/// exact flat data ([`ConeDevelopment::derives_from`]) — checked once per call, hoisted out of
+/// [`fold_outline_pw`]'s per-vertex loop.
+fn charts_paired<B: Backend>(pw: &PiecewiseDevelopment<B>, charts: &[Chart<B>]) -> bool {
+    charts.len() == pw.regions().len()
+        && pw
+            .regions()
+            .iter()
+            .zip(charts)
+            .all(|((_, dev), chart)| dev.derives_from(chart))
+}
+
+/// The unguarded piecewise fold: the best (min-ε) candidate across every region ×
+/// faithfulness piece, with its raw round-trip ε — the DRC gate is the caller's. Errs
+/// [`FoldFault::AmbiguousPreimage`] when two candidates with **disjoint** σ-enclosures both
+/// round-trip inside the DRC (`ε < clearance/2`): on a gluing whose flat span exceeds 2π the
+/// development is genuinely 2-to-1 in the lap wedge, and a min-ε pick between two certified
+/// preimages would be arbitrary. Touching or overlapping enclosures are one root seen from
+/// adjacent pieces, never ambiguous.
+#[allow(clippy::too_many_arguments)]
+fn fold_point_pw_at<B: Backend>(
+    pw: &PiecewiseDevelopment<B>,
+    charts: &[Chart<B>],
+    x: &Rat<B>,
+    y: &Rat<B>,
+    w: &Rat<B>,
+    iters: usize,
+    mu_negative: bool,
+    cfg: &DevConfig<B>,
+    clearance: &Rat<B>,
+) -> Result<Fold3D<B>, FoldFault> {
+    use core::cmp::Ordering;
+    let half = clearance.mul(&Rat::new(1, 2));
     let mut best: Option<Fold3D<B>> = None;
+    let mut admissible: Vec<RatIv<B>> = Vec::new();
     for (k, (band, dev)) in pw.regions().iter().enumerate() {
         let base = match pw.cum_before(k, cfg) {
             Some(b) => b,
-            None => return Verdict::Refuted(FoldFault::PoleInEval),
+            None => return Err(FoldFault::PoleInEval),
         };
         for piece in faithful_pieces(dev, band, cfg.terms) {
             let sigma = match invert_sigma_from(
@@ -649,12 +706,12 @@ pub fn fold_point_pw<B: Backend>(
             ) {
                 Ok(s) => s,
                 Err(FoldFault::OutOfGore) => continue,
-                Err(f) => return Verdict::Refuted(f),
+                Err(f) => return Err(f),
             };
             // radius → |µ̂| = |res|/ρ, res the running-frame residual over the σ-enclosure.
             let g = match dev.directrix_between_on(&band.lo, &sigma, cfg) {
                 Some(g) => g,
-                None => return Verdict::Refuted(FoldFault::PoleInEval),
+                None => return Err(FoldFault::PoleInEval),
             };
             let xr = RatIv::point(x.clone()).sub(&base[0]).sub(&g[0]);
             let yr = RatIv::point(y.clone()).sub(&base[1]).sub(&g[1]);
@@ -664,23 +721,23 @@ pub fn fold_point_pw<B: Backend>(
                 .and_then(|r| r.recip_pos())
             {
                 Some(iv) => iv,
-                None => return Verdict::Refuted(FoldFault::PoleInEval),
+                None => return Err(FoldFault::PoleInEval),
             };
             let abs_mu = r.mul(&inv_rho);
             let mu = if mu_negative { abs_mu.neg() } else { abs_mu };
-            let point = match lift_box(&charts[k], &sigma, &mu, w) {
-                Ok(p) => p,
-                Err(f) => return Verdict::Refuted(f),
-            };
+            let point = lift_box(&charts[k], &sigma, &mu, w)?;
             // Round-trip: re-develop through the region's running frame, measure the residual.
             let back = match dev.point_from_on(&base, &band.lo, &sigma, &mu, cfg) {
                 Some(b) => b,
-                None => return Verdict::Refuted(FoldFault::PoleInEval),
+                None => return Err(FoldFault::PoleInEval),
             };
             let (ex, ey) = (axis_residual(&back.x, x), axis_residual(&back.y, y));
             let eps = sqrt(&ex.mul(&ex).add(&ey.mul(&ey)), &cfg.sqrt_eps)
                 .hi()
                 .clone();
+            if eps.cmp(&half) == Ordering::Less {
+                admissible.push(sigma.clone());
+            }
             if best
                 .as_ref()
                 .map(|b| eps.cmp(&b.eps) == Ordering::Less)
@@ -696,24 +753,25 @@ pub fn fold_point_pw<B: Backend>(
             }
         }
     }
-    match best {
-        None => Verdict::Refuted(FoldFault::OutOfGore),
-        Some(f) => {
-            let half = clearance.mul(&Rat::new(1, 2));
-            if f.eps.cmp(&half) == Ordering::Less {
-                Verdict::Verified(f)
-            } else {
-                Verdict::Unresolved(f.eps)
+    // Two DRC-passing preimages separated by a σ-gap: the point sits in the lap wedge, and a
+    // min-ε pick between genuine preimages would be arbitrary — refuse.
+    for i in 0..admissible.len() {
+        for j in i + 1..admissible.len() {
+            let (a, b) = (&admissible[i], &admissible[j]);
+            if a.hi().cmp(b.lo()) == Ordering::Less || b.hi().cmp(a.lo()) == Ordering::Less {
+                return Err(FoldFault::AmbiguousPreimage);
             }
         }
     }
+    best.ok_or(FoldFault::OutOfGore)
 }
 
-/// Fold a whole flat loop back through a **piecewise development**: [`fold_point_pw`] every
-/// vertex (each in whichever region's running frame brackets it) and collect the 3-D boxes into a
-/// [`FoldedWire`]. Each vertex folds under a permissive clearance to read its raw round-trip ε
-/// back; the uniform `ε = max` is gated once by the DRC `ε < clearance/2` — `Unresolved(ε)` to
-/// refine, `Refuted` for an empty loop, a vertex outside the glued gore, or mismatched charts.
+/// Fold a whole flat loop back through a **piecewise development**: fold every vertex (each in
+/// whichever region's running frame brackets it) and collect the 3-D boxes into a
+/// [`FoldedWire`]. Each vertex's raw round-trip ε is read back and the uniform `ε = max` is
+/// gated once by the DRC `ε < clearance/2` — `Unresolved(ε)` to refine, `Refuted` for an empty
+/// loop, a vertex outside the glued gore, mismatched charts, or a vertex in the lap wedge
+/// ([`FoldFault::AmbiguousPreimage`], checked per vertex against this same clearance).
 #[allow(clippy::too_many_arguments)]
 pub fn fold_outline_pw<B: Backend>(
     pw: &PiecewiseDevelopment<B>,
@@ -726,14 +784,16 @@ pub fn fold_outline_pw<B: Backend>(
     clearance: &Rat<B>,
 ) -> Verdict<FoldedWire<B>, FoldFault, Rat<B>> {
     use core::cmp::Ordering;
+    if !charts_paired(pw, charts) {
+        return Verdict::Refuted(FoldFault::ChartMismatch);
+    }
     if flat.is_empty() {
         return Verdict::Refuted(FoldFault::EmptyLoop);
     }
-    let permissive = Rat::from_i128(1_000_000);
     let mut points: Vec<[RatIv<B>; 3]> = Vec::with_capacity(flat.len());
     let mut eps = Rat::from_i128(0);
     for p in flat {
-        match fold_point_pw(
+        match fold_point_pw_at(
             pw,
             charts,
             &p[0],
@@ -742,17 +802,15 @@ pub fn fold_outline_pw<B: Backend>(
             iters,
             mu_negative,
             cfg,
-            &permissive,
+            clearance,
         ) {
-            Verdict::Verified(f) => {
+            Ok(f) => {
                 if f.eps.cmp(&eps) == Ordering::Greater {
                     eps = f.eps;
                 }
                 points.push(f.point);
             }
-            Verdict::Refuted(fault) => return Verdict::Refuted(fault),
-            // Unreachable under the permissive clearance; propagate defensively (panic-free).
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Err(fault) => return Verdict::Refuted(fault),
         }
     }
     let half = clearance.mul(&Rat::new(1, 2));
@@ -1297,6 +1355,61 @@ mod tests {
         }
     }
 
+    /// On a gluing whose flat span exceeds 2π (`[−3, 3]` on the wrapping chart: ≈ 384°) the
+    /// development overlaps itself: a flat point in the lap wedge has **two** genuine σ-preimages
+    /// (σ = 12/5 develops to ψ ≈ +180.6°, and a second root near σ ≈ −2.35 develops to the same
+    /// direction at ψ − 360°). Both round-trip exactly, so no certified choice exists — the fold
+    /// must refuse rather than pick by ε. Off the wedge the same gluing still certifies.
+    #[test]
+    fn a_lap_wedge_point_is_refused_as_ambiguous() {
+        let chart = fixtures::devices::cone_wrap();
+        let pw = PiecewiseDevelopment::new(vec![(
+            Interval {
+                lo: Q::from_i128(-3),
+                hi: Q::from_i128(3),
+            },
+            ConeDevelopment::new(&chart).unwrap(),
+        )])
+        .unwrap();
+        let charts = [fixtures::devices::cone_wrap()];
+        let cfg = DevConfig::tight();
+        let m0 = Q::from_i128(-1);
+        let (x, y) = Development::point(&pw, &Q::new(12, 5), &m0, &cfg)
+            .unwrap()
+            .center();
+        assert!(matches!(
+            fold_point_pw(
+                &pw,
+                &charts,
+                &x,
+                &y,
+                &Q::from_i128(0),
+                60,
+                true,
+                &cfg,
+                &Q::from_i128(1),
+            ),
+            Verdict::Refuted(FoldFault::AmbiguousPreimage)
+        ));
+        // Off the wedge (ψ(1) ≈ 120.6° is single-covered): the unique preimage certifies.
+        let s0 = Q::from_i128(1);
+        let (x, y) = Development::point(&pw, &s0, &m0, &cfg).unwrap().center();
+        match fold_point_pw(
+            &pw,
+            &charts,
+            &x,
+            &y,
+            &Q::from_i128(0),
+            60,
+            true,
+            &cfg,
+            &Q::from_i128(1),
+        ) {
+            Verdict::Verified(f) => assert!(f.sigma.contains(&s0)),
+            _ => panic!("off-wedge points on the wide gluing must still certify"),
+        }
+    }
+
     /// The positive side: `mu_negative = false` folds a µ̂ > 0 signed point (no flip).
     #[test]
     fn pw_fold_positive_side() {
@@ -1393,6 +1506,27 @@ mod tests {
                 &charts[..1],
                 &x,
                 &y,
+                &Q::from_i128(0),
+                40,
+                true,
+                &cfg,
+                &Q::from_i128(1),
+            ),
+            Verdict::Refuted(FoldFault::ChartMismatch)
+        ));
+        // Same length, wrong pairing (the two charts swapped): the derived-data guard refuses
+        // it even at a point where the flat inversion alone would certify — the round-trip
+        // certificate never sees the lift, so the pairing must be checked, not trusted.
+        let (gx, gy) = Development::point(&pw, &Q::new(1, 8), &Q::from_i128(-1), &cfg)
+            .unwrap()
+            .center();
+        let swapped = [fixtures::devices::cone_seam_ramp(), cone()];
+        assert!(matches!(
+            fold_point_pw(
+                &pw,
+                &swapped,
+                &gx,
+                &gy,
                 &Q::from_i128(0),
                 40,
                 true,
