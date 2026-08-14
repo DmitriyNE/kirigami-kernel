@@ -264,23 +264,72 @@ pub fn cut_fit<B: Backend>(
     chart: &Chart<B>,
     cert: &CutFitCert<B>,
 ) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
-    use core::cmp::Ordering;
-    let (lo, hi) = (&cert.span.lo, &cert.span.hi);
-    if lo.cmp(hi) != Ordering::Less {
-        return Verdict::Refuted(CutFitFault::DegenerateSpan);
-    }
     // The rail point on the cone: C(σ) = pedal + μ̂(σ)·ruling + w·normal, rational in σ.
     let c = chart
         .pedal()
         .add(&chart.ruling().scale(&cert.mu_hat))
         .add(&chart.normal().scale_rat(&cert.w));
+    traced_cut_fit(
+        &c,
+        &cert.surface,
+        &cert.span,
+        cert.subdiv,
+        &cert.clearance,
+        &cert.cfg,
+    )
+}
 
-    let n_sub = cert.subdiv.max(1);
+/// Certify that a **p-curve** traces a cutting surface: the same obligation as [`cut_fit`], stated
+/// over the curve's own parameter — `sup_t dist(X(t), {F=0}) ≤ ε` for the curve's 3-D image
+/// `X(t)` ([`PCurve::lift`](crate::pcurve::PCurve::lift)) — and gated by the same DRC.
+///
+/// A graph rail is the special case `σ(t) = t`, so this subsumes [`cut_fit`] rather than competing
+/// with it: both hand the same core the traced point as a rational vector function of whatever
+/// parameter it is authored over. The generalization is what lets a cut **turn around in σ** — at
+/// a solid cutter's tangent rulings, where a graph has to stop short — and so lets a closed cut be
+/// certified as one curve instead of two branches plus bridges.
+///
+/// `Refuted(DegenerateSpan)` on an empty parameter span, `PoleInEval` where the traced point or
+/// residual poles; a curve that drifts off the surface is `Unresolved(ε)`, never a wrong
+/// `Verified`.
+pub fn pcurve_cut_fit<B: Backend>(
+    chart: &Chart<B>,
+    curve: &crate::pcurve::PCurve<B>,
+    surface: &CutSurface<B>,
+    w: &Rat<B>,
+    subdiv: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
+    let x = match curve.lift(chart, w) {
+        Some(x) => x,
+        None => return Verdict::Refuted(CutFitFault::PoleInEval),
+    };
+    traced_cut_fit(&x, surface, &curve.domain, subdiv, clearance, cfg)
+}
+
+/// The shared core: the traced point `c` as a rational vector function of its own parameter, the
+/// rigorous `sup` of its distance to `surface` over `span`, and the DRC gate. Both the graph and
+/// p-curve entry points differ only in how `c` is built.
+fn traced_cut_fit<B: Backend>(
+    c: &Vec3Rat<B>,
+    surface: &CutSurface<B>,
+    span: &Interval<B>,
+    subdiv: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
+    use core::cmp::Ordering;
+    let (lo, hi) = (&span.lo, &span.hi);
+    if lo.cmp(hi) != Ordering::Less {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let n_sub = subdiv.max(1);
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
 
-    let eps = match &cert.surface {
+    let eps = match surface {
         CutSurface::Plane { n, d } => {
-            let norm = sqrt(&dot3(n, n), &cert.cfg.sqrt_eps); // |n| enclosure
+            let norm = sqrt(&dot3(n, n), &cfg.sqrt_eps); // |n| enclosure
             let inv_norm = match norm.recip_pos() {
                 Some(iv) => iv,
                 None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
@@ -321,7 +370,7 @@ pub fn cut_fit<B: Backend>(
                 .dot(&dvec)
                 .sub(&axdot.mul(&axdot).scale(&inv_a2))
                 .reduce();
-            let r = sqrt(r2, &cert.cfg.sqrt_eps); // R = √r2 enclosure
+            let r = sqrt(r2, &cfg.sqrt_eps); // R = √r2 enclosure
             let mut eps = Rat::from_i128(0);
             for k in 0..n_sub {
                 let sig = subiv(lo, &width, k);
@@ -329,7 +378,7 @@ pub fn cut_fit<B: Backend>(
                     Some(p) => p,
                     None => return Verdict::Refuted(CutFitFault::PoleInEval),
                 };
-                let rho = sqrt_on(&p2, &cert.cfg.sqrt_eps); // √perp2 = distance to axis
+                let rho = sqrt_on(&p2, &cfg.sqrt_eps); // √perp2 = distance to axis
                 let dist = abs_on(&rho.sub(&r)); // |ρ − R|
                 eps = max_rat(eps, dist.hi().clone());
             }
@@ -337,12 +386,12 @@ pub fn cut_fit<B: Backend>(
         }
     };
 
-    let half = cert.clearance.mul(&Rat::new(1, 2));
+    let half = clearance.mul(&Rat::new(1, 2));
     if eps.cmp(&half) == Ordering::Less {
         Verdict::Verified(ValidCutFit {
-            span: cert.span.clone(),
+            span: span.clone(),
             eps,
-            clearance: cert.clearance.clone(),
+            clearance: clearance.clone(),
         })
     } else {
         Verdict::Unresolved(eps)
@@ -364,6 +413,120 @@ mod tests {
         Interval {
             lo: Q::from_i128(lo),
             hi: Q::from_i128(hi),
+        }
+    }
+
+    /// A **graph** p-curve certifies exactly as the graph checker does — the p-curve certificate
+    /// subsumes [`cut_fit`] rather than competing with it.
+    #[test]
+    fn a_graph_pcurve_certifies_like_the_graph_checker() {
+        let chart = cone();
+        let n = [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)];
+        let d = Q::from_i128(1);
+        let surface = CutSurface::Plane {
+            n: n.clone(),
+            d: d.clone(),
+        };
+        let rail = plane_cut_rail(&chart, &n, &d);
+        let curve = crate::pcurve::PCurve::graph(rail, ivl(1, 3));
+        match pcurve_cut_fit(
+            &chart,
+            &curve,
+            &surface,
+            &Q::from_i128(0),
+            8,
+            &Q::new(1, 100),
+            &DevConfig::tight(),
+        ) {
+            Verdict::Verified(v) => assert!(
+                v.eps <= Q::new(1, 1_000_000),
+                "exact rail ε ≈ 0, got {}",
+                to_f64(&v.eps)
+            ),
+            other => panic!("expected Verified, got {:?}", verdict_tag(&other)),
+        }
+    }
+
+    /// **The capability the graph model cannot express**: a cut curve that *turns around in σ*
+    /// still certifies. The same exact plane rail is re-parametrized by `σ(t) = 1 − t²/4`, which
+    /// reverses at `t = 0` — so `dµ̂/dσ` is unbounded there and no `µ̂ = f(σ)` covers the curve in
+    /// one piece — yet the traced point lies on the plane throughout and the certificate says so
+    /// at ε ≈ 0. The obligation is stated over the curve's own parameter, so it never sees the
+    /// turn as a singularity.
+    #[test]
+    fn a_curve_that_turns_around_in_sigma_still_certifies() {
+        let chart = cone();
+        let n = [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)];
+        let d = Q::from_i128(1);
+        let surface = CutSurface::Plane {
+            n: n.clone(),
+            d: d.clone(),
+        };
+        let rail = plane_cut_rail(&chart, &n, &d);
+        // σ(t) = 1 − t²/4 on t ∈ [−1, 1]: σ ∈ [3/4, 1], reversing at t = 0.
+        let sigma = RatFunc::from_poly(Poly::from_coeffs(vec![
+            Q::from_i128(1),
+            Q::from_i128(0),
+            Q::new(-1, 4),
+        ]));
+        let mu = crate::pcurve::compose(&rail, &sigma).expect("composable");
+        let curve = crate::pcurve::PCurve {
+            sigma,
+            mu,
+            domain: ivl(-1, 1),
+        };
+        assert_eq!(
+            curve.sigma_turning_points(64, 40).unwrap().len(),
+            1,
+            "the fixture must genuinely turn around in σ"
+        );
+        match pcurve_cut_fit(
+            &chart,
+            &curve,
+            &surface,
+            &Q::from_i128(0),
+            16,
+            &Q::new(1, 100),
+            &DevConfig::tight(),
+        ) {
+            Verdict::Verified(v) => assert!(
+                v.eps <= Q::new(1, 1_000_000),
+                "a turning curve on the plane is still exact, got {}",
+                to_f64(&v.eps)
+            ),
+            other => panic!("expected Verified, got {:?}", verdict_tag(&other)),
+        }
+    }
+
+    /// Fail-closed: nudge the traced curve off the cutting surface and the certificate refuses to
+    /// call it a cut — a loose curve is `Unresolved`, never a wrong `Verified`.
+    #[test]
+    fn a_curve_off_the_surface_is_not_certified() {
+        let chart = cone();
+        let n = [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)];
+        let d = Q::from_i128(1);
+        let surface = CutSurface::Plane {
+            n: n.clone(),
+            d: d.clone(),
+        };
+        let drifted =
+            plane_cut_rail(&chart, &n, &d).add(&RatFunc::from_poly(Poly::constant(Q::new(1, 10))));
+        let curve = crate::pcurve::PCurve::graph(drifted, ivl(1, 3));
+        match pcurve_cut_fit(
+            &chart,
+            &curve,
+            &surface,
+            &Q::from_i128(0),
+            8,
+            &Q::new(1, 100),
+            &DevConfig::tight(),
+        ) {
+            Verdict::Unresolved(e) => assert!(
+                e > Q::new(1, 1000),
+                "the drift must show up in ε, got {}",
+                to_f64(&e)
+            ),
+            other => panic!("expected Unresolved, got {:?}", verdict_tag(&other)),
         }
     }
 

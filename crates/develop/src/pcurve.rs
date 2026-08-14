@@ -33,7 +33,7 @@
 //! ```
 
 use crate::interval::{RatIv, eval_ratfunc_on};
-use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Vec3Rat};
 
 /// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
 /// the final bracket — exact sign evaluation, rational midpoints. `None` if there is no sign
@@ -103,6 +103,80 @@ pub fn scan_roots<B: Backend>(
         prev = Some((x, s));
     }
     Some(roots)
+}
+
+/// `Σ_{i≤n} c_i·u^i·v^{n−i}` — the coefficients read as a **homogeneous** form of degree `n` in
+/// `(u, v)`, missing coefficients taken as zero. Substituting `u/v` into a degree-`≤n` polynomial
+/// gives exactly this over `v^n`, which is what makes the shared `v^n` cancel between a rational
+/// function's numerator and denominator (see [`compose`]).
+fn homogenize<B: Backend>(coeffs: &[Rat<B>], n: usize, u: &Poly<B>, v: &Poly<B>) -> Poly<B> {
+    let mut vpows: Vec<Poly<B>> = Vec::with_capacity(n + 1);
+    let mut cur = Poly::constant(Rat::from_i128(1));
+    for _ in 0..=n {
+        vpows.push(cur.clone());
+        cur = cur.mul(v);
+    }
+    let mut upow = Poly::constant(Rat::from_i128(1));
+    let mut acc = Poly::zero();
+    for i in 0..=n {
+        if let Some(c) = coeffs.get(i) {
+            acc = acc.add(&upow.mul(&vpows[n - i]).scale(c));
+        }
+        upow = upow.mul(u);
+    }
+    acc
+}
+
+/// The **composition** `f ∘ g` of rational functions — `f(g(t))`, exact.
+///
+/// This is the primitive the repo lacked, and the reason a general `(σ(t), µ̂(t))` contour was out
+/// of reach: a curve's 3-D image needs the chart fields *at* `σ(t)` (`pedal ∘ σ`, `ruling ∘ σ`, …),
+/// which is composition. Writing `f = p/q` and `g = u/v` and homogenizing both `p` and `q` to the
+/// common degree `N = max(deg p, deg q)`, the substitution's shared `v^N` cancels and
+/// `f(g) = P_N(u, v) / Q_N(u, v)` outright. `None` if the result's denominator vanishes
+/// identically (a degenerate `g`, or `f` with a zero denominator).
+///
+/// It builds curves; it does not certify them. A composition error cannot smuggle a wrong result
+/// past the checkers, which re-derive their bounds from the composed object by interval evaluation
+/// — a wrong curve simply fails to certify against its cutter.
+pub fn compose<B: Backend>(f: &RatFunc<B>, g: &RatFunc<B>) -> Option<RatFunc<B>> {
+    let (u, v) = (g.num(), g.den());
+    let (p, q) = (f.num().coeffs(), f.den().coeffs());
+    let n = p.len().max(q.len()).saturating_sub(1);
+    let den = homogenize(q, n, u, v);
+    if den.is_zero() {
+        return None;
+    }
+    Some(RatFunc::new(homogenize(p, n, u, v), den).reduce())
+}
+
+/// The **composition** of a rational 3-vector field with a rational reparametrization —
+/// `F(g(t))`, exact, the [`compose`] identity applied component-wise over the shared denominator
+/// (all four polynomials homogenized to one degree, so the vector keeps a single denominator).
+/// `None` if the composed denominator vanishes identically.
+pub fn compose_vec3<B: Backend>(f: &Vec3Rat<B>, g: &RatFunc<B>) -> Option<Vec3Rat<B>> {
+    let (u, v) = (g.num(), g.den());
+    let num = f.num();
+    let den_c = f.den().coeffs();
+    let n = num
+        .iter()
+        .map(|p| p.coeffs().len())
+        .chain(core::iter::once(den_c.len()))
+        .max()
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let den = homogenize(den_c, n, u, v);
+    if den.is_zero() {
+        return None;
+    }
+    Some(Vec3Rat::new(
+        [
+            homogenize(num[0].coeffs(), n, u, v),
+            homogenize(num[1].coeffs(), n, u, v),
+            homogenize(num[2].coeffs(), n, u, v),
+        ],
+        den,
+    ))
 }
 
 /// A curve in a chart's `(σ, µ̂)` domain, parametrized rationally: `t ↦ (σ(t), µ̂(t))` over
@@ -234,6 +308,24 @@ impl<B: Backend> PCurve<B> {
         })
     }
 
+    /// The curve's **3-D image** on a chart at layer offset `w`, as a rational vector function of
+    /// the curve parameter: `X(t) = pedal(σ(t)) + µ̂(t)·ruling(σ(t)) + w·normal(σ(t))`.
+    ///
+    /// This is the object every 3-D obligation is stated against — the cut certificate's distance
+    /// bound, and (being rational in `t`) an exact Bézier for export. `None` if a composed
+    /// denominator degenerates.
+    pub fn lift(&self, chart: &geom::chart::Chart<B>, w: &Rat<B>) -> Option<Vec3Rat<B>> {
+        let pedal = compose_vec3(chart.pedal(), &self.sigma)?;
+        let ruling = compose_vec3(chart.ruling(), &self.sigma)?;
+        let normal = compose_vec3(chart.normal(), &self.sigma)?;
+        Some(
+            pedal
+                .add(&ruling.scale(&self.mu))
+                .add(&normal.scale_rat(w))
+                .reduce(),
+        )
+    }
+
     /// Split at an interior parameter into the two sub-curves, or `None` if `t` is not strictly
     /// inside the domain.
     pub fn split_at(&self, t: &Rat<B>) -> Option<(Self, Self)> {
@@ -329,6 +421,67 @@ mod tests {
             let p = c.eval(&t).unwrap();
             assert!(sig.contains(&p[0]), "σ enclosure must contain σ(t)");
             assert!(mu.contains(&p[1]), "µ̂ enclosure must contain µ̂(t)");
+        }
+    }
+
+    /// The composition identity, checked the only way that matters: composing then evaluating
+    /// must equal evaluating then evaluating, at many parameters, on rational functions with
+    /// genuine denominators (so the homogenization's cancelling `v^N` is exercised).
+    #[test]
+    fn composition_agrees_with_nested_evaluation() {
+        let f = RatFunc::<Bignum>::new(poly(&[1, -2, 3]), poly(&[2, 0, 1])); // (1−2x+3x²)/(2+x²)
+        let g = RatFunc::<Bignum>::new(poly(&[0, 5, -1]), poly(&[3, 1])); // (5x−x²)/(3+x)
+        let fg = compose(&f, &g).expect("composable");
+        for n in -7i128..=7 {
+            let t = Q::new(n, 3);
+            let inner = g.eval(&t).expect("g defined");
+            let expect = f.eval(&inner).expect("f defined at g(t)");
+            assert_eq!(
+                fg.eval(&t).expect("f∘g defined"),
+                expect,
+                "composition must agree with nested evaluation at t = {t:?}"
+            );
+        }
+    }
+
+    /// The same identity for the vector fields the 3-D lift composes — a chart's `pedal`,
+    /// `ruling` and `normal` evaluated at `σ(t)`.
+    #[test]
+    fn vector_composition_agrees_with_nested_evaluation() {
+        let chart = fixtures::devices::cone();
+        let sigma = RatFunc::<Bignum>::new(poly(&[0, 3, 1]), poly(&[4, 0, 1])); // (3t+t²)/(4+t²)
+        for field in [chart.pedal(), chart.ruling(), chart.normal()] {
+            let composed = compose_vec3(field, &sigma).expect("composable");
+            for n in -5i128..=5 {
+                let t = Q::new(n, 2);
+                let inner = sigma.eval(&t).expect("σ defined");
+                let expect = field.eval(&inner).expect("field defined at σ(t)");
+                assert_eq!(
+                    composed.eval(&t).expect("composed field defined"),
+                    expect,
+                    "vector composition must agree at t = {t:?}"
+                );
+            }
+        }
+    }
+
+    /// A p-curve's 3-D image agrees with lifting its traced points by hand — the object every
+    /// 3-D obligation is stated against.
+    #[test]
+    fn the_lift_traces_the_surface_points() {
+        let chart = fixtures::devices::cone();
+        let c = circle();
+        let w = Q::new(1, 8);
+        let lifted = c.lift(&chart, &w).expect("liftable");
+        for n in -3i128..=3 {
+            let t = Q::new(n, 4);
+            let [s, m] = c.eval(&t).unwrap();
+            let expect = chart.surface(&m, &w).eval(&s).expect("surface defined");
+            assert_eq!(
+                lifted.eval(&t).expect("lift defined"),
+                expect,
+                "the lifted curve must trace the surface point at t = {t:?}"
+            );
         }
     }
 
