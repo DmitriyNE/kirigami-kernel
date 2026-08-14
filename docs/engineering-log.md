@@ -648,6 +648,26 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **OPT.3 shipped — 1.7× on `develop`, 2.9× on `fold`, and the hot spot is gone.** `gcd_u128` is now
+  strip-twos + `u64`-narrowed Euclidean (see step 0/1 below for the harvest, the benchmark and why
+  this shape rather than a binary gcd). **Measured end-to-end** on `scale_probe` at the demo's
+  fidelity: `develop` **89.87 → 52.27 s (1.72×)**, `fold` **136.8 → 47.6 ms/pt (2.87×)**; the author
+  suites fell 78.4 → 62.1 s, 16.8 → 12.1 s, 38.9 → 25.8 s. **Re-profiled**: `u128_div_rem` drops from
+  **53% of samples to 13.8%**, and the profile is now *flat* — allocation (`malloc`/`free`/`Repr`
+  drop+clone, ~20%) is comparable to division, and the `dashu` bignum path is relatively more
+  prominent than `small`. The single dominant hotspot no longer exists, which means the next
+  optimization needs its own profile rather than an extrapolation from this one.
+  **Arithmetically invisible, as designed and as checked**: every pinned ε bit-identical (`develop`
+  4.1481e-1, `fold` 1.3879e-1, `refold` 5.9982e-3, `solid` 5.7663e-2, flex 2.7573e-1/1.3663e-1),
+  every chord golden unchanged (3.0/9.4/10.1%), every VV.1 work counter unchanged (2256 γ cells,
+  4096 cut evals). That was the whole point of picking a value-preserving optimization: correctness
+  evidence is exact equality, not a tolerance.
+  **⚠️ It ships with a proof debt.** `GcdReduce.lean` proves the *old* Euclidean loop and no longer
+  applies to what runs; `docs/proofs/ledger.md` is marked ⚠️ STALE and OPT.3-proof (#240) blocks
+  merge to main. Interim Rust-side evidence is a differential test against the Euclidean reference
+  over ~80k pairs (powers of two, `u64`-boundary straddles, `2^127`) plus the bit-identical pins.
+  *2026-08-14 · open (proof debt) · OPT.3 (#239)*
+
 - **OPT.3 step 0/1 — the gcd operand mix is 85% powers of two, and ~6× is available for one
   standard identity.** *Harvested* (temporary counters in `gcd_u128`, one `scale_probe` run):
   **168 246 619 gcd calls** in 36 s — **84.7% have a power-of-two operand**, 76.5% have both

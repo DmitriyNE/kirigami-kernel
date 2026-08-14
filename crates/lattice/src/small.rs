@@ -8,13 +8,59 @@
 use core::cmp::Ordering;
 
 /// gcd of two `u128` magnitudes (exact; `u128` holds `|i128::MIN| = 2^127`).
-pub(crate) fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
+///
+/// Computed as **strip the common power of two, then Euclidean on the odd parts**, using the
+/// standard identity
+///
+/// ```text
+///   gcd(2^i·m, 2^j·n)  =  2^min(i,j) · gcd(m, n)        (m, n odd)
+/// ```
+///
+/// and narrowing the Euclidean loop to `u64` as soon as both operands fit.
+///
+/// **Why (OPT.3).** Profiling the kernel put ~60% of *all* runtime in `u128` division: this
+/// function is called ~4.6 M times a second, ARM64 has no hardware 128-bit divide, and the plain
+/// Euclidean loop spends a software `u128 %` on each of ~12 iterations. Measured on the harvested
+/// operand mix, **84.7% of calls have a power-of-two operand** — not a coincidence, since the
+/// kernel snaps coordinates onto `2^-30`/`2^-50` dyadic grids, so denominators are powers of two by
+/// construction. Under the identity such a call needs no division at all: a power of two has odd
+/// part `1`, so the Euclidean step returns immediately. Benchmarked at **265.6 → 44.8 ns/call
+/// (5.9×)** on that mix (`benchmarks/gcd-hot-path`).
+///
+/// The **value is unchanged** — this returns the same gcd as the Euclidean loop for every input, so
+/// no enclosure, bound or certificate anywhere moves.
+///
+/// **Panic-freedom.** The only shifts are `>> ia`, `>> ib` with `ia, ib < 128` (trailing zeros of a
+/// nonzero value), and the final `<< shift` with `shift = min(ia, ib) < 128`. That last one cannot
+/// overflow the value either: writing `a = 2^ia·m`, the result is `gcd(m, n)·2^shift ≤ m·2^ia = a`,
+/// so it is bounded by `min(a, b)`.
+pub(crate) fn gcd_u128(a: u128, b: u128) -> u128 {
+    if a == 0 {
+        return b;
     }
-    a
+    if b == 0 {
+        return a;
+    }
+    let (ia, ib) = (a.trailing_zeros(), b.trailing_zeros());
+    let shift = if ia < ib { ia } else { ib };
+    // The odd parts. Their gcd is odd, and the common power of two is restored at the end.
+    let (mut x, mut y) = (a >> ia, b >> ib);
+    while y != 0 {
+        // Both operands fit 64 bits: finish where the divide is a hardware instruction.
+        if x <= u64::MAX as u128 && y <= u64::MAX as u128 {
+            let (mut p, mut q) = (x as u64, y as u64);
+            while q != 0 {
+                let t = p % q;
+                p = q;
+                q = t;
+            }
+            return (p as u128) << shift;
+        }
+        let t = x % y;
+        x = y;
+        y = t;
+    }
+    x << shift
 }
 
 /// `i128` gcd magnitude (`≥ 0`). `None` iff the gcd is `2^127` (only
@@ -138,4 +184,76 @@ pub(crate) fn cmp(x: &SmallRat, y: &SmallRat) -> Option<Ordering> {
 /// `-1 | 0 | 1` (total, never overflows: `den > 0`).
 pub(crate) fn sign(x: &SmallRat) -> i8 {
     x.num.signum() as i8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reference [`gcd_u128`] replaced (OPT.3): plain `u128` Euclidean.
+    fn gcd_euclid(mut a: u128, mut b: u128) -> u128 {
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        a
+    }
+
+    /// **The strip-twos gcd computes exactly what the Euclidean loop computed.**
+    ///
+    /// This is the whole safety argument for OPT.3: the optimization is a *speed* change and must
+    /// not be an arithmetic one, since every enclosure, bound and certificate in the kernel is
+    /// built out of these rationals. Covers the shapes the harvested operand mix is made of —
+    /// powers of two (84.7% of real calls, the case the identity short-circuits), mixed widths
+    /// straddling the `u64` narrowing boundary, and full 127-bit magnitudes including
+    /// `|i128::MIN|`.
+    #[test]
+    fn the_strip_twos_gcd_agrees_with_the_euclidean_loop() {
+        let check = |a: u128, b: u128| {
+            assert_eq!(
+                gcd_u128(a, b),
+                gcd_euclid(a, b),
+                "gcd({a}, {b}) diverged from the Euclidean reference"
+            );
+        };
+        // Exhaustive small grid: ordering, parity and zero handling.
+        for a in 0u128..64 {
+            for b in 0u128..64 {
+                check(a, b);
+            }
+        }
+        // Powers of two against odd, even and huge partners — the dominant real shape.
+        for k in [0u32, 1, 30, 50, 63, 64, 100, 126, 127] {
+            let p = 1u128 << k;
+            for other in [
+                1u128,
+                3,
+                5,
+                12,
+                u64::MAX as u128,
+                (1u128 << 100) + 1,
+                u128::MAX,
+            ] {
+                check(p, other);
+                check(other, p);
+            }
+        }
+        // Straddling the u64 narrowing boundary in both directions.
+        for d in 0u128..8 {
+            check(u64::MAX as u128 - d, u64::MAX as u128 + d);
+            check((1u128 << 64) + d, (1u128 << 64) - d - 1);
+        }
+        // A deterministic spread of wide magnitudes, including |i128::MIN| = 2^127.
+        let mut s: u128 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..20_000 {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let t = s.rotate_left(41) | 1;
+            check(s, t);
+            check(s << 1, t << 3);
+            check(1u128 << 127, s);
+        }
+    }
 }
