@@ -608,9 +608,9 @@ fine — this is a log, not a schema.
 
 ## Tech debt / sketchy
 
-- **γ≠0 chord-certified unroll re-runs the verified quadrature per rail edge — needs the perf pass before multilayer.** The piecewise unroll's anchor frames call `gamma_at(edge.lo)` and the checker's `point_from_on` integrates `∫γ′` from the region window start per edge/subdivision point, each at the region's full `panels` count regardless of span width. `PiecewiseDevelopment` now memoizes the cumulative-γ prefixes (budget-keyed `RefCell` — the dominant cross-region re-integration is gone), but the per-edge own-window integrals remain O(edges × panels × interval-transcendental evals) — a γ-heavy part at fab segment counts takes minutes in debug builds. Candidate fixes, in order of principle: **(a)** scale the quadrature panel count with the integration span (the midpoint-slope rule's error is O((w/panels)²·w), so short spans need few panels — soundness is panel-count-independent); **(b)** an incremental frame walk in the unroll (edges march monotonically; each frame extends the previous by one short increment, the demo's old `gamma_grid` shape); **(c)** release-profile evaluation for authoring workflows. *2026-08-14 · open · `develop::part` (`gamma_at`/`anchor_pieces`), `develop::cone::directrix_between` · surfaced by the `author` facade's piecewise tests (budgets right-sized there in the meantime).*
+- **γ≠0 chord-certified unroll re-runs the verified quadrature per rail edge — needs the perf pass before multilayer.** The piecewise unroll's anchor frames call `gamma_at(edge.lo)` and the checker's `point_from_on` integrates `∫γ′` from the region window start per edge/subdivision point, each at the region's full `panels` count regardless of span width. `PiecewiseDevelopment` now memoizes the cumulative-γ prefixes (budget-keyed `RefCell` — the dominant cross-region re-integration is gone), but the per-edge own-window integrals remain O(edges × panels × interval-transcendental evals) — a γ-heavy part at fab segment counts takes minutes in debug builds. The **piecewise fold** (PR 3) joins the same family: each `invert_sigma_from` bisection step re-integrates `directrix_between(lo, mid)` at full panel count, so a γ-region fold costs O(iters × panels) — same fix family applies. Candidate fixes, in order of principle: **(a)** scale the quadrature panel count with the integration span (the midpoint-slope rule's error is O((w/panels)²·w), so short spans need few panels — soundness is panel-count-independent); **(b)** an incremental frame walk in the unroll (edges march monotonically; each frame extends the previous by one short increment, the demo's old `gamma_grid` shape); **(c)** release-profile evaluation for authoring workflows. *2026-08-14 · open · `develop::part` (`gamma_at`/`anchor_pieces`), `develop::cone::directrix_between`, `develop::fold` (pw) · surfaced by the `author` facade's piecewise tests (budgets right-sized there in the meantime).*
 
-- **The self-lapping demo keeps a C¹ cubic ramp; the C² quintic is blocked by the trim geometry, not the γ-quadrature.** As of task #216 the `integrate_on_slope` quadrature develops the quintic smootherstep tightly (the original blocker is gone), but restoring it in `crates/export/examples/self_lapping_cone.rs::ramp_support` fails at the **trim rail**: the quintic reshapes the ramp surface so the fixed outer/inner cylinder cuts (tuned for the cubic) no longer produce a smooth low-degree rail over region 1 (D1-outer ε≈14.7; raising the fit degree makes it *and* the unchanged body region worse — Runge, i.e. a geometry/branch wall). **To restore C²:** re-tune the trim-cylinder placement/radii (and/or sub-band region 1) for the steeper quintic surface, then regenerate the SVG/STEP artifacts. Purely a demo-geometry task — the kernel quadrature is done. *2026-08-12 · open · `self_lapping_cone.rs` (`ramp_support`, `cyl_rails`)*
+- **The self-lapping demo keeps a C¹ cubic ramp; the C² quintic is blocked by the trim geometry, not the γ-quadrature.** As of task #216 the `integrate_on_slope` quadrature develops the quintic smootherstep tightly (the original blocker is gone), but restoring it (now `SupportFn::InU` in `crates/author/examples/self_lapping_cone.rs` — the old hand-wired demo is deleted) fails at the **trim rail**: the quintic reshapes the ramp surface so the fixed outer/inner cylinder cuts (tuned for the cubic) no longer produce a smooth low-degree rail over the ramp region (D1-outer ε≈14.7; raising the fit degree makes it *and* the unchanged body region worse — Runge, i.e. a geometry/branch wall). **To restore C²:** re-tune the trim-cylinder placement/radii (and/or sub-band the ramp) for the steeper quintic surface, then regenerate the SVG/STEP artifacts. Purely a demo-geometry task — the kernel quadrature is done. *2026-08-12 · open · the self-lapping recipe (now `author/examples/self_lapping_cone.rs`)*
 
 - **CLEAR (`develop::bonded::clear`) is a brute-force adaptive-AABB min-distance search — sound, but the user flagged it as unsatisfying (2026-08-11); resolve in future.** It de-risks the seam-ramp subdivision *technique* (S3.2, `4ff425a`) and is correct/fail-closed, but it is inelegant on several axes: **(1) rails-only** — it certifies the sheets' `(µ,w)`-rails, not the full-band *surface* (a world-AABB over a whole ruling is dominated by its length, so µ must also be subdivided — an O(more) mechanical extension, unbuilt); **(2) AABB-loose** — world-axis boxes of a rotating ruled arc are slack, forcing extra subdivision; **(3) linearly-convergent** — interval subdivision tightens linearly, so certifying a keep-out *near* the true min is deep/slow (fine when the clearance is comfortable, which is the physical case, but brittle otherwise); **(4) ignores the shared-frame structure** — the two lapping sheets differ by *exactly* the pedal-offset field `c_B(σ') − c_A(σ')` (µ,w-**independent**, a σ'-only rational vector), so the true min-distance is really a **1-parameter** problem (support gap + a correspondence residual bounded by the ruling regularity), not a blind 2-parameter box search. **A better future certificate** should exploit that structure — reduce to the support scalar plus an exact/Sturm residual bound (the §7 correspondence-lemma "stationary support ⇒ same-ruling" made quantitative), i.e. closer to the rejected "normal-gap + residual" option but made rigorous — giving an *exact/structural* CLEAR (no linear-convergence brute force) that also covers full surfaces. Keep the current `clear` as the honest baseline + the technique-of-record until then. Owner: S3 follow-up / a `develop`-split-time revisit.
 
@@ -647,6 +647,44 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **Construction-API PR 3 — the piecewise/side fold, and what the self-lapping rewrite flushed
+  out.** `develop::fold::{fold_point_pw, fold_outline_pw}` invert the *signed* connected
+  development `D = Γ(σ) + µ̂·ρ·e(ψ)` per region in its running frame, and `author` grew
+  `Part::fold` (µ̂-side **derived** from the resolution — seam #3 closed) + `Part::hole_flat`
+  (ECAD 2-D cutouts: cut as-is in the flat boolean, folded back and drilled at solid time). The
+  918-line hand-wired self-lapping demo is now a ~75-line recipe (`author/examples/
+  self_lapping_cone.rs`) whose structure is derived — including the seam drill: **one cutter, two
+  holes** (one per disc-positive window, head + lapping tail flap). Three findings the rewrite
+  forced, each a general-engine fix: **(1) a fixed 3-D witness cannot resolve a wrapping window
+  alone** — past ~half a turn the cone's *mirror nappe* comes closer to the witness point than the
+  kept sheet that has rotated away, so the per-sample nearest pick flips mid-domain (observed as
+  branch-flipped runs at `4·arctan σ ≈ ±150°` and a 24-face "outline"). The resolver now **seeds**
+  the choice at the sample with the widest distance margin (where the witness actually lies) and
+  **propagates by continuity** — σ-adjacent kept µ̂-intervals of one connected face must overlap —
+  with the witness re-deciding only where overlap is inconclusive; hole-gaps are now counted only
+  inside the *chosen* component (the drill also gaps the unchosen sheet). **(2) the σ=0 split is
+  not enough for a wrapping fold** — on a `c ≥ 2` chart even a one-sided domain sweeps past π,
+  where the signed-area bisection loses sign-faithfulness; `faithful_pieces` splits each region
+  band until every piece's *certified* ψ-span clears a rational lower bound of π, and every
+  region/piece is tried with the smallest round-trip ε winning (sound regardless of how a
+  candidate was found — the round-trip *is* the certificate). **(3) hole loops need an
+  escalation ladder, not one fit profile** — the wrap drill's window is a narrow off-origin span
+  where degree ≥ 4 monomial fits are Vandermonde-catastrophic (ε 10⁴–10⁷) and a 1/200 tangent
+  inset leaves the `∂s/∂µ̂ → 0` region inside the fit span (ε floor ≈ 1.2 at any subdiv);
+  `certify_holes` now caps hole fits at degree 3 (the G2 narrow-span rule) and escalates inset
+  (1/200 → 1/20) then subdivision (×1/×4/×16 from the user's knob) until a rung certifies
+  (wrap head window: Verified ε ≈ 0.33) — fail-closed with the tightest ε reached. The #220
+  Chebyshev/Bernstein-basis item would remove the degree cap wholesale. Also learned cheaply: flat
+  holes are pairwise-disjoint operands of the exact Diff (an overlapping `hole_flat` XORs an
+  island face and the coherence gate refuses it), and a drill's *flat* position is set by the σ
+  whose ruling pierces it (the device drill develops around ψ ≈ 0), not by its 3-D azimuth.
+  **Numbers are not comparable to the old demo's:** its headline flat ε ≈ 7.9e-3 / refold 1.4e-6
+  were *pointwise/f64 emission* quality (the PR 1 "two rigor levels" finding); the facade's
+  develop ε ≈ 0.37 / fold ε ≈ 0.2 / refold ≈ 1.4e-2 at the default budget are **certified
+  chord/round-trip bounds** (dominated by the hole-ladder ε ≈ 0.33 and the 20-panel γ
+  quadrature) — refine with `segments`/`support_panels`/`budget`, not by reading them as a
+  regression.
 
 - **Construction-API PR 2 — the `author` facade, and what deriving roles flushed out.** The new
   `author` crate evaluates declarative `Part` recipes (regions + solid-cutter material ops) by an

@@ -380,7 +380,14 @@ fn certify_boundary<B: Backend>(
     })
 }
 
-/// Certify each hole op's loop (extent, both branch rails, micro-caps) at the given fit.
+/// Certify each hole op's loop (extent, both branch rails, micro-caps).
+///
+/// A hole's window is a **narrow span**, so the fit degree caps at 3 (the G2 narrow-span
+/// finding: higher degrees are Vandermonde-catastrophic off-origin, and the certified ε refines
+/// by `subdiv`, not degree). The ladder escalates the tangent inset (a thin inset leaves the
+/// near-tangent `∂s/∂µ̂ → 0` region inside the fit span, which blows the certified bound on a
+/// fast-turning chart) and then the subdivision, starting from the user's knobs; the first
+/// verified rung wins, and a dry ladder reports the tightest ε reached (fail-closed).
 fn certify_holes<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
@@ -388,6 +395,7 @@ fn certify_holes<B: Backend>(
     fit: RailFit,
     segments: usize,
 ) -> Result<Vec<HoleLoop<B>>, RErr<B>> {
+    use core::cmp::Ordering;
     let mut out = Vec::with_capacity(structure.holes.len());
     for (op, ri, window) in &structure.holes {
         let (op, ri) = (*op, *ri);
@@ -398,23 +406,54 @@ fn certify_holes<B: Backend>(
             lo: rmax(&window.lo.sub(&pad), &part.regions[ri].band.lo),
             hi: rmin(&window.hi.add(&pad), &part.regions[ri].band.hi),
         };
-        let loop_v = surface_hole_loop(
-            &built.charts[ri],
-            &part.ops[op].1.surface(),
-            &span,
-            fit,
-            &part.clearance,
-            &part.cfg,
-            &Rat::new(1, 200),
-            segments,
-        );
-        match loop_v {
-            Verdict::Verified(h) => out.push(h),
-            Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
-            Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
-                return Err(RErr::Fault(PartFault::Pole));
+        let base = RailFit {
+            degree: fit.degree.min(3),
+            ..fit
+        };
+        let mut certified: Option<HoleLoop<B>> = None;
+        let mut tightest: Option<Rat<B>> = None;
+        'ladder: for margin_den in [200i128, 20] {
+            for mult in [1usize, 4, 16] {
+                let rung = RailFit {
+                    subdiv: base.subdiv * mult,
+                    ..base
+                };
+                match surface_hole_loop(
+                    &built.charts[ri],
+                    &part.ops[op].1.surface(),
+                    &span,
+                    rung,
+                    &part.clearance,
+                    &part.cfg,
+                    &Rat::new(1, margin_den),
+                    segments,
+                ) {
+                    Verdict::Verified(h) => {
+                        certified = Some(h);
+                        break 'ladder;
+                    }
+                    Verdict::Unresolved(e) => {
+                        tightest = Some(match tightest {
+                            Some(t) if t.cmp(&e) == Ordering::Less => t,
+                            _ => e,
+                        });
+                    }
+                    Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+                        return Err(RErr::Fault(PartFault::Pole));
+                    }
+                    Verdict::Refuted(_) => {
+                        return Err(RErr::Fault(PartFault::CutUnresolved { op }));
+                    }
+                }
             }
-            Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
+        }
+        match certified {
+            Some(h) => out.push(h),
+            None => {
+                return Err(RErr::Loose(
+                    tightest.unwrap_or_else(|| part.clearance.clone()),
+                ));
+            }
         }
     }
     Ok(out)
