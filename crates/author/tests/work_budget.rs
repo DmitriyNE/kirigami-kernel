@@ -62,6 +62,51 @@ fn the_development_stays_within_its_work_budget() {
     );
 }
 
+/// **The MAP.1 fast path is actually taken.** A seeded bracket and a bisection produce the *same*
+/// certified answer — the bisection is only slower — so identical ε proves nothing about whether
+/// the seed fired. If `seed_sigma` silently started returning `None`, or the bracket stopped
+/// verifying, every certificate would stay green and the pipeline would quietly revert to its old
+/// cost. This is the only check that would notice.
+#[test]
+fn the_fold_takes_the_seeded_bracket() {
+    let part = device();
+    let flat = match part.develop() {
+        Verdict::Verified(f) => f,
+        other => panic!("develop must certify: {:?}", verdict_tag(&other)),
+    };
+    let verts = &flat.outline().vertices;
+    let n = verts.len();
+    counters::reset();
+    for k in 0..8 {
+        let (x, y) = verts[(k * n) / 8].center();
+        match part.fold(&[[x, y]], &lattice::Rat::from_i128(0)) {
+            Verdict::Verified(_) => {}
+            other => panic!("fold must certify: {:?}", verdict_tag(&other)),
+        }
+    }
+    let (seeded, bisected) = (counters::bracket_seeded(), counters::bracket_bisected());
+    println!("[work] σ-inversions: seeded {seeded}, bisected {bisected}");
+    // Only "it fires at all" is pinned. The hit *rate* is a tuning outcome — it moves with
+    // `BRACKET_ATTEMPTS`, with the geometry, and with how close vertices sit to region seams — and
+    // the seed is deliberately abandoned after three widenings rather than chased, because a seed
+    // that needs more leaves a bracket the bisection must close anyway (measured: 26 attempts is
+    // *slower* than not seeding, at a 100% hit rate). Gating on the rate would pin the tuning, not
+    // the property.
+    assert!(
+        seeded > 0,
+        "the seeded bracket never fired — the fold silently reverted to bisection \
+         (seeded {seeded}, bisected {bisected})"
+    );
+}
+
+fn verdict_tag<T, F: core::fmt::Debug, E>(v: &Verdict<T, F, E>) -> String {
+    match v {
+        Verdict::Verified(_) => "Verified".into(),
+        Verdict::Unresolved(_) => "Unresolved".into(),
+        Verdict::Refuted(f) => format!("Refuted({f:?})"),
+    }
+}
+
 /// The property OPT.1 actually installed, asserted directly rather than inferred from a total:
 /// **γ work is independent of how many times γ is asked for.** A second development of the same
 /// part costs the same as the first; before the prefix table, every query paid the whole integral

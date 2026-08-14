@@ -32,12 +32,16 @@ use core::cell::Cell;
 thread_local! {
     static GAMMA_CELLS: Cell<u64> = const { Cell::new(0) };
     static CUT_EVALS: Cell<u64> = const { Cell::new(0) };
+    static BRACKET_SEEDED: Cell<u64> = const { Cell::new(0) };
+    static BRACKET_BISECTED: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Zero every counter on the calling thread. Call at the start of a measurement.
 pub fn reset() {
     GAMMA_CELLS.with(|c| c.set(0));
     CUT_EVALS.with(|c| c.set(0));
+    BRACKET_SEEDED.with(|c| c.set(0));
+    BRACKET_BISECTED.with(|c| c.set(0));
 }
 
 /// Cells of the flat directrix `γ` integrated on this thread — grid cells plus partial cells.
@@ -56,6 +60,28 @@ pub fn gamma_cells() -> u64 {
 /// unbounded digit growth noted in `docs/engineering-log.md`).
 pub fn cut_evals() -> u64 {
     CUT_EVALS.with(|c| c.get())
+}
+
+/// σ-inversions served by a **seeded, verified bracket** (MAP.1) on this thread.
+///
+/// Paired with [`bracket_bisected`] this is the fast path's hit rate. It matters because a seed
+/// that silently stops working is invisible in the certificates: the bisection fallback produces
+/// the same answer, only slowly — so equal ε proves nothing on its own.
+pub fn bracket_seeded() -> u64 {
+    BRACKET_SEEDED.with(|c| c.get())
+}
+
+/// σ-inversions that fell back to the bisection on this thread — see [`bracket_seeded`].
+pub fn bracket_bisected() -> u64 {
+    BRACKET_BISECTED.with(|c| c.get())
+}
+
+pub(crate) fn bump_bracket_seeded() {
+    BRACKET_SEEDED.with(|c| c.set(c.get().saturating_add(1)));
+}
+
+pub(crate) fn bump_bracket_bisected() {
+    BRACKET_BISECTED.with(|c| c.set(c.get().saturating_add(1)));
 }
 
 pub(crate) fn bump_gamma_cell() {

@@ -95,9 +95,20 @@ program incremental rather than a rewrite: the certification path is shared by e
 ### 4.2 Two tiers
 
 **Tier 1 — swap the search, keep the certificate.** Candidate from a cheap float solve; existing
-residual check unchanged. Each point costs one forward evaluation instead of ~50 bisection steps.
-Estimated ~50× (136 ms → ~3 ms); no new theory. Its real purpose is to land and validate the
-residual-only certification path that Tier 2 reuses.
+residual check unchanged.
+
+> **Corrected by measurement, 2026-08-14 (MAP.1 shipped).** The projection here was ~50× on the
+> reasoning that ~50 bisection steps collapse to one evaluation. Measured: **1.16×** (158.0 →
+> 136.8 ms/pt on the acceptance outline, identical ε). The bisection is *not* the dominant cost of a
+> fold point — OPT.1 had already removed the γ cost that made it appear so, and what remains is the
+> region trials, the lift, and the round-trip re-development that **is** the certificate.
+>
+> **This bounds Tier 2 as well**: a fitted map replaces the same search, so its fold speedup is
+> capped at roughly the same factor. The certified fold has a floor set by residual certification,
+> and reaching §3's targets requires making the *enclosure evaluations* cheaper (the float-filter
+> lever), not eliminating the search. Tier 2 keeps its other three justifications below — it is the
+> ECAD artifact, it amortizes across the stackup, it is what an optimization loop re-certifies — but
+> it is **not** the fold's performance answer. See the MAP.1 entry in the engineering log.
 
 **Tier 2 — the certified embedding map.** Per region, a patchwise approximant of the flat ↔ domain map
 with a rigorous sup-norm bound, built once at atlas-freeze time. Transforming a point becomes: locate

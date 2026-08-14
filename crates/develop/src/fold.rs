@@ -148,10 +148,47 @@ fn invert_sigma<B: Backend>(
     if xat(&domain.lo).hi().sign() < 0 || xat(&domain.hi).lo().sign() > 0 {
         return Err(FoldFault::OutOfGore);
     }
-    let (mut lo, mut hi) = (domain.lo.clone(), domain.hi.clone());
-    two_probe_bisect(&mut lo, &mut hi, iters, |s| Ok(xat(s)))?;
+    // MAP.1: the seed only ever *narrows* the starting bracket — the bisection below still runs to
+    // the same width target, so a bad or widened seed costs a little time and never accuracy.
+    let seeded = match seed_sigma(dev, None, None, x, y, domain, cfg, flip) {
+        Some(seed) => bracket_verified(|s| Ok(xat(s)), domain, &seed, iters, BRACKET_ATTEMPTS)?,
+        None => None,
+    };
+    let (mut lo, mut hi) = match seeded {
+        Some((a, b)) => {
+            crate::counters::bump_bracket_seeded();
+            (a, b)
+        }
+        None => {
+            crate::counters::bump_bracket_bisected();
+            (domain.lo.clone(), domain.hi.clone())
+        }
+    };
+    two_probe_bisect(&mut lo, &mut hi, iters, &target_width(domain, iters), |s| {
+        Ok(xat(s))
+    })?;
     Ok(RatIv::new(lo, hi))
 }
+
+/// The bracket width `iters` of bisection would have reached: `width·(3/7)^(iters/2)`, i.e.
+/// `width·2^-0.611·iters`. Used both as the seeded window's starting size and as the stopping
+/// width, so ε is the same function of `iters` however the bracket was obtained.
+fn target_width<B: Backend>(domain: &Interval<B>, iters: usize) -> Rat<B> {
+    let shift = ((iters as u64 * 611) / 1000).clamp(1, 100) as u32;
+    domain.hi.sub(&domain.lo).mul(&Rat::new(1, 1i128 << shift))
+}
+
+/// A certified bracket around the root, or `None` when the search should fall back.
+type Bracket<B> = Option<(Rat<B>, Rat<B>)>;
+
+/// How many geometric widenings [`bracket_verified`] tries before conceding to the bisection.
+///
+/// **Deliberately small.** Each attempt quadruples the window, so a seed that needs many widenings
+/// yields a bracket the bisection must close anyway — paying for the widening *and* keeping the
+/// work. Measured on the acceptance outline (40 vertices, one `fold` call): seed off 158.0 ms/pt,
+/// `3` attempts **136.8 ms/pt** at a 69% hit rate and identical ε, `26` attempts *slower than not
+/// trying at all* despite a 100% hit rate. Three buys the cheap hits and abandons the rest.
+const BRACKET_ATTEMPTS: usize = 3;
 
 /// The **two-probe** monotone bisection step, shared by the single-panel and piecewise σ
 /// inversions. Two probes at *non-dyadic* fractions (2/7, 5/7) of the bracket: a rational root
@@ -165,6 +202,7 @@ fn two_probe_bisect<B: Backend>(
     lo: &mut Rat<B>,
     hi: &mut Rat<B>,
     iters: usize,
+    target: &Rat<B>,
     xat: impl Fn(&Rat<B>) -> Result<RatIv<B>, FoldFault>,
 ) -> Result<(), FoldFault> {
     let (r1, r2) = (Rat::new(2, 7), Rat::new(5, 7));
@@ -180,6 +218,12 @@ fn two_probe_bisect<B: Backend>(
     let mut spent = 0usize;
     while spent < iters {
         let w = hi.sub(lo);
+        // Stop once the bracket is as tight as the budget was ever going to make it. With a
+        // seeded start (MAP.1) this is usually true immediately, which is where the saving comes
+        // from; without one it fires exactly when the plain bisection would have finished.
+        if w.cmp(target) != core::cmp::Ordering::Greater {
+            return Ok(());
+        }
         let t1 = lo.add(&w.mul(&r1));
         let s1 = sign3(&xat(&t1)?);
         spent += 1;
@@ -206,6 +250,187 @@ fn two_probe_bisect<B: Backend>(
         }
     }
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// MAP.1 — the search is not the certificate.
+//
+// `two_probe_bisect` spends ~`iters` enclosure evaluations locating σ. But nothing downstream
+// depends on *how* σ was found: `fold_point` certifies by re-developing the recovered (σ, µ̂) and
+// measuring the residual to the authored point. So the search may be replaced by anything that
+// proposes a σ, provided the proposal is turned into a **certified bracket** before use.
+//
+// That is the split below: `seed_sigma` proposes (uncertified, floating-point — the repo's
+// float-search-then-certify doctrine, one level down from its use in 3-D placement), and
+// `bracket_verified` proves the proposal brackets the root with two enclosure evaluations. A
+// failed proposal costs nothing: the caller falls back to the bisection, unchanged.
+//
+// The seam is deliberately a **proposed σ**, not a solver object. A fitted embedding map (MAP.2)
+// proposes σ exactly as the float solve does, so it substitutes here with no retrofit.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A rational as `f64`, for the **search only** — never for a certificate. `None` when the value
+/// does not survive the conversion (huge numerator/denominator overflowing to infinity), which
+/// simply costs the caller its fast path.
+fn to_f64<B: Backend>(r: &Rat<B>) -> Option<f64> {
+    let (n, d) = r.numer_denom_decimal();
+    let (n, d) = (n.parse::<f64>().ok()?, d.parse::<f64>().ok()?);
+    let v = n / d;
+    if v.is_finite() && d != 0.0 {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+/// An `f64` snapped onto the `2^-50` dyadic grid as an exact rational. `None` if out of range.
+///
+/// The grid must be **finer than the bracket the seed is searched in**, or the snap's own error
+/// puts the root outside the initial window and every attempt widens past it. `2^-50` sits below
+/// `f64`'s own resolution at these magnitudes, so the snap costs nothing the estimate had.
+fn from_f64<B: Backend>(v: f64) -> Option<Rat<B>> {
+    const SCALE: i128 = 1 << 50;
+    if !v.is_finite() || v.abs() > 1e9 {
+        return None;
+    }
+    let n = (v * SCALE as f64).round();
+    if !n.is_finite() || n.abs() >= i128::MAX as f64 {
+        return None;
+    }
+    Some(Rat::new(n as i128, SCALE))
+}
+
+/// Propose the σ that develops to `(x, y)` — **uncertified**, the search half of MAP.1.
+///
+/// The development sends σ to the ray at angle `ψ(σ) = c·arctan σ` offset by the directrix, so
+/// inverting the angle is closed-form: `σ = tan(ψ/c)`. With `γ ≠ 0` the residual `(x,y) − base − γ(σ)`
+/// depends on σ, so one fixed-point correction is taken using γ at the first estimate — γ is the
+/// small ramp offset, so this converges immediately in practice, and any error is absorbed by the
+/// bracket widening rather than trusted.
+///
+/// `base`/`lo_frame` carry the piecewise running frame (`None` for the single-region form). `flip`
+/// marks the `γ ≠ 0, µ̂ < 0` case where the residual points at `ψ + π`.
+///
+/// Returns `None` whenever the estimate cannot be formed — the caller then bisects as before.
+#[allow(clippy::too_many_arguments)]
+fn seed_sigma<B: Backend>(
+    dev: &ConeDevelopment<B>,
+    base: Option<&[RatIv<B>; 2]>,
+    lo_frame: Option<&Rat<B>>,
+    x: &Rat<B>,
+    y: &Rat<B>,
+    domain: &Interval<B>,
+    cfg: &DevConfig<B>,
+    flip: bool,
+) -> Option<Rat<B>> {
+    use core::f64::consts::PI;
+    let c = to_f64(dev.angle_coeff())?;
+    if c.abs() < 1e-12 {
+        return None;
+    }
+    let (xf, yf) = (to_f64(x)?, to_f64(y)?);
+    let (s_lo, s_hi) = (to_f64(&domain.lo)?, to_f64(&domain.hi)?);
+    let (bx, by) = match base {
+        Some(b) => (to_f64(&b[0].mid())?, to_f64(&b[1].mid())?),
+        None => (0.0, 0.0),
+    };
+    // ψ is only recoverable modulo 2π from an `atan2`, and a wrapping chart (`c ≥ 2`) reaches past
+    // one turn — so the estimate is unwrapped into the domain's own ψ-range, which is narrower
+    // than 2π for any region and therefore picks the branch uniquely.
+    let (psi_lo, psi_hi) = (c * s_lo.atan(), c * s_hi.atan());
+    let (mut gx, mut gy) = (0.0f64, 0.0f64);
+    let mut sigma = None;
+    for _ in 0..2 {
+        let theta = (yf - by - gy).atan2(xf - bx - gx);
+        let mut psi = if flip { theta - PI } else { theta };
+        while psi < psi_lo - 1e-9 {
+            psi += 2.0 * PI;
+        }
+        while psi > psi_hi + 1e-9 {
+            psi -= 2.0 * PI;
+        }
+        if psi < psi_lo - 1e-9 || psi > psi_hi + 1e-9 {
+            return None; // outside this piece's angular range — let the bisection say so
+        }
+        let s = (psi / c).tan().clamp(s_lo, s_hi);
+        sigma = Some(s);
+        if !dev.has_directrix() {
+            break;
+        }
+        // Re-read γ at the estimate and correct once. `directrix_*` is memoized (OPT.1), so this
+        // costs a partial cell rather than a full quadrature.
+        let sr = from_f64::<B>(s)?;
+        let sr = clamp_rat(&sr, domain);
+        let g = match lo_frame {
+            Some(lo) => dev.directrix_between(lo, &sr, cfg)?,
+            None => dev.directrix_at(&sr, cfg)?,
+        };
+        gx = to_f64(&g[0].mid())?;
+        gy = to_f64(&g[1].mid())?;
+    }
+    let s = from_f64::<B>(sigma?)?;
+    Some(clamp_rat(&s, domain))
+}
+
+fn clamp_rat<B: Backend>(s: &Rat<B>, domain: &Interval<B>) -> Rat<B> {
+    use core::cmp::Ordering::{Greater, Less};
+    if s.cmp(&domain.lo) == Less {
+        domain.lo.clone()
+    } else if s.cmp(&domain.hi) == Greater {
+        domain.hi.clone()
+    } else {
+        s.clone()
+    }
+}
+
+/// Turn an uncertified proposal into a **certified bracket**: the narrowest window around `seed`
+/// whose endpoints carry *definite, opposite* signed-area signs, so the root provably lies inside.
+///
+/// This is the certificate half of MAP.1, and it is what makes the search disposable. Two
+/// enclosure evaluations per attempt, against ~`iters` for the bisection. The window widens
+/// geometrically when the signs are not yet definite — which happens exactly when an endpoint sits
+/// within enclosure resolution of the root, and widening is the correct response. `Ok(None)` means
+/// every attempt failed and the caller should bisect; correctness never depends on success.
+fn bracket_verified<B: Backend>(
+    xat: impl Fn(&Rat<B>) -> Result<RatIv<B>, FoldFault>,
+    domain: &Interval<B>,
+    seed: &Rat<B>,
+    iters: usize,
+    attempts: usize,
+) -> Result<Bracket<B>, FoldFault> {
+    use core::cmp::Ordering::{Greater, Less};
+    // `iters` stays the caller's accuracy dial. The bisection reaches a bracket of roughly
+    // `width·(3/7)^(iters/2)`, i.e. `width·2^-0.611·iters`, so the window starts there: same ε for
+    // the same budget, at two enclosure evaluations instead of `iters`. (Ignoring `iters` here
+    // would silently remove the dial — ε would stop responding to it.)
+    let shift = ((iters as u64 * 611) / 1000).clamp(1, 100) as u32;
+    let mut half = domain.hi.sub(&domain.lo).mul(&Rat::new(1, 1i128 << shift));
+    for _ in 0..attempts {
+        let a = clamp_rat(&seed.sub(&half), domain);
+        let b = clamp_rat(&seed.add(&half), domain);
+        if a.cmp(&b) != Less {
+            half = half.mul(&Rat::from_i128(4));
+            continue;
+        }
+        // Decreasing signed area: definite `≥ 0` at the left end and `≤ 0` at the right end
+        // brackets the root. A straddling enclosure is *not* definite and does not count —
+        // *except* at a domain endpoint, where the caller's gore precondition already established
+        // the same one-sided fact and the enclosure straddles precisely because the root sits
+        // within enclosure resolution of the boundary (a vertex on a region seam). Accepting the
+        // endpoint there is no weaker than the bisection, which starts from exactly that bracket
+        // under exactly that precondition — and in both cases the *certificate* is the downstream
+        // round-trip residual, not this bracket.
+        let ok_lo = a.cmp(&domain.lo) == core::cmp::Ordering::Equal || xat(&a)?.lo().sign() >= 0;
+        let ok_hi = b.cmp(&domain.hi) == core::cmp::Ordering::Equal || xat(&b)?.hi().sign() <= 0;
+        if ok_lo && ok_hi {
+            return Ok(Some((a, b)));
+        }
+        half = half.mul(&Rat::from_i128(4));
+        if half.cmp(&domain.hi.sub(&domain.lo)) == Greater {
+            break;
+        }
+    }
+    Ok(None)
 }
 
 /// The largest `|c − t|` over `c ∈ box`, `t = target` — the axis residual of a round-trip.
@@ -509,8 +734,23 @@ fn invert_sigma_from<B: Backend>(
     if xat(&domain.lo)?.hi().sign() < 0 || xat(&domain.hi)?.lo().sign() > 0 {
         return Err(FoldFault::OutOfGore);
     }
-    let (mut lo, mut hi) = (domain.lo.clone(), domain.hi.clone());
-    two_probe_bisect(&mut lo, &mut hi, iters, xat)?;
+    // MAP.1, running-frame form — seeded against the same residual `(x, y) − base − γ(σ)` this
+    // piece's signed area uses. As above, the seed narrows; the bisection still sets the width.
+    let seeded = match seed_sigma(dev, Some(base), Some(lo_frame), x, y, domain, cfg, flip) {
+        Some(seed) => bracket_verified(xat, domain, &seed, iters, BRACKET_ATTEMPTS)?,
+        None => None,
+    };
+    let (mut lo, mut hi) = match seeded {
+        Some((a, b)) => {
+            crate::counters::bump_bracket_seeded();
+            (a, b)
+        }
+        None => {
+            crate::counters::bump_bracket_bisected();
+            (domain.lo.clone(), domain.hi.clone())
+        }
+    };
+    two_probe_bisect(&mut lo, &mut hi, iters, &target_width(domain, iters), xat)?;
     Ok(RatIv::new(lo, hi))
 }
 

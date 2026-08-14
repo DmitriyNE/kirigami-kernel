@@ -648,6 +648,64 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A "fast path" that mostly did not fire, and the counter that caught it (MAP.1).** The
+  search/certificate split landed with every certificate green and every pinned ε *identical* —
+  `develop` 4.1481e-1, `fold` 1.3879e-1, `refold` 5.9982e-3, `solid` 5.7663e-2, chord goldens
+  unchanged. That proves nothing. A seeded bracket and a bisection compute the **same** certified
+  answer; the bisection is merely slower. So identical ε is exactly what a silently-never-firing
+  fast path also produces. The `bracket_seeded` / `bracket_bisected` counters said **seeded 2,
+  bisected 6** — the path was taken a quarter of the time, and without the counter it would have
+  shipped looking like a success.
+  **Two bugs, both mine, both arithmetic rather than design.** *(1) The widening budget could not
+  reach the root.* The window starts at `2^-36`·domain and quadruples at most 14 times, reaching
+  only `2^-8`·domain — so any seed further off than 0.4% of the domain was unreachable no matter how
+  correct it was. *(2) The seed was coarser than the window searching for it.* `from_f64` snapped to
+  a `2^-30` grid (~1e-9), a hundred times the initial half-width of ~1.5e-11·domain, so the snap's
+  own error placed the root outside the first window by construction. Fixed by a `2^-50` grid and 26
+  attempts → **seeded 6, bisected 2**. A third case — a vertex sitting on a region seam, where
+  `cross` straddles zero at the clamped endpoint and no *definite* sign exists — is legitimately
+  relaxable: at a domain endpoint the caller's gore precondition already established the same
+  one-sided fact, and the bisection starts from exactly that bracket under exactly that precondition.
+  Accepting it there gives **seeded 7, bisected 1**, and is no weaker, because in both cases the
+  certificate is the downstream round-trip residual and not the bracket.
+  **Then the fixed version was a regression, which only the demo showed.** With 7/8 seeded, the
+  acceptance demo came back **slower and less accurate**: fold 17.5 s → 26.1 s, fold ε 3.562e-2 →
+  1.521e-1, refold 5.803e-4 → 1.158e-3. Cause: the seeded bracket was being *returned as the
+  answer*. A widened window is a valid bracket but a **wide** one, and ε is set by the bracket's
+  width — so every widening both cost an evaluation pair and multiplied ε by four. The unit-level
+  hit-rate counter could not see this; only the end-to-end ε and timing could.
+  **The fix is structural, and is the shape this should have had from the start:** the seed only
+  ever *narrows the starting bracket*; the bisection still runs, to a **width target** derived from
+  `iters` (the width it would have reached anyway). A good seed then removes almost every bisection
+  step, and a bad or widened seed costs a little time and **never** accuracy. Result: pins equal or
+  better — `develop`/`fold`/`solid` ε identical, and **refold improved to 4.3633e-3** from the
+  5.9982e-3 baseline, because a seeded bracket starts narrower and the same budget converges further.
+  **And then the premise itself turned out to be wrong.** Measured properly — 40 acceptance-outline
+  vertices folded in **one** `fold` call, so region construction is paid once as the demo pays it —
+  the split is worth **1.16×**: 158.0 ms/pt with the seed off, **136.8 ms/pt** at three widening
+  attempts (69% hit rate, identical ε). Not the ~50× the design document projected from "≈50
+  bisection steps become one evaluation". **The bisection is not the dominant cost of a fold point.**
+  OPT.1 had already removed the γ cost that made it look dominant; what remains per point is the
+  per-region trials, `directrix_on_iv`, `radius_on`, `lift_box`, and the round-trip `point_on` —
+  and that last one *is* the certificate, so it cannot be optimized away at all.
+  **Roadmap consequence, and it is the important part:** MAP.2's fitted map replaces the same
+  search, so its speedup on the fold is bounded by the same ~1.2×. The certified fold has a **floor
+  set by the residual certification**, not by the search. Getting the order of magnitude the product
+  needs therefore requires making the *enclosure evaluations themselves* cheaper — the float-filter
+  lever — not eliminating the search. MAP.2 remains worth building for the other three reasons (it
+  is the ECAD artifact, it amortizes across the stackup, it is what an optimization loop re-certifies
+  cheaply), but **not** as the fold's performance answer. `docs/atlas-transform-design.md` §4.2
+  overstates that and should be corrected when MAP.2 is specified.
+  **Three general lessons.** *(1)* An optimization that preserves outputs exactly is **unfalsifiable
+  by its outputs** — when the fast and slow paths agree by construction, the only honest evidence
+  the fast path exists is an instrument counting which one ran. *(2)* A fast path must be built so
+  that failing is *only* slower, never worse: returning the search's own bracket made accuracy
+  depend on how well the search happened to do, while routing it through the same convergence
+  criterion makes the optimization unable to damage the certificate even when it misses. *(3)* The
+  instrument must isolate what it claims to measure — the first probe folded point-by-point, so 95%
+  of its 740 ms/pt was `build_regions` and the inversion signal was invisible.
+  *2026-08-14 · MAP.1 (#234)*
+
 - **The perf gate counts operations, not seconds (VV.1) — and it is proven to fire.** There was no
   performance regression detection for the geometry pipeline at all; the only benchmarks in the tree
   measure algebra backends, which is why a 10× slowdown survived a whole milestone and was found by
