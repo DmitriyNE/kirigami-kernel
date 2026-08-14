@@ -648,6 +648,50 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The post-p-curve 10× slowdown is the γ quadrature re-run per point, not the p-curve subdivision
+  (OPT.0 triage).** The demo went ~1 min → 10.5 min across the p-curve milestone, and the standing
+  suspicion was the certificate's first-order bound forcing node count up. **Measured, and that is
+  not where the time is.** One real drill-hole `quadric_cut_loop` at `n=12` costs **9.5 s**, and the
+  demo runs ~4 of them (2 holes × flat `n=12`, solid `n=16`) — ~45 s of a 627 s run, ~7%. The stage
+  split at `segments=24`: **`develop` 163.1 s (26%) · `fold` 259.7 s (41%) · `solid` 203.5 s (33%) ·
+  `write_step` 0.8 s · svg 0.0 s** — i.e. spread across all three geometry stages, *not* concentrated
+  in the flat side as previously assumed (flat = develop+fold = 67%, solid = 33%). The real driver: a single
+  `ConeDevelopment::point` costs **1.34 ms** at `γ ≡ 0` but **111 ms** at `γ ≠ 0` with the demo's
+  `support_panels(20)` — **83×** — and scales *linearly* in `panels` (4.0× measured for 4× panels).
+  `directrix_at`/`directrix_between` call `integrate_on_slope` over all `panels` subintervals **from
+  scratch on every query**, twice (x and y), with no prefix table or memoization — and `fold.rs:29`
+  already says so in its own doc comment ("each `invert_sigma` bisection step re-integrates `γ(σ)`
+  from 0"), at `GAMMA_PANELS = 64`, so the fold pays it once *per bisection step*. Clean in-run
+  confirmation: fold rings 1 and 2 are the two drill holes with **identical 24-point counts** but cost
+  **15.3 s vs 64.7 s** — a 4.2× spread whose only variable is whether the hole sits in the γ≡0 body or
+  the γ≠0 lap. So the cost is
+  `(#γ≠0 point evaluations) × 2 × panels × (velocity+accel enclosure)`, and what the p-curve
+  milestone changed was the *first* factor: a hole went from ~4 boundary arcs to ~4n ≈ 48. **The 10×
+  is a node-count increase multiplying an already-quadratic-in-disguise per-node cost.** Consequence
+  for planning: the fix is **bounded** — γ is an integral, so it is additive; accumulating a prefix
+  table over a shared panel grid turns `N×P` into `N+P` (interval addition of adjacent panel
+  enclosures is the *same* quadrature, so the certificate is untouched). It is **not** the
+  certificate redesign the first-order bound would have implied. **But it will move ε**: a prefix
+  table answers a query as `prefix[k] + partial panel`, a *different* partition of `[0, σ]` than the
+  `panels`-uniform one, so the enclosure shifts (tighter or looser, must be measured). That is the
+  concrete reason to land VV.2 (ε pinning, #230) **before** OPT.1 rather than after — without it the
+  change is invisible, since a 10×-worse ε still certifies `Verified` under the clearance.
+  *Second measurement, worth keeping:*
+  at `segments=12` `develop` returns **Unresolved at ε 5.737e-1** against **2.687e-1** at 24 — ratio
+  2.13 for 2× segments, i.e. first-order convergence confirmed at the top level, and the acceptance
+  demo sits close to its DRC margin. *2026-08-14 · open · OPT.0 (#228), fix tracked as OPT.1 (#232)*
+
+- **`develop::cut`'s p-curve hot path never applies the outward rounding `interval.rs` exists to
+  provide.** `cut.rs` contains **zero** `.rounded()` calls, against 33 in `cone.rs` and 16 in
+  `interval.rs`; `eval_poly_on` is a bare interval Horner and `chart_point_on`/`surface_distance_on`
+  chain exact-rational interval ops with no budget. With degree-24 field denominators over 2⁻³⁰-grid
+  endpoints, an evaluation reaches ~720-bit denominators before the three fields even combine.
+  `ROUND_BITS = 60` (DEV.2a) is documented as the mechanism that bounds exactly this growth. Not
+  currently the dominant cost (the cut loops are ~7% of the demo), so it is a *secondary* OPT.1
+  candidate rather than the headline — but it is a real unbounded-growth path in a hot certified
+  routine, and rounding outward is sound by construction (a wider enclosure is still an enclosure).
+  *2026-08-14 · open · OPT.0 (#228)*
+
 - **Interior holes are shaped by a representation choice, not a fit-quality limit — the p-curve
   milestone (PC.0 GO-gate).** The device's drill holes export as two cubic rails sewn by two
   straight chords. Measured on the emitted flat pattern, each hole's two longest edges are ~0.14
