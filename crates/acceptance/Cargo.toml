@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 lattice.workspace = true
+certify-core.workspace = true
 author.workspace = true
 develop.workspace = true
 export.workspace = true

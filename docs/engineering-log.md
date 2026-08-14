@@ -648,6 +648,35 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The γ prefix table buys 2.7× overall and 14.8× on the fold — and shows the remaining cost is
+  *not* γ (OPT.1).** `γ` is an integral, so it is additive; memoizing prefix sums over a grid
+  anchored at the integration origin turns `N` queries × `panels` subintervals into `cells + N`.
+  Measured on the acceptance demo at `segments=24`: **627 s → 235 s** (10:34 → 3:55 wall), with
+  `develop` 163.1 → 89.9 s (1.8×), **`fold` 259.7 → 17.5 s (14.8×)**, `solid` 203.5 → 126.2 s (1.6×).
+  The fold wins hugely because it ran at `GAMMA_PANELS = 64` *per bisection step*; develop and solid
+  ran at 20 and spend much of their time elsewhere. **Certificates are preserved**: `develop`
+  ε 2.687e-1 and refold 5.803e-4 bit-identical, `fold` ε 3.561e-2 → 3.562e-2, STEP still
+  `cert=Verified occt=ok 148 faces 0 free`; on the test-tier parts `develop`/`solid` ε identical,
+  `fold` 1.3878e-1 → 1.3879e-1, `refold` 5.9975e-3 → 5.9982e-3 (~0.01%). The ε pins from VV.2 are
+  what make that a *measurement* rather than a hope.
+  **The honest part: this does not restore the pre-p-curve ~1 min.** OPT.0 established that γ was the
+  dominant *per-point* cost; it did not establish what fraction of each stage was γ, and now we know —
+  γ was ~73 s of develop and ~77 s of solid, but nearly all of fold. The remaining 216 s is the
+  p-curve node-count increase multiplying *non-γ* per-node work (rail fitting, the interval arithmetic
+  in the cut certificates, the arrangement). That is a separate optimization, and the `develop::cut`
+  unbounded-rounding item below is one concrete lead into it.
+  *Design notes worth keeping:* the grid step is set by the **first** query as `(σ₁ − lo)/panels`, so
+  the error at σ₁ equals the direct rule's exactly, farther queries get more cells (tighter) and
+  nearer ones fewer (looser, but bounded by σ₁'s error) — since ε is a max over queried points, the
+  worst case is preserved, which is what the measurements above confirm. Four origins are cached
+  because `directrix_at` (origin 0) and `directrix_between` (region `lo`) interleave and a
+  single-entry cache would thrash into being *slower* than no cache.
+  **The bug worth remembering:** the first version always used the *last* prefix entry, so a query
+  landing *below* a table built by an earlier farther query integrated backwards from a grid point
+  past σ — `integrate_on_slope` correctly returned `None` and six tests failed on `unwrap`. The index
+  must be searched for (largest grid point ≤ σ), not assumed to be the end.
+  *2026-08-14 · resolved · OPT.1 (#232)*
+
 - **`flex_part` — a part with a *derived* hole — had no `solid()` test at all (VV.3).** Building the
   golden metric turned up the coverage gap directly: `solid()` on the Stage-1 flex panel was only
   ever exercised by an *example*, never by a test, even though it carries a derived interior hole
