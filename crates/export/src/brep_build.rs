@@ -245,57 +245,51 @@ impl<B: Backend> HoleRail<B> {
             s2,
         }
     }
-
-    /// The single-rail view of this hole over one slice — the piece of each side covering `at`
-    /// (a σ inside both the slice and the hole). `None` if either side has no piece there.
-    fn at(&self, at: &Rat<B>) -> Option<HoleSlice<'_, B>> {
-        Some(HoleSlice {
-            near: piece_at(&self.near, at)?,
-            far: piece_at(&self.far, at)?,
-            s1: self.s1.clone(),
-            s2: self.s2.clone(),
-        })
-    }
-
-    /// The σ where this hole's chains change piece, strictly inside `(s1, s2)` — the stations a
-    /// slice partition must contain for [`HoleRail::at`] to be well defined. The tangent σ
-    /// themselves are excluded deliberately: a slice boundary flush with a hole's σ-cap makes
-    /// OCCT's sewing see intersecting wires.
-    fn interior_breaks(&self) -> Vec<Rat<B>> {
-        use core::cmp::Ordering::Less;
-        let mut out = Vec::new();
-        for side in [&self.near, &self.far] {
-            for (band, _) in side {
-                for s in [&band.lo, &band.hi] {
-                    if self.s1.cmp(s) == Less && s.cmp(&self.s2) == Less {
-                        out.push(s.clone());
-                    }
-                }
-            }
-        }
-        out
-    }
 }
 
-/// One hole resolved to a single rail per side, valid over one slice.
-struct HoleSlice<'a, B: Backend> {
-    near: &'a RatFunc<B>,
-    far: &'a RatFunc<B>,
-    s1: Rat<B>,
-    s2: Rat<B>,
-}
-
-/// `x` clamped into `[lo, hi]` — a slice midpoint pulled onto a hole's own σ-range, so the hole's
-/// chain piece is looked up somewhere it is actually defined even when the slice reaches past it.
-fn clamp_to<B: Backend>(lo: &Rat<B>, hi: &Rat<B>, x: &Rat<B>) -> Rat<B> {
-    use core::cmp::Ordering::Less;
-    if x.cmp(lo) == Less {
-        lo.clone()
-    } else if hi.cmp(x) == Less {
-        hi.clone()
-    } else {
-        x.clone()
+/// The corners tracing one side of a hole from `a` to `b` (either direction), with a corner at
+/// every chain-piece boundary strictly between — each carrying the piece covering the span *ahead*
+/// of it, which is the rail [`lift_trim_edge`] uses for that edge.
+///
+/// This is what keeps a hole's resolution paid for in **hole edges** rather than panel slices. The
+/// alternative — making every piece boundary a σ-station — builds, but the √-graded nodes that give
+/// the tangents their shape sit ~1e-4 apart in σ, so the whole panel inherits sliver slices and
+/// OCCT rejects the shell. Resolving a hole and partitioning a panel are different concerns and
+/// must not be the same knob.
+fn rail_run<B: Backend>(
+    chain: &[(Interval<B>, RatFunc<B>)],
+    a: &Rat<B>,
+    b: &Rat<B>,
+) -> Option<Vec<TrimCorner<B>>> {
+    use core::cmp::Ordering::{Greater, Less};
+    let forward = a.cmp(b) != Greater;
+    let (lo, hi) = if forward { (a, b) } else { (b, a) };
+    let mut cuts: Vec<Rat<B>> = chain
+        .iter()
+        .flat_map(|(iv, _)| [iv.lo.clone(), iv.hi.clone()])
+        .filter(|s| lo.cmp(s) == Less && s.cmp(hi) == Less)
+        .collect();
+    cuts.sort();
+    cuts.dedup();
+    if !forward {
+        cuts.reverse();
     }
+    let mut xs: Vec<Rat<B>> = Vec::with_capacity(cuts.len() + 2);
+    xs.push(a.clone());
+    xs.extend(cuts);
+    xs.push(b.clone());
+    let mut out = Vec::with_capacity(xs.len());
+    for k in 0..xs.len() {
+        // The piece covering the span ahead; for the final corner, the span behind.
+        let other = if k + 1 < xs.len() {
+            &xs[k + 1]
+        } else {
+            &xs[k - 1]
+        };
+        let probe = xs[k].add(other).mul(&Rat::new(1, 2));
+        out.push((xs[k].clone(), piece_at(chain, &probe)?.clone()));
+    }
+    Some(out)
 }
 
 /// A piecewise boundary evaluated at a σ — the piece covering it, applied. Public so the trim
@@ -1374,16 +1368,16 @@ fn slice_footprint<B: Backend>(
     sk1: &Rat<B>,
     mu_in: &RatFunc<B>,
     mu_out: &RatFunc<B>,
-    holes: &[HoleSlice<'_, B>],
+    holes: &[HoleRail<B>],
 ) -> Option<Vec<SliceFace<B>>> {
     use core::cmp::Ordering::{Greater, Less};
     let inn = |s: &Rat<B>| (s.clone(), mu_in.clone());
     let out = |s: &Rat<B>| (s.clone(), mu_out.clone());
 
-    let mut left: Option<&HoleSlice<'_, B>> = None; // reaches the left edge (s1 ≤ sk < s2)
-    let mut right: Option<&HoleSlice<'_, B>> = None; // reaches the right edge (s1 < sk1 ≤ s2)
-    let mut span: Option<&HoleSlice<'_, B>> = None; // spans the whole slice (s1 ≤ sk, sk1 ≤ s2)
-    let mut interior: Vec<&HoleSlice<'_, B>> = Vec::new();
+    let mut left: Option<&HoleRail<B>> = None; // reaches the left edge (s1 ≤ sk < s2)
+    let mut right: Option<&HoleRail<B>> = None; // reaches the right edge (s1 < sk1 ≤ s2)
+    let mut span: Option<&HoleRail<B>> = None; // spans the whole slice (s1 ≤ sk, sk1 ≤ s2)
+    let mut interior: Vec<&HoleRail<B>> = Vec::new();
     for h in holes {
         let a = if h.s1.cmp(sk) == Greater { &h.s1 } else { sk };
         let b = if h.s2.cmp(sk1) == Less { &h.s2 } else { sk1 };
@@ -1406,10 +1400,11 @@ fn slice_footprint<B: Backend>(
         if left.is_some() || right.is_some() || !interior.is_empty() {
             return None;
         }
-        let near = |s: &Rat<B>| (s.clone(), (*h.near).clone());
-        let far = |s: &Rat<B>| (s.clone(), (*h.far).clone());
-        let bot = vec![inn(sk), inn(sk1), near(sk1), near(sk)];
-        let top = vec![far(sk), far(sk1), out(sk1), out(sk)];
+        let mut bot = vec![inn(sk), inn(sk1)];
+        bot.extend(rail_run(&h.near, sk1, sk)?);
+        let mut top = rail_run(&h.far, sk, sk1)?;
+        top.push(out(sk1));
+        top.push(out(sk));
         return Some(vec![(bot, Vec::new()), (top, Vec::new())]);
     }
 
@@ -1417,31 +1412,22 @@ fn slice_footprint<B: Backend>(
     // edge (with a left-notch). Consecutive corners share σ (radial) or rail (Bézier) by construction.
     let mut outer = vec![inn(sk), inn(sk1)];
     if let Some(h) = right {
-        outer.push((sk1.clone(), (*h.near).clone())); // CR_lo up
-        outer.push((h.s1.clone(), (*h.near).clone())); // near rail back
-        outer.push((h.s1.clone(), (*h.far).clone())); // hole cap up
-        outer.push((sk1.clone(), (*h.far).clone())); // far rail forward
+        outer.extend(rail_run(&h.near, sk1, &h.s1)?); // near branch back to the tangent
+        outer.extend(rail_run(&h.far, &h.s1, sk1)?); // far branch forward (the cap collapses)
     }
     outer.push(out(sk1)); // (CR_hi up, or the full right radial)
     outer.push(out(sk)); // outer rail back
     if let Some(h) = left {
-        outer.push((sk.clone(), (*h.far).clone())); // CR_hi down
-        outer.push((h.s2.clone(), (*h.far).clone())); // far rail forward
-        outer.push((h.s2.clone(), (*h.near).clone())); // hole cap down
-        outer.push((sk.clone(), (*h.near).clone())); // near rail back (→ CR_lo closes to inn(sk))
+        outer.extend(rail_run(&h.far, sk, &h.s2)?); // far branch to the tangent
+        outer.extend(rail_run(&h.near, &h.s2, sk)?); // near branch back (→ closes to inn(sk))
     }
 
-    let hole_loops = interior
-        .iter()
-        .map(|h| {
-            vec![
-                (h.s1.clone(), (*h.near).clone()),
-                (h.s1.clone(), (*h.far).clone()),
-                (h.s2.clone(), (*h.far).clone()),
-                (h.s2.clone(), (*h.near).clone()),
-            ]
-        })
-        .collect();
+    let mut hole_loops = Vec::with_capacity(interior.len());
+    for h in &interior {
+        let mut lp = rail_run(&h.far, &h.s1, &h.s2)?;
+        lp.extend(rail_run(&h.near, &h.s2, &h.s1)?);
+        hole_loops.push(lp);
+    }
     Some(vec![(outer, hole_loops)])
 }
 
@@ -1493,13 +1479,6 @@ pub fn brep_trim_solid<B: Backend>(
     for (iv, _) in inner.iter().chain(outer.iter()) {
         stations.push(iv.lo.clone());
         stations.push(iv.hi.clone());
-    }
-    // A hole's chains change piece inside its σ-extent; each such σ must be a station, or a slice
-    // would straddle two pieces and `HoleRail::at` would pick only one of them. The tangent σ are
-    // deliberately NOT added (a slice boundary flush with a hole's σ-cap makes OCCT see
-    // intersecting wires) — a hole still reaches a station as a curved notch.
-    for h in holes {
-        stations.extend(h.interior_breaks());
     }
     stations.sort();
     stations.dedup();
@@ -1562,11 +1541,7 @@ pub fn brep_trim_solid<B: Backend>(
         let smid = sk.add(sk1).mul(&Rat::new(1, 2));
         let mu_in = piece_at(&inner, &smid)?.clone();
         let mu_out = piece_at(&outer, &smid)?.clone();
-        let slice_holes: Vec<HoleSlice<'_, B>> = holes
-            .iter()
-            .filter_map(|h| h.at(&clamp_to(&h.s1, &h.s2, &smid)))
-            .collect();
-        let faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &slice_holes)?
+        let faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?
             .into_iter()
             .map(|(o, hs)| {
                 (
@@ -1699,13 +1674,6 @@ pub fn brep_trim_solid_regions<B: Backend>(
         stations.push(iv.lo.clone());
         stations.push(iv.hi.clone());
     }
-    // A hole's chains change piece inside its σ-extent; each such σ must be a station, or a slice
-    // would straddle two pieces and `HoleRail::at` would pick only one of them. The tangent σ are
-    // deliberately NOT added (a slice boundary flush with a hole's σ-cap makes OCCT see
-    // intersecting wires) — a hole still reaches a station as a curved notch.
-    for h in holes {
-        stations.extend(h.interior_breaks());
-    }
     stations.sort();
     stations.dedup();
     let nst = stations.len();
@@ -1786,11 +1754,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
         };
         let mu_in = piece_at(&inner, &smid)?.clone();
         let mu_out = piece_at(&outer, &smid)?.clone();
-        let slice_holes: Vec<HoleSlice<'_, B>> = holes
-            .iter()
-            .filter_map(|h| h.at(&clamp_to(&h.s1, &h.s2, &smid)))
-            .collect();
-        let mut faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &slice_holes)?
+        let mut faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?
             .into_iter()
             .map(|(o, hs)| {
                 (
