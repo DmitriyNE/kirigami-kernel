@@ -681,6 +681,26 @@ fine — this is a log, not a schema.
   why the facade replaced it. The milestone's point is to have both. *2026-08-14 · PC.0 GO ·
   branch `pcurve` · tasks #221–#227*
 
+- **Making the hole faithful broke the B-rep: a collapsed tangent cap is a zero-length edge
+  (PC.5).** The graph model bridged each tangent ruling with a straight chord ~30–48% of the hole
+  across; the p-curve loop meets its tangent at a *single point*, both branches evaluating to the
+  midline there. The solid builder still emitted that σ-cap as an edge, so it asked OCCT to build
+  a **zero-length line** — `MakeEdge(line) failed`, and the STEP certificate came back `REFUTED`
+  (the gate working exactly as intended: the shell was refused, not shipped). The lesson is worth
+  keeping: *the more faithful the hole gets, the more certainly this fires* — a defect that hides
+  behind a coarse approximation and appears when the approximation improves. Fixed by collapsing
+  corner pairs that map to the same `(σ, µ̂)` point before lifting, which is also the honest
+  topology — the loop really does have one vertex there, not two. **Also measured (PC.5):** hole
+  chain-piece boundaries become σ-stations, so hole segment count now drives the solid's face
+  count directly (48 segments → ~770 faces on the doctest panel against 28 before; the solid takes
+  a loop clamped to 16 → ~256). Build time rose sharply with it, and the cause was **not** the face
+  count: the slice loop re-`reduce()`d the chart's surface fields *per slice*, and `reduce()` is a
+  polynomial gcd over degree-24 denominators, so the cost scaled with hole fidelity through the
+  station count. Hoisting the reduction to once per region (regions are few; slices are now many)
+  cut the doctest panel's solid from ~21s to 8.2s. The general lesson for this builder: anything
+  expensive that depends only on the *region* must not sit inside the *slice* loop, because the
+  slice count is now driven by authored fidelity rather than by the chart. *2026-08-14 · PC.5 · branch `pcurve`*
+
 - **Interior cuts are p-curve loops on the flat path — measured (PC.4).** `surface_hole_loop` no
   longer fits two graphs and bridges them; it returns the closed p-curve loop of
   `quadric_cut_loop`, and `unroll` grew a `BoundaryArc::Curve` whose chords are certified by the

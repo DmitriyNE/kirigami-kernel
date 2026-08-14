@@ -1249,6 +1249,40 @@ fn lift_trim_edge<B: Backend>(
 }
 
 /// Lift a whole footprint loop (ordered corners) to a forward wire at thickness level `w`.
+/// One slice's footprint: an outer loop with its inner (hole) loops.
+type SliceFace<B> = (Vec<TrimCorner<B>>, Vec<Vec<TrimCorner<B>>>);
+
+/// Drop corners that repeat the previous corner's `(σ, µ̂)` **point** — a degenerate edge.
+///
+/// A hole now meets its tangent ruling at a single point (both branches evaluate to the midline
+/// there), so the σ-cap that used to bridge a visible gap has collapsed to nothing. Emitting it
+/// anyway asks OCCT to build a zero-length line, which it refuses outright — the more faithful the
+/// hole gets, the more certainly this fires. Collapsing the pair to one corner is also the honest
+/// topology: the loop really does have a single vertex there.
+fn dedup_trim_corners<B: Backend>(corners: &[TrimCorner<B>]) -> Vec<TrimCorner<B>> {
+    let pt = |c: &TrimCorner<B>| c.1.eval(&c.0).map(|m| (c.0.clone(), m));
+    let mut out: Vec<TrimCorner<B>> = Vec::with_capacity(corners.len());
+    for c in corners {
+        let same = match (out.last().and_then(&pt), pt(c)) {
+            (Some(prev), Some(cur)) => prev == cur,
+            _ => false,
+        };
+        if !same {
+            out.push(c.clone());
+        }
+    }
+    // The loop wraps, so the last corner may repeat the first.
+    if out.len() > 1 {
+        let ends = (out.first().and_then(&pt), out.last().and_then(&pt));
+        if let (Some(a), Some(b)) = ends {
+            if a == b {
+                out.pop();
+            }
+        }
+    }
+    out
+}
+
 fn lift_trim_loop<B: Backend>(
     bld: &mut Builder<B>,
     c: &Vec3Rat<B>,
@@ -1341,7 +1375,7 @@ fn slice_footprint<B: Backend>(
     mu_in: &RatFunc<B>,
     mu_out: &RatFunc<B>,
     holes: &[HoleSlice<'_, B>],
-) -> Option<Vec<(Vec<TrimCorner<B>>, Vec<Vec<TrimCorner<B>>>)>> {
+) -> Option<Vec<SliceFace<B>>> {
     use core::cmp::Ordering::{Greater, Less};
     let inn = |s: &Rat<B>| (s.clone(), mu_in.clone());
     let out = |s: &Rat<B>| (s.clone(), mu_out.clone());
@@ -1532,7 +1566,15 @@ pub fn brep_trim_solid<B: Backend>(
             .iter()
             .filter_map(|h| h.at(&clamp_to(&h.s1, &h.s2, &smid)))
             .collect();
-        let faces = slice_footprint(sk, sk1, &mu_in, &mu_out, &slice_holes)?;
+        let faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &slice_holes)?
+            .into_iter()
+            .map(|(o, hs)| {
+                (
+                    dedup_trim_corners(&o),
+                    hs.iter().map(|h| dedup_trim_corners(h)).collect(),
+                )
+            })
+            .collect();
         for (outer_loop, hole_loops) in &faces {
             // Lid patch: the cone ruled between this slice's inner and outer rails — it contains every
             // notched/banded footprint face, so OCCT just trims it to the wire (`ruled_common` shares
@@ -1623,11 +1665,24 @@ pub fn brep_trim_solid_regions<B: Backend>(
 
     // The piece of a piecewise boundary covering a σ.
     // The region chart covering σ (by containment).
-    let chart_at = |s: &Rat<B>| -> Option<&Chart<B>> {
-        charts
-            .iter()
-            .find(|(iv, _)| iv.lo.cmp(s) != Ordering::Greater && s.cmp(&iv.hi) != Ordering::Greater)
-            .map(|(_, ch)| *ch)
+    // The reduced surface fields, **once per region** rather than once per slice. `reduce()` is a
+    // polynomial gcd over degree-24 denominators, and the slice count is now driven by the hole
+    // chains' piece boundaries, so recomputing these per slice made the cost scale with hole
+    // fidelity — the dominant term in the build, not the face count.
+    let region_fields: Vec<(Vec3Rat<B>, Vec3Rat<B>, Vec3Rat<B>)> = charts
+        .iter()
+        .map(|(_, ch)| {
+            (
+                ch.pedal().reduce(),
+                ch.ruling().reduce(),
+                ch.normal().reduce(),
+            )
+        })
+        .collect();
+    let region_at = |s: &Rat<B>| -> Option<usize> {
+        charts.iter().position(|(iv, _)| {
+            iv.lo.cmp(s) != Ordering::Greater && s.cmp(&iv.hi) != Ordering::Greater
+        })
     };
 
     // σ-stations: each region's own positive-weight partition ∪ every region and rail-piece boundary.
@@ -1725,10 +1780,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
         let (sk, sk1) = (&stations[k], &stations[k + 1]);
         let smid = sk.add(sk1).mul(&Rat::new(1, 2));
         // The region's surface fields (only the pedal `c` varies across a shared-frame device).
-        let chart_k = chart_at(&smid)?;
-        let c = chart_k.pedal().reduce();
-        let r = chart_k.ruling().reduce();
-        let n = chart_k.normal().reduce();
+        let (c, r, n) = &region_fields[region_at(&smid)?];
         let surf = |mu_hat: &RatFunc<B>, wl: &Rat<B>| {
             c.add(&r.scale(mu_hat)).reduce().add(&n.scale_rat(wl))
         };
@@ -1738,7 +1790,15 @@ pub fn brep_trim_solid_regions<B: Backend>(
             .iter()
             .filter_map(|h| h.at(&clamp_to(&h.s1, &h.s2, &smid)))
             .collect();
-        let mut faces = slice_footprint(sk, sk1, &mu_in, &mu_out, &slice_holes)?;
+        let mut faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &slice_holes)?
+            .into_iter()
+            .map(|(o, hs)| {
+                (
+                    dedup_trim_corners(&o),
+                    hs.iter().map(|h| dedup_trim_corners(h)).collect(),
+                )
+            })
+            .collect();
         // Append the polygon holes interior to this slice as inner loops of its (outer) lid face.
         let extra: Vec<Vec<TrimCorner<B>>> = poly_holes
             .iter()
