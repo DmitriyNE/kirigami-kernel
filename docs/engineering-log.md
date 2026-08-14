@@ -648,6 +648,36 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **OPT.3 step 0/1 — the gcd operand mix is 85% powers of two, and ~6× is available for one
+  standard identity.** *Harvested* (temporary counters in `gcd_u128`, one `scale_probe` run):
+  **168 246 619 gcd calls** in 36 s — **84.7% have a power-of-two operand**, 76.5% have both
+  operands under `2^64`, 17.6% are trivial, mean **11.98** Euclidean iterations, max width 127 bits.
+  That is ~2 × 10⁹ `u128 %` operations, which is the 60% the profile attributed. The operand mix is
+  not an accident: the kernel snaps coordinates to `2^-30` and `2^-50` dyadic grids everywhere, so
+  denominators are powers of two by construction.
+  *Benchmarked* (`benchmarks/gcd-hot-path`, 2M pairs matching the harvested mix, every candidate
+  checked against the shipping implementation on 200k pairs): current **265.6 ns/call**; power-of-two
+  fast path **63.7 ns (4.17×)**; + `u64`-narrowed Euclidean **43.8 ns (6.06×)**; strip-twos +
+  `u64` **44.8 ns (5.93×)**. Since gcd-driven division is ~60% of runtime, ~6× on it predicts
+  **≈2× end-to-end across every crate**.
+  **Preferred shape: strip the common power of two, then Euclidean on the odd parts** —
+  `gcd(2^i·m, 2^j·n) = 2^min(i,j)·gcd(m, n)`. It matches the branchy version's speed (within noise)
+  but the power-of-two case stops being a special case: a power of two has odd part 1, so the
+  Euclidean call returns immediately. One standard identity to state instead of a pile of branches.
+  **Proof cost (step 1), priced rather than guessed:** `docs/proofs/ledger.md` puts `small::gcd_u128`
+  under `GcdReduce.lean` and `SmallRat::reduce` under `Reduce.lean`, both ✅ axiom-clean. The gcd
+  proof is **45 lines** and is structurally tied to the Euclidean loop — `loop.spec_decr_nat` with
+  invariant `Nat.gcd st.1 st.2 = Nat.gcd a b` (discharged by `Nat.gcd_rec`) and measure `st.2.val`
+  (discharged by `Nat.mod_lt`). Consequences: a **binary/Stein gcd would need an entirely new proof**
+  (different measure, 2-factor bookkeeping) — which is why it is *not* the recommendation despite
+  being the obvious textbook answer; whereas strip-twos keeps that loop verbatim and adds the one
+  identity above plus the zero cases, and the `u64` narrowing is the same proof at a second width
+  plus a cast. Tractable, bounded, and it does not reopen the previously-rejected binary-GCD
+  question.
+  **Correctness check available for free:** the change computes *identical rationals*, so every
+  pinned ε must return bit-identical (VV.2) and every work counter unchanged (VV.1). Any movement at
+  all is a bug, not a tradeoff. *2026-08-14 · open · OPT.3 (#239)*
+
 - **60% of the kernel's runtime is 128-bit software division inside the i128 rational tier — and no
   amount of algorithmic work upstream would have found it.** Profiled (`sample`, macOS) on the new
   fold-heavy `scale_probe`, 43 757 top-of-stack samples: `compiler_builtins::…::u128_div_rem`
