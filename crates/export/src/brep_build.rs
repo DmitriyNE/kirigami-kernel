@@ -1261,7 +1261,18 @@ fn dedup_trim_corners<B: Backend>(corners: &[TrimCorner<B>]) -> Vec<TrimCorner<B
             (Some(prev), Some(cur)) => prev == cur,
             _ => false,
         };
-        if !same {
+        if same {
+            // Coincident corners collapse to one — but a corner's rail is the rail of the edge
+            // leaving it, so the survivor must carry the *outgoing* one. Keeping the incoming rail
+            // instead hands the next edge the wrong branch: at a hole's tangent the far run ends
+            // and the near run begins at the same point, and the near edge would be built on the
+            // far rail over the same σ-span as the real far edge — identical geometry, so the
+            // builder's edge dedup merges them and the wire ends up traversing one edge twice
+            // (a spike: incidence 4, non-manifold).
+            if let Some(last) = out.last_mut() {
+                *last = c.clone();
+            }
+        } else {
             out.push(c.clone());
         }
     }

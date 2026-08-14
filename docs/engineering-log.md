@@ -708,15 +708,17 @@ fine — this is a log, not a schema.
   runs (each carrying the piece covering the span ahead, which is the rail `lift_trim_edge` already
   uses) — so a hole's fidelity buys hole *edges* and nothing else. Result: **`occt=ok`**, faces
   516 → 148, and the per-slice hole projection deleted (net −36 lines).
-  **STILL OPEN:** our own shell certificate refuses it — `cert=REFUTED` with **0 free edges** but
-  **4 non-manifold edges**, exactly 2 per hole. Each has incidence *4* while being listed by only
-  *3* faces, so one face's wire traverses it **twice** — a spike, where the loop goes out and back
-  along one edge. It sits at the hole's tangent, i.e. where the cap collapsed: the far run ends and
-  the near run begins at the same vertex, and something there is emitting the pair of adjacent
-  rail edges as one traversed twice rather than two distinct ones. Next step is to dump the wire
-  of the offending face (18/19 on the doctest panel) and see which corner pair degenerates —
-  suspects are the snap making the tangent-adjacent `h` vanish, so the last far vertex and the
-  first near vertex coincide and the Builder's edge dedup merges the two rail edges into one. *2026-08-14 · PC.5 · branch `pcurve`*
+  **A collapsed corner must inherit the OUTGOING rail, not the incoming one.** With `occt=ok` the
+  shell was still refused by our own certificate: 0 free edges but **4 non-manifold edges**, 2 per
+  hole, each with incidence *4* while listed by only *3* faces — one face's wire traversing an edge
+  **twice**, a spike. Cause: a corner's rail is the rail of the edge *leaving* it, and the dedup
+  kept the first of each coincident pair. At a hole's tangent the far run ends and the near run
+  begins at the same point, so the survivor carried the **far** rail while the next edge was meant
+  to follow the **near** branch back — giving that edge far-rail geometry over the same σ-span as
+  the real far edge. Identical geometry, so the builder's edge dedup merged the two into one and
+  the wire walked it twice. Keeping the outgoing rail on collapse fixes it: non-manifold edges
+  **4 → 0**, the shell is a closed 2-manifold. The general rule: when merging coincident corners,
+  position comes from either but the rail must come from the *later* one. *2026-08-14 · PC.5 · branch `pcurve`*
 
 - **Interior cuts are p-curve loops on the flat path — measured (PC.4).** `surface_hole_loop` no
   longer fits two graphs and bridges them; it returns the closed p-curve loop of
