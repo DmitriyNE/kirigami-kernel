@@ -63,6 +63,13 @@ axiom core.num.I128.unsigned_abs : Std.I128 → Result Std.U128
 @[rust_fun "core::num::{i128}::signum"]
 axiom core.num.I128.signum : Std.I128 → Result Std.I128
 
+/-- [core::num::{u128}::trailing_zeros]:
+    Source: '/rustc/library/core/src/num/uint_macros.rs', lines 177:8-177:48
+    Name pattern: [core::num::{u128}::trailing_zeros]
+    Visibility: public -/
+@[rust_fun "core::num::{u128}::trailing_zeros"]
+axiom core.num.U128.trailing_zeros : Std.U128 → Result Std.U32
+
 /-- [core::num::{usize}::div_ceil]:
     Source: '/rustc/library/core/src/num/uint_macros.rs', lines 3755:8-3755:54
     Name pattern: [core::num::{usize}::div_ceil]

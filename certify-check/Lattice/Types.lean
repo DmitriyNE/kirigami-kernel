@@ -78,7 +78,7 @@ structure refbackend.RefRat where
 def refbackend.RefBackend := Unit
 
 /-- [lattice::small::SmallRat]
-    Source: 'crates/lattice/src/small.rs', lines 39:0-42:1
+    Source: 'crates/lattice/src/small.rs', lines 85:0-88:1
     Visibility: public -/
 structure small.SmallRat where
   num : Std.I128
