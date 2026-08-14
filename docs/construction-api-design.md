@@ -477,7 +477,11 @@ back + drilled at solid time). Three general-engine upgrades it forced (engineer
 the resolver's **seeded continuity-propagated pick** (a fixed witness alone flips to the mirror
 nappe past ~half a turn), per-chosen-component hole attribution, and the **hole-fit escalation
 ladder** in `certify_holes` (degree cap 3 + inset/subdiv rungs; the #220 basis change would remove
-the cap).
+the cap). A pre-merge adversarial review sweep then closed four fail-open paths (engineering log,
+Findings): the fold's chart pairing is verified by re-derivation (not length), σ-disjoint dual
+preimages on a > 360° flat sector refuse as `AmbiguousPreimage`, `solid()` gates authored polygon
+holes through the same exact flat boolean as `develop()`, and 0-overlap resolver junctions fault
+instead of re-trusting the witness.
 
 **PR 4 — `Cutter::Extrude`** (lines+arcs sketches in a placed frame): the flagship authoring primitive;
 after the acceptance test so PR 2 stays lean. Cone/Sphere/Quadric cutter variants follow as demand

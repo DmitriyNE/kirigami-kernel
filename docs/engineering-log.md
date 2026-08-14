@@ -686,6 +686,39 @@ fine — this is a log, not a schema.
   quadrature) — refine with `segments`/`support_panels`/`budget`, not by reading them as a
   regression.
 
+- **Construction-API PR 3 pre-merge review sweep — four fail-open paths closed.** A two-reviewer
+  adversarial pass over the PR 3 diff before merge confirmed four gaps, all fixed fail-closed on
+  the branch: **(1) the pw fold's chart pairing was only length-checked** — the round-trip
+  certificate lives entirely on the flat side, so a same-length mis-ordered chart slice lifted a
+  `Verified` fold onto the wrong surface; `fold_point_pw`/`fold_outline_pw` now require each
+  chart to *re-derive* its region's exact flat data (`ConeDevelopment::derives_from`: `c`, `ρ²`,
+  directrix dot products — value equality, refused as `ChartMismatch`; necessary-not-sufficient:
+  a pedal component along the surface normal is flat-invisible by construction). **(2) the
+  development is genuinely 2-to-1 past a 360° flat sector** — on a flat span > 2π (c > 2 with a
+  wide band; the current device's 275° sector is safe) a lap-wedge point has two *exact*
+  σ-preimages, both round-tripping, and the min-ε pick between them was arbitrary noise
+  comparison; the fold now collects every DRC-passing candidate and refuses σ-disjoint pairs as
+  `AmbiguousPreimage` (new `FoldFault`/`PartFault` variants; per-vertex in the wire path, which
+  also killed the permissive-clearance hack — the inner fold returns raw ε now). **(3) `solid()`
+  drilled authored polygon holes with no coherence gate** — the builder's checks are slice-local
+  (σ-extent only), so an overlapping/out-of-band `hole_flat`/`hole_domain` polygon that
+  `develop()` refuses as `TopologyMismatch` sewed a self-intersecting `Verified` shell; `solid()`
+  now runs the same exact flat boolean before building whenever authored polygons are present
+  (cost: one extra flat evaluation on hole-bearing parts — acceptable until a shared-evaluation
+  cache), plus a defense-in-depth `len < 3` polygon guard in `solid_brep` (an empty `hole_domain`
+  used to *panic* in the builder's vertex indexing). **(4) the resolver's 0-overlap junction
+  fallback re-trusted the raw witness metric** — exactly the mirror-nappe hazard the seeded
+  propagation exists to avoid (buildable via a support discontinuity or a cutter outrunning the
+  sample grid); a no-overlap junction now faults `AmbiguousRegion` instead of witness-re-deciding
+  (≥ 2 overlapping candidates keep the witness tiebreak — those all continue the material).
+  **Logged, deliberately not fixed here:** the hole ladder's inset escalation trades tangent
+  micro-cap size (`HoleLoop::max_microcap`, µ̂ units) that is *not* folded into ε — the flat-length
+  bound needs a certified ρ conversion and belongs with the #220 fit-basis rework (folding it in
+  naïvely could flip the demo's rung); the `snap30` of folded hole vertices leaves the certified
+  enclosure by ≤ ~2⁻³⁰ per coordinate (× the chart metric) without an ε term — same #220 bucket,
+  practically ~1e-9 against clearance 1; and a caller-facing σ-window for `fold` (restrict to a
+  lap deliberately) is PR 4 API material. *2026-08-14 · branch `construction-api`.*
+
 - **Construction-API PR 2 — the `author` facade, and what deriving roles flushed out.** The new
   `author` crate evaluates declarative `Part` recipes (regions + solid-cutter material ops) by an
   in-domain resolution sweep (float mechanism, conclusive-or-fault) + certified realization, gated by

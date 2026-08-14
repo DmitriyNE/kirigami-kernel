@@ -60,6 +60,7 @@ pub(crate) fn map_fold_fault(f: FoldFault) -> PartFault {
         FoldFault::EmptyLoop => PartFault::EmptyFeature,
         // Unreachable: `BuiltRegions` keeps charts parallel to the gluing by construction.
         FoldFault::ChartMismatch => PartFault::FrameMismatch,
+        FoldFault::AmbiguousPreimage => PartFault::AmbiguousPreimage,
     }
 }
 
@@ -292,12 +293,17 @@ pub enum PartFault {
     /// [`hole_flat`](Part::hole_flat) vertex at solid time) lies outside the part's developed
     /// gore — no σ in the declared domain develops to its direction.
     OutOfGore,
-    /// A fold was requested on an empty feature loop.
+    /// A fold was requested on an empty feature loop, or an authored polygon hole has fewer
+    /// than three vertices.
     EmptyFeature,
     /// The fold's µ̂-side convention is undefined: the resolved material does not keep one sign
     /// of µ̂ across the whole domain (it straddles the pedal locus µ̂ = 0, or genuinely uses both
     /// sheets). [`fold`](Part::fold) and [`hole_flat`](Part::hole_flat) need a single-side part.
     SideAmbiguous,
+    /// A flat point handed to the fold lies where the development overlaps itself (a part whose
+    /// flat sector exceeds 360°): two σ-disjoint preimages both certify, so no sound choice
+    /// exists. Author the feature outside the lap wedge.
+    AmbiguousPreimage,
 }
 
 /// One declared σ-region: the (snapped) band, its support recipe, and the requested azimuth
@@ -399,7 +405,8 @@ impl<B: Backend> Part<B> {
     }
 
     /// An interior cut authored directly in the **domain** `(σ, µ̂)` as a polygon loop (exact
-    /// power-user data).
+    /// power-user data). Like [`hole_flat`](Part::hole_flat) it must stay disjoint from every
+    /// other cut — both evaluators gate authored polygons through the exact flat boolean.
     pub fn hole_domain(mut self, poly: Vec<(Rat<B>, Rat<B>)>) -> Self {
         self.domain_holes.push(poly);
         self
@@ -411,7 +418,9 @@ impl<B: Backend> Part<B> {
     /// certified piecewise fold-inversion (the µ̂-side derived from the resolution) and drills it
     /// through the solid. Vertex winding is free; the polygon must stay disjoint from every
     /// other cut (the flat boolean's holes are pairwise disjoint — an overlap breaks the
-    /// expected topology and the coherence gate refuses the evaluation).
+    /// expected topology and the coherence gate refuses the evaluation, on **both** evaluators:
+    /// `solid` runs the same exact flat boolean before building whenever authored polygon holes
+    /// are present).
     pub fn hole_flat(mut self, poly: Vec<[Rat<B>; 2]>) -> Self {
         self.flat_holes.push(poly);
         self
@@ -503,6 +512,18 @@ impl<B: Backend> Part<B> {
             Ok(s) => s,
             Err(f) => return Verdict::Refuted(f),
         };
+        // The authored-polygon coherence gate: domain- and flat-authored holes are validated by
+        // the same exact flat boolean [`develop`](Part::develop) runs (containment + pairwise
+        // disjointness, surfaced through the face/hole counts). The solid builder's own checks
+        // are slice-local — an overlapping or out-of-band polygon must refuse here, never sew a
+        // self-intersecting shell.
+        if !self.domain_holes.is_empty() || !self.flat_holes.is_empty() {
+            match realize::flat_pattern(self, &built, structure.clone()) {
+                Verdict::Verified(_) => {}
+                Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+                Verdict::Refuted(f) => return Verdict::Refuted(f),
+            }
+        }
         match realize::solid_brep(self, &built, structure) {
             Verdict::Verified((brep, eps, report)) => {
                 Verdict::Verified(PartSolid { brep, eps, report })

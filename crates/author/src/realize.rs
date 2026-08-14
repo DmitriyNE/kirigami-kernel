@@ -412,10 +412,14 @@ fn certify_holes<B: Backend>(
         };
         let mut certified: Option<HoleLoop<B>> = None;
         let mut tightest: Option<Rat<B>> = None;
+        // NOTE: escalating the tangent inset (1/200 → 1/20) trades hole-shape fidelity near the
+        // tangents — the bridged micro-caps (`HoleLoop::max_microcap`, µ̂ units) are NOT folded
+        // into ε (the flat-length bound needs a certified ρ conversion; logged V&V gap, with
+        // the fit-basis rework).
         'ladder: for margin_den in [200i128, 20] {
             for mult in [1usize, 4, 16] {
                 let rung = RailFit {
-                    subdiv: base.subdiv * mult,
+                    subdiv: base.subdiv.saturating_mul(mult),
                     ..base
                 };
                 match surface_hole_loop(
@@ -701,6 +705,12 @@ pub(crate) fn solid_brep<B: Backend>(
     // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
     // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
     let mut poly_holes = part.domain_holes.clone();
+    // A polygon cut needs at least a triangle — the builder indexes vertices unchecked, and
+    // this evaluator must stay fail-closed even without the flat gate (defense in depth for
+    // both authored hole classes).
+    if poly_holes.iter().any(|p| p.len() < 3) {
+        return Verdict::Refuted(PartFault::EmptyFeature);
+    }
     if !part.flat_holes.is_empty() {
         let side = match structure.mu_negative {
             Some(s) => s,
@@ -708,7 +718,7 @@ pub(crate) fn solid_brep<B: Backend>(
         };
         let zero = Rat::from_i128(0);
         for poly in &part.flat_holes {
-            if poly.is_empty() {
+            if poly.len() < 3 {
                 return Verdict::Refuted(PartFault::EmptyFeature);
             }
             let mut folded: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(poly.len());

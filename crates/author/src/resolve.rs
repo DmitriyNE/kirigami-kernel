@@ -53,6 +53,18 @@ pub(crate) struct Run<B: Backend> {
     pub upper: Label,
 }
 
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Run<B> {
+    fn clone(&self) -> Self {
+        Run {
+            lo: self.lo.clone(),
+            hi: self.hi.clone(),
+            lower: self.lower,
+            upper: self.upper,
+        }
+    }
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
     /// The boundary runs, in σ order, covering the declared domain.
@@ -65,6 +77,18 @@ pub(crate) struct Structure<B: Backend> {
     /// µ̂ < 0, `Some(false)` = all µ̂ > 0, `None` = mixed or 0-straddling. The fold's side
     /// convention (derived, never authored — the seam-#3 doctrine).
     pub mu_negative: Option<bool>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Structure<B> {
+    fn clone(&self) -> Self {
+        Structure {
+            runs: self.runs.clone(),
+            holes: self.holes.clone(),
+            roles: self.roles.clone(),
+            mu_negative: self.mu_negative,
+        }
+    }
 }
 
 /// The resolver's sample-grid density per region (also the realizer's corner pad unit).
@@ -344,9 +368,12 @@ fn sample_comps<B: Backend>(
 /// per-sample nearest pick flips mid-domain. The kept material is one connected face, so its
 /// µ̂-component varies continuously in σ; the witness designates it **once** (at the sample with
 /// the widest distance margin — right where the witness point actually lies), and overlap
-/// carries the choice outward. Where continuity alone is inconclusive (no or several overlaps)
-/// the witness re-decides among the candidates; with no pick at all, any multi-component sample
-/// faults [`PartFault::AmbiguousRegion`] as before.
+/// carries the choice outward. Where several candidates overlap (a hole opening) the witness
+/// re-decides among them; where **none** overlaps (a support discontinuity, or a cutter
+/// outrunning the sample grid) the junction is refused as [`PartFault::AmbiguousRegion`] —
+/// re-trusting the raw witness metric there is exactly the mirror-nappe hazard the seeded
+/// propagation exists to avoid. With no pick at all, any multi-component sample faults
+/// [`PartFault::AmbiguousRegion`] as before.
 fn choose_comps<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
@@ -411,8 +438,10 @@ fn choose_comps<B: Backend>(
     }
     let mut chosen = vec![usize::MAX; at.len()];
     chosen[seed] = margin_of(&dists[seed]).0;
-    // Propagate outward from the seed, right then left.
-    let step = |chosen: &mut Vec<usize>, from: usize, to: usize| {
+    // Propagate outward from the seed, right then left. Several overlapping candidates (a hole
+    // opening) → the witness re-decides among them; **none** → refuse the junction rather than
+    // re-trust the raw witness metric far from the witness (the mirror-nappe hazard).
+    let step = |chosen: &[usize], from: usize, to: usize| -> Result<usize, PartFault> {
         let prev = ends(&at[from].2[chosen[from]]);
         let comps = &at[to].2;
         let overlapping: Vec<usize> = (0..comps.len())
@@ -421,31 +450,30 @@ fn choose_comps<B: Backend>(
                 lo < prev.1 && prev.0 < hi
             })
             .collect();
-        chosen[to] = match overlapping.len() {
-            1 => overlapping[0],
-            // Continuity inconclusive — the witness re-decides among the candidates (all
-            // components when nothing overlaps, e.g. across a support discontinuity).
-            _ => {
-                let pool: Vec<usize> = if overlapping.is_empty() {
-                    (0..comps.len()).collect()
-                } else {
-                    overlapping
-                };
-                pool.into_iter()
-                    .min_by(|a, b| {
-                        dists[to][*a]
-                            .partial_cmp(&dists[to][*b])
-                            .unwrap_or(core::cmp::Ordering::Equal)
-                    })
-                    .expect("nonempty components")
+        match overlapping.len() {
+            1 => Ok(overlapping[0]),
+            0 => {
+                // Attribute to the op whose rail bounds the junction sample's first component.
+                let op = comps[0].comp.hi.as_ref().unwrap().1.0;
+                Err(PartFault::AmbiguousRegion { op })
             }
-        };
+            _ => Ok(overlapping
+                .into_iter()
+                .min_by(|a, b| {
+                    dists[to][*a]
+                        .partial_cmp(&dists[to][*b])
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                })
+                .expect("nonempty components")),
+        }
     };
     for i in seed + 1..at.len() {
-        step(&mut chosen, i - 1, i);
+        let pick = step(&chosen, i - 1, i)?;
+        chosen[i] = pick;
     }
     for i in (0..seed).rev() {
-        step(&mut chosen, i + 1, i);
+        let pick = step(&chosen, i + 1, i)?;
+        chosen[i] = pick;
     }
     Ok(chosen)
 }

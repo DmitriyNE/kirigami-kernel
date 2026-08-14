@@ -116,3 +116,39 @@ fn a_flat_authored_hole_is_cut_into_the_pattern() {
     assert_eq!(flat.region().faces[0].holes.len(), 2);
     assert_eq!(flat.flat_hole_polys(), &[diamond]);
 }
+
+/// An overlapping authored hole is refused by **both** evaluators: `develop` counts it in the
+/// exact flat boolean, and `solid` runs the same gate before building — an overlap XORs an
+/// island face, and drilled blind it would sew a self-intersecting shell.
+#[test]
+fn an_overlapping_flat_hole_refuses_the_solid_too() {
+    // The diamond centered on the derived drill's flat window (the σ = 0 ruling pierces the
+    // drill cylinder, so its hole develops around ψ ≈ 0 — right here).
+    let c = forward(qi(0), q(23, 10));
+    let r = q(1, 10);
+    let diamond = vec![
+        [c[0].add(&r), c[1].clone()],
+        [c[0].clone(), c[1].add(&r)],
+        [c[0].sub(&r), c[1].clone()],
+        [c[0].clone(), c[1].sub(&r)],
+    ];
+    let part = panel().hole_flat(diamond);
+    assert!(matches!(
+        part.develop(),
+        Verdict::Refuted(PartFault::TopologyMismatch { .. })
+    ));
+    assert!(matches!(
+        part.solid(),
+        Verdict::Refuted(PartFault::TopologyMismatch { .. })
+    ));
+}
+
+/// A degenerate authored polygon (here: empty) is refused as a typed fault on the solid path —
+/// never handed to the builder's unchecked vertex indexing.
+#[test]
+fn a_degenerate_domain_hole_is_refused_not_built() {
+    assert!(matches!(
+        panel().hole_domain(vec![]).solid(),
+        Verdict::Refuted(_)
+    ));
+}
