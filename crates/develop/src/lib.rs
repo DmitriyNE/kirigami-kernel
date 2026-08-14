@@ -22,6 +22,7 @@ pub mod flat;
 pub mod fold;
 pub mod interval;
 pub mod part;
+pub mod pcurve;
 pub mod place;
 pub mod seam_frame;
 pub mod unroll;

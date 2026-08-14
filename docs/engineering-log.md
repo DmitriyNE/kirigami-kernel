@@ -648,6 +648,51 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Interior holes are shaped by a representation choice, not a fit-quality limit — the p-curve
+  milestone (PC.0 GO-gate).** The device's drill holes export as two cubic rails sewn by two
+  straight chords. Measured on the emitted flat pattern, each hole's two longest edges are ~0.14
+  against a 0.46 hole diameter — **31% flats**, 2.3× longer than any other edge — and in the STEP
+  solid those chords are literal straight lines between two Bézier rails. Root cause: the trim
+  layer represents a cut as a **graph** `µ̂ = f(σ)`. A closed cut turns around in σ at the two
+  tangent rulings (where the cutter grazes the sheet and `dµ̂/dσ` blows up), which no graph can
+  represent, so the loop is split into near/far graphs that must stop short of the turning points,
+  and the gap is bridged straight. The gap closes only as **√inset**, so it is stubborn.
+  **Spike (three strategies, on the real drill; window width 0.053, hole height 0.291):** *(S1)*
+  the current fitted rail — the best rung over the whole margin×subdiv ladder is a **30% cap at
+  ε 0.257** (margin 1/200, subdiv ×16); the rung that certifies in the demo gives **48%**. There
+  is no rung with a small cap: shrinking the inset to fix the shape makes the fit diverge, which
+  is exactly why the ladder escalated the inset *up* and capped degree at 3 — it traded the hole's
+  shape to buy certification. *(S2)* graded pieces marching toward the tangent, reusing the
+  existing fit — **ε 1.6e2 … 1.9e9**, catastrophic: a cubic in σ over a 1e-5-wide window at
+  σ ≈ −0.94 is Vandermonde-hopeless, so the monomial basis blocks the piecewise route until #220
+  lands. *(S3)* the **exact algebraic branch** — the cut is `a(σ)µ̂² + b(σ)µ̂ + c(σ) = 0`, so the
+  boundary is `µ̂ = m(σ) ± √H(σ)` with `m = −b/2a` and `H = (b²−4ac)/4a²` *exact rational
+  functions*; with no fit in the way the cap follows √inset with no floor (4.5% at 1/2000, below
+  f64 resolution at 1/200000). **Decision: represent domain cut curves as p-curves `(σ(t), µ̂(t))`,
+  not graphs.** This is not hole-specific — `Cutter::Extrude` (PR 4) puts turning points on the
+  *outer* boundary too, so general intersections need the machinery regardless. Cheaper than it
+  looks: the deepest certified layer is **already parametric** — `AnchorDevCert` has always carried
+  `sigma`/`mu` as functions of a parameter `t`, and the unroll merely instantiates it with the
+  identity reparametrization. The graph assumption is bolted on above it in four places
+  (`BoundaryArc::Rail`, `HoleRail`'s near/far band, `cut_fit`, and the solid builder's
+  single-slice restriction on polygon holes). History note: the deleted demo's `drill_hole` was
+  the exact-branch construction — no margin, no fit, tangent vertices exactly at `disc = 0`, no
+  caps, refold defect 1.4e-6 against today's 1.8e-3 — but float-sampled and uncertified, which is
+  why the facade replaced it. The milestone's point is to have both. *2026-08-14 · PC.0 GO ·
+  branch `pcurve` · tasks #221–#227*
+
+- **A root landing exactly on a scan node was invisible to the rational root scanner.**
+  `scan_roots` only registered a *sign change* between adjacent nodes, and required both signs
+  non-zero — so a root sitting precisely on a node was skipped twice (each flanking cell has a
+  zero endpoint, so neither reads as a change). Symmetric geometry produces this routinely: a
+  curve turning at `t = 0`, a hole centred on a ruling, any dyadic scan over a symmetric span.
+  Found by the p-curve core's own turning-point test (the unit circle's turn at `t = 0` reported
+  zero turns). Fixed by taking an exact zero at a node as a root as it stands. The primitive moved
+  down to `develop::pcurve` (the curve core needs it to locate turning points and station
+  crossings) and `export::trim` now re-exports it instead of keeping a second copy — the copy was
+  how the two drifted. Full workspace re-run after the fix: no behaviour change anywhere else.
+  *2026-08-14 · resolved (PC.1) · branch `pcurve`*
+
 - **Construction-API PR 3 — the piecewise/side fold, and what the self-lapping rewrite flushed
   out.** `develop::fold::{fold_point_pw, fold_outline_pw}` invert the *signed* connected
   development `D = Γ(σ) + µ̂·ρ·e(ψ)` per region in its running frame, and `author` grew
@@ -809,7 +854,7 @@ fine — this is a log, not a schema.
 
 - **Algebraic-σ arrangement vertices → the micro-cap treatment.** Arrangement-derived boundary transitions (D3∩D1 crossings; the D4 tangent rulings where near meets far) land at **algebraic (non-rational) σ**, but `unroll::BoundaryArc` requires **rational** `sigma_start/end` and `unroll_trim_loop` chains loops **exactly** (`sm_eq`). Fail-closed treatment: snap σ to a rational (from a certified bisection of the relevant rational residual — the D1-rail∩D3-cylinder `h(σ)`, or `tangent_poly` `g(σ)`), and bridge the tiny `μ̂` mismatch between the two adjacent rails with a **micro-cap** (an exact radial `Cap`). The loop then chains exactly while the geometric error is a certified-small residual. **SVG-polish refinement:** for a *transverse* crossing (D3∩D1) the micro-cap is driven to ~0 by refining the crossing σ to where the **fitted** D3 meets D1 (`μ̂_D3fit − μ̂_D1 = 0`, a bisection) instead of the exact geometric crossing — the two rails then coincide there and the D1↔D3 corner is a **clean join**, no visible step. Below the development's rounding precision the two developed points collapse to the *same* rational (a zero-length edge `arrange2d` rejects as `DegenerateLine`), so `flat_to_poly` also **dedups exactly-coincident consecutive vertices** (float-free). D4 tangent micro-caps stay (the √-branch residual, see next). *2026-08-11 · resolved (`5973302`, `131ca8c`; SVG polish follow-up) · branch `roadmap-flex-pcb`*
 
-- **A developed circular hole has slightly-flattened tangent points — an irreducible √-branch limit, not a bug.** A circle's boundary is double-valued in σ (near/far branches meeting at the two tangent rulings, where `μ̂` has a vertical tangent — a √-branch point). A polynomial rail cannot match the vertical tangent, so the near/far fits stop meeting a small gap short (~0.06 μ̂ on a ~0.4-tall hole, floor independent of margin/degree); the two branches are joined by a tangent micro-cap → the developed hole's two points are slightly flattened (an exact, watertight `Cap`). Fully-exact alternative (AlgReal-σ `BoundaryArc`, or a per-point developed polyline) deferred. *2026-08-11 · watching · branch `roadmap-flex-pcb`*
+- **A developed circular hole has slightly-flattened tangent points — an irreducible √-branch limit, not a bug.** A circle's boundary is double-valued in σ (near/far branches meeting at the two tangent rulings, where `μ̂` has a vertical tangent — a √-branch point). A polynomial rail cannot match the vertical tangent, so the near/far fits stop meeting a small gap short (~0.06 μ̂ on a ~0.4-tall hole, floor independent of margin/degree); the two branches are joined by a tangent micro-cap → the developed hole's two points are slightly flattened (an exact, watertight `Cap`). Fully-exact alternative (AlgReal-σ `BoundaryArc`, or a per-point developed polyline) deferred. *2026-08-11 · watching · branch `roadmap-flex-pcb`* — **AMENDED 2026-08-14: "irreducible" was true only of the *graph* representation `µ̂ = f(σ)`, and the flattening is far larger than this entry's ~0.06 estimate suggests.** The limit is not the √-branch as such but the decision to represent a closed cut as two graphs; measured on the device drill, the *best* the graph model achieves over every margin/degree/subdiv rung is a chord ~30% of the hole's height (the shipped rung gives 48%). See the p-curve entry at the top of this section — the deferred "per-point developed polyline" was in fact built and shipped in the old demo, then deleted with it.
 
 - **The cut oracle's monomial-basis Vandermonde fit is ill-conditioned over a narrow off-origin σ-range.** Fitting the D3 notch's near branch over `σ≈[0.3,0.5]` (narrow, far from the σ-origin) with `fit_cut_rail`'s monomial Vandermonde yields huge coefficients at degree ≥ 4, whose interval evaluation explodes (`cut_fit` ε ~ 100s–1000s, *growing* with degree). A **low degree** (3; the dip is gentle) certifies tightly there. The hole fit is unaffected because its range straddles the origin. A Chebyshev-basis oracle would remove the per-rail degree cap; deferred (oracle-only, float-side, fail-closed regardless). *2026-08-11 · watching · branch `roadmap-flex-pcb`*
 

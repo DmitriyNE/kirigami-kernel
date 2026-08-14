@@ -43,66 +43,12 @@ fn ruling_xy<B: Backend>(chart: &Chart<B>) -> (RatFunc<B>, RatFunc<B>) {
     )
 }
 
-/// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
-/// the final bracket — exact sign evaluation, rational midpoints. `None` if no sign change or a
-/// pole is hit. (Public for the authoring layer's corner refinement — the same primitive
-/// [`outer_loop`] uses to collapse notch corners to clean joins.)
-pub fn bisect_root<B: Backend>(
-    f: &RatFunc<B>,
-    lo: &Rat<B>,
-    hi: &Rat<B>,
-    iters: usize,
-) -> Option<Rat<B>> {
-    let half = Rat::new(1, 2);
-    let mut a = lo.clone();
-    let mut b = hi.clone();
-    let sa = f.eval(&a)?.sign();
-    if sa == 0 {
-        return Some(a);
-    }
-    if f.eval(&b)?.sign() == sa {
-        return None;
-    }
-    for _ in 0..iters {
-        let m = a.add(&b).mul(&half);
-        let sm = f.eval(&m)?.sign();
-        if sm == 0 {
-            return Some(m);
-        }
-        if sm == sa {
-            a = m; // sign at `a` unchanged
-        } else {
-            b = m;
-        }
-    }
-    Some(a.add(&b).mul(&half))
-}
-
-/// All sign-change roots of `f` on `[lo, hi]`, found by scanning `scan` sub-intervals and
-/// bisecting each bracket. `None` if `f` has a pole at a scan node.
-fn scan_roots<B: Backend>(
-    f: &RatFunc<B>,
-    lo: &Rat<B>,
-    hi: &Rat<B>,
-    scan: usize,
-    iters: usize,
-) -> Option<Vec<Rat<B>>> {
-    let n = scan.max(4);
-    let width = hi.sub(lo).div(&Rat::from_i128(n as i128));
-    let mut prev: Option<(Rat<B>, i8)> = None;
-    let mut roots: Vec<Rat<B>> = Vec::new();
-    for k in 0..=n {
-        let x = lo.add(&width.mul(&Rat::from_i128(k as i128)));
-        let s = f.eval(&x)?.sign();
-        if let Some((px, ps)) = &prev {
-            if *ps != 0 && s != 0 && *ps != s {
-                roots.push(bisect_root(f, px, &x, iters)?);
-            }
-        }
-        prev = Some((x, s));
-    }
-    Some(roots)
-}
+// The rational root primitives live in `develop::pcurve` — below this layer, because the p-curve
+// core needs them to locate σ-turning points and station crossings. Re-exported here (rather than
+// kept as a second copy) so the trim layer and the curve core cannot drift apart: the duplicate
+// here silently skipped a root landing *exactly* on a scan node, which symmetric geometry
+// produces routinely.
+pub use develop::pcurve::{bisect_root, scan_roots};
 
 /// The σ where the (exact) D1 rail point enters/exits a cylinder `(cx, cy, r²)` — the roots of
 /// `h(σ) = (μ̂₁·r_x − cx)² + (μ̂₁·r_y − cy)² − r²`, which is exact-rational in σ. Lets the D1∩D3
