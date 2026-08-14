@@ -21,6 +21,7 @@
 
 use crate::cone::{ConeDevelopment, DevConfig};
 use crate::interval::{RatIv, cos_on, eval_ratfunc_on, sin_on, sqrt, sqrt_on};
+use crate::part::PiecewiseDevelopment;
 use certify_core::Verdict;
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Interval, Rat};
@@ -73,6 +74,9 @@ pub enum FoldFault {
     PoleInEval,
     /// A [`fold_outline`] loop was handed no vertices.
     EmptyLoop,
+    /// The chart slice handed to the piecewise fold is not parallel to the gluing's regions
+    /// ([`fold_point_pw`] needs one chart per region for the 3-D lift).
+    ChartMismatch,
 }
 
 /// The signed area `cos ψ(σ)·(y − γ_y(σ)) − sin ψ(σ)·(x − γ_x(σ))` at a rational σ — the
@@ -231,25 +235,10 @@ pub fn fold_point<B: Backend>(
     let abs_mu = r.mul(&inv_rho);
     let mu = if mu_negative { abs_mu.neg() } else { abs_mu };
 
-    // lift: C(σ, μ̂, w)[i] = c_i(σ) + μ̂·r⃗_i(σ) + w·n_i(σ), each field interval-evaluated over σ.
-    let eval = |f: &lattice::RatFunc<B>| eval_ratfunc_on(f, &sigma);
-    let mut point: [RatIv<B>; 3] = [
-        RatIv::point(Rat::from_i128(0)),
-        RatIv::point(Rat::from_i128(0)),
-        RatIv::point(Rat::from_i128(0)),
-    ];
-    for (i, slot) in point.iter_mut().enumerate() {
-        let (ci, ri, ni) = (
-            eval(&chart.pedal().comp(i)),
-            eval(&chart.ruling().comp(i)),
-            eval(&chart.normal().comp(i)),
-        );
-        let (ci, ri, ni) = match (ci, ri, ni) {
-            (Some(c), Some(r), Some(n)) => (c, r, n),
-            _ => return Verdict::Refuted(FoldFault::PoleInEval),
-        };
-        *slot = ci.add(&ri.mul(&mu)).add(&ni.scale(w)).rounded();
-    }
+    let point = match lift_box(chart, &sigma, &mu, w) {
+        Ok(p) => p,
+        Err(f) => return Verdict::Refuted(f),
+    };
 
     // round-trip: re-develop the recovered (σ, μ̂) and measure the residual to the input (x, y).
     let back = match dev.point_on(&sigma, &mu, cfg) {
@@ -380,6 +369,367 @@ pub fn fold_outline<B: Backend>(
         }
     }
 
+    let half = clearance.mul(&Rat::new(1, 2));
+    if eps.cmp(&half) == Ordering::Less {
+        Verdict::Verified(FoldedWire {
+            points,
+            eps,
+            clearance: clearance.clone(),
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
+// ---- The piecewise/side fold (the connected-frame extension) ------------------------------------
+
+/// The exact chart lift `C(σ, μ̂, w)[i] = c_i(σ) + μ̂·r⃗_i(σ) + w·n_i(σ)` over the recovered
+/// enclosures — a rational 3-D box, each field interval-evaluated over σ.
+fn lift_box<B: Backend>(
+    chart: &Chart<B>,
+    sigma: &RatIv<B>,
+    mu: &RatIv<B>,
+    w: &Rat<B>,
+) -> Result<[RatIv<B>; 3], FoldFault> {
+    let eval = |f: &lattice::RatFunc<B>| eval_ratfunc_on(f, sigma);
+    let mut point: [RatIv<B>; 3] = [
+        RatIv::point(Rat::from_i128(0)),
+        RatIv::point(Rat::from_i128(0)),
+        RatIv::point(Rat::from_i128(0)),
+    ];
+    for (i, slot) in point.iter_mut().enumerate() {
+        let (ci, ri, ni) = (
+            eval(&chart.pedal().comp(i)),
+            eval(&chart.ruling().comp(i)),
+            eval(&chart.normal().comp(i)),
+        );
+        let (ci, ri, ni) = match (ci, ri, ni) {
+            (Some(c), Some(r), Some(n)) => (c, r, n),
+            _ => return Err(FoldFault::PoleInEval),
+        };
+        *slot = ci.add(&ri.mul(mu)).add(&ni.scale(w)).rounded();
+    }
+    Ok(point)
+}
+
+/// The signed area of the **running-frame directrix residual** at a rational σ within one glued
+/// region: `cos ψ·(y − Γ_y(σ)) − sin ψ·(x − Γ_x(σ))` with `Γ(σ) = base + ∫_lo^σ γ′` — the region's
+/// cumulative flat frame ([`PiecewiseDevelopment`]'s `point_from` shape). `None` on a γ pole
+/// (propagated, unlike the single-panel [`cross_at`]'s γ≡0 fallback — a piecewise region's γ is
+/// load-bearing).
+fn cross_at_from<B: Backend>(
+    dev: &ConeDevelopment<B>,
+    base: &[RatIv<B>; 2],
+    lo: &Rat<B>,
+    s: &Rat<B>,
+    x: &Rat<B>,
+    y: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Option<RatIv<B>> {
+    let ang = dev.angle(s, cfg.terms);
+    let c = cos_on(&ang, cfg.terms);
+    let si = sin_on(&ang, cfg.terms);
+    let g = dev.directrix_between(lo, s, cfg)?;
+    let yg = RatIv::point(y.clone()).sub(&base[1]).sub(&g[1]);
+    let xg = RatIv::point(x.clone()).sub(&base[0]).sub(&g[0]);
+    Some(c.mul(&yg).sub(&si.mul(&xg)))
+}
+
+/// [`invert_sigma`] in a region's **running frame**: monotone bisection on the signed area of the
+/// residual `(x, y) − Γ(σ)` over `domain` (one faithfulness piece — see [`faithful_pieces`]).
+/// `flip` is the **side**: the piecewise development is always signed, so `µ̂ < 0` puts the
+/// residual at `ψ + π` (the opposite bracketing convention) even where `γ ≡ 0` — unlike the
+/// single-panel `|µ̂|` fold, the flip depends on the side alone.
+#[allow(clippy::too_many_arguments)]
+fn invert_sigma_from<B: Backend>(
+    dev: &ConeDevelopment<B>,
+    base: &[RatIv<B>; 2],
+    lo_frame: &Rat<B>,
+    x: &Rat<B>,
+    y: &Rat<B>,
+    domain: &Interval<B>,
+    iters: usize,
+    cfg: &DevConfig<B>,
+    flip: bool,
+) -> Result<RatIv<B>, FoldFault> {
+    use core::cmp::Ordering;
+    if domain.lo.cmp(&domain.hi) != Ordering::Less {
+        return Err(FoldFault::DegenerateDomain);
+    }
+    let xat = |s: &Rat<B>| -> Result<RatIv<B>, FoldFault> {
+        let c = cross_at_from(dev, base, lo_frame, s, x, y, cfg).ok_or(FoldFault::PoleInEval)?;
+        Ok(if flip { c.neg() } else { c })
+    };
+    // Bracket: cross(σ_lo) ≥ 0 and cross(σ_hi) ≤ 0, else the angle is outside this piece.
+    if xat(&domain.lo)?.hi().sign() < 0 || xat(&domain.hi)?.lo().sign() > 0 {
+        return Err(FoldFault::OutOfGore);
+    }
+    let (mut lo, mut hi) = (domain.lo.clone(), domain.hi.clone());
+    // The non-dyadic 3/7 split of `invert_sigma` (a rational root is never hit exactly, so the
+    // straddle-stop triggers only near convergence).
+    let ratio = Rat::new(3, 7);
+    for _ in 0..iters {
+        let mid = lo.add(&hi.sub(&lo).mul(&ratio));
+        let cr = xat(&mid)?;
+        if cr.lo().sign() > 0 {
+            lo = mid;
+        } else if cr.hi().sign() < 0 {
+            hi = mid;
+        } else {
+            return Ok(RatIv::new(lo, hi));
+        }
+    }
+    Ok(RatIv::new(lo, hi))
+}
+
+/// Split a σ-domain into pieces on which the signed-area bisection is **faithful**: the sign of
+/// `cross = |res|·sin(θ − ψ(σ))` tracks `sign(θ − ψ)` only while the piece's flat-angle span stays
+/// below π. Splits at σ = 0 first (the arctan symmetry point — [`split_domain`]'s rule), then
+/// bisects until each piece's certified ψ-span upper bound clears a rational lower bound of π.
+/// This is what makes the fold **wrapping-safe**: on a wrapping chart (`c ≥ 2`, e.g. the
+/// self-lapping `c = 260/97`) even a one-sided domain sweeps more than π, where the σ=0 split
+/// alone would be unsound. Bounded depth; a piece still too wide at the cap is returned anyway —
+/// a wrong bracket cannot *certify* (the round-trip ε is the certificate), only fail.
+fn faithful_pieces<B: Backend>(
+    dev: &ConeDevelopment<B>,
+    domain: &Interval<B>,
+    terms: usize,
+) -> Vec<Interval<B>> {
+    use core::cmp::Ordering;
+    // 314159/100000 < π: a certified span-hi at or below it is strictly below π.
+    let pi_lo = Rat::new(314_159, 100_000);
+    let zero = Rat::from_i128(0);
+    let mut queue: Vec<(Interval<B>, usize)> = Vec::new();
+    if domain.lo.sign() < 0 && domain.hi.sign() > 0 {
+        queue.push((
+            Interval {
+                lo: domain.lo.clone(),
+                hi: zero.clone(),
+            },
+            0,
+        ));
+        queue.push((
+            Interval {
+                lo: zero,
+                hi: domain.hi.clone(),
+            },
+            0,
+        ));
+    } else {
+        queue.push((domain.clone(), 0));
+    }
+    let mut out = Vec::new();
+    while let Some((piece, depth)) = queue.pop() {
+        let span = dev
+            .angle(&piece.hi, terms)
+            .sub(&dev.angle(&piece.lo, terms));
+        if span.hi().cmp(&pi_lo) != Ordering::Greater || depth >= 24 {
+            out.push(piece);
+        } else {
+            let mid = piece.lo.add(&piece.hi).mul(&Rat::new(1, 2));
+            queue.push((
+                Interval {
+                    lo: piece.lo,
+                    hi: mid.clone(),
+                },
+                depth + 1,
+            ));
+            queue.push((
+                Interval {
+                    lo: mid,
+                    hi: piece.hi,
+                },
+                depth + 1,
+            ));
+        }
+    }
+    out.sort_by(|a, b| a.lo.cmp(&b.lo));
+    out
+}
+
+/// Fold a flat point back through a **piecewise development** (the connected glued frame):
+/// invert the *signed* development `D = Γ(σ) + µ̂·ρ·e(ψ)` — `Γ` the running cumulative directrix —
+/// to a certified `(σ, µ̂)` enclosure and lift it to a 3-D box on the owning region's chart.
+///
+/// Beyond the single-panel [`fold_point`]:
+/// - **signed µ̂ throughout** (the [`PiecewiseDevelopment`] convention): with `mu_negative` the
+///   residual sits at `ψ + π` even where `γ ≡ 0`, so the bisection flips on the side alone;
+/// - **every region is tried in its own running frame**; a candidate must bracket inside one of
+///   the region band's faithfulness pieces, and the smallest round-trip ε wins — sound however
+///   the candidate was found, because the round-trip *is* the certificate;
+/// - **wrapping-safe**: bands are split until each piece's certified ψ-span is below π
+///   ([`faithful_pieces`]) — the σ=0 split alone is not enough on a wrapping chart (`c ≥ 2`).
+///
+/// `charts` are the per-region charts, parallel to the gluing's regions (the 3-D lift needs the
+/// owning region's surface; refused as [`FoldFault::ChartMismatch`] if not parallel). Returns
+/// `Verified` under the DRC `ε < clearance/2`, `Unresolved(ε)` to refine (`iters`, `cfg`), or
+/// `Refuted` when no region develops to the point's direction (`OutOfGore`) or a field poles.
+///
+/// ```
+/// use certify_core::Verdict;
+/// use develop::cone::{ConeDevelopment, DevConfig};
+/// use develop::fold::fold_point_pw;
+/// use develop::part::{Development, PiecewiseDevelopment};
+/// use fixtures::devices::cone;
+/// use lattice::{Bignum, Interval, Rat};
+///
+/// let chart = cone();
+/// let pw = PiecewiseDevelopment::new(vec![(
+///     Interval { lo: Rat::<Bignum>::from_i128(0), hi: Rat::from_i128(1) },
+///     ConeDevelopment::new(&chart).unwrap(),
+/// )])
+/// .unwrap();
+/// let cfg = DevConfig::tight();
+/// let (s, m) = (Rat::new(1, 2), Rat::from_i128(-1));
+/// let (x, y) = Development::point(&pw, &s, &m, &cfg).unwrap().center();
+/// let charts = [chart];
+/// match fold_point_pw(&pw, &charts, &x, &y, &Rat::from_i128(0), 60, true, &cfg, &Rat::from_i128(1)) {
+///     Verdict::Verified(f) => assert!(f.sigma.contains(&s) && f.mu.contains(&m)),
+///     _ => panic!("the fold must certify"),
+/// }
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn fold_point_pw<B: Backend>(
+    pw: &PiecewiseDevelopment<B>,
+    charts: &[Chart<B>],
+    x: &Rat<B>,
+    y: &Rat<B>,
+    w: &Rat<B>,
+    iters: usize,
+    mu_negative: bool,
+    cfg: &DevConfig<B>,
+    clearance: &Rat<B>,
+) -> Verdict<Fold3D<B>, FoldFault, Rat<B>> {
+    use core::cmp::Ordering;
+    if charts.len() != pw.regions().len() {
+        return Verdict::Refuted(FoldFault::ChartMismatch);
+    }
+    let mut best: Option<Fold3D<B>> = None;
+    for (k, (band, dev)) in pw.regions().iter().enumerate() {
+        let base = match pw.cum_before(k, cfg) {
+            Some(b) => b,
+            None => return Verdict::Refuted(FoldFault::PoleInEval),
+        };
+        for piece in faithful_pieces(dev, band, cfg.terms) {
+            let sigma = match invert_sigma_from(
+                dev,
+                &base,
+                &band.lo,
+                x,
+                y,
+                &piece,
+                iters,
+                cfg,
+                mu_negative,
+            ) {
+                Ok(s) => s,
+                Err(FoldFault::OutOfGore) => continue,
+                Err(f) => return Verdict::Refuted(f),
+            };
+            // radius → |µ̂| = |res|/ρ, res the running-frame residual over the σ-enclosure.
+            let g = match dev.directrix_between_on(&band.lo, &sigma, cfg) {
+                Some(g) => g,
+                None => return Verdict::Refuted(FoldFault::PoleInEval),
+            };
+            let xr = RatIv::point(x.clone()).sub(&base[0]).sub(&g[0]);
+            let yr = RatIv::point(y.clone()).sub(&base[1]).sub(&g[1]);
+            let r = sqrt_on(&xr.mul(&xr).add(&yr.mul(&yr)), &cfg.sqrt_eps);
+            let inv_rho = match dev
+                .radius_on(&sigma, &cfg.sqrt_eps)
+                .and_then(|r| r.recip_pos())
+            {
+                Some(iv) => iv,
+                None => return Verdict::Refuted(FoldFault::PoleInEval),
+            };
+            let abs_mu = r.mul(&inv_rho);
+            let mu = if mu_negative { abs_mu.neg() } else { abs_mu };
+            let point = match lift_box(&charts[k], &sigma, &mu, w) {
+                Ok(p) => p,
+                Err(f) => return Verdict::Refuted(f),
+            };
+            // Round-trip: re-develop through the region's running frame, measure the residual.
+            let back = match dev.point_from_on(&base, &band.lo, &sigma, &mu, cfg) {
+                Some(b) => b,
+                None => return Verdict::Refuted(FoldFault::PoleInEval),
+            };
+            let (ex, ey) = (axis_residual(&back.x, x), axis_residual(&back.y, y));
+            let eps = sqrt(&ex.mul(&ex).add(&ey.mul(&ey)), &cfg.sqrt_eps)
+                .hi()
+                .clone();
+            if best
+                .as_ref()
+                .map(|b| eps.cmp(&b.eps) == Ordering::Less)
+                .unwrap_or(true)
+            {
+                best = Some(Fold3D {
+                    sigma,
+                    mu,
+                    point,
+                    eps,
+                    clearance: clearance.clone(),
+                });
+            }
+        }
+    }
+    match best {
+        None => Verdict::Refuted(FoldFault::OutOfGore),
+        Some(f) => {
+            let half = clearance.mul(&Rat::new(1, 2));
+            if f.eps.cmp(&half) == Ordering::Less {
+                Verdict::Verified(f)
+            } else {
+                Verdict::Unresolved(f.eps)
+            }
+        }
+    }
+}
+
+/// Fold a whole flat loop back through a **piecewise development**: [`fold_point_pw`] every
+/// vertex (each in whichever region's running frame brackets it) and collect the 3-D boxes into a
+/// [`FoldedWire`]. Each vertex folds under a permissive clearance to read its raw round-trip ε
+/// back; the uniform `ε = max` is gated once by the DRC `ε < clearance/2` — `Unresolved(ε)` to
+/// refine, `Refuted` for an empty loop, a vertex outside the glued gore, or mismatched charts.
+#[allow(clippy::too_many_arguments)]
+pub fn fold_outline_pw<B: Backend>(
+    pw: &PiecewiseDevelopment<B>,
+    charts: &[Chart<B>],
+    flat: &[[Rat<B>; 2]],
+    w: &Rat<B>,
+    iters: usize,
+    mu_negative: bool,
+    cfg: &DevConfig<B>,
+    clearance: &Rat<B>,
+) -> Verdict<FoldedWire<B>, FoldFault, Rat<B>> {
+    use core::cmp::Ordering;
+    if flat.is_empty() {
+        return Verdict::Refuted(FoldFault::EmptyLoop);
+    }
+    let permissive = Rat::from_i128(1_000_000);
+    let mut points: Vec<[RatIv<B>; 3]> = Vec::with_capacity(flat.len());
+    let mut eps = Rat::from_i128(0);
+    for p in flat {
+        match fold_point_pw(
+            pw,
+            charts,
+            &p[0],
+            &p[1],
+            w,
+            iters,
+            mu_negative,
+            cfg,
+            &permissive,
+        ) {
+            Verdict::Verified(f) => {
+                if f.eps.cmp(&eps) == Ordering::Greater {
+                    eps = f.eps;
+                }
+                points.push(f.point);
+            }
+            Verdict::Refuted(fault) => return Verdict::Refuted(fault),
+            // Unreachable under the permissive clearance; propagate defensively (panic-free).
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        }
+    }
     let half = clearance.mul(&Rat::new(1, 2));
     if eps.cmp(&half) == Ordering::Less {
         Verdict::Verified(FoldedWire {
@@ -784,6 +1134,210 @@ mod tests {
                 &Q::from_i128(1),
             ),
             Verdict::Refuted(FoldFault::EmptyLoop)
+        ));
+    }
+
+    // ---- The piecewise/side fold ------------------------------------------------------------
+
+    use crate::part::Development;
+
+    /// The device cone (γ≡0) on [0, 1/4] glued to the seam-ramp flap (γ≠0) on [1/4, 1/2] — the
+    /// same two-region gluing as `part`'s tests — with its parallel charts.
+    fn two_region_pw() -> (PiecewiseDevelopment<Bignum>, [Chart<Bignum>; 2]) {
+        let body = cone();
+        let ramp = fixtures::devices::cone_seam_ramp();
+        let pw = PiecewiseDevelopment::new(vec![
+            (
+                Interval {
+                    lo: Q::from_i128(0),
+                    hi: Q::new(1, 4),
+                },
+                ConeDevelopment::new(&body).unwrap(),
+            ),
+            (
+                Interval {
+                    lo: Q::new(1, 4),
+                    hi: Q::new(1, 2),
+                },
+                ConeDevelopment::new_developable(&ramp, 12).unwrap(),
+            ),
+        ])
+        .unwrap();
+        (pw, [body, ramp])
+    }
+
+    /// Folding forward images through the glued frame recovers the chart coordinates in **both**
+    /// regions — the γ≡0 body in the signed convention, and the γ≠0 ramp in its running frame
+    /// (base = the body's cumulative γ) — and lifts each onto its own region's surface.
+    #[test]
+    fn pw_fold_recovers_across_the_join() {
+        let (pw, charts) = two_region_pw();
+        // A fab-plausible budget: the γ quadrature runs once per bisection iter (the logged
+        // γ-perf tech debt), so the tight default would spend most of the test integrating.
+        let cfg = DevConfig {
+            terms: 14,
+            sqrt_eps: Q::new(1, 1_000_000_000),
+        };
+        for (s0, m0) in [
+            (Q::new(1, 8), Q::from_i128(-1)),
+            (Q::new(3, 8), Q::new(-3, 2)),
+        ] {
+            let (x, y) = Development::point(&pw, &s0, &m0, &cfg).unwrap().center();
+            match fold_point_pw(
+                &pw,
+                &charts,
+                &x,
+                &y,
+                &Q::from_i128(0),
+                30,
+                true,
+                &cfg,
+                &Q::from_i128(1),
+            ) {
+                Verdict::Verified(f) => {
+                    assert!(
+                        f.sigma.contains(&s0),
+                        "σ enclosure must contain σ₀ = {s0:?}"
+                    );
+                    assert!(f.mu.contains(&m0), "µ̂ enclosure must contain µ̂₀");
+                    // The lift lands on the owning region's surface.
+                    let ri = if s0.cmp(&Q::new(1, 4)) == core::cmp::Ordering::Greater {
+                        1
+                    } else {
+                        0
+                    };
+                    let orig = charts[ri].surface(&m0, &Q::from_i128(0)).eval(&s0).unwrap();
+                    assert!(
+                        boxes_close(&f.point, &orig),
+                        "lifted 3-D box must recover the original surface point"
+                    );
+                }
+                other => panic!(
+                    "the glued fold must certify, got Unresolved/Refuted: {:?}",
+                    {
+                        match other {
+                            Verdict::Unresolved(e) => format!("Unresolved({e:?})"),
+                            Verdict::Refuted(f) => format!("Refuted({f:?})"),
+                            _ => unreachable!(),
+                        }
+                    }
+                ),
+            }
+        }
+    }
+
+    /// The **wrapping chart** (`c = 260/97 > 2`): even a one-sided σ-domain sweeps more than π, so
+    /// the σ=0 split alone is unfaithful — the ψ-span pieces rescue it. Both far ends of the wide
+    /// two-sided window `[−5/4, 5/4]` (ψ-span ≈ 275°) fold back to their surface points.
+    #[test]
+    fn pw_fold_handles_a_wrapping_chart() {
+        let chart = fixtures::devices::cone_wrap();
+        let pw = PiecewiseDevelopment::new(vec![(
+            Interval {
+                lo: Q::new(-5, 4),
+                hi: Q::new(5, 4),
+            },
+            ConeDevelopment::new(&chart).unwrap(),
+        )])
+        .unwrap();
+        let charts = [fixtures::devices::cone_wrap()];
+        let cfg = DevConfig::tight();
+        for s0 in [Q::from_i128(-1), Q::from_i128(1), Q::new(9, 8)] {
+            let m0 = Q::from_i128(-1);
+            let (x, y) = Development::point(&pw, &s0, &m0, &cfg).unwrap().center();
+            match fold_point_pw(
+                &pw,
+                &charts,
+                &x,
+                &y,
+                &Q::from_i128(0),
+                60,
+                true,
+                &cfg,
+                &Q::from_i128(1),
+            ) {
+                Verdict::Verified(f) => {
+                    assert!(
+                        f.sigma.contains(&s0),
+                        "σ enclosure must contain σ₀ = {s0:?}"
+                    );
+                    let orig = chart.surface(&m0, &Q::from_i128(0)).eval(&s0).unwrap();
+                    assert!(
+                        boxes_close(&f.point, &orig),
+                        "wrap lift recovers σ₀ = {s0:?}"
+                    );
+                }
+                _ => panic!("the wrapping fold must certify at σ₀ = {s0:?}"),
+            }
+        }
+    }
+
+    /// The positive side: `mu_negative = false` folds a µ̂ > 0 signed point (no flip).
+    #[test]
+    fn pw_fold_positive_side() {
+        let chart = fixtures::devices::cone_wrap();
+        let pw =
+            PiecewiseDevelopment::new(vec![(ivl(0, 1), ConeDevelopment::new(&chart).unwrap())])
+                .unwrap();
+        let charts = [fixtures::devices::cone_wrap()];
+        let cfg = DevConfig::tight();
+        let (s0, m0) = (Q::new(1, 2), Q::from_i128(2));
+        let (x, y) = Development::point(&pw, &s0, &m0, &cfg).unwrap().center();
+        match fold_point_pw(
+            &pw,
+            &charts,
+            &x,
+            &y,
+            &Q::from_i128(0),
+            60,
+            false,
+            &cfg,
+            &Q::from_i128(1),
+        ) {
+            Verdict::Verified(f) => {
+                assert!(f.sigma.contains(&s0) && f.mu.contains(&m0));
+            }
+            _ => panic!("the positive-side fold must certify"),
+        }
+    }
+
+    /// A point outside the glued gore is refused, as is a non-parallel chart slice.
+    #[test]
+    fn pw_fold_refuses_out_of_gore_and_chart_mismatch() {
+        let (pw, charts) = two_region_pw();
+        let cfg = DevConfig::tight();
+        // Develop far outside the glued window [0, 1/2] on the body's own frame.
+        let body = ConeDevelopment::new(&cone()).unwrap();
+        let far = body.point_signed(&Q::from_i128(5), &Q::from_i128(-1), &cfg);
+        let (x, y) = far.center();
+        assert!(matches!(
+            fold_point_pw(
+                &pw,
+                &charts,
+                &x,
+                &y,
+                &Q::from_i128(0),
+                40,
+                true,
+                &cfg,
+                &Q::from_i128(1),
+            ),
+            Verdict::Refuted(FoldFault::OutOfGore)
+        ));
+        // One chart for two regions: refused before any work.
+        assert!(matches!(
+            fold_point_pw(
+                &pw,
+                &charts[..1],
+                &x,
+                &y,
+                &Q::from_i128(0),
+                40,
+                true,
+                &cfg,
+                &Q::from_i128(1),
+            ),
+            Verdict::Refuted(FoldFault::ChartMismatch)
         ));
     }
 }
