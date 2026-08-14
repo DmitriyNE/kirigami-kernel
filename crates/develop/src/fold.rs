@@ -142,25 +142,63 @@ fn invert_sigma<B: Backend>(
         return Err(FoldFault::OutOfGore);
     }
     let (mut lo, mut hi) = (domain.lo.clone(), domain.hi.clone());
-    // Split at a *non-dyadic* ratio (3/7), not the midpoint: a rational root (e.g. a dyadic
-    // σ = 1/2, 3/4) is then never hit exactly, so the sign of the signed area is decidable at
-    // every split and the interval narrows geometrically. The straddle-stop below therefore
-    // triggers only near convergence — where `mid` is within the cos/sin enclosure width of the
-    // root — not at the first step, giving a tight σ-enclosure that refines with `iters`.
-    let ratio = Rat::new(3, 7);
-    for _ in 0..iters {
-        let mid = lo.add(&hi.sub(&lo).mul(&ratio));
-        let cr = xat(&mid);
-        if cr.lo().sign() > 0 {
-            lo = mid; // ψ(mid) < θ ⇒ σ* > mid
-        } else if cr.hi().sign() < 0 {
-            hi = mid; // ψ(mid) > θ ⇒ σ* < mid
+    two_probe_bisect(&mut lo, &mut hi, iters, |s| Ok(xat(s)))?;
+    Ok(RatIv::new(lo, hi))
+}
+
+/// The **two-probe** monotone bisection step, shared by the single-panel and piecewise σ
+/// inversions. Two probes at *non-dyadic* fractions (2/7, 5/7) of the bracket: a rational root
+/// is never hit exactly, and — the load-bearing part — a probe whose signed-area enclosure
+/// *straddles* zero (the root lies within enclosure width of it) does not end the search: the
+/// other, well-separated probe still shrinks the bracket. Only both probes straddling means the
+/// bracket is at the enclosures' resolution — the genuine convergence stop. (A single-probe
+/// straddle-stop returns the *current* bracket, which at iteration 0 is the whole domain — a
+/// boundary vertex sitting near the first split point folds with a domain-wide σ-enclosure.)
+fn two_probe_bisect<B: Backend>(
+    lo: &mut Rat<B>,
+    hi: &mut Rat<B>,
+    iters: usize,
+    xat: impl Fn(&Rat<B>) -> Result<RatIv<B>, FoldFault>,
+) -> Result<(), FoldFault> {
+    let (r1, r2) = (Rat::new(2, 7), Rat::new(5, 7));
+    let sign3 = |iv: &RatIv<B>| -> i8 {
+        if iv.lo().sign() > 0 {
+            1
+        } else if iv.hi().sign() < 0 {
+            -1
         } else {
-            // The signed area straddles 0 — mid is within the enclosure width of the root.
-            return Ok(RatIv::new(lo, hi));
+            0
+        }
+    };
+    let mut spent = 0usize;
+    while spent < iters {
+        let w = hi.sub(lo);
+        let t1 = lo.add(&w.mul(&r1));
+        let s1 = sign3(&xat(&t1)?);
+        spent += 1;
+        if s1 < 0 {
+            *hi = t1; // ψ(t1) > θ ⇒ σ* < t1
+            continue;
+        }
+        if spent >= iters {
+            break;
+        }
+        let t2 = lo.add(&w.mul(&r2));
+        let s2 = sign3(&xat(&t2)?);
+        spent += 1;
+        match (s1, s2) {
+            (_, 1) => *lo = t2, // σ* > t2 (certified even when t1 straddles)
+            (1, -1) => {
+                *lo = t1;
+                *hi = t2;
+            }
+            (1, 0) => *lo = t1,  // σ* within enclosure width of t2
+            (0, -1) => *hi = t2, // σ* within enclosure width of t1
+            // Both probes straddle: the bracket is at the enclosures' resolution.
+            _ => return Ok(()),
         }
     }
-    Ok(RatIv::new(lo, hi))
+    Ok(())
 }
 
 /// The largest `|c − t|` over `c ∈ box`, `t = target` — the axis residual of a round-trip.
@@ -465,20 +503,7 @@ fn invert_sigma_from<B: Backend>(
         return Err(FoldFault::OutOfGore);
     }
     let (mut lo, mut hi) = (domain.lo.clone(), domain.hi.clone());
-    // The non-dyadic 3/7 split of `invert_sigma` (a rational root is never hit exactly, so the
-    // straddle-stop triggers only near convergence).
-    let ratio = Rat::new(3, 7);
-    for _ in 0..iters {
-        let mid = lo.add(&hi.sub(&lo).mul(&ratio));
-        let cr = xat(&mid)?;
-        if cr.lo().sign() > 0 {
-            lo = mid;
-        } else if cr.hi().sign() < 0 {
-            hi = mid;
-        } else {
-            return Ok(RatIv::new(lo, hi));
-        }
-    }
+    two_probe_bisect(&mut lo, &mut hi, iters, xat)?;
     Ok(RatIv::new(lo, hi))
 }
 
@@ -1298,6 +1323,43 @@ mod tests {
                 assert!(f.sigma.contains(&s0) && f.mu.contains(&m0));
             }
             _ => panic!("the positive-side fold must certify"),
+        }
+    }
+
+    /// A root sitting **on a probe fraction** of the bisection bracket still converges: the
+    /// two-probe step shrinks past a straddling probe (a single-probe straddle-stop would return
+    /// the whole domain as the σ-enclosure — the self-lapping tail-hole regression).
+    #[test]
+    fn a_root_on_the_probe_fraction_still_converges() {
+        let chart = cone();
+        let dev = ConeDevelopment::new(&chart).unwrap();
+        // σ* at exactly 2/7 and 5/7 (the probe fractions) and 3/7 (the old single-probe split).
+        for s0 in [Q::new(2, 7), Q::new(5, 7), Q::new(3, 7)] {
+            let (x, y) = {
+                let b = dev.point(&s0, &Q::from_i128(-1), &DevConfig::tight());
+                (b.x.mid(), b.y.mid())
+            };
+            match fold_point(
+                &chart,
+                &x,
+                &y,
+                &Q::from_i128(0),
+                &ivl(0, 1),
+                60,
+                true,
+                &DevConfig::tight(),
+                &Q::from_i128(1),
+            ) {
+                Verdict::Verified(f) => {
+                    let width = f.sigma.hi().sub(f.sigma.lo());
+                    assert!(
+                        width.cmp(&Q::new(1, 10_000)) == core::cmp::Ordering::Less,
+                        "σ-enclosure must converge past a straddling probe (σ* = {s0:?})"
+                    );
+                    assert!(f.sigma.contains(&s0));
+                }
+                _ => panic!("the probe-fraction fold must certify (σ* = {s0:?})"),
+            }
         }
     }
 
