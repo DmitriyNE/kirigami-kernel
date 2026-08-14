@@ -179,6 +179,30 @@ pub fn compose_vec3<B: Backend>(f: &Vec3Rat<B>, g: &RatFunc<B>) -> Option<Vec3Ra
     ))
 }
 
+/// Round to the nearest multiple of `2^-bits` — exact, float-free.
+///
+/// Curve vertices derived from surds and bisected roots carry enormous numerators and
+/// denominators (a 60-step bisection propagates through every arithmetic step), and the residual
+/// polynomials built from them are then too large for their interval enclosures to stay usable —
+/// a positive denominator's enclosure straddles zero and reports a spurious pole. Snapping keeps
+/// the emitted geometry small; nothing is lost, because a curve is certified against the true
+/// surface *after* snapping, so the displacement lands in the measured ε rather than escaping it.
+pub fn snap<B: Backend>(r: &Rat<B>, bits: u32) -> Rat<B> {
+    let scale = Rat::from_i128(1i128 << bits);
+    r.mul(&scale).add(&Rat::new(1, 2)).floor().div(&scale)
+}
+
+/// Round **up** to the nearest multiple of `2^-bits`.
+///
+/// For a certified bound this is always safe — a larger upper bound is still an upper bound — and
+/// it is necessary in practice: an ε accumulated through interval arithmetic over snapped surd
+/// coordinates carries numerator and denominator of thousands of digits, which is slow to carry
+/// around and cannot even be printed. Rounding up keeps the certificate small and honest.
+pub fn snap_up<B: Backend>(r: &Rat<B>, bits: u32) -> Rat<B> {
+    let scale = Rat::from_i128(1i128 << bits);
+    r.mul(&scale).ceil().div(&scale)
+}
+
 /// A curve in a chart's `(σ, µ̂)` domain, parametrized rationally: `t ↦ (σ(t), µ̂(t))` over
 /// `domain`. Free to turn around in σ (see the module docs); a graph rail is the special case
 /// [`PCurve::graph`].
@@ -314,10 +338,14 @@ impl<B: Backend> PCurve<B> {
     /// This is the object every 3-D obligation is stated against — the cut certificate's distance
     /// bound, and (being rational in `t`) an exact Bézier for export. `None` if a composed
     /// denominator degenerates.
+    /// The fields are **reduced before composing**: a chart's `pedal` can carry a high-degree
+    /// denominator even when its numerator is identically zero (an apex cone), and composition
+    /// then squares that degree into the residual, where interval evaluation of the huge
+    /// denominator straddles zero and reports a spurious pole.
     pub fn lift(&self, chart: &geom::chart::Chart<B>, w: &Rat<B>) -> Option<Vec3Rat<B>> {
-        let pedal = compose_vec3(chart.pedal(), &self.sigma)?;
-        let ruling = compose_vec3(chart.ruling(), &self.sigma)?;
-        let normal = compose_vec3(chart.normal(), &self.sigma)?;
+        let pedal = compose_vec3(&chart.pedal().reduce(), &self.sigma)?;
+        let ruling = compose_vec3(&chart.ruling().reduce(), &self.sigma)?;
+        let normal = compose_vec3(&chart.normal().reduce(), &self.sigma)?;
         Some(
             pedal
                 .add(&ruling.scale(&self.mu))

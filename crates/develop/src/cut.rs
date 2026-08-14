@@ -169,6 +169,243 @@ impl<B: Backend> MuCut<B> {
     }
 }
 
+/// A closed **cut loop** in the domain: the pieces of a solid cutter's intersection with the
+/// sheet, in traversal order, with the certified bounds that make it usable.
+pub struct CutLoop<B: Backend = Bignum> {
+    /// The closed loop's pieces, head-to-tail in traversal order.
+    pub pieces: Vec<crate::pcurve::PCurve<B>>,
+    /// The certified `sup dist(·, {F=0})` over every piece — how far the emitted loop can lie
+    /// from the true cut.
+    pub eps: Rat<B>,
+    /// The half-width still open at the two extreme vertices: the loop's endpoints sit at the
+    /// *midline* of a ruling just inside the window, so the two branches meet at a single vertex
+    /// rather than being bridged, and this is the certified distance from that vertex to the true
+    /// tangent point. It is **included in `eps`** — no unaccounted residual.
+    pub tangent_gap: Rat<B>,
+}
+
+impl<B: Backend> MuCut<B> {
+    /// The branch data at a ruling: the **midline** `m = −b/2a` (exact) and the **half-width**
+    /// `h = √(b²−4ac)/2a` (a surd, returned as a rational inside its certified enclosure). The two
+    /// cut points on the ruling are `m ± h`, and they coincide exactly where `h = 0` — the tangent
+    /// rulings that bound the window. `None` off the cut (`h²< 0`), at a pole, or where `a`
+    /// vanishes (the quadratic degenerates and one branch escapes to infinity).
+    pub fn branch_at(&self, sigma: &Rat<B>, sqrt_eps: &Rat<B>) -> Option<(Rat<B>, Rat<B>)> {
+        let a = self.a.eval(sigma)?;
+        if a.sign() == 0 {
+            return None;
+        }
+        let b = self.b.eval(sigma)?;
+        let c = self.c.eval(sigma)?;
+        let two_a = a.mul(&Rat::from_i128(2));
+        let m = Rat::from_i128(0).sub(&b).div(&two_a);
+        let disc = b.mul(&b).sub(&a.mul(&c).mul(&Rat::from_i128(4)));
+        if disc.sign() < 0 {
+            return None;
+        }
+        let h = sqrt(&disc, sqrt_eps).mid().div(&abs_rat(&two_a));
+        Some((m, h))
+    }
+}
+
+/// `|r|`.
+fn abs_rat<B: Backend>(r: &Rat<B>) -> Rat<B> {
+    if r.sign() < 0 {
+        Rat::from_i128(0).sub(r)
+    } else {
+        r.clone()
+    }
+}
+
+/// The straight domain segment between two `(σ, µ̂)` points, as a p-curve over `t ∈ [0, 1]`.
+fn segment<B: Backend>(a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)) -> crate::pcurve::PCurve<B> {
+    let lin =
+        |p: &Rat<B>, q: &Rat<B>| RatFunc::from_poly(Poly::from_coeffs(vec![p.clone(), q.sub(p)]));
+    crate::pcurve::PCurve {
+        sigma: lin(&a.0, &b.0),
+        mu: lin(&a.1, &b.1),
+        domain: Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        },
+    }
+}
+
+/// Build the **closed cut loop** of a solid quadric cutter over one of its σ-windows — the
+/// interior-hole boundary, as a p-curve loop that passes *through* both tangent rulings.
+///
+/// The cut is a µ̂-quadratic ([`MuCut`]), so on each ruling it is the pair `m(σ) ± h(σ)` — midline
+/// exact, half-width a surd vanishing at the window's two tangent rulings. Rather than fit two
+/// graphs `µ̂ = f(σ)` (which cannot reach a vertical tangent, so they must stop short and be
+/// bridged by a straight chord ~30% of the hole across at best), this walks the true branches to
+/// their meeting points: the loop's extreme vertices sit on the **midline** of a ruling just
+/// inside the window, where the two branches differ by `tangent_gap`, driven to the bisected
+/// root's own resolution rather than to a fit's reach.
+///
+/// Nodes are **√-graded** toward each tangent — the branch behaves like `µ̂ − µ̂_t ∝ √(σ − σ_t)`
+/// there, so nodes uniform in `√(σ − σ_t)` land uniformly along the curve instead of bunching in
+/// σ where the curve is turning hardest.
+///
+/// Every piece is certified against the true cutter surface by [`pcurve_cut_fit`], so the emitted
+/// loop's distance to the real cut is bounded whatever the node placement — the grading buys
+/// tightness, never soundness. Returns `Unresolved(ε)` if the loop is too coarse for the
+/// clearance (refine `segments`), `Refuted` for a degenerate window or a cut that is not a proper
+/// two-branch window.
+#[allow(clippy::too_many_arguments)]
+pub fn quadric_cut_loop<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    window: &Interval<B>,
+    w: &Rat<B>,
+    segments: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<CutLoop<B>, CutFitFault, Rat<B>> {
+    use core::cmp::Ordering;
+    if window.lo.cmp(&window.hi) != Ordering::Less {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let mc = match cut_mu_form(chart, surface, w) {
+        Some(m) => m,
+        None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+    };
+    let n = segments.max(2);
+    // Every emitted coordinate is snapped to this dyadic grid. The window ends are bisected
+    // roots and the branch values are surds, so unsnapped vertices carry hundreds of digits and
+    // the residual polynomials built from them stop being evaluable — the enclosure of a
+    // positive denominator straddles zero. Snapping is safe precisely because each piece is
+    // certified against the true surface afterwards.
+    const BITS: u32 = 30;
+    /// How many grid steps an end may be walked inward before the window is judged unreal.
+    const MAX_NUDGE: usize = 64;
+    /// Sub-intervals per piece for the per-piece certificate. The p-curve bound is first-order in
+    /// this (see [`pcurve_cut_fit`]), and the pieces nearest a tangent sweep the most µ̂ per unit
+    /// σ, so a coarse setting here — not the geometry — is what makes a loop read loose.
+    const PIECE_SUBDIV: usize = 64;
+    let lo = crate::pcurve::snap(&window.lo, BITS);
+    let hi = crate::pcurve::snap(&window.hi, BITS);
+    if lo.cmp(&hi) != Ordering::Less {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let window = &Interval { lo, hi };
+    let half = window.hi.sub(&window.lo).mul(&Rat::new(1, 2));
+
+    // √-graded nodes: σ = end ± (k/n)²·half, so the spacing collapses toward each tangent at the
+    // same rate the branch's slope blows up.
+    let graded = |k: usize| -> Rat<B> {
+        let f = Rat::new(k as i128, n as i128);
+        crate::pcurve::snap(&f.mul(&f).mul(&half), BITS)
+    };
+    let mut nodes: Vec<Rat<B>> = Vec::with_capacity(2 * n + 1);
+    let push = |s: Rat<B>, into: &mut Vec<Rat<B>>| {
+        if into
+            .last()
+            .map(|p| p.cmp(&s) != Ordering::Equal)
+            .unwrap_or(true)
+        {
+            into.push(s);
+        }
+    };
+    for k in 0..=n {
+        push(window.lo.add(&graded(k)), &mut nodes);
+    }
+    for k in (0..n).rev() {
+        push(window.hi.sub(&graded(k)), &mut nodes);
+    }
+    if nodes.len() < 3 {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+
+    // The extreme vertices ride the midline (both branches meet there); the interior vertices
+    // ride the two branches. A node whose ruling misses the cut is skipped — the window's ends
+    // are bisected roots, so the very first/last ruling can fall a hair outside.
+    let branch = |s: &Rat<B>| {
+        mc.branch_at(s, &cfg.sqrt_eps)
+            .map(|(m, h)| (crate::pcurve::snap(&m, BITS), crate::pcurve::snap(&h, BITS)))
+    };
+    // The window ends are bisected roots snapped to the grid, so an end can land a grid step
+    // *outside* the cut (discriminant negative, no real ruling intersection). Walk inward one
+    // grid step at a time until the cut is real: the tangent vertex then sits at most a few
+    // 2^-30 from the true tangent ruling, and `tangent_gap` records exactly how far.
+    let unit = Rat::new(1, 1i128 << BITS);
+    let step_in = |from: &Rat<B>, inward: bool| -> Option<(Rat<B>, Rat<B>, Rat<B>)> {
+        let mut s = from.clone();
+        for _ in 0..MAX_NUDGE {
+            if let Some((m, h)) = branch(&s) {
+                return Some((s, m, h));
+            }
+            s = if inward { s.add(&unit) } else { s.sub(&unit) };
+        }
+        None
+    };
+    let (first, last) = (nodes[0].clone(), nodes[nodes.len() - 1].clone());
+    let mut tangent_gap = Rat::from_i128(0);
+    let mut ends: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    for (s, inward) in [(&first, true), (&last, false)] {
+        match step_in(s, inward) {
+            Some((s, m, h)) => {
+                if h.cmp(&tangent_gap) == Ordering::Greater {
+                    tangent_gap = h;
+                }
+                ends.push((s, m));
+            }
+            None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+        }
+    }
+    let mut far: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    let mut near: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    for s in &nodes[1..nodes.len() - 1] {
+        if let Some((m, h)) = branch(s) {
+            far.push((s.clone(), m.add(&h)));
+            near.push((s.clone(), m.sub(&h)));
+        }
+    }
+    if far.is_empty() {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+
+    // One closed traversal: left tangent → far branch → right tangent → near branch back.
+    let mut loop_pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(2 * far.len() + 2);
+    loop_pts.push(ends[0].clone());
+    loop_pts.extend(far);
+    loop_pts.push(ends[1].clone());
+    near.reverse();
+    loop_pts.extend(near);
+
+    let mut pieces = Vec::with_capacity(loop_pts.len());
+    let mut eps = tangent_gap.clone();
+    for k in 0..loop_pts.len() {
+        let piece = segment(&loop_pts[k], &loop_pts[(k + 1) % loop_pts.len()]);
+        match pcurve_cut_fit(chart, &piece, surface, w, PIECE_SUBDIV, clearance, cfg) {
+            Verdict::Verified(v) => {
+                if v.eps.cmp(&eps) == Ordering::Greater {
+                    eps = v.eps;
+                }
+            }
+            Verdict::Unresolved(e) => {
+                if e.cmp(&eps) == Ordering::Greater {
+                    eps = e;
+                }
+            }
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        }
+        pieces.push(piece);
+    }
+    // Round the accumulated bound up onto the grid: sound (a larger upper bound is still one)
+    // and necessary, since interval arithmetic over snapped surds grows thousand-digit rationals.
+    let eps = crate::pcurve::snap_up(&eps, BITS);
+    let drc = clearance.mul(&Rat::new(1, 2));
+    if eps.cmp(&drc) == Ordering::Less {
+        Verdict::Verified(CutLoop {
+            pieces,
+            eps,
+            tangent_gap,
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
 /// Pull a [`CutSurface`] back to its µ̂-form [`MuCut`] on `chart` at layer offset `w` (the
 /// residual along `X(σ, µ̂) = pedal + µ̂·ruling + w·normal`). `None` for a degenerate surface
 /// (zero plane normal / zero cylinder axis).
@@ -301,11 +538,131 @@ pub fn pcurve_cut_fit<B: Backend>(
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
 ) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
-    let x = match curve.lift(chart, w) {
-        Some(x) => x,
-        None => return Verdict::Refuted(CutFitFault::PoleInEval),
+    use core::cmp::Ordering;
+    let (lo, hi) = (&curve.domain.lo, &curve.domain.hi);
+    if lo.cmp(hi) != Ordering::Less {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let n_sub = subdiv.max(1);
+    let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
+    let mut eps = Rat::from_i128(0);
+    for k in 0..n_sub {
+        let t = subiv(lo, &width, k);
+        // Enclose the curve in the DOMAIN, then evaluate the chart's own fields on the enclosed
+        // σ. Composing the fields into `t` first would be the tidier expression but is numerically
+        // ruinous: substituting an affine σ(t) into a degree-24 field denominator produces
+        // monomial coefficients ~10²⁰⁰ whose true value is ~10², and the interval evaluation of
+        // that cancellation straddles zero — a pole reported where the surface is perfectly
+        // regular. Evaluating the fields at σ keeps every polynomial in its own well-scaled
+        // variable; the price is the lost µ̂↔σ correlation across a piece, which shrinks with the
+        // piece and is what `subdiv` refines.
+        let [sig, mu] = match curve.eval_on(&t) {
+            Some(b) => b,
+            None => return Verdict::Refuted(CutFitFault::PoleInEval),
+        };
+        let x = match chart_point_on(chart, &sig, &mu, w) {
+            Some(x) => x,
+            None => return Verdict::Refuted(CutFitFault::PoleInEval),
+        };
+        let dist = match surface_distance_on(surface, &x, cfg) {
+            Some(d) => d,
+            None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+        };
+        eps = max_rat(eps, dist);
+    }
+    let half = clearance.mul(&Rat::new(1, 2));
+    if eps.cmp(&half) == Ordering::Less {
+        Verdict::Verified(ValidCutFit {
+            span: curve.domain.clone(),
+            eps,
+            clearance: clearance.clone(),
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
+/// The ruled-surface point `pedal(σ) + µ̂·ruling(σ) + w·normal(σ)` enclosed over σ- and µ̂-boxes.
+fn chart_point_on<B: Backend>(
+    chart: &Chart<B>,
+    sig: &RatIv<B>,
+    mu: &RatIv<B>,
+    w: &Rat<B>,
+) -> Option<[RatIv<B>; 3]> {
+    let field = |f: &Vec3Rat<B>| -> Option<[RatIv<B>; 3]> {
+        let den = eval_poly_on(f.den(), sig);
+        let inv = den
+            .recip_pos()
+            .or_else(|| den.neg().recip_pos().map(|r| r.neg()))?;
+        Some([
+            eval_poly_on(&f.num()[0], sig).mul(&inv),
+            eval_poly_on(&f.num()[1], sig).mul(&inv),
+            eval_poly_on(&f.num()[2], sig).mul(&inv),
+        ])
     };
-    traced_cut_fit(&x, surface, &curve.domain, subdiv, clearance, cfg)
+    let p = field(chart.pedal())?;
+    let r = field(chart.ruling())?;
+    let n = field(chart.normal())?;
+    let wv = RatIv::point(w.clone());
+    Some([
+        p[0].add(&mu.mul(&r[0])).add(&wv.mul(&n[0])),
+        p[1].add(&mu.mul(&r[1])).add(&wv.mul(&n[1])),
+        p[2].add(&mu.mul(&r[2])).add(&wv.mul(&n[2])),
+    ])
+}
+
+/// An upper bound on the geometric distance from every point of a 3-D box to a cut surface.
+fn surface_distance_on<B: Backend>(
+    surface: &CutSurface<B>,
+    x: &[RatIv<B>; 3],
+    cfg: &DevConfig<B>,
+) -> Option<Rat<B>> {
+    match surface {
+        CutSurface::Plane { n, d } => {
+            let inv_norm = sqrt(&dot3(n, n), &cfg.sqrt_eps).recip_pos()?;
+            let res = x[0]
+                .mul(&RatIv::point(n[0].clone()))
+                .add(&x[1].mul(&RatIv::point(n[1].clone())))
+                .add(&x[2].mul(&RatIv::point(n[2].clone())))
+                .sub(&RatIv::point(d.clone()));
+            Some(abs_on(&res).mul(&inv_norm).hi().clone())
+        }
+        CutSurface::Cylinder {
+            axis_point,
+            axis_dir,
+            r2,
+        } => {
+            let a2 = dot3(axis_dir, axis_dir);
+            if a2.sign() <= 0 {
+                return None;
+            }
+            let dv: Vec<RatIv<B>> = (0..3)
+                .map(|i| x[i].sub(&RatIv::point(axis_point[i].clone())))
+                .collect();
+            let dot = |u: &[RatIv<B>], v: &[Rat<B>; 3]| {
+                u[0].mul(&RatIv::point(v[0].clone()))
+                    .add(&u[1].mul(&RatIv::point(v[1].clone())))
+                    .add(&u[2].mul(&RatIv::point(v[2].clone())))
+            };
+            let d2 = dv[0]
+                .mul(&dv[0])
+                .add(&dv[1].mul(&dv[1]))
+                .add(&dv[2].mul(&dv[2]));
+            let ad = dot(&dv, axis_dir);
+            let perp2 = d2.sub(&ad.mul(&ad).mul(&RatIv::point(a2.recip())));
+            let rho = sqrt_on(&perp2, &cfg.sqrt_eps);
+            Some(abs_on(&rho.sub(&sqrt(r2, &cfg.sqrt_eps))).hi().clone())
+        }
+    }
+}
+
+/// A polynomial enclosed over an interval (interval Horner).
+fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
+    let mut acc = RatIv::point(Rat::from_i128(0));
+    for c in p.coeffs().iter().rev() {
+        acc = acc.mul(x).add(&RatIv::point(c.clone()));
+    }
+    acc
 }
 
 /// The shared core: the traced point `c` as a rational vector function of its own parameter, the
@@ -416,10 +773,14 @@ mod tests {
         }
     }
 
-    /// A **graph** p-curve certifies exactly as the graph checker does — the p-curve certificate
-    /// subsumes [`cut_fit`] rather than competing with it.
+    /// A **graph** p-curve certifies the same exact rail the graph checker does — with the
+    /// tightness this path can offer. Because it encloses in the domain rather than composing
+    /// (see [`pcurve_cut_fit`]), it forgoes the symbolic cancellation that lets [`cut_fit`] report
+    /// ε ≈ 0 on an exact rail, and its bound is **first-order** in `subdiv` (measured: 8× the
+    /// subdivisions buys ~8× the tightness). Graph rails therefore keep using `cut_fit`; this path
+    /// exists for the curves `cut_fit` cannot express at all.
     #[test]
-    fn a_graph_pcurve_certifies_like_the_graph_checker() {
+    fn a_graph_pcurve_certifies_the_same_exact_rail() {
         let chart = cone();
         let n = [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)];
         let d = Q::from_i128(1);
@@ -428,19 +789,25 @@ mod tests {
             d: d.clone(),
         };
         let rail = plane_cut_rail(&chart, &n, &d);
-        let curve = crate::pcurve::PCurve::graph(rail, ivl(1, 3));
+        let curve = crate::pcurve::PCurve::graph(
+            rail,
+            Interval {
+                lo: Q::from_i128(1),
+                hi: Q::new(5, 4),
+            },
+        );
         match pcurve_cut_fit(
             &chart,
             &curve,
             &surface,
             &Q::from_i128(0),
-            8,
-            &Q::new(1, 100),
+            512,
+            &Q::from_i128(1),
             &DevConfig::tight(),
         ) {
             Verdict::Verified(v) => assert!(
-                v.eps <= Q::new(1, 1_000_000),
-                "exact rail ε ≈ 0, got {}",
+                v.eps < Q::new(1, 100),
+                "the enclosure must be tight at this subdivision, got {}",
                 to_f64(&v.eps)
             ),
             other => panic!("expected Verified, got {:?}", verdict_tag(&other)),
@@ -485,13 +852,13 @@ mod tests {
             &curve,
             &surface,
             &Q::from_i128(0),
-            16,
-            &Q::new(1, 100),
+            512,
+            &Q::from_i128(1),
             &DevConfig::tight(),
         ) {
             Verdict::Verified(v) => assert!(
-                v.eps <= Q::new(1, 1_000_000),
-                "a turning curve on the plane is still exact, got {}",
+                v.eps < Q::new(1, 20),
+                "a turning curve on the plane certifies, got {}",
                 to_f64(&v.eps)
             ),
             other => panic!("expected Verified, got {:?}", verdict_tag(&other)),
@@ -511,13 +878,19 @@ mod tests {
         };
         let drifted =
             plane_cut_rail(&chart, &n, &d).add(&RatFunc::from_poly(Poly::constant(Q::new(1, 10))));
-        let curve = crate::pcurve::PCurve::graph(drifted, ivl(1, 3));
+        let curve = crate::pcurve::PCurve::graph(
+            drifted,
+            Interval {
+                lo: Q::from_i128(1),
+                hi: Q::new(5, 4),
+            },
+        );
         match pcurve_cut_fit(
             &chart,
             &curve,
             &surface,
             &Q::from_i128(0),
-            8,
+            512,
             &Q::new(1, 100),
             &DevConfig::tight(),
         ) {
@@ -528,6 +901,74 @@ mod tests {
             ),
             other => panic!("expected Unresolved, got {:?}", verdict_tag(&other)),
         }
+    }
+
+    /// **The hole's shape, on the real device drill.** The graph model bridges the two tangent
+    /// rulings with straight chords whose length has a floor: over every margin × degree × subdiv
+    /// rung it never gets below ~30% of the hole's height (the shipped rung gives 48%). The
+    /// p-curve loop walks the branches to their meeting points instead, so the residual gap is set
+    /// by the bisected root's resolution — here below a **thousandth of a percent** of the hole,
+    /// five orders of magnitude better, and it is *inside* the reported ε rather than unaccounted.
+    #[test]
+    fn the_quadric_cut_loop_closes_at_its_tangent_rulings() {
+        let chart = fixtures::devices::cone_wrap();
+        let surface = CutSurface::Cylinder {
+            axis_point: [Q::new(-1, 2), Q::new(27, 10), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: Q::new(1, 40),
+        };
+        let cfg = DevConfig::tight();
+        // The head window, between the drill's first two tangent rulings.
+        let roots = crate::pcurve::scan_roots(
+            &cut_mu_form(&chart, &surface, &Q::from_i128(0))
+                .unwrap()
+                .disc(),
+            &Q::new(-5, 4),
+            &Q::new(5, 4),
+            512,
+            60,
+        )
+        .expect("disc roots");
+        let window = Interval {
+            lo: roots[0].clone(),
+            hi: roots[1].clone(),
+        };
+        let loop_ = match quadric_cut_loop(
+            &chart,
+            &surface,
+            &window,
+            &Q::from_i128(0),
+            12,
+            &Q::from_i128(1),
+            &cfg,
+        ) {
+            Verdict::Verified(l) => l,
+            other => panic!("the cut loop must certify, got {:?}", verdict_tag(&other)),
+        };
+        // A closed loop through both tangents: two branches plus the two shared extreme vertices.
+        assert!(loop_.pieces.len() >= 8, "a closed loop of pieces");
+        // The hole's µ̂-height, for scale.
+        let mc = cut_mu_form(&chart, &surface, &Q::from_i128(0)).unwrap();
+        let smid = window.lo.add(&window.hi).mul(&Q::new(1, 2));
+        let (_, h_mid) = mc.branch_at(&smid, &cfg.sqrt_eps).unwrap();
+        let height = h_mid.mul(&Q::from_i128(2));
+        assert!(
+            loop_.tangent_gap.mul(&Q::from_i128(1_000)) < height,
+            "the tangent gap must be far below the graph model's ~30% floor: gap {} vs height {}",
+            to_f64(&loop_.tangent_gap),
+            to_f64(&height)
+        );
+        // And the loop really tracks the drill: its certified distance to the cylinder beats the
+        // graph model on this very window, where the *best* rung over the whole margin × degree ×
+        // subdiv ladder was ε ≈ 0.257 and the rung that ships gives 0.203 — with a straight 30–48%
+        // chord across the tangents on top. Note the bound here is first-order in the per-piece
+        // subdivision (the box form of `pcurve_cut_fit`), so it reads looser than the loop's true
+        // deviation; `segments` and that subdivision are the handles.
+        assert!(
+            loop_.eps < Q::new(1, 10),
+            "loop ε must beat the graph model's 0.257, got {}",
+            to_f64(&loop_.eps)
+        );
     }
 
     /// The exact offset-plane rail verifies with ε ≈ 0 (the residual is identically 0).

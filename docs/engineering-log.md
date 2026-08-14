@@ -681,6 +681,28 @@ fine — this is a log, not a schema.
   why the facade replaced it. The milestone's point is to have both. *2026-08-14 · PC.0 GO ·
   branch `pcurve` · tasks #221–#227*
 
+- **The p-curve cut certificate must enclose in the domain, not compose into the parameter — and
+  its bound is first-order (PC.2/PC.3).** The tidy way to state "this curve traces the surface" is
+  to compose the chart fields into the curve's parameter and enclose the resulting residual, as
+  the graph checker does in σ. On the device's wrapping chart that is **numerically ruinous**:
+  substituting an affine `σ(t)` into a degree-24 field denominator produces monomial coefficients
+  around 10²⁰⁰ whose true value is ~10², and interval evaluation of that cancellation straddles
+  zero — so a *pole* is reported at every single node of a perfectly regular hole. The fix is to
+  enclose `(σ, µ̂)` over the parameter sub-interval and then evaluate the chart's own fields at the
+  enclosed σ, keeping every polynomial in its own well-scaled variable. The price is the lost
+  µ̂↔σ correlation across a piece, which makes the bound **first-order** in the subdivision
+  (measured on an exact plane rail: ε 3.7e-1 → 4.0e-2 → 4.9e-3 for 8× steps) where the symbolic
+  graph residual is exact. Consequences, all deliberate: graph rails keep using `cut_fit`
+  (unchanged, still ε ≈ 0); the p-curve path is for curves the graph cannot express at all; and
+  composition stays, tested and exact, for the *export* lift, where a p-curve's 3-D image being
+  rational in `t` is what gives an exact Bézier. **Tightening is a known follow-up** — a
+  mean-value/centred form would restore second order. A second lesson from the same stage: curve
+  vertices derived from surds and 60-step bisected roots carry thousand-digit numerators, and the
+  residual polynomials built from them stop being evaluable at all; every emitted coordinate is
+  snapped to a 2⁻³⁰ grid and the accumulated ε rounded *up* onto it (sound — a larger upper bound
+  is still an upper bound), which is what keeps the certificate both small and honest.
+  *2026-08-14 · resolved (PC.2/PC.3) · branch `pcurve`*
+
 - **A root landing exactly on a scan node was invisible to the rational root scanner.**
   `scan_roots` only registered a *sign change* between adjacent nodes, and required both signs
   non-zero — so a root sitting precisely on a node was skipped twice (each flanking cell has a
