@@ -61,6 +61,10 @@ pub(crate) struct Structure<B: Backend> {
     pub holes: Vec<(usize, usize, Interval<B>)>,
     /// The derived role per op.
     pub roles: Vec<OpRole>,
+    /// The kept material's µ̂-side, when it is uniform across every sample: `Some(true)` = all
+    /// µ̂ < 0, `Some(false)` = all µ̂ > 0, `None` = mixed or 0-straddling. The fold's side
+    /// convention (derived, never authored — the seam-#3 doctrine).
+    pub mu_negative: Option<bool>,
 }
 
 /// The resolver's sample-grid density per region (also the realizer's corner pad unit).
@@ -206,12 +210,15 @@ fn comp_subtract(k: &Comp, sh: &Shadow) -> Vec<Comp> {
     out
 }
 
-/// One sample's resolved record: the hull boundary labels plus the ops holing here.
+/// One sample's resolved record: the hull boundary labels, the ops holing here, and the kept
+/// component's µ̂-ends (float — the side consensus input).
 struct SampleRec<B: Backend> {
     sigma: Rat<B>,
     lower: Label,
     upper: Label,
     hole_ops: Vec<usize>,
+    mu_lo: f64,
+    mu_hi: f64,
 }
 
 /// The 3-D distance² from the witness point `p` to the material of one µ̂-component at σ —
@@ -344,11 +351,14 @@ fn resolve_sample<B: Backend>(
         }
     };
     hole_ops.sort_unstable();
+    let (lo_end, hi_end) = (chosen.lo.unwrap(), chosen.hi.unwrap());
     Ok(SampleRec {
         sigma,
-        lower: chosen.lo.unwrap().1,
-        upper: chosen.hi.unwrap().1,
+        lower: lo_end.1,
+        upper: hi_end.1,
         hole_ops,
+        mu_lo: lo_end.0,
+        mu_hi: hi_end.0,
     })
 }
 
@@ -518,5 +528,19 @@ pub(crate) fn sweep<B: Backend>(
         };
     }
 
-    Ok(Structure { runs, holes, roles })
+    // The side consensus: uniform µ̂-sign across every kept sample, else undetermined.
+    let mu_negative = if recs.iter().all(|r| r.mu_hi < 0.0) {
+        Some(true)
+    } else if recs.iter().all(|r| r.mu_lo > 0.0) {
+        Some(false)
+    } else {
+        None
+    };
+
+    Ok(Structure {
+        runs,
+        holes,
+        roles,
+        mu_negative,
+    })
 }

@@ -38,11 +38,30 @@ use crate::resolve;
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
 use develop::cut::CutSurface;
+use develop::fold::{FoldFault, FoldedWire, fold_outline_pw};
 use develop::part::PiecewiseDevelopment;
 use develop::unroll::FlatOutline;
 use export::trim::RailFit;
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
+
+/// The σ-bisection depth of the facade's fold evaluators (`(4/7)⁶⁰ ≈ 3·10⁻¹⁵` of the piece
+/// width — well under any fab-plausible ε floor; the enclosure budget is [`Part::budget`]).
+pub(crate) const FOLD_ITERS: usize = 60;
+
+/// Translate an engine [`FoldFault`] into the facade's typed fault.
+pub(crate) fn map_fold_fault(f: FoldFault) -> PartFault {
+    match f {
+        // Unreachable after `build_regions` (every region already developed) — typed anyway.
+        FoldFault::NotACone => PartFault::NotDevelopable(0),
+        FoldFault::DegenerateDomain => PartFault::EmptyRegion,
+        FoldFault::OutOfGore => PartFault::OutOfGore,
+        FoldFault::PoleInEval => PartFault::Pole,
+        FoldFault::EmptyLoop => PartFault::EmptyFeature,
+        // Unreachable: `BuiltRegions` keeps charts parallel to the gluing by construction.
+        FoldFault::ChartMismatch => PartFault::FrameMismatch,
+    }
+}
 
 /// A **solid cutter** — a region of space with an unambiguous inside, used by the material ops
 /// [`subtract`](Part::subtract)/[`intersect`](Part::intersect). Because cutters are solids (not
@@ -269,6 +288,16 @@ pub enum PartFault {
     /// The solid builder refused the certified chains (degenerate band, or a hole not strictly
     /// interior / σ-disjoint — the `brep_trim_solid_regions` preconditions).
     SolidRefused,
+    /// A flat point handed to the fold (a [`fold`](Part::fold) feature vertex, or a
+    /// [`hole_flat`](Part::hole_flat) vertex at solid time) lies outside the part's developed
+    /// gore — no σ in the declared domain develops to its direction.
+    OutOfGore,
+    /// A fold was requested on an empty feature loop.
+    EmptyFeature,
+    /// The fold's µ̂-side convention is undefined: the resolved material does not keep one sign
+    /// of µ̂ across the whole domain (it straddles the pedal locus µ̂ = 0, or genuinely uses both
+    /// sheets). [`fold`](Part::fold) and [`hole_flat`](Part::hole_flat) need a single-side part.
+    SideAmbiguous,
 }
 
 /// One declared σ-region: the (snapped) band, its support recipe, and the requested azimuth
@@ -288,6 +317,7 @@ pub struct Part<B: Backend = Bignum> {
     pub(crate) regions: Vec<RegionSpec<B>>,
     pub(crate) ops: Vec<(OpKind, Cutter<B>)>,
     pub(crate) domain_holes: Vec<Vec<(Rat<B>, Rat<B>)>>,
+    pub(crate) flat_holes: Vec<Vec<[Rat<B>; 2]>>,
     pub(crate) pick: Option<RegionPick<B>>,
     pub(crate) clearance: Rat<B>,
     pub(crate) thickness: Rat<B>,
@@ -307,6 +337,7 @@ impl<B: Backend> Part<B> {
             regions: Vec::new(),
             ops: Vec::new(),
             domain_holes: Vec::new(),
+            flat_holes: Vec::new(),
             pick: None,
             clearance: Rat::from_i128(1),
             thickness: Rat::new(1, 8),
@@ -368,9 +399,21 @@ impl<B: Backend> Part<B> {
     }
 
     /// An interior cut authored directly in the **domain** `(σ, µ̂)` as a polygon loop (exact
-    /// power-user data; the 2-D-flat-authored `hole_flat` joins with the fold extension).
+    /// power-user data).
     pub fn hole_domain(mut self, poly: Vec<(Rat<B>, Rat<B>)>) -> Self {
         self.domain_holes.push(poly);
+        self
+    }
+
+    /// An interior cut authored directly in the **flat pattern** (ECAD 2-D coordinates) as a
+    /// polygon loop. [`develop`](Part::develop) cuts it into the exact flat boolean as-is (it is
+    /// already flat data); [`solid`](Part::solid) **folds it back** onto the surface through the
+    /// certified piecewise fold-inversion (the µ̂-side derived from the resolution) and drills it
+    /// through the solid. Vertex winding is free; the polygon must stay disjoint from every
+    /// other cut (the flat boolean's holes are pairwise disjoint — an overlap breaks the
+    /// expected topology and the coherence gate refuses the evaluation).
+    pub fn hole_flat(mut self, poly: Vec<[Rat<B>; 2]>) -> Self {
+        self.flat_holes.push(poly);
         self
     }
 
@@ -469,6 +512,46 @@ impl<B: Backend> Part<B> {
         }
     }
 
+    /// Fold a **flat-authored feature** (a polyline or loop in the certified flat frame — ECAD
+    /// coordinates, the same frame [`develop`](Part::develop) emits) back onto the 3-D surface at
+    /// normal offset `w`: the certified piecewise fold-inversion, direction ② of the product
+    /// round-trip. The µ̂-side is **derived from the resolution** (never authored — a mixed-side
+    /// part is refused as [`PartFault::SideAmbiguous`]); each vertex is inverted in whichever
+    /// region's running frame brackets it and lifted onto that region's chart. Returns the folded
+    /// 3-D wire under the round-trip DRC `ε <` [`clearance`](Part::clearance)`/2`.
+    pub fn fold(
+        &self,
+        feature: &[[Rat<B>; 2]],
+        w: &Rat<B>,
+    ) -> Verdict<FoldedWire<B>, PartFault, Rat<B>> {
+        let built = match self.build_regions() {
+            Ok(b) => b,
+            Err(f) => return Verdict::Refuted(f),
+        };
+        let structure = match resolve::sweep(self, &built) {
+            Ok(s) => s,
+            Err(f) => return Verdict::Refuted(f),
+        };
+        let side = match structure.mu_negative {
+            Some(s) => s,
+            None => return Verdict::Refuted(PartFault::SideAmbiguous),
+        };
+        match fold_outline_pw(
+            &built.pw,
+            &built.charts,
+            feature,
+            w,
+            FOLD_ITERS,
+            side,
+            &self.cfg,
+            &self.clearance,
+        ) {
+            Verdict::Verified(wire) => Verdict::Verified(wire),
+            Verdict::Unresolved(e) => Verdict::Unresolved(e),
+            Verdict::Refuted(f) => Verdict::Refuted(map_fold_fault(f)),
+        }
+    }
+
     /// Validate and build the per-region charts + developments and the glued piecewise
     /// development (shared by the evaluators).
     pub(crate) fn build_regions(&self) -> Result<BuiltRegions<B>, PartFault> {
@@ -523,6 +606,7 @@ pub struct FlatPattern<B: Backend = Bignum> {
     pub(crate) outline: FlatOutline<B>,
     pub(crate) holes: Vec<FlatOutline<B>>,
     pub(crate) domain_holes: Vec<Vec<[Rat<B>; 2]>>,
+    pub(crate) flat_holes: Vec<Vec<[Rat<B>; 2]>>,
     pub(crate) region: arrange2d::boolean::Region<B>,
     pub(crate) eps: Rat<B>,
     pub(crate) report: ResolveReport<B>,
@@ -540,6 +624,10 @@ impl<B: Backend> FlatPattern<B> {
     /// The domain-authored hole polygons, developed.
     pub fn domain_hole_polys(&self) -> &[Vec<[Rat<B>; 2]>] {
         &self.domain_holes
+    }
+    /// The flat-authored hole polygons, as authored (already flat coordinates).
+    pub fn flat_hole_polys(&self) -> &[Vec<[Rat<B>; 2]>] {
+        &self.flat_holes
     }
     /// The exact assembled flat region (`outer − ⋃ holes` via the certified 2-D boolean).
     pub fn region(&self) -> &arrange2d::boolean::Region<B> {

@@ -567,9 +567,13 @@ pub(crate) fn flat_pattern<B: Backend>(
     }
 
     // — 8. The exact flat boolean + the topology coherence gate. —
+    // Flat-authored holes are already flat data: they cut directly (their fold-back is the
+    // solid evaluator's job). The coherence gate covers them too — a flat hole outside the
+    // pattern breaks the expected topology and refuses the evaluation.
     let outer_poly = flat_to_poly(&outline);
     let mut hole_polys: Vec<Vec<[Rat<B>; 2]>> = hole_outlines.iter().map(flat_to_poly).collect();
     hole_polys.extend(domain_polys.iter().cloned());
+    hole_polys.extend(part.flat_holes.iter().cloned());
     let expected_holes = hole_polys.len();
     let region = match assemble_flat(&outer_poly, &hole_polys) {
         Verdict::Verified(r) => r,
@@ -596,6 +600,7 @@ pub(crate) fn flat_pattern<B: Backend>(
         outline,
         holes: hole_outlines,
         domain_holes: domain_polys,
+        flat_holes: part.flat_holes.clone(),
         region,
         eps: eps_all,
         report,
@@ -652,17 +657,58 @@ pub(crate) fn solid_brep<B: Backend>(
         }
     }
 
+    // Flat-authored holes: fold each vertex back to `(σ, µ̂)` (the certified piecewise fold, the
+    // µ̂-side derived from the resolution), snap to the STEP dyadic grid, and drill them as
+    // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
+    // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
+    let mut poly_holes = part.domain_holes.clone();
+    if !part.flat_holes.is_empty() {
+        let side = match structure.mu_negative {
+            Some(s) => s,
+            None => return Verdict::Refuted(PartFault::SideAmbiguous),
+        };
+        let zero = Rat::from_i128(0);
+        for poly in &part.flat_holes {
+            if poly.is_empty() {
+                return Verdict::Refuted(PartFault::EmptyFeature);
+            }
+            let mut folded: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(poly.len());
+            for p in poly {
+                match develop::fold::fold_point_pw(
+                    &built.pw,
+                    &built.charts,
+                    &p[0],
+                    &p[1],
+                    &zero,
+                    crate::part::FOLD_ITERS,
+                    side,
+                    &part.cfg,
+                    &part.clearance,
+                ) {
+                    Verdict::Verified(f) => {
+                        eps_all = rmax(&eps_all, &f.eps);
+                        folded.push((snap30(&f.sigma.mid()), snap30(&f.mu.mid())));
+                    }
+                    Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+                    Verdict::Refuted(fault) => {
+                        return Verdict::Refuted(crate::part::map_fold_fault(fault));
+                    }
+                }
+            }
+            poly_holes.push(folded);
+        }
+    }
+
     let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> =
         bands.iter().cloned().zip(built.charts.iter()).collect();
     let w = Interval {
         lo: Rat::from_i128(0),
         hi: part.thickness.clone(),
     };
-    let solid =
-        match brep_trim_solid_regions(&charts, &w, &inner, &outer, &holes, &part.domain_holes) {
-            Some(s) => s,
-            None => return Verdict::Refuted(PartFault::SolidRefused),
-        };
+    let solid = match brep_trim_solid_regions(&charts, &w, &inner, &outer, &holes, &poly_holes) {
+        Some(s) => s,
+        None => return Verdict::Refuted(PartFault::SolidRefused),
+    };
     let report = build_report(part, &structure);
     Verdict::Verified((solid, eps_all, report))
 }
