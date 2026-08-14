@@ -151,6 +151,50 @@ fn gcd_stein_fast1(a: u128, b: u128) -> u128 {
     }
 }
 
+/// (G) Strip the twos with an explicit **loop** instead of `trailing_zeros`.
+///
+/// Motivation is verification, not speed: `u128::trailing_zeros` is an intrinsic Aeneas cannot
+/// model, so it lifts as an `axiom` and would need a hand-written faithful `def` — growing the
+/// `lattice` model's audited TCB surface. A plain loop lifts natively and is provable with the
+/// same `loop.spec_decr_nat` machinery already used for the Euclidean loop. The question is what
+/// it costs.
+fn gcd_strip2_loop(a: u128, b: u128) -> u128 {
+    if a == 0 {
+        return b;
+    }
+    if b == 0 {
+        return a;
+    }
+    let (mut x, mut y) = (a, b);
+    let mut shift = 0u32;
+    while x & 1 == 0 && y & 1 == 0 {
+        x >>= 1;
+        y >>= 1;
+        shift += 1;
+    }
+    while x & 1 == 0 {
+        x >>= 1;
+    }
+    while y & 1 == 0 {
+        y >>= 1;
+    }
+    while y != 0 {
+        if x <= u64::MAX as u128 && y <= u64::MAX as u128 {
+            let (mut p, mut q) = (x as u64, y as u64);
+            while q != 0 {
+                let t = p % q;
+                p = q;
+                q = t;
+            }
+            return (p as u128) << shift;
+        }
+        let t = x % y;
+        x = y;
+        y = t;
+    }
+    x << shift
+}
+
 /// Operand pairs matching the harvested mix.
 fn corpus(n: usize) -> Vec<(u128, u128)> {
     let mut s: u128 = 0x2545_F491_4F6C_DD1D;
@@ -195,6 +239,7 @@ fn main() {
         assert_eq!(gcd_strip2(a, b), want, "strip2 disagrees on ({a}, {b})");
         assert_eq!(gcd_stein(a, b), want, "stein disagrees on ({a}, {b})");
         assert_eq!(gcd_stein_fast1(a, b), want, "stein_fast1 disagrees on ({a}, {b})");
+        assert_eq!(gcd_strip2_loop(a, b), want, "strip2_loop disagrees on ({a}, {b})");
     }
     println!("agreement: ok (200k pairs)");
 
@@ -217,6 +262,7 @@ fn main() {
     let b = run("pow2", gcd_pow2);
     let c = run("pow2+u64", gcd_pow2_u64);
     let d = run("strip2+u64", gcd_strip2);
+    let g = run("strip2loop+u64", gcd_strip2_loop);
     let e = run("stein", gcd_stein);
     let f = run("stein+exit1", gcd_stein_fast1);
     println!(
@@ -224,6 +270,11 @@ fn main() {
         base / b, base / c, base / d, base / e, base / f
     );
     println!("stein+exit1 vs shipped: {:.2}x", d / f);
+    println!(
+        "strip2 via LOOP (no trailing_zeros intrinsic, no TCB growth): {:.2}x vs current, {:.2}x vs shipped",
+        base / g,
+        d / g
+    );
 
     // Robustness: the 84.7% power-of-two share is a property of *this* device's dyadic grids. If a
     // future chart produced general denominators, would the choice of odd-part algorithm start to

@@ -648,6 +648,28 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The OPT.3 re-proof hits a TCB question, not a proof-difficulty question: `trailing_zeros` is an
+  intrinsic Aeneas cannot model.** Regenerating the model (`nix run .#extract`, clean) lifts the new
+  gcd tidily — `gcd_u128_loop0_loop0` (the `u64` inner Euclid, structurally the old proof at a second
+  width), `gcd_u128_loop0` (outer, with the narrowing branch), and a wrapper. But `lake build` fails
+  on the *model*, not the theorem: **`Unknown identifier core.num.U128.trailing_zeros`**, emitted
+  into `extract/lattice.FunsExternal_Template.lean` as a bare `axiom … : Std.U128 → Result Std.U32`.
+  `Lattice/FunsExternal.lean` states the house rule plainly: such holes are filled with a *faithful
+  `def`* rather than left as axioms, "which would pollute every downstream proof's `#print axioms`
+  footprint and defeat the axiom-clean guarantee", and those defs "are the ENTIRE hand-written TCB
+  surface of the `lattice` model" (guarded by `scripts/check-externals.sh`). So the shipped gcd needs
+  **one new entry on that audited surface** — small and auditable ("count of trailing zero bits, 128
+  for 0"), arguably simpler than the `unsigned_abs` already there, but growth nonetheless.
+  **The alternative costs performance instead of TCB:** strip the twos with a plain loop, which lifts
+  natively and is provable with the same `loop.spec_decr_nat` machinery. Measured: **80.1 ns/call
+  (3.24×)** against the intrinsic version's **44.2 ns (5.87×)** — end-to-end roughly **1.7× vs 2.0×**,
+  i.e. ~14% of the overall win traded for zero TCB growth. Note the intrinsic route is also *less*
+  proof work (one def + one lemma, versus three loop specs), so this is not a
+  effort-versus-purity trade — it is purely performance versus audited surface.
+  *Either way the remaining theorem work is shared*: the `u64` loop spec (the existing proof at a
+  second width), the strip-twos identity `gcd(2^i·m, 2^j·n) = 2^min(i,j)·gcd(m,n)`, and the
+  shift-no-overflow bound `gcd(m,n)·2^shift ≤ min(a,b)`. *2026-08-14 · open · OPT.3-proof (#240)*
+
 - **Stein / binary GCD benchmarked head-to-head and rejected on evidence — it is not faster here, on
   either operand mix.** The earlier rejection was an argument about proof cost; since OPT.3 already
   owes a re-proof, the question was legitimately reopened and settled by measurement instead.
