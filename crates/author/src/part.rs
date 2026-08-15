@@ -38,11 +38,13 @@ use crate::resolve;
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
 use develop::cut::CutSurface;
+use develop::extrude::{Apex, Cast, ExtrudeFault, Frame};
 use develop::fold::{FoldFault, FoldedWire, fold_outline_pw};
 use develop::part::PiecewiseDevelopment;
 use develop::unroll::FlatOutline;
 use export::trim::RailFit;
 use geom::chart::Chart;
+use geom::content::Edge;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
 
 /// The σ-bisection depth of the facade's fold evaluators (`(4/7)⁶⁰ ≈ 3·10⁻¹⁵` of the piece
@@ -86,6 +88,32 @@ pub enum Cutter<B: Backend = Bignum> {
         /// The squared radius `R²` (positive).
         r2: Rat<B>,
     },
+    /// A **sketch swept from an apex**: a profile region drawn in a rational frame and extruded,
+    /// parallel or drafted (`docs/cutter-extrude-design.md`). Boxed because it is much the largest
+    /// variant and the two metric cutters are what the existing pipelines pass around.
+    Extrude(Box<Extrusion<B>>),
+}
+
+/// The authored data of an extruded cutter, kept exactly as drawn.
+///
+/// Validation is deliberately **not** here: a `Part` records intent, and the frame/apex pair is
+/// checked when the part is built (an apex in the frame plane becomes a
+/// [`PartFault`](crate::part::PartFault), never a panic at authoring time).
+pub struct Extrusion<B: Backend = Bignum> {
+    /// The plane the profile is drawn in.
+    pub frame: Frame<B>,
+    /// The sweep's apex — a direction (parallel) or a cast point (drafted).
+    pub apex: Apex<B>,
+    /// The profile's boundary in frame coordinates, as `arrange2d` edges: non-convex profiles and
+    /// holes need no decomposition, because the fill rule stays with the region.
+    pub profile: Vec<Edge<B>>,
+}
+
+impl<B: Backend> Extrusion<B> {
+    /// The projection this extrusion works through, or the fault its authoring carries.
+    pub(crate) fn cast(&self) -> Result<Cast<B>, ExtrudeFault> {
+        Cast::new(self.frame.clone(), self.apex.clone())
+    }
 }
 
 impl<B: Backend> Cutter<B> {
@@ -103,6 +131,18 @@ impl<B: Backend> Cutter<B> {
         }
     }
 
+    /// A profile drawn in `frame` and swept from `apex` — the sketch-extrude cutter.
+    ///
+    /// The profile is an `arrange2d` boundary in frame coordinates; its own even-odd fill decides
+    /// what is inside, so a non-convex outline or one with holes needs no decomposition.
+    pub fn extrude(frame: Frame<B>, apex: Apex<B>, profile: Vec<Edge<B>>) -> Self {
+        Cutter::Extrude(Box::new(Extrusion {
+            frame,
+            apex,
+            profile,
+        }))
+    }
+
     /// The vertical (z-axis-parallel) cylinder over the xy-disk `(cx, cy, r²)` — the flex-PCB
     /// trim idiom (disks drawn in the physical xy-plane).
     pub fn vertical_cylinder(cx: Rat<B>, cy: Rat<B>, r2: Rat<B>) -> Self {
@@ -113,8 +153,25 @@ impl<B: Backend> Cutter<B> {
         }
     }
 
-    /// The cutter's boundary as the engine's [`CutSurface`] (the realization currency).
-    pub(crate) fn surface(&self) -> CutSurface<B> {
+    /// The cutter's boundary as the engine's [`CutSurface`]s — **one per wall**, in a fixed order
+    /// a [`Label`](crate::resolve::Label) can index into.
+    ///
+    /// This replaced a `surface() -> CutSurface`, which could not describe a cutter whose boundary
+    /// is several surfaces. The two metric cutters return exactly one wall, so every existing
+    /// caller reads `walls()[0]` and nothing about them changed.
+    pub(crate) fn walls(&self) -> Result<Vec<CutSurface<B>>, ExtrudeFault> {
+        if let Cutter::Extrude(e) = self {
+            let cast = e.cast()?;
+            // Distinct carriers, not edges: a disc arrives as two arcs of one circle, and a
+            // duplicated wall is counted twice by everything downstream that counts walls.
+            return cast.carrier_walls(&e.profile);
+        }
+        Ok(vec![self.metric_surface()])
+    }
+
+    /// The single boundary surface of a metric cutter. Panics for an extrusion, which has no
+    /// single surface — callers go through [`walls`](Self::walls).
+    fn metric_surface(&self) -> CutSurface<B> {
         match self {
             Cutter::HalfSpace { n, d } => CutSurface::Plane {
                 n: [n[0].clone(), n[1].clone(), n[2].clone()],
@@ -136,6 +193,12 @@ impl<B: Backend> Cutter<B> {
                     axis_dir[2].clone(),
                 ],
                 r2: r2.clone(),
+            },
+            // Unreachable: `walls` routes extrusions before this is called. Typed rather than
+            // panicking, so a future variant cannot silently take a wrong surface.
+            Cutter::Extrude(_) => CutSurface::Plane {
+                n: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)],
+                d: Rat::from_i128(0),
             },
         }
     }

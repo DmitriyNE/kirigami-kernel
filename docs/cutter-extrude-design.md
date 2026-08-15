@@ -240,13 +240,41 @@ nearer the caster but has the *larger* σ, so an ordinal read off σ inverts the
 
 ## 6. What has to change in existing code
 
-- `Cutter::surface() -> CutSurface` (`crates/author/src/part.rs:119`) cannot survive — an extruded
-  cutter has many walls. It becomes a walk yielding the wall surfaces plus the projective predicate.
-- `crates/author/src/resolve.rs:521` special-cases `Subtract` + `Cutter::Cylinder` when choosing σ
-  sample stations. An extruded cutter would silently receive no targeted stations and drop small
-  features between cells. This generalizes to "the σ-windows where any wall of the cutter is
-  active" — a de-ossification in the sense of the standing rule, not an addition beside it.
-- `crates/author/src/realize.rs:223` dispatches per `Cutter` variant; same treatment.
+Built as AUTH.1e, in two steps: a pure refactor with a no-goldens-move gate, then the capability.
+
+**The load-bearing assumption was not in this list.** It was the `Shadow` type in `resolve.rs`: one
+labelled µ̂-interval, because a quadric `MuCut` has exactly two roots. A general profile shadows a
+ruling in *several* stretches, so `Shadow` became a union of `Patch`es (**AUTH.1e.1**) — with
+`comp_intersect`/`comp_subtract` keeping their bodies verbatim and the union a `flat_map` and a
+`fold` over them. The equivalence is structural: the old `Empty` arms return what those combinators
+produce over **zero** patches, and the old single-interval arms are exactly one patch.
+
+Then (**AUTH.1e.2**):
+
+- `Cutter::surface() -> CutSurface` (`pub(crate)`, so no public break) became
+  `walls() -> Result<Vec<CutSurface>>`. All five call sites index by wall; the metric cutters return
+  exactly one, so each of them reads `walls()[0]` and nothing about them moved.
+- `Label` gained `BranchSide::Wall(index, upper)`, keeping the tuple shape so the other 24 label
+  sites compiled untouched.
+- The two station sites keyed off the **cutter variant** (`matches!(cutter, Cylinder{..})` in
+  `resolve.rs`, a per-variant `match` in `realize.rs`). Windowing is not a property of the variant —
+  it is a property of the **wall**: one whose µ̂-pullback is a genuine quadratic (`a ≢ 0`) is real
+  only between tangent rulings, an affine one everywhere. Both sites test that instead, which
+  reproduces the old behaviour by construction (`cut.rs` sets `a: RatFunc::zero()` for a plane, and
+  a cylinder's `a` vanishes identically only if the ruling is always parallel to the axis).
+
+### 6.1 Edges are not carriers
+
+A wall belongs to a **carrier**, and `arrange2d` hands out *decomposed* edges — a circle as its two
+x-monotone arcs, a split line as several segments. Building a wall per edge therefore duplicates
+surfaces, and while the µ̂-shadow absorbs that (coincident crossings leave zero-width stretches), the
+σ-window stations run per wall: measured, an extruded disc derived **two interior holes where the
+cylinder it equals derives one**. `Cast::carrier_walls` dedupes by carrier, with lines reduced by
+their first nonzero coefficient so the same line at two scales collapses.
+
+What caught it is worth recording: not the unit tests of the shadow — all green before and after —
+but the end-to-end differential that authors the *same solid* two ways and compares the resolved
+structures. The defect lived in the layer above the function under test.
 
 ## 7. Slices
 
@@ -257,7 +285,7 @@ nearer the caster but has the *larger* σ, so an ordinal read off σ inverts the
 | **AUTH.1b** | `Frame` (affine, with reported distortion) + the §2.3 carrier pullback + the projective inside predicate — **done** (`develop::extrude::Cast`) |
 | **AUTH.1c** | ray-pick frames: search → **backward-error certificate** (§9) — **done** (`develop::pick`) |
 | **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test — **done** (`develop::pick::{Sheet,Span,ray_crossings}`) |
-| **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) |
+| **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) — **done** (1e.1 shadow union, 1e.2 the cutter) |
 | **AUTH.1f** | acceptance demo through develop → fold → STEP; full gate; vv-matrix rows to ✅ |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through

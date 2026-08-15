@@ -1980,6 +1980,28 @@ special case in `resolve.rs` becomes "the σ-windows where any wall is active" �
 cutter gets no targeted stations and drops small features between cells. Existing `HalfSpace` and
 `Cylinder` cutters keep working, with their pinned ε and chord goldens unchanged.
 
+**Split the refactor from the capability, and gate them differently.** The µ̂-`Shadow` has to become a
+union before an extruded cutter can have one, and that step should land alone with the strongest gate
+available: the whole suite green with every pinned ε, chord golden **and work budget** unchanged. The
+work-budget tests assert counted work, so their passing is evidence nothing *moved*, not merely that
+nothing broke. Only then is the capability safe to layer on.
+
+**The generalization must key off the right property.** Both station sites matched on the *cutter
+variant*; windowing is a property of the **wall** (`a ≢ 0` ⟹ real only between tangent rulings). Test
+that the new criterion reproduces the old behaviour by construction rather than by observation.
+
+**Unit tests of the new function are not enough, and here is the evidence.** The shadow's own tests
+passed before and after a defect that made an extruded disc derive **two** interior holes where the
+cylinder it equals derives one — a duplicated wall, because `arrange2d` edges are decomposed pieces
+and several share one carrier. What found it was an **end-to-end differential**: author the same
+solid two ways, resolve both, compare roles/holes/kept-side. A slice claiming "wired into `Part`"
+needs a test that goes through `Part`.
+
+The membership sampling deserves its own case. Between consecutive wall crossings membership is
+constant, which is what makes one midpoint sample exact — but only while the sample stays inside its
+stretch, so the genericity nudge must be scaled to the **stretch**, not to the profile. The test is a
+lobe two orders of magnitude thinner than its neighbour, measured at its true width.
+
 **AUTH.1f — the demo cuts something real.** A drafted, spanned cut authored on a picked frame, taken
 through develop → fold → STEP: per-stage `Verified`, the emitted geometry checked **faithful to the
 authored profile** (not merely certificate-green), OCCT `audit valid ∧ free_edges == 0`, and the full

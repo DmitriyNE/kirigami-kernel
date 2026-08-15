@@ -215,25 +215,38 @@ fn certify_boundary<B: Backend>(
     // window's ends makes the oracle decline. So a cylinder label's span clamps to the
     // disc-positive window that contains it (inset a hair, the hole-loop margin doctrine).
     // Planes have no windows.
-    let mut disc_roots: Vec<Vec<Option<Vec<Rat<B>>>>> = Vec::new();
+    // Windowing is a property of the WALL, not of the cutter variant: a wall whose µ̂-pullback is a
+    // genuine quadratic (`a ≢ 0`) is real only between tangent rulings, an affine one everywhere.
+    // Reading it that way rather than matching on `Cutter` is what lets a multi-walled cutter join
+    // — and it reproduces the old behaviour exactly, since a cylinder's wall is quadratic and a
+    // half-space's is not.
+    /// Per region, per op, per wall: the wall's tangent-ruling σ roots, or `None` where the wall
+    /// is affine and has no windows.
+    type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Rat<B>>>>>>;
+    let mut disc_roots: DiscRoots<B> = Vec::new();
     for (ri, band) in bands.iter().enumerate() {
         let mut row = Vec::with_capacity(part.ops.len());
-        for (_, cutter) in &part.ops {
-            row.push(match cutter {
-                crate::part::Cutter::Cylinder { .. } => export::trim::surface_disc_roots(
-                    &built.charts[ri],
-                    &cutter.surface(),
-                    band,
-                    256,
-                    60,
-                ),
-                crate::part::Cutter::HalfSpace { .. } => None,
-            });
+        for (op, (_, cutter)) in part.ops.iter().enumerate() {
+            let walls = cutter
+                .walls()
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+            let mut per_wall = Vec::with_capacity(walls.len());
+            for wall in &walls {
+                let quadratic =
+                    develop::cut::cut_mu_form(&built.charts[ri], wall, &Rat::from_i128(0))
+                        .is_some_and(|f| !f.a.is_zero());
+                per_wall.push(if quadratic {
+                    export::trim::surface_disc_roots(&built.charts[ri], wall, band, 256, 60)
+                } else {
+                    None
+                });
+            }
+            row.push(per_wall);
         }
         disc_roots.push(row);
     }
-    let window_around = |ri: usize, op: usize, at: &Rat<B>| -> Extent<B> {
-        let roots = disc_roots[ri][op].as_ref()?;
+    let window_around = |ri: usize, op: usize, wall: usize, at: &Rat<B>| -> Extent<B> {
+        let roots = disc_roots[ri][op].get(wall)?.as_ref()?;
         for w in roots.windows(2) {
             if w[0].cmp(at) == Ordering::Less && at.cmp(&w[1]) == Ordering::Less {
                 let inset = w[1].sub(&w[0]).mul(&Rat::new(1, 200));
@@ -254,7 +267,8 @@ fn certify_boundary<B: Backend>(
                 hi: span_hi,
             };
             let mid = span.lo.add(&span.hi).mul(&Rat::new(1, 2));
-            if let Some((t1, t2)) = window_around(ri, label.0, &mid) {
+            if let Some((t1, t2)) = window_around(ri, label.0, crate::resolve::wall_of(label), &mid)
+            {
                 span = Interval {
                     lo: rmax(&span.lo, &t1),
                     hi: rmin(&span.hi, &t2),
@@ -282,10 +296,21 @@ fn certify_boundary<B: Backend>(
             let pick = match label.1 {
                 BranchSide::Lower => RootPick::Lower,
                 BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
+                BranchSide::Wall(_, upper) => {
+                    if upper {
+                        RootPick::Upper
+                    } else {
+                        RootPick::Lower
+                    }
+                }
             };
+            let walls = part.ops[label.0]
+                .1
+                .walls()
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
             let (mu, e) = match certified_rail_surface(
                 &built.charts[ri],
-                &part.ops[label.0].1.surface(),
+                &walls[crate::resolve::wall_of(label)],
                 pick,
                 &span,
                 fit,
@@ -404,9 +429,13 @@ fn certify_holes<B: Backend>(
             lo: rmax(&window.lo.sub(&pad), &part.regions[ri].band.lo),
             hi: rmin(&window.hi.add(&pad), &part.regions[ri].band.hi),
         };
+        let walls = part.ops[op]
+            .1
+            .walls()
+            .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
         match surface_hole_loop(
             &built.charts[ri],
-            &part.ops[op].1.surface(),
+            &walls[0],
             &span,
             &part.clearance,
             &part.cfg,

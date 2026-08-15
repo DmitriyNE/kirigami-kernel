@@ -488,6 +488,32 @@ impl<B: Backend> Cast<B> {
         edges.iter().map(|e| self.edge_wall(e)).collect()
     }
 
+    /// Every **distinct carrier**'s wall, in first-appearance order.
+    ///
+    /// This is [`walls`](Self::walls) with the duplicates removed, and the distinction is not
+    /// cosmetic. `arrange2d` hands out *decomposed* edges — a circle arrives as its two x-monotone
+    /// arcs, a split line as several segments — and all the pieces of one carrier sweep the **same**
+    /// surface. Walking edges is right when the edges are the subject; when the *surfaces* are the
+    /// subject, a duplicate wall is a second copy of one boundary, and any consumer that counts
+    /// walls (σ-window stations, hole records) counts it twice.
+    ///
+    /// Carriers are compared exactly, after dividing each line's `(a, b, c)` by its first nonzero
+    /// coefficient — so `2x + 4y + 6 = 0` and `x + 2y + 3 = 0`, the same line at two scales, reduce
+    /// to the same key.
+    pub fn carrier_walls(&self, edges: &[Edge<B>]) -> Result<Vec<CutSurface<B>>, ExtrudeFault> {
+        let mut seen: Vec<CarrierKey<B>> = Vec::new();
+        let mut out = Vec::new();
+        for e in edges {
+            let key = carrier_key(e);
+            if seen.iter().any(|k| same_carrier(k, &key)) {
+                continue;
+            }
+            out.push(self.edge_wall(e)?);
+            seen.push(key);
+        }
+        Ok(out)
+    }
+
     /// Is the 3-D point `X` inside the sketch — does its generatrix pass through the profile?
     ///
     /// This is the **predicate view** of the cutter: cast `X` to frame coordinates, then ask the
@@ -502,6 +528,41 @@ impl<B: Backend> Cast<B> {
     pub fn contains(&self, x: &V3<B>, edges: &[Edge<B>]) -> Option<bool> {
         let (a, b) = self.coords(x)?;
         generic_row(&b, edges).then(|| arrange2d::locate::winding_parity(&a, &b, edges))
+    }
+}
+
+/// A profile edge's carrier, reduced to what identifies it: a line by its coefficients normalized
+/// against the first nonzero one (so scale drops out), a circle by centre and squared radius.
+enum CarrierKey<B: Backend> {
+    Line(V3<B>),
+    Circle(V3<B>),
+}
+
+fn carrier_key<B: Backend>(e: &Edge<B>) -> CarrierKey<B> {
+    match e {
+        Edge::Seg(s) => {
+            let (a, b, c) = (&s.line.a, &s.line.b, &s.line.c);
+            let pivot = if !a.is_zero() { a } else { b };
+            if pivot.is_zero() {
+                return CarrierKey::Line([a.clone(), b.clone(), c.clone()]);
+            }
+            let inv = pivot.recip();
+            CarrierKey::Line([a.mul(&inv), b.mul(&inv), c.mul(&inv)])
+        }
+        Edge::Arc(arc) => CarrierKey::Circle([
+            arc.circle.cx.clone(),
+            arc.circle.cy.clone(),
+            arc.circle.r2.clone(),
+        ]),
+    }
+}
+
+fn same_carrier<B: Backend>(x: &CarrierKey<B>, y: &CarrierKey<B>) -> bool {
+    let eq = |a: &V3<B>, b: &V3<B>| (0..3).all(|i| a[i].cmp(&b[i]) == core::cmp::Ordering::Equal);
+    match (x, y) {
+        (CarrierKey::Line(a), CarrierKey::Line(b)) => eq(a, b),
+        (CarrierKey::Circle(a), CarrierKey::Circle(b)) => eq(a, b),
+        _ => false,
     }
 }
 
@@ -1075,6 +1136,46 @@ mod tests {
         // and a point with no projection at all has no answer either.
         assert_eq!(cast.contains(&at(&q(3), &q(1), &q(1)), &edges), None);
         assert_eq!(cast.contains(&ap, &edges), None);
+    }
+
+    /// **Edges are not carriers.** `arrange2d` hands out decomposed pieces — a circle as its two
+    /// x-monotone arcs — and all the pieces of one carrier sweep the *same* surface. Walking edges
+    /// gives a wall per piece, which is right when the edges are the subject and wrong when the
+    /// surfaces are: a consumer that counts walls (σ-window stations, hole records) then counts one
+    /// boundary twice. Measured, before this existed: an extruded disc derived **two** interior
+    /// holes where the cylinder it equals derived one.
+    #[test]
+    fn one_carrier_is_one_wall_however_many_edges_it_arrived_as() {
+        let cast = skew_cast();
+        // A disc: two arcs, one circle.
+        let disc = circle_edges(q(2), q(2), q(1), 0);
+        assert_eq!(
+            disc.len(),
+            2,
+            "a circle decomposes into two x-monotone arcs"
+        );
+        assert_eq!(cast.walls(&disc).unwrap().len(), 2, "per edge");
+        assert_eq!(
+            cast.carrier_walls(&disc).unwrap().len(),
+            1,
+            "per carrier — the two arcs sweep one surface"
+        );
+
+        // A square, then the same square with one side split in two: four carriers either way.
+        let square = poly_edges(&[(0, 0), (4, 0), (4, 4), (0, 4)], 1);
+        assert_eq!(cast.carrier_walls(&square).unwrap().len(), 4);
+        let split = poly_edges(&[(0, 0), (2, 0), (4, 0), (4, 4), (0, 4)], 2);
+        assert_eq!(split.len(), 5, "the bottom side arrives in two pieces");
+        assert_eq!(
+            cast.carrier_walls(&split).unwrap().len(),
+            4,
+            "collinear pieces share a carrier, even written at a different scale"
+        );
+
+        // Two genuinely distinct circles stay two walls.
+        let mut two = circle_edges(q(0), q(0), q(1), 3);
+        two.extend(circle_edges(q(9), q(0), q(1), 4));
+        assert_eq!(cast.carrier_walls(&two).unwrap().len(), 2);
     }
 
     /// A region flattens losslessly for the predicate: parity recovers the nesting, so a hole is

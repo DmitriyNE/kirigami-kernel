@@ -688,6 +688,23 @@ fine — this is a log, not a schema.
   what the pullback needs) and that was silently read as also fixing the *metric class*, which it
   does not.
 
+- **Edges are not carriers, and the difference cost a duplicated hole.** AUTH.1b built
+  `Cast::walls` per *edge* and documented that as deliberate: "carriers are not deduplicated, which
+  is what the caller wants when it is walking edges." AUTH.1e.2's caller wants the opposite and the
+  doc note did not save me. `arrange2d` hands out **decomposed** pieces — a circle arrives as its
+  two x-monotone arcs — and both arcs sweep the *same* quadric, so an extruded disc produced two
+  identical walls. The µ̂-shadow survived that (coincident crossings leave zero-width stretches,
+  which the scan skips), but the σ-window station loop runs per wall, so the window was recorded
+  twice and the resolver derived **two interior holes where the cylinder it equals derives one**.
+  Fixed with `Cast::carrier_walls`, which dedupes by carrier — lines normalized against their first
+  nonzero coefficient so the same line at a different scale collapses too.
+  Two things worth keeping. First, **what caught it**: not the three unit tests of `extruded_shadow`
+  (all green, all passing before and after), but the end-to-end differential that authored the *same
+  solid* two ways and compared the resolved structures. The bug lived entirely in the layer above
+  the function under test. Second, the smell in advance: I had written "which is what the caller
+  wants" about a caller that did not exist yet. A justification written for a hypothetical consumer
+  is worth re-checking the moment a real one appears.
+
 - **A lap is made of support, not of charts — so a span counts regions.** AUTH.1d started from the
   design's phrase "neutral surfaces (chart embeddings)" and the obvious reading, one chart = one
   surface, is wrong on the very device the acceptance test uses. Cast down the seam-drill axis at
