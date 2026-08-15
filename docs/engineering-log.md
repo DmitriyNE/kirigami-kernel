@@ -670,6 +670,29 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **AUTH.2's scout: the band lives in one file, and everything downstream already takes a general
+  loop.** #256 sized the work as "holes must become regions end to end, through the flat boolean and
+  into the B-rep builder", and named `HoleRail`'s band (`brep_build.rs:222`) as the load-bearing
+  blocker to scout before planning. Measured instead, by drilling a deliberately **non-convex**
+  L-shaped `(σ, µ̂)` loop through the doctest panel with `Part::hole_domain` (the authored-polygon
+  channel, which is the same currency a traced footprint would produce): **(1)** the flat leg is
+  free — develop → exact `arrange2d` boolean → topology gate, all `Verified`, with a convex rectangle
+  as the control; **(2)** the solid leg is *also* free while the loop stays inside one σ-slice —
+  `brep_trim_solid_regions`' `poly_holes` channel takes an arbitrary `(σ,µ̂)` loop as a lid inner
+  wire and sweeps a wall per edge, and the shell certifies; **(3)** the one real solid-path gap is a
+  loop **crossing a σ-station**, refused by name at `brep_build.rs:1739` (`SolidRefused`), confirmed
+  by placing the same slot across `σ=0` with the drill removed. So `HoleRail`'s band is not what
+  stands between us and non-convex profiles — it is the channel for *station-crossing* holes, which
+  is an orthogonal axis. Two corollaries: the **resolver was already general** (AUTH.1e.1's
+  `Shadow(Vec<Patch>)` carries several µ̂-stretches per ruling, so structure/stations/spans need no
+  work), and the refusal is confined to **two lines** in `develop::cut` (`ruling_patch`'s
+  several-stretches check, `cut.rs:663`, and the window-gap check, `cut.rs:812`). AUTH.2 is therefore
+  a **tracer** milestone, not a plumbing one. *Method note:* the first three runs all refused with
+  `TopologyMismatch` and it took a convex control to show that was placement, not convexity — the
+  slot was sitting on the panel's existing drill, and then on the inner boundary. A refusal that
+  looks like the thing you are testing is worth one control run before it becomes a finding.
+  *2026-08-16 · resolved · #256, `crates/develop/src/cut.rs`, `crates/export/src/brep_build.rs`*
+
 - **A drafted round hole is not a round cone, and AUTH.1a's surface-class table said it was.** The
   GO-gate's table (`docs/cutter-extrude-design.md` §2.2) mapped *arc + finite apex* to a `Cone` and
   *arc + direction* to the existing `Cylinder`, meaning the two metric surfaces the kernel already
