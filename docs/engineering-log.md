@@ -1657,6 +1657,29 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **`DevConfig::terms` is NOT the transcendental bottleneck — and four attempts to tame the bignum
+  traffic all failed.** Recorded as a NEGATIVE result so it is not re-derived. Re-profiling in an
+  OPTIMIZED build (after the profile fix) inverted the picture: no `arctan`/`cos_on`/`sin_on` frame
+  appears at all; ~a third of samples are ALLOCATION (malloc/free/memmove/memset/`Repr::clone`/
+  `Repr::drop`) and the rest is dashu BIG-integer work (`lehmer_guess`, `gcd_large_dword`,
+  `mul_large`, `UBig::div`). `lattice::small` — which dominated the UNOPTIMIZED profile — is now
+  minor. Two profiles of the same code disagreed about the hot spot because one of them was
+  measuring the wrong build.
+  Tried, all reverted: (1) `ROUND_BITS` 60→30 — **30% faster and rejected**, because VV.1's
+  `the_fold_takes_the_seeded_bracket` failed "seeded 0, bisected 8": at 2^-30 the enclosure is too
+  wide to verify and MAP.1's fast path silently degrades to bisection, same certified answer, quietly
+  weaker. That test's doc says it is "the only check that would notice"; it was. (2) rounding the
+  product before adding in `point_from_on`, 6 sites — no gain. (3) rounding between Horner's multiply
+  and add in `eval_poly_on` — no gain. (4) large polynomial coefficients — disproved, 18/9/4 digits.
+  The arithmetic made (2)/(3) look compelling: `SmallRat` is `i128/i128`, so at 60-bit operands ONE
+  op fits and the second unrounded op overflows to bignum. Shortening the chains should have helped
+  and measurably did not — so either promotion is not the cost, or the allocation traffic comes from
+  somewhere else. **That is the question any future attempt must answer before optimizing**, and it
+  is why the follow-ups are filed (#257) rather than attempted.
+  The one clean lesson: a speedup that a gate rejects is not a speedup. (1) would have shipped a 30%
+  win that quietly disabled a certified fast path.
+  *2026-08-16 · finding · task #233 → #257*
+
 - **The test suite had no `[profile]` section at all — every test ran at `opt-level = 0`.** The
   single largest factor in the suite's runtime, and it was configuration, not code: **185.0s → 25.6s
   (7.2×)**; the heaviest test 157.6s → 22.0s. Counters byte-identical (2 256 / 2 640 / 4 096), so
