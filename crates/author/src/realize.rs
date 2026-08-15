@@ -919,9 +919,15 @@ mod tests {
             ("self_lapping (gamma!=0)", self_lapping_cone(16, 8)),
         ];
         for (name, part) in cases {
+            develop::counters::reset();
             let clock = std::time::Instant::now();
             let _ = part.develop();
             let t_total = clock.elapsed().as_secs_f64();
+            std::eprintln!(
+                "  [gamma] whole develop: {} cells, {} cut_evals",
+                develop::counters::gamma_cells(),
+                develop::counters::cut_evals()
+            );
 
             let c = std::time::Instant::now();
             let built = part.build_regions().expect("regions develop");

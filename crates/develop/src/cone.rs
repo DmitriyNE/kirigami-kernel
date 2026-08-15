@@ -492,6 +492,7 @@ impl<B: Backend> ConeDevelopment<B> {
         panel: &RatIv<B>,
         cfg: &DevConfig<B>,
     ) -> Option<[RatIv<B>; 2]> {
+        crate::counters::bump_gamma_velocity();
         let cr = eval_ratfunc_on(&d.cr, panel)?;
         let cn = eval_ratfunc_on(&d.cn, panel)?;
         let rho2 = eval_ratfunc_on(&self.rho_sq, panel)?;

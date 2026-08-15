@@ -31,6 +31,15 @@ use lattice::Bignum;
 const GAMMA_CELLS_MAX: u64 = 3_200;
 const CUT_EVALS_MAX: u64 = 5_800;
 
+/// The γ **integrand** budget — measured 4 896 `γ′` evaluations on the same device, so ~1.4× above.
+///
+/// This one exists because the gate had a hole. `gamma_cells` counts the quadrature grid, but every
+/// *interval* γ query also evaluates the integrand once, and nothing counted those: 2 256 counted
+/// against 4 896 uncounted, i.e. the budget was watching about a third of the γ work. A change that
+/// doubled the velocity evaluations — the dominant cost of the unroll's lift bound — would have
+/// passed untouched. Counted separately so the 2 256 baseline above keeps meaning what it says.
+const GAMMA_VELOCITY_MAX: u64 = 6_900;
+
 fn device() -> Part<Bignum> {
     acceptance::self_lapping_cone(16, 8, true)
 }
@@ -43,18 +52,30 @@ fn the_development_stays_within_its_work_budget() {
         Verdict::Unresolved(e) => panic!("develop unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
         Verdict::Refuted(f) => panic!("develop refuted: {f:?}"),
     };
-    let (gamma, cuts) = (counters::gamma_cells(), counters::cut_evals());
-    println!("[work] develop  γ cells {gamma}/{GAMMA_CELLS_MAX}  cut evals {cuts}/{CUT_EVALS_MAX}");
+    let (gamma, cuts, vel) = (
+        counters::gamma_cells(),
+        counters::cut_evals(),
+        counters::gamma_velocity(),
+    );
+    println!(
+        "[work] develop  γ cells {gamma}/{GAMMA_CELLS_MAX}  γ′ evals {vel}/{GAMMA_VELOCITY_MAX}  \
+         cut evals {cuts}/{CUT_EVALS_MAX}"
+    );
     // The part really was built — a gate over a stage that silently did nothing would pass.
     assert_eq!(flat.region().faces[0].holes.len(), 2);
     assert!(
-        gamma > 0 && cuts > 0,
-        "the counters must actually observe the pipeline (γ {gamma}, cuts {cuts})"
+        gamma > 0 && cuts > 0 && vel > 0,
+        "the counters must actually observe the pipeline (γ {gamma}, γ′ {vel}, cuts {cuts})"
     );
     assert!(
         gamma <= GAMMA_CELLS_MAX,
         "γ cells {gamma} exceeds the work budget {GAMMA_CELLS_MAX} — the flat directrix is being \
          re-integrated per query again (see OPT.1)"
+    );
+    assert!(
+        vel <= GAMMA_VELOCITY_MAX,
+        "γ′ evaluations {vel} exceeds the work budget {GAMMA_VELOCITY_MAX} — the lift bound is \
+         re-deriving the directrix more often than the geometry needs"
     );
     assert!(
         cuts <= CUT_EVALS_MAX,

@@ -31,6 +31,7 @@ use core::cell::Cell;
 
 thread_local! {
     static GAMMA_CELLS: Cell<u64> = const { Cell::new(0) };
+    static GAMMA_VELOCITY: Cell<u64> = const { Cell::new(0) };
     static CUT_EVALS: Cell<u64> = const { Cell::new(0) };
     static BRACKET_SEEDED: Cell<u64> = const { Cell::new(0) };
     static BRACKET_BISECTED: Cell<u64> = const { Cell::new(0) };
@@ -39,6 +40,7 @@ thread_local! {
 /// Zero every counter on the calling thread. Call at the start of a measurement.
 pub fn reset() {
     GAMMA_CELLS.with(|c| c.set(0));
+    GAMMA_VELOCITY.with(|c| c.set(0));
     CUT_EVALS.with(|c| c.set(0));
     BRACKET_SEEDED.with(|c| c.set(0));
     BRACKET_BISECTED.with(|c| c.set(0));
@@ -51,6 +53,28 @@ pub fn reset() {
 /// runs it.
 pub fn gamma_cells() -> u64 {
     GAMMA_CELLS.with(|c| c.get())
+}
+
+/// Evaluations of the directrix **velocity** `γ′` on this thread — the integrand itself, enclosed
+/// over an interval.
+///
+/// Counted separately from [`gamma_cells`] because it is a **different operation with a different
+/// caller**, and conflating them would have hidden a real gap. `gamma_cells` counts the quadrature
+/// grid; `directrix_velocity` is called once per *interval* γ query — every lift bound in the
+/// unroll issues them — and was previously counted by nothing at all. Measured on the acceptance
+/// device: 2 256 cells against **4 896 velocity evaluations**, so the work budget was watching
+/// about a third of the γ integrand work and a change that doubled the rest would have passed the
+/// gate untouched.
+///
+/// Kept as its own counter rather than folded into `gamma_cells` so the committed 2 256 baseline
+/// keeps meaning what it says.
+pub fn gamma_velocity() -> u64 {
+    GAMMA_VELOCITY.with(|c| c.get())
+}
+
+/// Bump the `γ′` evaluation counter.
+pub(crate) fn bump_gamma_velocity() {
+    GAMMA_VELOCITY.with(|c| c.set(c.get() + 1));
 }
 
 /// Sub-interval evaluations performed by the p-curve cut certificate on this thread.
