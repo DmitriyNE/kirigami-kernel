@@ -1194,25 +1194,15 @@ mod tests {
 
     /// **A polygonal slot must be SEEN, however small.** Every wall of a polygon is affine, so it
     /// has no tangent-ruling window — and station targeting keyed on exactly that. The result was
-    /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
-    /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
-    /// `Inactive` — a green certificate on a cut that did nothing.
-    ///
-    /// The profile's bounding circle supplies the missing window. A superset is the right error:
-    /// extra stations sample where the cut is absent and cost nothing, a missing one loses the cut.
-    #[test]
-    fn a_polygonal_slot_is_not_dropped_between_sample_cells() {
-        use crate::construct;
-        use crate::part::SupportFn;
-        // A square the same size and place as the disc that already resolves.
-        let (cx, cy, h) = (q(0), Q::new(11, 5), Q::new(1, 5));
+    /// The axis-aligned square of half-side `h` about `(cx, cy)`, as `arrange2d` segment edges.
+    fn square_edges(cx: Q, cy: Q, h: Q) -> Vec<Edge<Bignum>> {
         let pts = [
             (cx.sub(&h), cy.sub(&h)),
             (cx.add(&h), cy.sub(&h)),
             (cx.add(&h), cy.add(&h)),
             (cx.sub(&h), cy.add(&h)),
         ];
-        let square: Vec<Edge<Bignum>> = (0..4)
+        (0..4)
             .map(|i| {
                 let ((sx, sy), (ex, ey)) = (pts[i].clone(), pts[(i + 1) % 4].clone());
                 let a = ey.sub(&sy).neg();
@@ -1226,7 +1216,58 @@ mod tests {
                     source: CurveId(0),
                 }))
             })
-            .collect();
+            .collect()
+    }
+
+    /// **A bounding box has two sides, and both must be bracketed the right way round.** `extent`
+    /// is what `bounding_wall` and `reference_point` are built on, and it bracketed segment
+    /// endpoints with `rational_above` on *both* sides — a strict upper bound found by doubling
+    /// from zero. For this square that gave `[0, 1] × [3, 3]`: not a loose box, a **wrong** one,
+    /// with zero height and containing none of the profile. The bounding circle derived from it
+    /// missed the square entirely, so the hole window did too, and the multi-wall loop refused a
+    /// perfectly good cut. Nothing caught it for two slices because until AUTH.1e.4 no geometry
+    /// consumed the box — the polygonal-slot test below only asks that the role is not `Inactive`.
+    #[test]
+    fn a_polygon_extent_brackets_its_own_corners() {
+        let (cx, cy, h) = (q(0), Q::new(11, 5), Q::new(1, 5));
+        let Cutter::Extrude(e) = drilled(square_edges(cx.clone(), cy.clone(), h.clone())) else {
+            panic!("drilled builds an extrusion")
+        };
+        let (lo_a, lo_b, hi_a, hi_b) = e.extent().expect("a square has an extent");
+        // Tight: within the 2^-48 bisection slop of the true corners, not merely containing them.
+        let slack = Q::new(1, 1 << 20);
+        for (got, want) in [
+            (&lo_a, cx.sub(&h)),
+            (&lo_b, cy.sub(&h)),
+            (&hi_a, cx.add(&h)),
+            (&hi_b, cy.add(&h)),
+        ] {
+            let d = got.sub(&want);
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            assert!(
+                d.cmp(&slack) != core::cmp::Ordering::Greater,
+                "extent bound {} should bracket {} tightly",
+                rat_to_f64(got),
+                rat_to_f64(&want)
+            );
+        }
+        // And it really contains the profile — the invariant `bounding_wall` rests on.
+        assert!(lo_a.cmp(&cx.sub(&h)) != core::cmp::Ordering::Greater);
+        assert!(hi_b.cmp(&cy.add(&h)) != core::cmp::Ordering::Less);
+    }
+
+    /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
+    /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
+    /// `Inactive` — a green certificate on a cut that did nothing.
+    ///
+    /// The profile's bounding circle supplies the missing window. A superset is the right error:
+    /// extra stations sample where the cut is absent and cost nothing, a missing one loses the cut.
+    #[test]
+    fn a_polygonal_slot_is_not_dropped_between_sample_cells() {
+        use crate::construct;
+        use crate::part::SupportFn;
+        // A square the same size and place as the disc that already resolves.
+        let square = square_edges(q(0), Q::new(11, 5), Q::new(1, 5));
 
         let part = construct::from_chart::<Bignum>(&cone())
             .region_sigma(Q::new(-7, 2), Q::new(7, 2), SupportFn::inherit())

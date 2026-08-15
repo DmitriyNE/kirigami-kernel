@@ -46,7 +46,7 @@ use develop::unroll::FlatOutline;
 use export::trim::RailFit;
 use geom::chart::Chart;
 use geom::content::{Circle, Edge};
-use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Surd};
 
 /// The σ-bisection depth of the facade's fold evaluators (`(4/7)⁶⁰ ≈ 3·10⁻¹⁵` of the piece
 /// width — well under any fab-plausible ε floor; the enclosure budget is [`Part::budget`]).
@@ -130,16 +130,41 @@ fn rational_sqrt_above<B: Backend>(r2: &Rat<B>) -> Rat<B> {
 /// The profile's extent in frame coordinates: `(lo_a, lo_b, hi_a, hi_b)`.
 type Extent<B> = (Rat<B>, Rat<B>, Rat<B>, Rat<B>);
 
+/// A **tight** rational bracket `lo ≤ s < hi` around a possibly-algebraic coordinate.
+///
+/// `rational_below`/`rational_above` bracket by *doubling from zero*, so on their own they answer
+/// at integer scale — `1/5` brackets to `[0, 1]` and `2` to `[0, 3]`. That is a correct bracket and
+/// a useless box: for a profile a fraction of a unit across, the derived bounding circle comes out
+/// an order of magnitude too big. Bisecting brings both ends within `2⁻⁴⁸` of the true value while
+/// keeping the containment invariant (`lo` only ever moves to a value `≤ s`, `hi` to one `> s`).
+fn bracket<B: Backend>(s: &Surd<B>) -> (Rat<B>, Rat<B>) {
+    use core::cmp::Ordering;
+    let (mut lo, mut hi) = (
+        arrange2d::locate::rational_below(s),
+        arrange2d::locate::rational_above(s),
+    );
+    for _ in 0..48 {
+        let m = lo.add(&hi).mul(&Rat::new(1, 2));
+        if s.cmp(&Surd::from_rat(m.clone())) == Ordering::Less {
+            hi = m;
+        } else {
+            lo = m;
+        }
+    }
+    (lo, hi)
+}
+
 impl<B: Backend> Extrusion<B> {
     /// A rectangle containing the whole profile, in frame coordinates.
     ///
-    /// A segment endpoint may be algebraic (`Surd`, after a boolean), so it is bracketed rather
-    /// than used exactly — an extent only has to *contain*.
+    /// A segment endpoint may be algebraic (`Surd`, after a boolean), so it is [`bracket`]ed rather
+    /// than used exactly — an extent only has to *contain*. Both ends of the bracket are needed:
+    /// taking `rational_above` for the low side too was AUTH.1f's own bug, and it did not merely
+    /// inflate the box, it **collapsed** it — a square with horizontal edges at `b = 2` and
+    /// `b = 12/5` came out with `lo_b = hi_b = 3`, a box the profile is nowhere inside.
     pub(crate) fn extent(&self) -> Option<Extent<B>> {
         let mut bbox: Option<Extent<B>> = None;
-        let mut grow = |x: Rat<B>, y: Rat<B>, r: Rat<B>| {
-            let (lo_x, hi_x) = (x.sub(&r), x.add(&r));
-            let (lo_y, hi_y) = (y.sub(&r), y.add(&r));
+        let mut grow = |lo_x: Rat<B>, lo_y: Rat<B>, hi_x: Rat<B>, hi_y: Rat<B>| {
             let least = |p: Rat<B>, q: Rat<B>| {
                 if p.cmp(&q) == core::cmp::Ordering::Less {
                     p
@@ -163,18 +188,20 @@ impl<B: Backend> Extrusion<B> {
         };
         for e in &self.profile {
             match e {
-                Edge::Arc(a) => grow(
-                    a.circle.cx.clone(),
-                    a.circle.cy.clone(),
-                    rational_sqrt_above(&a.circle.r2),
-                ),
+                Edge::Arc(a) => {
+                    let r = rational_sqrt_above(&a.circle.r2);
+                    grow(
+                        a.circle.cx.sub(&r),
+                        a.circle.cy.sub(&r),
+                        a.circle.cx.add(&r),
+                        a.circle.cy.add(&r),
+                    );
+                }
                 Edge::Seg(sg) => {
                     for p in [&sg.start, &sg.end] {
-                        let (x, y) = (
-                            arrange2d::locate::rational_above(&p.x),
-                            arrange2d::locate::rational_above(&p.y),
-                        );
-                        grow(x, y, Rat::from_i128(0));
+                        let (lo_x, hi_x) = bracket(&p.x);
+                        let (lo_y, hi_y) = bracket(&p.y);
+                        grow(lo_x, lo_y, hi_x, hi_y);
                     }
                 }
             }
@@ -497,6 +524,15 @@ pub enum PartFault {
     /// A hole op's σ-extent crosses a region join (not yet realizable — split the hole or move
     /// the join).
     HoleCrossesRegions {
+        /// The offending op.
+        op: usize,
+    },
+    /// This op's cutter meets some ruling in **more than one stretch** — an extruded profile that
+    /// is non-convex, or that has a hole of its own. An interior hole is realized as a *band* (one
+    /// lower boundary, one upper), which cannot express that footprint, so the cut is refused
+    /// rather than approximated by one of its stretches. Author the feature as several convex
+    /// cuts, or wait for holes to be regions end-to-end (`docs/cutter-extrude-design.md` §10.1).
+    ProfileNotSimple {
         /// The offending op.
         op: usize,
     },
