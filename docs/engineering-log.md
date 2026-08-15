@@ -688,6 +688,24 @@ fine — this is a log, not a schema.
   what the pullback needs) and that was silently read as also fixing the *metric class*, which it
   does not.
 
+- **Building walls from carriers instead of endpoints deleted three problems at once.** AUTH.1a
+  built a wall from the *endpoints* of a profile edge (`segment_wall`: one determinant through two
+  3-D points and the apex), following the GO-gate's §4 wording. AUTH.1b needed the same thing for a
+  profile coming out of `arrange2d`, where that shape does not fit: an edge's endpoints are `Surd`
+  (degree-2 algebraic after any boolean) and an arc's circle is stored by **`r²`**, never `r`.
+  Rather than plumb algebraic coordinates through, the wall is now read off the edge's **carrier**
+  and built by the one rule in §2.3 — frame coordinates are a rational quotient, so any 2-D carrier
+  equation becomes a 3-D surface by substituting it and clearing the denominator. Three things fell
+  out of that single change: the `Surd` endpoints never enter (a wall is unbounded; trimming is a
+  `(σ, µ̂)` boolean); `r²` survives the clearing **linearly**, so no root is ever taken; and each
+  wall inherits its own carrier's sign, which leaves the fill rule with the region and is exactly
+  why a non-convex profile with holes needs no decomposition. `segment_wall` was then a second
+  derivation of what `line_wall` computes, with no consumer left — deleted per the standing
+  no-ossification rule, its property re-pinned against the engine that survived. The general lesson
+  is the one the milestone keeps producing: the *carrier* is the durable object, the endpoints are
+  trim data, and code that reaches for endpoints is usually about to need a coordinate type it
+  cannot afford.
+
 - **The first-order distance bound wants headroom, and says so.** `Plane` and `Cylinder` have exact
   distances; a quadric gets `dist ≤ |F|/g` from the gradient-flow lemma, valid when `|∇F| ≥ g > 0` on
   a ball `B̄(X, R)` and `|F|/g ≤ R`. Three things fell out while building it. **The hypothesis is

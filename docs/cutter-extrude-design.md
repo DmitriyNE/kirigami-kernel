@@ -81,6 +81,35 @@ translation for a projection, and both are rational.
 The price of generality is that a quadric has **no closed-form distance**, which the certificate has
 to supply some other way — see §4.2.
 
+### 2.3 One rule builds every wall
+
+The two views share a single mechanism, and building AUTH.1b around it removed a whole class of
+special cases. A point's frame coordinates are a **rational quotient**
+
+```text
+(a, b) = ( L₁·(X − o) / T(X),  L₂·(X − o) / T(X) )
+```
+
+with `L₁, L₂` rational 3-vectors and `T` a rational affine form — the projected point's homogeneous
+weight. So **any 2-D carrier equation becomes a 3-D surface by substituting that quotient and
+clearing the denominator**: a line clears to a plane, a circle clears (against `T²`) to a quadric.
+One derivation covers both carrier classes and both apex kinds.
+
+Three things fall out that would otherwise each need their own handling:
+
+- A wall is read off its edge's **carrier**, never its endpoints, which is why a profile arc's
+  algebraic endpoints (`Surd`, after a boolean) never enter — trimming to the authored piece is a
+  `(σ, µ̂)`-domain boolean, not a surface property.
+- A circle needs only **`r²`**, never the generally-irrational `r`, because `r²` survives the
+  clearing linearly. That is exactly how `arrange2d` already stores circles.
+- Each wall **inherits its own carrier's sign** — negative inside a disc, negative on the 2-D line's
+  negative side. The *fill rule* stays with the region rather than being smeared across the walls,
+  which is what lets a non-convex profile with holes work with no decomposition at all.
+
+`T` vanishes exactly on the plane through the apex parallel to the frame — where a generatrix runs
+parallel to the frame plane and no projection exists. That is the same plane the §4.1 nappe selector
+uses, so one quantity carries both meanings.
+
 ## 3. The frame, and why it is affine rather than orthonormal
 
 A frame is an origin `o` and two independent spanning vectors `u, v`, all rational. A profile point
@@ -109,10 +138,10 @@ Apex = [a : w]        w ≠ 0  →  finite cast point
 ```
 
 A parallel extrusion *is* a projection from a point at infinity, so these are one object, not two
-variants. The generatrix through profile point `Q` is the line joining `[Q:1]` and `[a:w]`; the wall
-over a profile edge is the plane spanned by the edge's endpoints and the apex — a single
-determinant, which at `w = 0` yields the plane containing direction `a`. One formula, one code path,
-**one cut-fit certificate derivation** instead of two.
+variants. The generatrix through profile point `Q` is the line joining `[Q:1]` and `[a:w]`, and the
+apex enters every formula below through the single expression `a − w·o` — at `w = 0` the direction,
+at `w = 1` the offset from the frame origin. One formula, one code path, **one cut-fit certificate
+derivation** instead of two.
 
 This is idiomatic for this kernel rather than clever: `σ = tan(φ/2)` is already a projective
 parameter, and Stage 2's seam result was that the seam sits at `σ = ±∞` and is removed by the exact
@@ -195,7 +224,7 @@ case is the acceptance test (§7) precisely because a layer-index model would ge
 |---|---|
 | **AUTH.1.0** | this document + `vv-guide` criteria + `vv-matrix` rows + tasks (the GO-gate) |
 | **AUTH.1a** | `Apex` (homogeneous) + `CutSurface::Quadric` + its pullback in `cut_mu_form`; the §4.1 refusals; the §4.2 first-order distance bound — **done** (`develop::extrude`) |
-| **AUTH.1b** | `Frame` (affine, with reported distortion) + profile-edge → wall mapping + the projective inside predicate |
+| **AUTH.1b** | `Frame` (affine, with reported distortion) + the §2.3 carrier pullback + the projective inside predicate — **done** (`develop::extrude::Cast`) |
 | **AUTH.1c** | ray-pick frames: float search → rational snap → **backward-error certificate** (§9) |
 | **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test |
 | **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) |

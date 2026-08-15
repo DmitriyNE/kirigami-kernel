@@ -1915,13 +1915,24 @@ exact cylinder distance, and against exactly-known geometry. Its limit is stated
 the working ball must avoid the surface's singular locus, so an error comparable to the feature's own
 radius reads `Unresolved`.
 
-**AUTH.1b — frame and profile.** The frame is affine — origin plus two independent rational spanning
-vectors — because rational *orthonormal* frames exist only for special normals and a picked frame
-could not otherwise be represented exactly. The frame reports its metric distortion, so a caller
-needing a true metric circle can tell whether it has one. The profile is an `arrange2d` region with
-its existing inside designation: non-convex profiles and holes need **no** decomposition and no
-polygon-CSG layer. The inside predicate is projection-through-the-apex followed by point-in-region,
-both rational hence exact.
+**AUTH.1b — frame and profile, on one rule.** The frame is affine — origin plus two independent
+rational spanning vectors — because rational *orthonormal* frames exist only for special normals and
+a picked frame could not otherwise be represented exactly. The frame reports its metric distortion,
+so a caller needing a true metric circle can tell whether it has one. The profile is an `arrange2d`
+region with its existing inside designation: non-convex profiles and holes need **no** decomposition
+and no polygon-CSG layer. The inside predicate is projection-through-the-apex followed by
+point-in-region, both rational hence exact.
+
+The design's §2.3 rule is what has to be demonstrated, not just implemented: a point's frame
+coordinates are a rational quotient, so every wall is a 2-D carrier equation with that quotient
+substituted and the denominator cleared. Three consequences are each a test rather than a claim —
+a wall is read off its edge's **carrier**, so a profile arc's algebraic endpoints never enter; a
+circle needs only **`r²`**, never the irrational `r`, so an arc can come straight from `arrange2d`;
+and each wall **mirrors its own carrier's sign**, leaving the fill rule with the region. The last of
+these is what makes the non-convex-with-holes claim testable: the boundary view and the predicate
+view must agree at every interior and exterior sample of a convex profile, and the predicate view
+alone must decide a non-convex one. Undecidable queries — no projection, or a row exact ray-casting
+excludes — are `None`, never a guess.
 
 **AUTH.1c — ray-pick frames are certified by backward error.** A ray meeting a rational developable
 solves a polynomial, so the hit is algebraic; carrying it as such would push `AlgReal` into every
