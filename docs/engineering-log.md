@@ -630,6 +630,19 @@ fine — this is a log, not a schema.
 
 ## Tech debt / sketchy
 
+- **A local `xtask gate --full` failed three OCCT/CGAL legs once and passed them on a clean re-run —
+  cause unidentified, so it is recorded rather than dismissed.** The run reported `FAIL` for *OCCT
+  STEP export*, *OCCT STEP doctests* and *CGAL differential*, while its own compile legs
+  (`clippy --features step`, `--features cgal`) passed in the same invocation. Running the failed
+  legs' exact commands by hand immediately after — same shell, same `nix develop` — passed
+  (91/91 on `export --features step`), and a full re-run was green on all 16 legs. The one
+  suspicious antecedent is that a **non-nix** `cargo clippy -p export --features step` had been run
+  just before, which fails at the OCCT build script; a poisoned `target/` fingerprint is the
+  hypothesis, not a finding. Worth naming because the failure mode is the dangerous direction — a
+  gate that reports FAIL when the code is fine trains people to re-run until green, which is how a
+  real failure gets waved through. If it recurs, capture the leg's stderr (the gate summary alone
+  does not carry it) before re-running. *2026-08-16 · watching · `xtask/src/main.rs` gate legs*
+
 - **γ≠0 chord-certified unroll re-runs the verified quadrature per rail edge — needs the perf pass before multilayer.** The piecewise unroll's anchor frames call `gamma_at(edge.lo)` and the checker's `point_from_on` integrates `∫γ′` from the region window start per edge/subdivision point, each at the region's full `panels` count regardless of span width. `PiecewiseDevelopment` now memoizes the cumulative-γ prefixes (budget-keyed `RefCell` — the dominant cross-region re-integration is gone), but the per-edge own-window integrals remain O(edges × panels × interval-transcendental evals) — a γ-heavy part at fab segment counts takes minutes in debug builds. The **piecewise fold** (PR 3) joins the same family: each `invert_sigma_from` bisection step re-integrates `directrix_between(lo, mid)` at full panel count, so a γ-region fold costs O(iters × panels) — same fix family applies. Candidate fixes, in order of principle: **(a)** scale the quadrature panel count with the integration span (the midpoint-slope rule's error is O((w/panels)²·w), so short spans need few panels — soundness is panel-count-independent); **(b)** an incremental frame walk in the unroll (edges march monotonically; each frame extends the previous by one short increment, the demo's old `gamma_grid` shape); **(c)** release-profile evaluation for authoring workflows. *2026-08-14 · open · `develop::part` (`gamma_at`/`anchor_pieces`), `develop::cone::directrix_between`, `develop::fold` (pw) · surfaced by the `author` facade's piecewise tests (budgets right-sized there in the meantime).*
 
 - **The self-lapping demo keeps a C¹ cubic ramp; the C² quintic is blocked by the trim geometry, not the γ-quadrature.** As of task #216 the `integrate_on_slope` quadrature develops the quintic smootherstep tightly (the original blocker is gone), but restoring it (now `SupportFn::InU` in `crates/author/examples/self_lapping_cone.rs` — the old hand-wired demo is deleted) fails at the **trim rail**: the quintic reshapes the ramp surface so the fixed outer/inner cylinder cuts (tuned for the cubic) no longer produce a smooth low-degree rail over the ramp region (D1-outer ε≈14.7; raising the fit degree makes it *and* the unchanged body region worse — Runge, i.e. a geometry/branch wall). **To restore C²:** re-tune the trim-cylinder placement/radii (and/or sub-band the ramp) for the steeper quintic surface, then regenerate the SVG/STEP artifacts. Purely a demo-geometry task — the kernel quadrature is done. *2026-08-12 · open · the self-lapping recipe (now `author/examples/self_lapping_cone.rs`)*

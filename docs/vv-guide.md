@@ -2058,6 +2058,45 @@ exact fill rule reports there, with the deviation folded into ε. State it as a 
 failure it guards is invisible to the per-piece certificate: a chord that stays on wall A across a
 missed corner certifies perfectly while the true boundary dips onto wall B beneath it.
 
+### AUTH.2 acceptance criteria (the general non-convex footprint — the tracer)
+
+Lifts 1e.4's band restriction for footprints that are **non-convex but connected** (L-slot, T-slot,
+keyhole, dogbone). Design in `docs/cutter-extrude-design.md` §11. Scoped by measurement rather than
+by assumption, which is the first criterion:
+
+*Scout before sizing, and let a control tell you when you are measuring the wrong thing.* The
+milestone was filed as "holes must become regions end to end, through the flat boolean and into the
+B-rep builder". Authoring a non-convex `(σ, µ̂)` loop directly (`Part::hole_domain`) showed the flat
+path and the within-slice solid path are **already general**, and that the only downstream gap is a
+loop crossing a σ-station. Both measurements are pinned as tests in `author/tests/fold_part.rs` — one
+that must stay green through the milestone, one that is *expected to flip* when 2e lands. Method
+note worth keeping: the first three scout runs refused with `TopologyMismatch`, which looks exactly
+like the thing being tested, and it took a convex control at the same coordinates to show it was
+placement (the slot sat on the panel's own drill, then on its inner boundary).
+
+*The event set is exact, and its arithmetic is checked against an independent computation.* The
+tracer's σ-partition comes from three polynomial families — `disc_µ̂(f_i)`, `Res_µ̂(f_i,f_j)`, and
+`a_i(σ)` (§11.2). The closed-form resultant for degree-≤2 forms is verified against a full Sylvester
+determinant over random rational pairs plus the degenerate cases (shared root, linear-vs-quadratic)
+before it is trusted, because a wrong resultant produces a *plausible* partition rather than an
+obvious failure.
+
+*The exact events buy tightness, not soundness — demonstrated, not asserted.* The design doc's
+§10.3 discipline carries over unchanged: every piece is compared at its own σ-midpoint against the
+boundary the fill rule reports there. The criterion is a test that **perturbs the event set** and
+shows ε degrading into `Unresolved` while the geometry stays honest. Without it, "the search is not
+load-bearing" is a claim about code that nothing checks.
+
+*A traced loop must be seen to be non-convex.* The 1e.4 lesson, one level up: a size or ε check
+passes on a hole that was silently convexified. The emitted loop must turn **both ways** (a reflex
+corner in the developed pattern), and in the solid it must contribute one wall per edge — the same
+check that catches a loop quietly collapsed to its bounding band. Already asserted, with both
+assertions mutation-verified, on the pinned pre-state.
+
+*The ring stays refused, and for its own reason.* A footprint with its own hole is not a
+representational shortfall — an annular through-cut leaves a disc of material floating, which is two
+parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.5).
+
 ---
 
 ## 9. Sequencing

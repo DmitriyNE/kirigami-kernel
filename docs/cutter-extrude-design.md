@@ -4,6 +4,10 @@ The design for `Cutter::Extrude`, the step-1 blocker named in
 [`atlas-transform-design.md`](atlas-transform-design.md) §5. Acceptance criteria live in
 [`vv-guide.md`](vv-guide.md) ("AUTH.1 acceptance criteria"); rows in [`../vv-matrix.md`](../vv-matrix.md).
 
+§§1–9 are AUTH.1 as shipped. §10 is the multi-wall hole loop (AUTH.1e.4), which realizes **convex**
+profiles and refuses the rest by name; §11 is AUTH.2, which lifts that refusal for footprints that
+are non-convex but connected — its criteria are "AUTH.2 acceptance criteria" in the same guide.
+
 ## 1. Where this sits in the product flow
 
 Cuts authored here happen at **stage 2** of the flow, before any stackup exists:
@@ -325,6 +329,13 @@ however many tests run through it.
 | **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) — **done** (1e.1 shadow union, 1e.2 the cutter, 1e.3 the span) |
 | **AUTH.1f** | acceptance demo + faithfulness tests + full gate + landing — **done** (`author/examples/sketch_cutter.rs`, `author/tests/sketch_cutter_part.rs`) |
 | **AUTH.1e.4** | multi-wall hole loops (§10) — **done** (`develop::cut::shadow_cut_loop`, `export::trim::shadow_hole_loop`) |
+| **AUTH.2.0** | §11 + `vv-matrix` rows + the scout's pre-state pinned as tests (the GO-gate) |
+| **AUTH.2a** | the exact event set: `disc_µ̂(f_i)` ∪ `Res_µ̂(f_i,f_j)`, Sturm-isolated (§11.2) |
+| **AUTH.2b** | `ruling_patch` → `ruling_patches`: every inside stretch, not the first only |
+| **AUTH.2c** | the cell/graph tracer — `shadow_cut_loop` → closed loops over the event partition (§11.3) |
+| **AUTH.2d** | the flat path: several loops per hole op |
+| **AUTH.2e** | the solid path: clip a general loop per σ-slice, lifting the station restriction (§11.1) |
+| **AUTH.2f** | acceptance: an L-slot through the device, developed, folded, exported; the ring still refused by name |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
 the lap satisfies: `ToNext` cuts the flap only; `NextN(2)` and `Through` cut flap **and** body. No
@@ -416,7 +427,7 @@ received σ-stations (§6's bounding wall), but could not be *realized*. `certif
 of a straight profile edge has no tangent-ruling window at all, so the loop builder declined and the
 part came back `Unresolved`. That hardcode is what this section replaces.
 
-### 10.1 The footprint is a band, and that is the scope
+### 10.1 The footprint is a band, and that is 1e.4's scope
 
 On one ruling, a solid cutter shows up as the µ̂ stretches it covers. For a **single quadric** wall
 that is the pair `m(σ) ± h(σ)` off one µ̂-quadratic — the whole of `quadric_cut_loop`. For several
@@ -438,8 +449,10 @@ does not:
 
 The refusal is **deliberate, not incidental**. Before 1e.4 a ring failed closed only by accident, on
 a window search declining a shape it could not read; now it is refused by name, so the author learns
-that the profile is the problem. Lifting it is not a bigger loop — it needs holes to be *regions*
-end to end, through the flat boolean and into the B-rep builder, which is its own piece of work.
+that the profile is the problem.
+
+The non-convex row is lifted in §11. The ring's is not, and §11.4 says why the two were never the
+same problem.
 
 ### 10.2 Three things follow from the wall changing
 
@@ -484,3 +497,95 @@ the region the structure was resolved from and the flat boolean's topology check
 One consequence worth naming: neither applies the §4.1 nappe restriction when reading membership —
 `Cast::contains` asks about the whole generatrix, both nappes. A loop that reached the mirror nappe
 is caught downstream by `pcurve_cut_fit` as `NappeCrossed`, a refusal.
+
+## 11. The general footprint (AUTH.2)
+
+An L-slot, a T-slot, a keyhole, a dogbone — the shapes fab actually asks for — are **non-convex but
+connected**, and §10's band cannot hold them: a ruling meets such a cutter in several stretches, and
+how many changes with σ as the stretches merge and split. This section lifts that restriction. It
+does **not** lift the ring's (§11.5).
+
+### 11.1 The band is confined to one file, and that is a measurement
+
+The obvious sizing — "holes must become regions end to end, through the flat boolean and into the
+B-rep builder" — is wrong, and it was worth an afternoon to find that out before planning around it.
+Drilling a deliberately non-convex `(σ, µ̂)` loop through the doctest panel by the authored-polygon
+channel (`Part::hole_domain`, the same currency a traced footprint produces) measures each leg
+separately:
+
+| leg | today |
+|---|---|
+| flat: develop → exact `arrange2d` boolean → topology gate | **already general** — a non-convex loop certifies, with a convex rectangle as the control |
+| solid, loop inside one σ-slice | **already general** — `brep_trim_solid_regions`' `poly_holes` channel takes an arbitrary loop as a lid inner wire and sweeps a wall per edge |
+| solid, loop crossing a σ-station | refused (`SolidRefused`) — the one downstream gap |
+| the resolver | already general since 1e.1: `Shadow(Vec<Patch>)` carries several µ̂-stretches per ruling, so structure, stations, spans and stock need nothing |
+
+So `HoleRail`'s band is not what stands between us and non-convex profiles. It is the channel for
+*station-crossing* holes — an orthogonal axis, and the only reason it survived the p-curve rewrite.
+The refusal itself lives in two lines of `develop::cut`: `ruling_patch`'s several-stretches check and
+the window-gap check. **This is a tracer milestone, not a plumbing one.**
+
+### 11.2 The event set is a finite set of polynomial roots
+
+Everything hard about tracing a non-convex footprint is knowing *where the structure changes*, and
+that set is small and exactly computable. Each wall pulls back to a µ̂-quadratic `a_i(σ)µ̂² + b_i(σ)µ̂
++ c_i(σ)` (§2.1), so the ruling's stretch structure can only change where a crossing meets another
+crossing or leaves the ruling altogether — three classes, each a polynomial:
+
+- **`disc_µ̂(f_i) = b_i² − 4a_i c_i`** — one wall's own two roots colliding. A stretch is born or
+  dies; this is §10's tangent ruling, now one event class among others rather than the two ends of
+  everything.
+- **`Res_µ̂(f_i, f_j)`** — two *different* walls' crossings colliding. This is the merge/split saddle
+  where two stretches coalesce **and** it is the governing-wall corner of §10.2: the same event seen
+  from two sides. So the exact event set *replaces* 1e.4's `CORNER_SWEEPS` bisection heuristic, and
+  AUTH.2 tightens the convex path rather than only extending it.
+- **`a_i(σ) = 0`** — the form degenerates from a conic to a line in µ̂ and one crossing escapes to
+  infinity rather than colliding with anything. Easy to overlook because nothing *meets*, but it
+  changes the stretch count all the same (and can hand an inside stretch to the unbounded region,
+  which is `ShadowUnbounded` and must be recognised as such rather than traced). The class is
+  already load-bearing elsewhere: both σ-station sites key off this same `a ≢ 0` test (§6).
+
+All three are polynomials in σ over ℚ once denominators are cleared, and all three are cheap: with
+degree ≤ 2 in µ̂ the resultant is the classical closed form
+`(a₁c₂ − a₂c₁)² − (a₁b₂ − a₂b₁)(b₁c₂ − b₂c₁)`, three 2×2 minors rather than a Sylvester matrix of
+unknown size. Root isolation is `lattice`'s existing Sturm chain. **None of the CM machinery is
+needed** — `Biv`,
+the resultant-cofactor certificate and `AlgReal` exist for transverse *curve × curve* intersection
+(CM.1); this is the resultant of two low-degree forms in one variable, which is a different and much
+smaller problem. Affine walls degrade correctly rather than specially: `a_i ≡ 0` makes the
+discriminant vacuous and the resultant that of a line against a conic.
+
+### 11.3 Between events nothing changes, so the tracer is a sweep
+
+Partition the window at the event set. Inside a cell the stretch count is constant and each
+stretch's two ends are continuous in σ, so the footprint restricted to a cell **is** a stack of
+bands — which means §10's √-graded nodes, per-piece certification and pinch closing all apply
+unchanged *inside* a cell. What is new is only the bookkeeping across cell walls: stretches are
+ordered by µ̂ and matched across the event, at a merge the upper end of stretch `k` joins the lower
+end of stretch `k+1`, at a birth/death the stretch closes on its pinch vertex, and the closed loops
+are read off the resulting graph. A footprint that is one connected region yields one loop whose
+vertex sequence turns around in σ — which p-curves have carried since PC.1 and a rail chain never
+could.
+
+### 11.4 The search buys tightness; soundness rests where it already did
+
+Worth stating plainly because it is what makes the milestone safe to build incrementally:
+**nothing rests on the event set being complete.** §10.3's discipline is unchanged — every emitted
+piece is compared at its own σ-midpoint against the boundary the exact fill rule reports there, and
+the deviation folded into `ε`. An event the sweep stepped over shows up as a loose bound and an
+`Unresolved` — refine — never as a quietly wrong hole. The exact event set is an accuracy and
+performance improvement over bisection sweeps, not a soundness dependency, and the milestone carries
+a test that says so: perturb the event set and `ε` degrades while the geometry stays honest.
+
+### 11.5 What stays refused, and why each is its own feature
+
+- **A footprint with its own hole** (the ring, §10.1's third row). An annular through-cut leaves a
+  disc of material floating, disconnected from the rest — that is two parts, not one hole, and the
+  resolver's stock discipline would drop the island anyway. It becomes interesting only as a
+  *span-limited* cut, where it is a pocket rather than a hole: a different feature class. The tracer
+  detects it as a nested loop and refuses by name.
+- **A cut that reaches the panel boundary.** An L-slot open to the edge is a notch, not an interior
+  hole, and the notch path is a different construction (§10.2's `ShadowUnbounded` still applies).
+- **Disconnected footprints.** The tracer produces one loop per component naturally, and disjoint
+  loops cost the downstream nothing — so this may fall out free. It is not promised, and no fixture
+  depends on it.
