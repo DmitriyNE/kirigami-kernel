@@ -41,6 +41,7 @@ use develop::cut::CutSurface;
 use develop::extrude::{Apex, Cast, ExtrudeFault, Frame};
 use develop::fold::{FoldFault, FoldedWire, fold_outline_pw};
 use develop::part::PiecewiseDevelopment;
+use develop::pick::{Ray, Span};
 use develop::unroll::FlatOutline;
 use export::trim::RailFit;
 use geom::chart::Chart;
@@ -107,12 +108,137 @@ pub struct Extrusion<B: Backend = Bignum> {
     /// The profile's boundary in frame coordinates, as `arrange2d` edges: non-convex profiles and
     /// holes need no decomposition, because the fill rule stays with the region.
     pub profile: Vec<Edge<B>>,
+    /// How deep the cut reaches, counted in neutral surfaces along the reference ray.
+    pub span: Span,
+}
+
+/// A rational **upper** bound on `√r2`, by three Newton steps from `1`. Newton on `t ↦ (t + r2/t)/2`
+/// approaches the root from above after the first step, so the result brackets the true radius
+/// without ever taking one — which is what lets a profile extent be computed over `r²` alone.
+fn rational_sqrt_above<B: Backend>(r2: &Rat<B>) -> Rat<B> {
+    let two = Rat::from_i128(2);
+    let mut t = Rat::from_i128(1);
+    for _ in 0..3 {
+        if t.sign() <= 0 {
+            return Rat::from_i128(1);
+        }
+        t = t.add(&r2.div(&t)).div(&two);
+    }
+    t
 }
 
 impl<B: Backend> Extrusion<B> {
     /// The projection this extrusion works through, or the fault its authoring carries.
     pub(crate) fn cast(&self) -> Result<Cast<B>, ExtrudeFault> {
         Cast::new(self.frame.clone(), self.apex.clone())
+    }
+
+    /// A point **inside the profile**, in frame coordinates — the "designated profile point" the
+    /// span's reference ray runs through (`docs/cutter-extrude-design.md` §5).
+    ///
+    /// Derived rather than authored, and **searched** rather than computed: a grid over the
+    /// profile's own extent, returning the first point its fill rule accepts. `None` if none is
+    /// accepted, which a caller turns into a refusal — a span with no interior point to measure
+    /// from is not a span.
+    ///
+    /// Two candidates that look obvious are deliberately not tried first. The **frame origin** need
+    /// not lie in the profile at all, and on a cone-charted part it is typically the apex, where the
+    /// reference ray runs along a ruling and the cast is rightly refused as ungrounded. A circle's
+    /// **centre** is worse than useless: it sits exactly on the row that exact ray-casting excludes
+    /// (`arrange2d::locate`'s genericity precondition), so the fill rule cannot answer there at all.
+    /// The grid's odd-fraction offsets keep samples off those rows.
+    pub(crate) fn reference_point(&self) -> Option<(Rat<B>, Rat<B>)> {
+        let cast = self.cast().ok()?;
+        // The profile's extent, from its carriers' own reference data.
+        /// The profile's extent in frame coordinates: `(lo_a, lo_b, hi_a, hi_b)`.
+        type Extent<B> = (Rat<B>, Rat<B>, Rat<B>, Rat<B>);
+        let mut bbox: Option<Extent<B>> = None;
+        let mut grow = |x: Rat<B>, y: Rat<B>, r: Rat<B>| {
+            let (lo_x, hi_x) = (x.sub(&r), x.add(&r));
+            let (lo_y, hi_y) = (y.sub(&r), y.add(&r));
+            bbox = Some(match bbox.take() {
+                None => (lo_x, lo_y, hi_x, hi_y),
+                Some((a, b, c, d)) => (
+                    if lo_x.cmp(&a) == core::cmp::Ordering::Less {
+                        lo_x
+                    } else {
+                        a
+                    },
+                    if lo_y.cmp(&b) == core::cmp::Ordering::Less {
+                        lo_y
+                    } else {
+                        b
+                    },
+                    if hi_x.cmp(&c) == core::cmp::Ordering::Greater {
+                        hi_x
+                    } else {
+                        c
+                    },
+                    if hi_y.cmp(&d) == core::cmp::Ordering::Greater {
+                        hi_y
+                    } else {
+                        d
+                    },
+                ),
+            });
+        };
+        for e in &self.profile {
+            match e {
+                Edge::Arc(a) => {
+                    grow(
+                        a.circle.cx.clone(),
+                        a.circle.cy.clone(),
+                        rational_sqrt_above(&a.circle.r2),
+                    );
+                }
+                Edge::Seg(sg) => {
+                    for p in [&sg.start, &sg.end] {
+                        // A segment endpoint may be algebraic; its rational bracket is enough for
+                        // an extent.
+                        let (x, y) = (
+                            arrange2d::locate::rational_above(&p.x),
+                            arrange2d::locate::rational_above(&p.y),
+                        );
+                        grow(x, y, Rat::from_i128(1));
+                    }
+                }
+            }
+        }
+        let (lo_x, lo_y, hi_x, hi_y) = bbox?;
+        // **Even** on purpose. The samples sit at `lo + (2j+1)·w/(2K)`, and with an odd `K` the
+        // middle one lands exactly on the extent's centre — which for a disc is the circle's own
+        // centre row, the one row exact ray-casting excludes. An even `K` can never produce it,
+        // since `2j+1` is odd.
+        const K: i128 = 10;
+        let (wx, wy) = (hi_x.sub(&lo_x), hi_y.sub(&lo_y));
+        for i in 0..K {
+            for j in 0..K {
+                let a = lo_x.add(&wx.mul(&Rat::new(2 * i + 1, 2 * K)));
+                let b = lo_y.add(&wy.mul(&Rat::new(2 * j + 1, 2 * K)));
+                if cast.contains(&self.frame.point(&a, &b), &self.profile) == Some(true) {
+                    return Some((a, b));
+                }
+            }
+        }
+        None
+    }
+
+    /// The **reference ray** the span counts along: the generatrix through
+    /// [`reference_point`](Self::reference_point). For a direction apex that point cast along the
+    /// direction; for a cast point, the ray from the apex through it.
+    pub(crate) fn reference_ray(&self) -> Option<Ray<B>> {
+        let (a, b) = self.reference_point()?;
+        let p = self.frame.point(&a, &b);
+        Some(match self.apex.finite() {
+            Some(x) => Ray {
+                origin: [x[0].clone(), x[1].clone(), x[2].clone()],
+                dir: [p[0].sub(&x[0]), p[1].sub(&x[1]), p[2].sub(&x[2])],
+            },
+            None => Ray {
+                origin: p,
+                dir: self.apex.a().clone(),
+            },
+        })
     }
 }
 
@@ -131,15 +257,25 @@ impl<B: Backend> Cutter<B> {
         }
     }
 
-    /// A profile drawn in `frame` and swept from `apex` — the sketch-extrude cutter.
+    /// A profile drawn in `frame` and swept from `apex`, cutting **every** surface it reaches.
     ///
     /// The profile is an `arrange2d` boundary in frame coordinates; its own even-odd fill decides
     /// what is inside, so a non-convex outline or one with holes needs no decomposition.
     pub fn extrude(frame: Frame<B>, apex: Apex<B>, profile: Vec<Edge<B>>) -> Self {
+        Self::extrude_span(frame, apex, profile, Span::Through)
+    }
+
+    /// The same, reaching only as deep as `span` counts along the reference ray.
+    ///
+    /// The span counts **neutral surfaces** — chart embeddings — because cuts are authored before
+    /// any stackup exists, so there are no layers or faces to count yet. See
+    /// [`Extrusion::reference_ray`] for the ray it is measured along.
+    pub fn extrude_span(frame: Frame<B>, apex: Apex<B>, profile: Vec<Edge<B>>, span: Span) -> Self {
         Cutter::Extrude(Box::new(Extrusion {
             frame,
             apex,
             profile,
+            span,
         }))
     }
 

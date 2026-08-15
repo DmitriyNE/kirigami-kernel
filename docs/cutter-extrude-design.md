@@ -263,7 +263,25 @@ Then (**AUTH.1e.2**):
   reproduces the old behaviour by construction (`cut.rs` sets `a: RatFunc::zero()` for a plane, and
   a cylinder's `a` vanishes identically only if the ruling is always parallel to the axis).
 
-### 6.1 Edges are not carriers
+### 6.1 The reference ray is derived, and two obvious derivations are wrong
+
+The span (§5) counts along a reference ray, and AUTH.1e.3 derives it rather than asking the author
+for one — but the first two derivations tried were both wrong, in ways worth keeping.
+
+**Not the frame origin.** §5 says "the pick ray, or a designated *profile* point", and the frame
+origin need not lie in the profile at all. On a cone-charted part it is typically the apex, where the
+ray runs along a ruling and the cast is refused as ungrounded — a correct refusal of a bad question.
+
+**Not a circle's centre.** Searching the profile's own carrier data for an interior point, the
+obvious candidate is a circle's centre — which sits *exactly* on the row `arrange2d`'s exact
+ray-casting excludes, so the fill rule cannot answer there. The most obvious seed is the one
+guaranteed to be undecidable, and an **odd** sample grid reproduces the same row at its midpoint.
+
+What works is a search: an even-count grid over the profile's extent, first accepted point wins,
+refusal if none is. The extent needs `r` from `r²`, which three Newton steps bound from above
+rationally — so a profile's extent is computed without ever taking a root.
+
+### 6.2 Edges are not carriers
 
 A wall belongs to a **carrier**, and `arrange2d` hands out *decomposed* edges — a circle as its two
 x-monotone arcs, a split line as several segments. Building a wall per edge therefore duplicates
@@ -285,7 +303,7 @@ structures. The defect lived in the layer above the function under test.
 | **AUTH.1b** | `Frame` (affine, with reported distortion) + the §2.3 carrier pullback + the projective inside predicate — **done** (`develop::extrude::Cast`) |
 | **AUTH.1c** | ray-pick frames: search → **backward-error certificate** (§9) — **done** (`develop::pick`) |
 | **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test — **done** (`develop::pick::{Sheet,Span,ray_crossings}`) |
-| **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) — **done** (1e.1 shadow union, 1e.2 the cutter) |
+| **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) — **done** (1e.1 shadow union, 1e.2 the cutter, 1e.3 the span) |
 | **AUTH.1f** | acceptance demo through develop → fold → STEP; full gate; vv-matrix rows to ✅ |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
@@ -302,6 +320,11 @@ Recorded so they read as scope decisions rather than oversights:
 - **p-curve profile edges.** Lines and arcs keep every wall a plane-or-quadric. Admitting the PC
   p-curves would push walls past degree 2 and into new certificate territory.
 - **Per-generatrix span** (§5).
+- **The span counts *surface* crossings, not *material* crossings.** The crossing search uses each
+  region's full µ̂ extent, so a ray that leaves the material and re-crosses the surface's untrimmed
+  continuation still counts one. That matches §5's own wording — neutral surfaces, chart embeddings
+  — and narrowing it to the trimmed material is circular: the material extent depends on the very
+  ops the span restricts. Worth revisiting once an op ordering makes the bounding cuts separable.
 - **Cutting a real stackup** (per-layer, §1), once a stackup exists in the flow.
 
 ## 9. Ray pick is a search, not a certificate

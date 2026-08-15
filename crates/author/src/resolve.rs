@@ -20,7 +20,9 @@
 
 use crate::part::Extrusion;
 use crate::part::{BuiltRegions, Cutter, OpKind, OpRole, Part, PartFault, RegionPick};
+use certify_core::Verdict;
 use develop::cut::{MuCut, cut_mu_form};
+use develop::pick::{Sheet, Span, ray_crossings, select};
 use export::approx::{f64_to_rat, rat_to_f64};
 use export::trim::surface_disc_roots;
 use lattice::{Backend, Interval, Rat};
@@ -451,15 +453,22 @@ struct MergedComp {
 
 /// The merged material components at one sample σ within region `ri` (the op-shadow interval
 /// algebra + the singular-rail-guarded hole merge — no pick yet; choosing is the sweep's job).
+#[allow(clippy::too_many_arguments)]
 fn sample_comps<B: Backend>(
     part: &Part<B>,
     forms: &[RegionForms<B>],
     chart: &geom::chart::Chart<B>,
+    reach: &[Option<Vec<usize>>],
     ri: usize,
     sigma: &Rat<B>,
 ) -> Result<Vec<MergedComp>, PartFault> {
     let mut comps = vec![Comp { lo: None, hi: None }];
     for (op, (kind, cutter)) in part.ops.iter().enumerate() {
+        // An op whose span does not reach this region is not applied here at all — the correct
+        // no-op for a `Subtract` (removes nothing) and for an `Intersect` (restricts nothing).
+        if reach[op].as_ref().is_some_and(|rs| !rs.contains(&ri)) {
+            continue;
+        }
         let sh =
             shadow_at(cutter, &forms[ri].forms[op], chart, op, sigma).ok_or(PartFault::Pole)?;
         let mut next = Vec::new();
@@ -643,6 +652,66 @@ fn choose_comps<B: Backend>(
     Ok(chosen)
 }
 
+/// Which regions each op's cut actually reaches, by index — `None` for an op that reaches all of
+/// them, which is every metric cutter and every extrusion spanning `Through`.
+///
+/// The span counts crossings of the part's **neutral surfaces** along the extrusion's own reference
+/// ray, ordered by ray parameter (`develop::pick::ray_crossings`), and `select` takes the ones the
+/// span reaches. An op that does not reach a region is simply **not applied** there, which is the
+/// right no-op for both kinds: a `Subtract` removes nothing, an `Intersect` restricts nothing.
+///
+/// **Known limitation.** The crossing search uses each region's full µ̂ extent, so it counts
+/// crossings of the *surface*, not of the trimmed material — a ray that leaves the material and
+/// re-crosses the surface's untrimmed continuation still counts one. That matches §5's wording
+/// ("neutral surfaces", "chart embeddings"), and deriving the material extent instead is circular:
+/// it depends on the very ops the span restricts.
+fn span_reach<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+) -> Result<Vec<Option<Vec<usize>>>, PartFault> {
+    let mut out = Vec::with_capacity(part.ops.len());
+    for (op, (_, cutter)) in part.ops.iter().enumerate() {
+        let Cutter::Extrude(e) = cutter else {
+            out.push(None);
+            continue;
+        };
+        if matches!(e.span, Span::Through) {
+            out.push(None);
+            continue;
+        }
+        // Every region is a sheet: its own chart (hence its own support) over its authored σ-band.
+        let wide = Interval {
+            lo: Rat::from_i128(-1_000_000),
+            hi: Rat::from_i128(1_000_000),
+        };
+        let sheets: Vec<Sheet<'_, B>> = part
+            .regions
+            .iter()
+            .zip(built.charts.iter())
+            .map(|(r, chart)| Sheet {
+                chart,
+                sigma: r.band.clone(),
+                mu: wide.clone(),
+            })
+            .collect();
+        let crossings = match ray_crossings(
+            &sheets,
+            &Rat::from_i128(0),
+            &e.reference_ray().ok_or(PartFault::CutUnresolved { op })?,
+            &part.clearance,
+            48,
+        ) {
+            Verdict::Verified(c) => c,
+            // An unorderable or ungrounded cast cannot name an ordinal, so the cut is refused
+            // rather than silently applied everywhere.
+            _ => return Err(PartFault::CutUnresolved { op }),
+        };
+        let reached = select(e.span, &crossings).map_err(|_| PartFault::CutUnresolved { op })?;
+        out.push(Some(reached.iter().map(|c| c.sheet).collect()));
+    }
+    Ok(out)
+}
+
 /// The in-domain sweep: pull every op back on every region, resolve the sample grid, and fold
 /// the records into the boundary-run structure + hole classification (see the module docs).
 pub(crate) fn sweep<B: Backend>(
@@ -650,6 +719,7 @@ pub(crate) fn sweep<B: Backend>(
     built: &BuiltRegions<B>,
 ) -> Result<Structure<B>, PartFault> {
     let zero = Rat::from_i128(0);
+    let reach = span_reach(part, built)?;
     // Pull each op back on each region's chart.
     let mut regions: Vec<RegionForms<B>> = Vec::with_capacity(part.regions.len());
     for (r, chart) in part.regions.iter().zip(built.charts.iter()) {
@@ -736,7 +806,7 @@ pub(crate) fn sweep<B: Backend>(
     // continuity-propagated choice (see [`choose_comps`]).
     let mut at: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
     for (ri, sigma) in samples {
-        let comps = sample_comps(part, &regions, &built.charts[ri], ri, &sigma)?;
+        let comps = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
         at.push((ri, sigma, comps));
     }
     let chosen = choose_comps(part, built, &at)?;
@@ -1093,6 +1163,84 @@ mod tests {
         assert!(
             (fat - 0.603).abs() < 5e-3,
             "the wide lobe should measure ≈0.603 in µ̂, got {fat:.6}"
+        );
+    }
+
+    /// **The span reaches only as deep as it says.** A transverse drill swept straight through the
+    /// cone crosses *both* sheets, so `Through` cuts both regions while `ToNext` cuts only the one
+    /// the ray meets first — and the resolver's own hole records show it, not just the reach.
+    ///
+    /// The ordering is by **ray parameter**: the near sheet is region 1 (σ ≈ +1.08, t ≈ 2.3), the
+    /// far one region 0 (σ ≈ −1.08, t ≈ 7.7). Reading depth off σ would pick the wrong sheet.
+    #[test]
+    fn a_span_cuts_only_the_sheets_it_reaches() {
+        use crate::construct;
+        use crate::part::SupportFn;
+        let mk = |span: Span| {
+            construct::from_chart::<Bignum>(&cone())
+                .region_sigma(Q::new(-3, 2), q(0), SupportFn::inherit())
+                .region_sigma(q(0), Q::new(3, 2), SupportFn::inherit())
+                .intersect(Cutter::half_space([q(0), q(0), q(1)], q(3)))
+                .subtract(Cutter::vertical_cylinder(q(0), Q::new(1, 2), q(2)))
+                .subtract(Cutter::extrude_span(
+                    // The sketch plane faces +x at (−5, 0, 3), swept along +x through the cone.
+                    Frame::new([q(-5), q(0), q(3)], [q(0), q(1), q(0)], [q(0), q(0), q(1)])
+                        .expect("independent axes"),
+                    Apex::direction([q(1), q(0), q(0)]).expect("a real direction"),
+                    disc_edges(q(0), q(0), Q::new(1, 5), 0),
+                    span,
+                ))
+                .clearance(q(1))
+        };
+        let reach_of = |span: Span| {
+            let part = mk(span);
+            let built = part.build_regions().expect("the regions develop");
+            span_reach(&part, &built).expect("the cast resolves")[2].clone()
+        };
+        assert_eq!(reach_of(Span::Through), None, "Through is unrestricted");
+        assert_eq!(
+            reach_of(Span::ToNext),
+            Some(vec![1]),
+            "ToNext reaches the sheet the ray meets first — region 1, at the smaller ray parameter"
+        );
+        let both = reach_of(Span::NextN(2)).expect("restricted");
+        assert_eq!(both.len(), 2, "NextN(2) reaches both sheets");
+        assert!(both.contains(&0) && both.contains(&1));
+
+        // And the restriction is visible in what the resolver *derives*, not only in the reach:
+        // the drill bounds material in the sheets it reaches and in no others. (Which role it takes
+        // — hole or rim notch — depends on where it lands; the span's job is only which sheets.)
+        let cut_in = |span: Span| {
+            let part = mk(span);
+            let built = part.build_regions().expect("the regions develop");
+            let st = sweep(&part, &built).expect("the sweep resolves");
+            let mut rs: Vec<usize> = Vec::new();
+            for run in &st.runs {
+                if run.lower.0 != 2 && run.upper.0 != 2 {
+                    continue;
+                }
+                let mid = run.lo.add(&run.hi).mul(&Rat::new(1, 2));
+                for (ri, r) in part.regions.iter().enumerate() {
+                    if r.band.lo.cmp(&mid) != core::cmp::Ordering::Greater
+                        && mid.cmp(&r.band.hi) != core::cmp::Ordering::Greater
+                        && !rs.contains(&ri)
+                    {
+                        rs.push(ri);
+                    }
+                }
+            }
+            rs.sort_unstable();
+            rs
+        };
+        assert_eq!(
+            cut_in(Span::ToNext),
+            vec![1],
+            "the shallow cut bounds material in the near sheet only"
+        );
+        assert_eq!(
+            cut_in(Span::Through),
+            vec![0, 1],
+            "the deep cut bounds material in both"
         );
     }
 
