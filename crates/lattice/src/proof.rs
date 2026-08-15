@@ -76,7 +76,17 @@ fn cmp_panic_free_full_domain() {
 // `SmallRat` invariant `den > 0`. `den > 0` rules out both division-by-zero and the
 // `MIN / -1` overflow, so `div_euclid`/`rem_euclid` are total; the ceil `+ 1` is only
 // reached when `rem != 0` (so the floor is strictly below `i128::MAX` and cannot
-// overflow). Proves panic-/overflow-freedom AND the Euclid identity.
+// overflow).
+//
+// Panic-/overflow-freedom ONLY — deliberately not the Euclid identity. This harness
+// used to also assert `num == f * den + rem`, which cost ~45 min of CBMC against ~19 s
+// for the rest, because it makes the solver bit-blast a symbolic 128×128 multiply on
+// top of the two divisions. That assertion also sat on the wrong side of the tool-fit
+// split at the top of this file: it is an arithmetic *correctness* claim, and — since
+// the harness mirrors the fast path rather than calling it — the claim it proves is
+// `div_euclid`/`rem_euclid`'s own libcore contract, not anything about `lattice`. The
+// defining brackets of `Rat::floor`/`Rat::ceil` are checked natively by
+// `rat::tests::{floor_ceil_fast_path_grid, floor_ceil_slow_tier}`.
 #[kani::proof]
 fn floor_ceil_fast_path_panic_free_full_domain() {
     let num: i128 = kani::any();
@@ -85,7 +95,6 @@ fn floor_ceil_fast_path_panic_free_full_domain() {
     let f = num.div_euclid(den); // floor
     let rem = num.rem_euclid(den); // in [0, den)
     assert!(rem >= 0 && rem < den);
-    assert!(num == f * den + rem); // Euclid identity (operands stay in range)
     let c = if rem != 0 { f + 1 } else { f }; // ceil — `+ 1` safe when rem != 0
     let gap = c - f;
     assert!(gap == 0 || gap == 1);

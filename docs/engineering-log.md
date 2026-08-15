@@ -681,6 +681,33 @@ fine — this is a log, not a schema.
   citation, inventing one, and renaming a theorem each exit 1 with the right message.
   *2026-08-15 · resolved · `scripts/check-axioms.sh`, `.github/workflows/ci.yml`, `docs/proofs/{ledger,README}.md`*
 
+- **A Kani harness that has never once run in CI, and costs 45+ min when it does.** DEV.2a
+  (`3e18c61`, 2026-08-10) added `floor_ceil_fast_path_panic_free_full_domain` together with its
+  `--harness` entry, and the commit message states "Kani harness runs in CI." **It never has.** The
+  Kani step is 10th of 13, and no run since has reached it: the `main` runs that *did* pass Kani
+  predate the harness (their logs tally `3 successfully verified harnesses` for `lattice`, and the
+  echoed command lists only three), `dev-go-gate` died at `fmt`, `pcurve` died at the OCCT step, the
+  rest are `fuzz-nightly` (a different workflow) or queued behind the dead Linux runner. So the
+  green-looking 21-second Kani step everyone remembers is a step that was never asked to do this work.
+  **The cost is real:** locally the harness runs 45+ min of single-threaded CBMC (kani 0.67.0,
+  aarch64-darwin, 211 k vars / 1.12 M clauses) while the other twelve harnesses together take ~21 s.
+  **Why:** the harness asserts the Euclid identity `num == f * den + rem` over the *full* `i128`
+  domain, so on top of two symbolic 128-bit divisions CBMC must bit-blast a symbolic **128×128
+  multiply**. That is a correctness claim, not a panic-freedom one — and `proof.rs`'s own header
+  assigns exactly that split elsewhere ("BMC is the wrong tool for iterative number theory"; gcd /
+  reduce *correctness* is Lean's, Kani keeps the gcd-free bridge + panic-freedom), with the defining
+  brackets already covered natively by `floor_ceil_fast_path_grid` + the slow-tier differential. So
+  the expensive assertion is both the odd one out doctrinally and the whole cost. **Measured, not
+  guessed:** a probe harness identical but for that one line verified in **18.8 s** against the
+  original's 45 min+. **Resolved** by dropping the identity and keeping every panic-freedom
+  assertion — the whole four-harness `lattice` leg now verifies in 170 s including the build.
+  Note what the assertion actually claimed: the harness *mirrors* the fast path rather than calling
+  `Rat::floor`, so `num == f * den + rem` is `div_euclid`/`rem_euclid`'s own **libcore** contract
+  restated symbolically, not a fact about `lattice`. **That mirroring is itself a smell** worth
+  carrying: a harness that re-implements the code under test passes even when the two diverge, and
+  this one never exercised `Rat::floor`'s Fast/Slow dispatch at all.
+  *2026-08-15 · resolved · #244, `crates/lattice/src/proof.rs`*
+
 - **A feature-gated test is only as good as the leg that compiles it — and a CI matrix is only as good
   as the legs you actually read.** Running the full gate locally before pushing the OPT.3 arc turned up
   a hard compile failure in `cargo clippy -p export --features step --all-targets`:
