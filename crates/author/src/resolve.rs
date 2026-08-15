@@ -94,9 +94,8 @@ impl<B: Backend> Clone for Structure<B> {
 /// The resolver's sample-grid density per region (also the realizer's corner pad unit).
 pub(crate) const CELLS: usize = 48;
 
-/// A µ̂-shadow of one op at one σ (float, labels exact).
-enum Shadow {
-    Empty,
+/// One connected piece of a µ̂-shadow (float bounds, labels exact).
+enum Patch {
     All,
     /// Inside is `µ̂ ∈ [lo, hi]`.
     Between(f64, f64, Label, Label),
@@ -104,6 +103,39 @@ enum Shadow {
     Below(f64, Label),
     /// Inside is `µ̂ ≥ r`.
     Above(f64, Label),
+}
+
+/// The µ̂-shadow of one op at one σ: the **union** of the [`Patch`]es where that op's cutter covers
+/// the ruling, in µ̂ order and pairwise disjoint.
+///
+/// A union, not one interval, because a general cutter's cross-section along a ruling need not be
+/// connected — an extruded profile that is non-convex, or has holes, shadows the ruling in several
+/// stretches. The two metric cutters are the special case of exactly one patch (a quadric `MuCut`
+/// has two roots), so they cost nothing here: [`comp_intersect`] and [`comp_subtract`] still do the
+/// per-patch work, and the union is a fold over them.
+struct Shadow(Vec<Patch>);
+
+impl Shadow {
+    /// The empty shadow — the cutter misses this ruling entirely.
+    fn empty() -> Self {
+        Shadow(Vec::new())
+    }
+    /// A shadow of one connected piece.
+    fn one(p: Patch) -> Self {
+        Shadow(vec![p])
+    }
+    /// Intersect a component with the whole union: each patch contributes at most one component,
+    /// and the patches are disjoint, so the results are too.
+    fn intersect(&self, k: &Comp) -> Vec<Comp> {
+        self.0.iter().flat_map(|p| comp_intersect(k, p)).collect()
+    }
+    /// Subtract the whole union from a component: remove each patch in turn from what survives the
+    /// previous ones.
+    fn subtract(&self, k: &Comp) -> Vec<Comp> {
+        self.0.iter().fold(vec![*k], |acc, p| {
+            acc.iter().flat_map(|c| comp_subtract(c, p)).collect()
+        })
+    }
 }
 
 /// One kept-material component at one σ: bounds are `None` at ±∞.
@@ -133,40 +165,44 @@ fn shadow_at<B: Backend>(form: &MuCut<B>, op: usize, sigma: &Rat<B>) -> Option<S
     Some(if a.abs() <= tiny {
         if b.abs() <= tiny {
             // A degenerate section (plane through the ruling): all-or-nothing by sign of c.
-            if c < 0.0 { Shadow::All } else { Shadow::Empty }
+            if c < 0.0 {
+                Shadow::one(Patch::All)
+            } else {
+                Shadow::empty()
+            }
         } else {
             let r = -c / b;
-            if b > 0.0 {
-                Shadow::Below(r, (op, BranchSide::Plane))
+            Shadow::one(if b > 0.0 {
+                Patch::Below(r, (op, BranchSide::Plane))
             } else {
-                Shadow::Above(r, (op, BranchSide::Plane))
-            }
+                Patch::Above(r, (op, BranchSide::Plane))
+            })
         }
     } else {
         // a > 0 structurally (Cauchy–Schwarz); inside = between the roots.
         let disc = b * b - 4.0 * a * c;
         if disc <= 0.0 {
-            Shadow::Empty
+            Shadow::empty()
         } else {
             let sq = disc.sqrt();
-            Shadow::Between(
+            Shadow::one(Patch::Between(
                 (-b - sq) / (2.0 * a),
                 (-b + sq) / (2.0 * a),
                 (op, BranchSide::Lower),
                 (op, BranchSide::Upper),
-            )
+            ))
         }
     })
 }
 
-/// Intersect a component with a shadow (0 or 1 result).
-fn comp_intersect(k: &Comp, sh: &Shadow) -> Vec<Comp> {
+/// Intersect a component with **one patch** of a shadow (0 or 1 result). The union form is
+/// [`Shadow::intersect`], which folds this over the patches.
+fn comp_intersect(k: &Comp, sh: &Patch) -> Vec<Comp> {
     let (slo, shi): (End, End) = match sh {
-        Shadow::Empty => return Vec::new(),
-        Shadow::All => (None, None),
-        Shadow::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
-        Shadow::Below(r, lab) => (None, Some((*r, *lab))),
-        Shadow::Above(r, lab) => (Some((*r, *lab)), None),
+        Patch::All => (None, None),
+        Patch::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
+        Patch::Below(r, lab) => (None, Some((*r, *lab))),
+        Patch::Above(r, lab) => (Some((*r, *lab)), None),
     };
     let lo = match (&k.lo, &slo) {
         (None, s) => *s,
@@ -186,15 +222,15 @@ fn comp_intersect(k: &Comp, sh: &Shadow) -> Vec<Comp> {
     vec![Comp { lo, hi }]
 }
 
-/// Subtract a shadow from a component (0, 1, or 2 results). The shadow's lower end becomes the
-/// upper bound of the piece below it, and vice versa.
-fn comp_subtract(k: &Comp, sh: &Shadow) -> Vec<Comp> {
+/// Subtract **one patch** of a shadow from a component (0, 1, or 2 results). The patch's lower end
+/// becomes the upper bound of the piece below it, and vice versa. The union form is
+/// [`Shadow::subtract`], which folds this over the patches.
+fn comp_subtract(k: &Comp, sh: &Patch) -> Vec<Comp> {
     let (slo, shi): (End, End) = match sh {
-        Shadow::Empty => return vec![*k],
-        Shadow::All => return Vec::new(),
-        Shadow::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
-        Shadow::Below(r, lab) => (None, Some((*r, *lab))),
-        Shadow::Above(r, lab) => (Some((*r, *lab)), None),
+        Patch::All => return Vec::new(),
+        Patch::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
+        Patch::Below(r, lab) => (None, Some((*r, *lab))),
+        Patch::Above(r, lab) => (Some((*r, *lab)), None),
     };
     // No overlap → unchanged.
     let above = |x: &End, y: &End| match (x, y) {
@@ -300,8 +336,8 @@ fn sample_comps<B: Backend>(
         let mut next = Vec::new();
         for k in &comps {
             match kind {
-                OpKind::Intersect => next.extend(comp_intersect(k, &sh)),
-                OpKind::Subtract => next.extend(comp_subtract(k, &sh)),
+                OpKind::Intersect => next.extend(sh.intersect(k)),
+                OpKind::Subtract => next.extend(sh.subtract(k)),
             }
         }
         comps = next;
