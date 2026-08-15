@@ -81,6 +81,21 @@
           pkgs.jq
         ];
 
+        # OCCT is a **runtime** dependency of anything built with `--features step`, and
+        # the build only ever declares it at LINK time (`cargo:rustc-link-search`). A
+        # binary that nix's ld-wrapper happens to give an rpath still loads; one that
+        # does not — notably **rustdoc's doctest binaries**, which cargo links without
+        # passing build-script link args — cannot find `libTKDESTEP.so` at load and dies
+        # with "error while loading shared libraries".
+        #
+        # That went unnoticed for as long as every machine running it had OCCT reachable
+        # some other way. On a minimal runner with nothing installed globally there is
+        # nothing to fall back on, so the missing declaration surfaces. Declare it.
+        occtRuntimePath = ''
+          export LD_LIBRARY_PATH="${pkgs.opencascade-occt}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export DYLD_FALLBACK_LIBRARY_PATH="${pkgs.opencascade-occt}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+        '';
+
         # `lake`/`git`-in-lake break under the darwin C-toolchain's DEVELOPER_DIR/
         # SDKROOT (nix xcbuild xcrun rejects the SDK-only path). Unset them for Lean
         # work; the C++ FFI (difftest/CGAL/CBMC) still sees them per-invocation.
@@ -102,6 +117,7 @@
             echo "kirigami dev shell:  $(rustc --version 2>/dev/null || echo 'rust not on PATH')" >&2
             echo "  Lean via elan; run \`nix develop .#extraction\` for hax/charon/aeneas" >&2
             ${leanEnvNote}
+            ${occtRuntimePath}
           '';
         };
 

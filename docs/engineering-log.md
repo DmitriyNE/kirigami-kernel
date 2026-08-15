@@ -688,6 +688,22 @@ fine — this is a log, not a schema.
   what the pullback needs) and that was silently read as also fixing the *metric class*, which it
   does not.
 
+- **A semi-hermetic build only looks hermetic until it meets a bare machine.** The first
+  `x86_64-linux` CI signal in eight days came back red — not on any AUTH.1 code (90/90 `export`
+  tests passed there, including the 122s `full_panel_assembles`) but on the **doctests**:
+  `libTKDESTEP.so.7.9: cannot open shared object file`. The devShell lists `opencascade-occt`, which
+  puts OCCT on the *compile* path, and `build.rs` derives `-L <occt>/lib` from it — but nothing ever
+  declared it a **runtime** dependency. Ordinary test binaries survive because nix's ld-wrapper bakes
+  an rpath at the final link; rustdoc's doctest binaries are linked without the build script's link
+  args, carry no rpath, and the loader has nowhere to look. It had worked everywhere OCCT happened to
+  be reachable by other means; a runner with nothing installed globally has nothing to fall back on.
+  Fixed by declaring the runtime path once in the devShell (`LD_LIBRARY_PATH` +
+  `DYLD_FALLBACK_LIBRARY_PATH`). The general shape is worth remembering: **a dependency that is only
+  ever declared at build time is untested as a runtime dependency**, and the machine that finds out
+  is the most minimal one you own. It also took eight days to learn, because a CI leg that never
+  finishes is indistinguishable from one that passes — the hang (fault a) hid the misconfiguration
+  (fault c) completely.
+
 - **A green certificate on a cut that did nothing — and the doc had predicted it.** AUTH.1e.2's
   station criterion is "a wall whose µ̂-pullback is a genuine quadratic (`a ≢ 0`) has tangent windows
   and needs targeted stations; an affine one does not." That reproduces `Cylinder` vs `HalfSpace`
