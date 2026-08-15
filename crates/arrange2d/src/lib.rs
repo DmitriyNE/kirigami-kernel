@@ -90,6 +90,7 @@ pub mod event;
 pub mod locate;
 pub mod membership;
 pub mod predicates;
+pub mod profile;
 pub mod spine;
 pub mod tangent;
 pub mod witness;

@@ -965,8 +965,8 @@ mod tests {
     use super::*;
     use develop::extrude::{Apex, Frame};
     use fixtures::devices::cone;
-    use geom::content::{ArcPiece, Circle, CurveId, Edge, Half, Orient, Point2, Winding};
-    use lattice::{Bignum, Surd};
+    use geom::content::Edge;
+    use lattice::Bignum;
 
     type Q = Rat<Bignum>;
 
@@ -975,31 +975,10 @@ mod tests {
     }
 
     /// A disc's boundary as the two x-monotone arcs `arrange2d` decomposes it into.
-    fn disc_edges(cx: Q, cy: Q, r: Q, src: u32) -> Vec<Edge<Bignum>> {
-        let (lo, hi) = (cx.sub(&r), cx.add(&r));
-        let circle = Circle {
-            cx: cx.clone(),
-            cy: cy.clone(),
-            r2: r.mul(&r),
-        };
-        [Half::Upper, Half::Lower]
-            .into_iter()
-            .map(|half| {
-                Edge::Arc(Box::new(ArcPiece {
-                    circle: circle.clone(),
-                    half,
-                    x_lo: Surd::from_rat(lo.clone()),
-                    x_hi: Surd::from_rat(hi.clone()),
-                    start: Point2::from_rat(lo.clone(), cy.clone()),
-                    end: Point2::from_rat(hi.clone(), cy.clone()),
-                    winding: Winding {
-                        orient: Orient::Ccw,
-                        source_span: None,
-                    },
-                    source: CurveId(src),
-                }))
-            })
-            .collect()
+    fn disc_edges(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
+        arrange2d::profile::Profile::new()
+            .circle(cx, cy, r)
+            .into_edges()
     }
 
     /// A cutter extruding `profile` straight down the `z` axis from the `z = 0` plane.
@@ -1041,8 +1020,8 @@ mod tests {
     /// before the refactor there was nowhere to put the second patch.
     #[test]
     fn a_two_lobed_profile_shadows_the_ruling_twice() {
-        let mut profile = disc_edges(q(0), q(1), Q::new(3, 10), 0);
-        profile.extend(disc_edges(q(0), Q::new(5, 2), Q::new(3, 10), 1));
+        let mut profile = disc_edges(q(0), q(1), Q::new(3, 10));
+        profile.extend(disc_edges(q(0), Q::new(5, 2), Q::new(3, 10)));
         let sh = shadow_of(&drilled(profile), &q(0));
         let got = spans(&sh);
         assert_eq!(got.len(), 2, "two lobes, two patches — got {got:?}");
@@ -1070,7 +1049,7 @@ mod tests {
     #[test]
     fn an_extruded_disc_shadows_like_the_cylinder_it_is() {
         let (cy, r) = (Q::new(11, 5), Q::new(1, 5));
-        let extruded = shadow_of(&drilled(disc_edges(q(0), cy.clone(), r.clone(), 0)), &q(0));
+        let extruded = shadow_of(&drilled(disc_edges(q(0), cy.clone(), r.clone())), &q(0));
         let metric = shadow_of(&Cutter::vertical_cylinder(q(0), cy, r.mul(&r)), &q(0));
         let (a, b) = (spans(&extruded), spans(&metric));
         assert_eq!(a.len(), 1, "one disc, one patch");
@@ -1123,7 +1102,6 @@ mod tests {
             q(0),
             Q::new(11, 5),
             Q::new(1, 5),
-            0,
         ))));
 
         assert_eq!(
@@ -1171,8 +1149,8 @@ mod tests {
     /// where a globally-scaled nudge would read the neighbour's answer instead.
     #[test]
     fn a_thin_lobe_survives_the_membership_sampling() {
-        let mut profile = disc_edges(q(0), q(1), Q::new(1, 500), 0); // r = 0.002
-        profile.extend(disc_edges(q(0), Q::new(5, 2), Q::new(3, 10), 1)); // r = 0.3, 150x wider
+        let mut profile = disc_edges(q(0), q(1), Q::new(1, 500)); // r = 0.002
+        profile.extend(disc_edges(q(0), Q::new(5, 2), Q::new(3, 10))); // r = 0.3, 150x wider
         let sh = shadow_of(&drilled(profile), &q(0));
         let got = spans(&sh);
         assert_eq!(
@@ -1192,31 +1170,11 @@ mod tests {
         );
     }
 
-    /// **A polygonal slot must be SEEN, however small.** Every wall of a polygon is affine, so it
-    /// has no tangent-ruling window — and station targeting keyed on exactly that. The result was
-    /// The axis-aligned square of half-side `h` about `(cx, cy)`, as `arrange2d` segment edges.
+    /// The axis-aligned square of half-side `h` about `(cx, cy)`.
     fn square_edges(cx: Q, cy: Q, h: Q) -> Vec<Edge<Bignum>> {
-        let pts = [
-            (cx.sub(&h), cy.sub(&h)),
-            (cx.add(&h), cy.sub(&h)),
-            (cx.add(&h), cy.add(&h)),
-            (cx.sub(&h), cy.add(&h)),
-        ];
-        (0..4)
-            .map(|i| {
-                let ((sx, sy), (ex, ey)) = (pts[i].clone(), pts[(i + 1) % 4].clone());
-                let a = ey.sub(&sy).neg();
-                let b = ex.sub(&sx);
-                let c = a.mul(&sx).add(&b.mul(&sy)).neg();
-                Edge::Seg(Box::new(geom::content::SegPiece {
-                    line: geom::content::Line { a, b, c },
-                    start: Point2::from_rat(sx, sy),
-                    end: Point2::from_rat(ex, ey),
-                    orient: Orient::Ccw,
-                    source: CurveId(0),
-                }))
-            })
-            .collect()
+        arrange2d::profile::Profile::new()
+            .rect(cx, cy, h.clone(), h)
+            .into_edges()
     }
 
     /// **A bounding box has two sides, and both must be bracketed the right way round.** `extent`
@@ -1256,6 +1214,14 @@ mod tests {
         assert!(hi_b.cmp(&cy.add(&h)) != core::cmp::Ordering::Less);
     }
 
+    /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
+    /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
+    /// `Inactive` — a green certificate on a cut that did nothing.
+    ///
+    /// The profile's bounding circle supplies the missing window. A superset is the right error:
+    /// extra stations sample where the cut is absent and cost nothing, a missing one loses the cut.
+    /// **A polygonal slot must be SEEN, however small.** Every wall of a polygon is affine, so it
+    /// has no tangent-ruling window — and station targeting keyed on exactly that. The result was
     /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
     /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
     /// `Inactive` — a green certificate on a cut that did nothing.
@@ -1316,7 +1282,7 @@ mod tests {
                     Frame::new([q(-5), q(0), q(3)], [q(0), q(1), q(0)], [q(0), q(0), q(1)])
                         .expect("independent axes"),
                     Apex::direction([q(1), q(0), q(0)]).expect("a real direction"),
-                    disc_edges(q(0), q(0), Q::new(1, 5), 0),
+                    disc_edges(q(0), q(0), Q::new(1, 5)),
                     span,
                 ))
                 .clearance(q(1))
@@ -1377,7 +1343,7 @@ mod tests {
     /// `subtract` must leave the material untouched by.
     #[test]
     fn a_missed_profile_shadows_nothing() {
-        let sh = shadow_of(&drilled(disc_edges(q(9), q(9), Q::new(1, 5), 0)), &q(0));
+        let sh = shadow_of(&drilled(disc_edges(q(9), q(9), Q::new(1, 5))), &q(0));
         assert!(sh.0.is_empty(), "got {:?}", spans(&sh));
     }
 }

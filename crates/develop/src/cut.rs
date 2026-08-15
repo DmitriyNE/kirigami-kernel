@@ -1813,55 +1813,6 @@ mod tests {
 
     // — AUTH.1e.4: the multi-wall band loop. —
 
-    /// A closed rectilinear profile in the frame plane, as `arrange2d` segment edges.
-    fn poly_edges(pts: &[(Q, Q)], src: u32) -> Vec<geom::content::Edge<Bignum>> {
-        let n = pts.len();
-        (0..n)
-            .map(|i| {
-                let ((sx, sy), (ex, ey)) = (&pts[i], &pts[(i + 1) % n]);
-                let (a, b) = (sy.sub(ey), ex.sub(sx));
-                let c = a.mul(sx).add(&b.mul(sy)).neg();
-                geom::content::Edge::Seg(Box::new(geom::content::SegPiece {
-                    line: geom::content::Line { a, b, c },
-                    start: geom::content::Point2::from_rat(sx.clone(), sy.clone()),
-                    end: geom::content::Point2::from_rat(ex.clone(), ey.clone()),
-                    orient: geom::content::Orient::Ccw,
-                    source: geom::content::CurveId(src),
-                }))
-            })
-            .collect()
-    }
-
-    /// A whole circle as its two x-monotone halves — `arrange2d`'s canonical decomposition. `r` is
-    /// rational so the halves can name their extreme points exactly.
-    fn circle_edges(cx: &Q, cy: &Q, r: &Q, src: u32) -> Vec<geom::content::Edge<Bignum>> {
-        use geom::content::{ArcPiece, Circle, CurveId, Edge, Half, Orient, Point2, Winding};
-        let (lo, hi) = (cx.sub(r), cx.add(r));
-        let circle = Circle {
-            cx: cx.clone(),
-            cy: cy.clone(),
-            r2: r.mul(r),
-        };
-        [Half::Upper, Half::Lower]
-            .into_iter()
-            .map(|half| {
-                Edge::Arc(Box::new(ArcPiece {
-                    circle: circle.clone(),
-                    half,
-                    x_lo: lattice::Surd::from_rat(lo.clone()),
-                    x_hi: lattice::Surd::from_rat(hi.clone()),
-                    start: Point2::from_rat(lo.clone(), cy.clone()),
-                    end: Point2::from_rat(hi.clone(), cy.clone()),
-                    winding: Winding {
-                        orient: Orient::Ccw,
-                        source_span: None,
-                    },
-                    source: CurveId(src),
-                }))
-            })
-            .collect()
-    }
-
     /// The frame the test profiles are drawn in: the physical xy-plane.
     fn xy_frame() -> crate::extrude::Frame<Bignum> {
         crate::extrude::Frame::new(
@@ -1945,16 +1896,9 @@ mod tests {
         let chart = fixtures::devices::cone_wrap();
         let cfg = DevConfig::tight();
         let (cx, cy, h) = (Q::new(-1, 2), Q::new(27, 10), Q::new(1, 8));
-        let corners: Vec<(Q, Q)> = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
-            .into_iter()
-            .map(|(i, j)| {
-                (
-                    cx.add(&h.mul(&Q::from_i128(i))),
-                    cy.add(&h.mul(&Q::from_i128(j))),
-                )
-            })
-            .collect();
-        let profile = poly_edges(&corners, 0);
+        let profile = arrange2d::profile::Profile::new()
+            .rect(cx.clone(), cy.clone(), h.clone(), h.clone())
+            .into_edges();
         let cast = crate::extrude::Cast::new(
             xy_frame(),
             crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
@@ -2080,8 +2024,10 @@ mod tests {
     fn a_ring_profile_is_refused_rather_than_approximated() {
         let chart = fixtures::devices::cone_wrap();
         let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
-        let mut profile = circle_edges(&cx, &cy, &Q::new(1, 4), 0);
-        profile.extend(circle_edges(&cx, &cy, &Q::new(1, 8), 1));
+        let profile = arrange2d::profile::Profile::new()
+            .circle(cx.clone(), cy.clone(), Q::new(1, 4))
+            .circle(cx.clone(), cy.clone(), Q::new(1, 8))
+            .into_edges();
         let cast = crate::extrude::Cast::new(
             xy_frame(),
             crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])

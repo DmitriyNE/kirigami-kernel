@@ -1657,6 +1657,28 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **A constraint I asserted twice did not exist — the helper had ossified into a believed property.**
+  Designing the `Profile` builder I claimed circles need a *rational radius*, because an arc's
+  extreme points must be named exactly, and offered the user a refuse-or-bracket decision for a
+  squared-radius constructor. Wrong on both counts. `Surd::new(a, b, d)` is `a + b√d` for any
+  rational `d ≥ 0`, so an extreme point is exactly `Surd::new(cx, ±1, r2)` — and `arrange2d`'s own
+  `decompose::extrema` **already computes precisely that**. The belief came from the test helpers,
+  which happen to take a rational `r` and pass `Surd::from_rat(cx ± r)`; I generalised the helper's
+  shape into a property of the arrangement. Verified the correction against `r² = 1/40` (the device
+  drill's own, irrational) end to end. Consequences: `circle_r2` is the primary constructor and
+  `circle(r)` the sugar, and the builder is ~80 lines of `Curve` + `decompose` rather than a fourth
+  hand-rolled decomposition. **The pattern is [[no-interface-ossification]] in its cheapest form** —
+  an example hardening into a constraint — and the tell was that I could state the limitation but
+  not point at the line enforcing it. *2026-08-15 · finding · `crates/arrange2d/src/profile.rs`*
+
+- **Scripted inserts anchored on "nearest preceding `///`" cut into the neighbouring doc comment.**
+  Twice now. In `23276f9` an insert placed a helper *inside* the doc block of
+  `a_polygonal_slot_is_not_dropped_between_sample_cells`, truncating it mid-sentence ("The result
+  was") — and it shipped, because a mangled doc comment compiles. Found only when a later edit to
+  the same region failed to parse. Anchor scripted edits on **unique whole-line matches** with an
+  asserted occurrence count, never on a scan backwards for a comment marker.
+  *2026-08-15 · finding · `crates/author/src/resolve.rs`*
+
 - **A gate that compiles gated code *out* is not a gate over it — `cargo xtask gate`.** The default
   `--workspace` clippy/nextest legs pass no `--features`, so `export`'s `step` items, `difftest`'s
   `cgal` items and `lattice`'s `fuzzing` items are absent from the everyday loop entirely. PC.5 and

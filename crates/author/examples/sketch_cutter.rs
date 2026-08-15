@@ -23,14 +23,15 @@
 //! Flags: `--segments <n>` (rail discretization, default 72), `--out-dir <dir>` (default
 //! `generated-demos/`).
 
+use arrange2d::profile::Profile;
 use author::construct;
 use author::part::{Cutter, Part, SupportFn};
 use certify_core::Verdict;
 use develop::extrude::{Apex, Frame};
 use export::approx::rat_to_f64;
 use fixtures::devices::cone;
-use geom::content::{ArcPiece, Circle, CurveId, Edge, Half, Orient, Point2, Winding};
-use lattice::{Bignum, Rat, Surd};
+use geom::content::Edge;
+use lattice::{Bignum, Rat};
 
 type Q = Rat<Bignum>;
 
@@ -41,35 +42,13 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// A disc's boundary as the two x-monotone arcs `arrange2d` decomposes a circle into.
+/// A disc's boundary, through the shared [`Profile`] builder.
 ///
-/// Hand-rolled here because authoring a profile currently means building arrangement edges
-/// directly — the ergonomics gap this demo makes visible (see the engineering log).
-fn disc(cx: Q, cy: Q, r: Q, src: u32) -> Vec<Edge<Bignum>> {
-    let (lo, hi) = (cx.sub(&r), cx.add(&r));
-    let circle = Circle {
-        cx: cx.clone(),
-        cy: cy.clone(),
-        r2: r.mul(&r),
-    };
-    [Half::Upper, Half::Lower]
-        .into_iter()
-        .map(|half| {
-            Edge::Arc(Box::new(ArcPiece {
-                circle: circle.clone(),
-                half,
-                x_lo: Surd::from_rat(lo.clone()),
-                x_hi: Surd::from_rat(hi.clone()),
-                start: Point2::from_rat(lo.clone(), cy.clone()),
-                end: Point2::from_rat(hi.clone(), cy.clone()),
-                winding: Winding {
-                    orient: Orient::Ccw,
-                    source_span: None,
-                },
-                source: CurveId(src),
-            }))
-        })
-        .collect()
+/// This used to be twenty lines of hand-built `ArcPiece`s — the ergonomics gap this demo made
+/// visible. `Profile` closed it: each constructor builds a `Curve` and hands it to `arrange2d`'s
+/// own `decompose`, so nothing here re-derives an arc.
+fn disc(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
+    Profile::new().circle(cx, cy, r).into_edges()
 }
 
 /// The `z = 0` sketch plane in world coordinates, orthonormal so a profile circle is a true circle.
@@ -103,7 +82,7 @@ fn panel(segments: usize, with_cuts: bool, apex: Apex<Bignum>) -> Part<Bignum> {
         part = part.subtract(Cutter::extrude(
             sketch_plane(),
             apex,
-            disc(qi(0), q(11, 5), q(1, 5), 0),
+            disc(qi(0), q(11, 5), q(1, 5)),
         ));
     }
     part

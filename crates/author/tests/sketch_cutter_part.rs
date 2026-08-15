@@ -5,16 +5,15 @@
 //! dominates it, so a drafted hole and an undrafted one report the **same** `ε`. Only the emitted
 //! geometry distinguishes them, which is what these tests measure.
 
+use arrange2d::profile::Profile;
 use author::construct;
 use author::part::{Cutter, Part, SupportFn};
 use certify_core::Verdict;
 use develop::extrude::{Apex, Frame};
 use export::approx::rat_to_f64;
 use fixtures::devices::cone;
-use geom::content::{
-    ArcPiece, Circle, CurveId, Edge, Half, Line, Orient, Point2, SegPiece, Winding,
-};
-use lattice::{Bignum, Rat, Surd};
+use geom::content::Edge;
+use lattice::{Bignum, Rat};
 
 type Q = Rat<Bignum>;
 
@@ -25,60 +24,14 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// A disc's boundary as the two x-monotone arcs `arrange2d` decomposes a circle into.
-fn disc(cx: Q, cy: Q, r: Q, src: u32) -> Vec<Edge<Bignum>> {
-    let (lo, hi) = (cx.sub(&r), cx.add(&r));
-    let circle = Circle {
-        cx: cx.clone(),
-        cy: cy.clone(),
-        r2: r.mul(&r),
-    };
-    [Half::Upper, Half::Lower]
-        .into_iter()
-        .map(|half| {
-            Edge::Arc(Box::new(ArcPiece {
-                circle: circle.clone(),
-                half,
-                x_lo: Surd::from_rat(lo.clone()),
-                x_hi: Surd::from_rat(hi.clone()),
-                start: Point2::from_rat(lo.clone(), cy.clone()),
-                end: Point2::from_rat(hi.clone(), cy.clone()),
-                winding: Winding {
-                    orient: Orient::Ccw,
-                    source_span: None,
-                },
-                source: CurveId(src),
-            }))
-        })
-        .collect()
-}
-
-/// A closed rectilinear profile, as `arrange2d` segment edges.
-fn poly(pts: &[(Q, Q)], src: u32) -> Vec<Edge<Bignum>> {
-    let n = pts.len();
-    (0..n)
-        .map(|i| {
-            let ((sx, sy), (ex, ey)) = (&pts[i], &pts[(i + 1) % n]);
-            let (a, b) = (sy.sub(ey), ex.sub(sx));
-            let c = a.mul(sx).add(&b.mul(sy)).neg();
-            Edge::Seg(Box::new(SegPiece {
-                line: Line { a, b, c },
-                start: Point2::from_rat(sx.clone(), sy.clone()),
-                end: Point2::from_rat(ex.clone(), ey.clone()),
-                orient: Orient::Ccw,
-                source: CurveId(src),
-            }))
-        })
-        .collect()
+/// A disc's boundary, through the shared `Profile` builder — no hand-built arcs.
+fn disc(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
+    Profile::new().circle(cx, cy, r).into_edges()
 }
 
 /// The axis-aligned square of half-side `h` about `(cx, cy)`.
-fn square(cx: Q, cy: Q, h: Q, src: u32) -> Vec<Edge<Bignum>> {
-    let pts: Vec<(Q, Q)> = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
-        .into_iter()
-        .map(|(i, j)| (cx.add(&h.mul(&qi(i))), cy.add(&h.mul(&qi(j)))))
-        .collect();
-    poly(&pts, src)
+fn square(cx: Q, cy: Q, h: Q) -> Vec<Edge<Bignum>> {
+    Profile::new().rect(cx, cy, h.clone(), h).into_edges()
 }
 
 fn sketch_plane() -> Frame<Bignum> {
@@ -110,7 +63,7 @@ fn panel_with(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
 
 /// The AUTH.1f panel: the same gore, its feature a disc of radius `1/5`.
 fn panel(apex: Apex<Bignum>) -> Part<Bignum> {
-    panel_with(apex, disc(qi(0), q(11, 5), q(1, 5), 0))
+    panel_with(apex, disc(qi(0), q(11, 5), q(1, 5)))
 }
 
 /// The same gore with a **metric** cylinder of squared radius `r2` in place of the extrusion —
@@ -228,7 +181,7 @@ fn a_square_prism_cuts_a_hole_between_its_inscribed_and_circumscribed_discs() {
     let square_hole = develop_or_panic(
         panel_with(
             Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
-            square(qi(0), q(11, 5), h.clone(), 0),
+            square(qi(0), q(11, 5), h.clone()),
         ),
         "the square prism",
     );
@@ -262,8 +215,8 @@ fn a_square_prism_cuts_a_hole_between_its_inscribed_and_circumscribed_discs() {
 /// 1e.4 this failed closed only by accident, on a window search declining a shape it could not read.
 #[test]
 fn a_ring_profile_is_refused_by_name() {
-    let mut profile = disc(qi(0), q(11, 5), q(1, 5), 0);
-    profile.extend(disc(qi(0), q(11, 5), q(1, 10), 1));
+    let mut profile = disc(qi(0), q(11, 5), q(1, 5));
+    profile.extend(disc(qi(0), q(11, 5), q(1, 10)));
     let part = panel_with(
         Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
         profile,

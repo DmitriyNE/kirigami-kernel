@@ -864,29 +864,6 @@ pub fn flat_to_poly<B: Backend>(outline: &FlatOutline<B>) -> Vec<[Rat<B>; 2]> {
     out
 }
 
-/// One closed polygon `pts` as exact [`arrange2d`] segment edges tagged `src` (mirrors
-/// `develop::flat`'s `seg_edge`: the directed line through each consecutive pair).
-fn poly_edges<B: Backend>(pts: &[[Rat<B>; 2]], src: u32) -> Vec<geom::content::Edge<B>> {
-    use geom::content::{CurveId, Edge, Line, Orient, Point2, SegPiece};
-    let n = pts.len();
-    (0..n)
-        .map(|i| {
-            let s = &pts[i];
-            let e = &pts[(i + 1) % n];
-            let a = e[1].sub(&s[1]).neg();
-            let b = e[0].sub(&s[0]);
-            let c = a.mul(&s[0]).add(&b.mul(&s[1])).neg();
-            Edge::Seg(Box::new(SegPiece {
-                line: Line { a, b, c },
-                start: Point2::from_rat(s[0].clone(), s[1].clone()),
-                end: Point2::from_rat(e[0].clone(), e[1].clone()),
-                orient: Orient::Ccw,
-                source: CurveId(src),
-            }))
-        })
-        .collect()
-}
-
 /// Assemble the final flat panel `Region` = `outer − ⋃ holes`, via the `BoolOp::Diff` arrangement
 /// (operand A = the outer polygon, operand B = the union of the interior hole polygons — authored
 /// pairwise-disjoint). Certified by `ledge_dom_certified`. This is [`crate::cut_oracle`]'s
@@ -897,10 +874,13 @@ pub fn assemble_flat<B: Backend>(
 ) -> Verdict<arrange2d::boolean::Region<B>, arrange2d::boolean::CapOutFault, ()> {
     use arrange2d::boolean::{BoolOp, OperandId, ledge_dom_certified};
     use geom::content::CurveId;
-    let mut edges = poly_edges(outer, 0);
-    for (i, h) in holes.iter().enumerate() {
-        edges.extend(poly_edges(h, (i + 1) as u32));
+    // Operand ids come from the order shapes are added: the outer is `CurveId(0)` = operand A,
+    // each hole the next id = operand B (see `operand_of` below).
+    let mut profile = arrange2d::profile::Profile::new().polygon(outer);
+    for h in holes {
+        profile = profile.polygon(h);
     }
+    let edges = profile.into_edges();
     let operand_of = |c: CurveId| {
         if c.0 == 0 { OperandId::A } else { OperandId::B }
     };
@@ -1008,29 +988,9 @@ mod tests {
         let cfg = DevConfig::tight();
         let (cx, cy, h) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 5));
         // The square prism the AUTH.1e.4 acceptance test drills, on the same device.
-        let pts: Vec<(Q, Q)> = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
-            .into_iter()
-            .map(|(i, j)| {
-                (
-                    cx.add(&h.mul(&Q::from_i128(i))),
-                    cy.add(&h.mul(&Q::from_i128(j))),
-                )
-            })
-            .collect();
-        let profile: Vec<geom::content::Edge<Bignum>> = (0..4)
-            .map(|i| {
-                let ((sx, sy), (ex, ey)) = (&pts[i], &pts[(i + 1) % 4]);
-                let (a, b) = (sy.sub(ey), ex.sub(sx));
-                let c = a.mul(sx).add(&b.mul(sy)).neg();
-                geom::content::Edge::Seg(Box::new(geom::content::SegPiece {
-                    line: geom::content::Line { a, b, c },
-                    start: geom::content::Point2::from_rat(sx.clone(), sy.clone()),
-                    end: geom::content::Point2::from_rat(ex.clone(), ey.clone()),
-                    orient: geom::content::Orient::Ccw,
-                    source: geom::content::CurveId(0),
-                }))
-            })
-            .collect();
+        let profile = arrange2d::profile::Profile::new()
+            .rect(cx.clone(), cy.clone(), h.clone(), h.clone())
+            .into_edges();
         let cast = Cast::new(
             Frame::new(
                 [Q::from_i128(0), Q::from_i128(0), Q::from_i128(0)],

@@ -896,7 +896,7 @@ mod tests {
         );
         // A profile edge whose carrier has no direction, and a circle that is not one.
         let cast = skew_cast();
-        let mut flat = poly_edges(&[(0, 0), (1, 0), (0, 1)], 0);
+        let mut flat = poly_edges(&[(0, 0), (1, 0), (0, 1)]);
         if let Edge::Seg(seg) = &mut flat[0] {
             seg.line.a = q(0);
             seg.line.b = q(0);
@@ -922,55 +922,24 @@ mod tests {
 
     // --- frame, profile and the predicate view (AUTH.1b) ---------------------------------------
 
-    /// A closed CCW loop of segment edges through the given frame-coordinate vertices. The directed
-    /// line's leftward normal is `(−Δb, Δa)`, so a CCW loop's interior sits where the residual is
-    /// **positive** — which is what [`Cast::line_wall`] then mirrors.
-    fn poly_edges(pts: &[(i128, i128)], src: u32) -> Vec<Edge<Bignum>> {
-        let n = pts.len();
-        (0..n)
-            .map(|i| {
-                let ((sx, sy), (ex, ey)) = (pts[i], pts[(i + 1) % n]);
-                let (a, b) = (q(-(ey - sy)), q(ex - sx));
-                let c = a.mul(&q(sx)).add(&b.mul(&q(sy))).neg();
-                Edge::Seg(Box::new(geom::content::SegPiece {
-                    line: Line { a, b, c },
-                    start: geom::content::Point2::from_rat(q(sx), q(sy)),
-                    end: geom::content::Point2::from_rat(q(ex), q(ey)),
-                    orient: geom::content::Orient::Ccw,
-                    source: geom::content::CurveId(src),
-                }))
-            })
-            .collect()
+    /// A closed CCW loop through integer frame coordinates. Thin sugar over
+    /// [`Profile`](arrange2d::profile::Profile) — only the integer-tuple spelling these fixtures
+    /// are written in is local; the decomposition is the arrangement's own.
+    ///
+    /// The directed line's leftward normal is `(−Δb, Δa)`, so a CCW loop's interior sits where the
+    /// residual is **positive** — which is what [`Cast::line_wall`] then mirrors.
+    fn poly_edges(pts: &[(i128, i128)]) -> Vec<Edge<Bignum>> {
+        let v: Vec<[Q; 2]> = pts.iter().map(|(x, y)| [q(*x), q(*y)]).collect();
+        arrange2d::profile::Profile::new().polygon(&v).into_edges()
     }
 
-    /// A whole circle as its two x-monotone halves — `arrange2d`'s canonical decomposition. `r` is
-    /// passed rationally only so the test can name the two extreme points; the wall builder never
-    /// sees it, taking `r²` alone.
-    fn circle_edges(cx: Q, cy: Q, r: Q, src: u32) -> Vec<Edge<Bignum>> {
-        let (lo, hi) = (cx.sub(&r), cx.add(&r));
-        let circle = Circle {
-            cx: cx.clone(),
-            cy: cy.clone(),
-            r2: r.mul(&r),
-        };
-        [geom::content::Half::Upper, geom::content::Half::Lower]
-            .into_iter()
-            .map(|half| {
-                Edge::Arc(Box::new(geom::content::ArcPiece {
-                    circle: circle.clone(),
-                    half,
-                    x_lo: Surd::from_rat(lo.clone()),
-                    x_hi: Surd::from_rat(hi.clone()),
-                    start: geom::content::Point2::from_rat(lo.clone(), cy.clone()),
-                    end: geom::content::Point2::from_rat(hi.clone(), cy.clone()),
-                    winding: geom::content::Winding {
-                        orient: geom::content::Orient::Ccw,
-                        source_span: None,
-                    },
-                    source: geom::content::CurveId(src),
-                }))
-            })
-            .collect()
+    /// A whole circle as its two x-monotone halves. `r` is rational only because these fixtures
+    /// name round radii; `Profile::circle_r2` takes any rational `r²`, and the wall builder never
+    /// sees `r` at all.
+    fn circle_edges(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
+        arrange2d::profile::Profile::new()
+            .circle(cx, cy, r)
+            .into_edges()
     }
 
     /// A frame that is emphatically not orthonormal, and a cast point off its plane.
@@ -1105,8 +1074,8 @@ mod tests {
     fn a_non_convex_profile_with_a_hole_needs_no_decomposition() {
         let cast = skew_cast();
         // An L, plus a circular hole in its foot.
-        let mut edges = poly_edges(&[(0, 0), (4, 0), (4, 2), (2, 2), (2, 4), (0, 4)], 0);
-        edges.extend(circle_edges(q(1), q(1), Q::new(1, 2), 1));
+        let mut edges = poly_edges(&[(0, 0), (4, 0), (4, 2), (2, 2), (2, 4), (0, 4)]);
+        edges.extend(circle_edges(q(1), q(1), Q::new(1, 2)));
 
         let ap = cast.apex().finite().unwrap();
         let at = |a: &Q, b: &Q, lam: &Q| {
@@ -1148,7 +1117,7 @@ mod tests {
     fn one_carrier_is_one_wall_however_many_edges_it_arrived_as() {
         let cast = skew_cast();
         // A disc: two arcs, one circle.
-        let disc = circle_edges(q(2), q(2), q(1), 0);
+        let disc = circle_edges(q(2), q(2), q(1));
         assert_eq!(
             disc.len(),
             2,
@@ -1162,9 +1131,9 @@ mod tests {
         );
 
         // A square, then the same square with one side split in two: four carriers either way.
-        let square = poly_edges(&[(0, 0), (4, 0), (4, 4), (0, 4)], 1);
+        let square = poly_edges(&[(0, 0), (4, 0), (4, 4), (0, 4)]);
         assert_eq!(cast.carrier_walls(&square).unwrap().len(), 4);
-        let split = poly_edges(&[(0, 0), (2, 0), (4, 0), (4, 4), (0, 4)], 2);
+        let split = poly_edges(&[(0, 0), (2, 0), (4, 0), (4, 4), (0, 4)]);
         assert_eq!(split.len(), 5, "the bottom side arrives in two pieces");
         assert_eq!(
             cast.carrier_walls(&split).unwrap().len(),
@@ -1173,8 +1142,8 @@ mod tests {
         );
 
         // Two genuinely distinct circles stay two walls.
-        let mut two = circle_edges(q(0), q(0), q(1), 3);
-        two.extend(circle_edges(q(9), q(0), q(1), 4));
+        let mut two = circle_edges(q(0), q(0), q(1));
+        two.extend(circle_edges(q(9), q(0), q(1)));
         assert_eq!(cast.carrier_walls(&two).unwrap().len(), 2);
     }
 
@@ -1182,8 +1151,8 @@ mod tests {
     /// still a hole after its loop has been thrown in with the outer boundary.
     #[test]
     fn a_region_flattens_to_every_boundary_edge() {
-        let outer = poly_edges(&[(0, 0), (4, 0), (4, 4), (0, 4)], 0);
-        let hole = circle_edges(q(2), q(2), q(1), 1);
+        let outer = poly_edges(&[(0, 0), (4, 0), (4, 4), (0, 4)]);
+        let hole = circle_edges(q(2), q(2), q(1));
         let region = Region {
             faces: vec![arrange2d::boolean::Face {
                 outer: outer.clone(),
@@ -1212,7 +1181,7 @@ mod tests {
     #[test]
     fn the_boundary_and_predicate_views_agree() {
         let cast = skew_cast();
-        let edges = poly_edges(&[(0, 0), (3, 0), (0, 3)], 0);
+        let edges = poly_edges(&[(0, 0), (3, 0), (0, 3)]);
         let walls = cast.walls(&edges).expect("three real walls");
         let ap = cast.apex().finite().unwrap();
         for ai in -2..=4 {
