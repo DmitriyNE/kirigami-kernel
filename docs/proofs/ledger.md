@@ -3,8 +3,11 @@
 The theorems the `certify-core` checkers rely on. See [`README.md`](README.md) for
 the field semantics and how this relates to `certify-check/` (the actual proofs)
 and `../../vv-matrix.md`. Status: ✅ proven in Lean · 📌 proven modulo one labelled
-cited axiom · ⬜ not yet formalized. All ✅/📌 rows are in the CI `#print axioms`
-gate (`.github/workflows/ci.yml`).
+cited axiom · ⬜ not yet formalized. All ✅/📌 rows are in the `#print axioms` gate
+([`scripts/check-axioms.sh`](../../scripts/check-axioms.sh), run by CI and locally).
+A 📌 row's cited axiom is declared there **against that theorem only**, so the same
+axiom appearing under any other proof fails the gate — and a citation that stops
+appearing fails it too, since that means the row should be promoted to ✅.
 
 | Obligation | Rust checker | Lean | Status · axioms |
 |---|---|---|---|

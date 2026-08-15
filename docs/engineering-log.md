@@ -659,6 +659,28 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The axiom gate was rejecting the one axiom the docs say it should accept — and its parser could
+  have missed a real one.** `main` has been CI-red since 2026-08-09 on the Lean step, with the build
+  itself clean (8823 jobs, every footprint `[propext, Classical.choice, Quot.sound]`) and the failure
+  coming entirely from the audit: `AXIOM AUDIT FAILED: non-allowlisted axiom(s): sturm_root_count`.
+  That axiom is the *deliberate citation* on `verify_chain_sound` — the 📌 row of
+  `docs/proofs/ledger.md`, whose header states 📌 rows are in the gate. When the audit was tightened
+  from "grep for `sorryAx`" to "allowlist `[propext, Classical.choice, Quot.sound]`" the documented
+  citation was not carried across, so the gate contradicted the ledger. **The interesting part is the
+  second defect**, found while fixing the first: the old parser did `grep "depends on axioms:"` and
+  then flattened every footprint into one anonymous stream. That has two consequences — it *cannot*
+  express a per-theorem rule (so the obvious fix, adding `sturm_root_count` to the global allowlist,
+  would have let that axiom appear under **any** proof unnoticed, which is precisely the leak the gate
+  exists to catch), and because `#print axioms` **wraps long footprints across lines** while only the
+  first line matches the grep, any axiom pushed onto a continuation line was invisible — a `sorryAx`
+  could have slipped through on a sufficiently long footprint. Replaced by
+  [`scripts/check-axioms.sh`](../scripts/check-axioms.sh): joins wrapped records, checks each
+  theorem's footprint against *its own* declared citation, and is **two-sided** — a citation that
+  stops appearing also fails, so discharging Sturm later forces the ledger row from 📌 to ✅ instead
+  of silently going stale. Guard verified by negative test, not just by passing: dropping the
+  citation, inventing one, and renaming a theorem each exit 1 with the right message.
+  *2026-08-15 · resolved · `scripts/check-axioms.sh`, `.github/workflows/ci.yml`, `docs/proofs/{ledger,README}.md`*
+
 - **A feature-gated test is only as good as the leg that compiles it — and a CI matrix is only as good
   as the legs you actually read.** Running the full gate locally before pushing the OPT.3 arc turned up
   a hard compile failure in `cargo clippy -p export --features step --all-targets`:
@@ -1526,7 +1548,12 @@ fine — this is a log, not a schema.
 - **Two open theorems, both tracked in the proof ledger.** Sturm's theorem is cited as an
   axiom (`sturm_root_count`, absent from Mathlib); CAP-OUT ⇒ 2-manifold-with-boundary is
   open. Runtime-checked hypotheses / bounded Kani cover soundness in the interim.
-  *2026-08-04 · watching · `docs/proofs/ledger.md`*
+  *2026-08-15:* revisited with the user while fixing the axiom gate — decision is to **keep
+  Sturm cited** and formalize it opportunistically, not now. The citation is no longer a red
+  CI signal: `scripts/check-axioms.sh` accepts it *on `verify_chain_sound` only*, and fails
+  the moment it appears anywhere else or stops appearing at all. So the assumption is pinned
+  and visible rather than either hidden or noisy.
+  *2026-08-04 · watching · `docs/proofs/ledger.md`, `scripts/check-axioms.sh`*
 
 ## Resolved
 

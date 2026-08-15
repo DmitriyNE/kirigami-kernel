@@ -17,8 +17,10 @@ Every obligation records:
 - **Lean** — how it is formalized in `certify-check/`, plus the axiom footprint.
   A clean footprint is `[propext, Classical.choice, Quot.sound]`; a single
   labelled cited `axiom` (e.g. `sturm_root_count`) is the honest assumption of the
-  runtime-checked-hypothesis pattern. Every proven/cited obligation is in the CI
-  `#print axioms` gate.
+  runtime-checked-hypothesis pattern. Every proven/cited obligation is in the
+  `#print axioms` gate ([`scripts/check-axioms.sh`](../../scripts/check-axioms.sh)),
+  which pins each citation to its own theorem rather than allowlisting the name
+  globally.
 
 ## Layout
 

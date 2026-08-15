@@ -115,40 +115,14 @@ jobs:
       # `sign_variations` model), fetching Mathlib's prebuilt oleans + the Aeneas
       # Lean library. Uses the default shell (elan + lake); the hax/Aeneas *binaries*
       # (`.#extraction`) are only needed to *re-generate* models, not to build them.
-      # `DEVELOPER_DIR`/`SDKROOT` are unset so `git`-in-lake works under the darwin
-      # C-toolchain (see docs/spike-extraction-report.md §3). Then audit axioms:
-      # our theorems must not depend on `sorryAx` (guards against the Aeneas Std
-      # `get_unchecked` sorries leaking onto a certified path).
+      # Then audits the axiom footprint of every theorem the checkers rely on: clean
+      # is [propext, Classical.choice, Quot.sound], and a `sorryAx` or a named axiom
+      # fails. The one legitimate exception — a labelled cited axiom on a 📌 ledger
+      # row — is declared PER-THEOREM in the script, so it cannot leak onto any other
+      # proof. Build + audit both live in `scripts/check-axioms.sh` so the Lean gate
+      # is one command locally too.
       - name: Lean (certify-check proof surface + axiom audit)
-        run: |
-          nix develop --command bash -c '
-            set -e
-            cd certify-check
-            unset DEVELOPER_DIR SDKROOT
-            lake exe cache get
-            lake build
-            printf "import CertifyCheck\nopen CertifyCheck\n#print axioms signVariationsImp_eq_signVariations\n#print axioms verify_chain_sound\n#print axioms lifted_sign_variations_eq_loop\n#print axioms sign_variations_spec\n#print axioms sliceIter_next_spec\n#print axioms gcd_u128_spec\n#print axioms reduce_spec\n#print axioms verify_common_factor_sound\n#print axioms link_ok_rejects_pinch\n#print axioms v_boundary_iff_boundary\n#print axioms v_boundary_imp_link_ok\n#print axioms cyclic_true_runs_loop_spec\n#print axioms cyclic_true_runs_spec\n#print axioms link_ok_spec\n#print axioms ClipSigma.clip_sigma_branch_eq\n#print axioms ClipSigma.corner_range_eq\n#print axioms ClipSigma.clipSigma_sound_positive\n#print axioms ClipSigma.clipSigma_sound_negative\n#print axioms ClipSigma.clipSigma_rejects_straddle\n#print axioms RefBackend.is_zero_eq\n#print axioms RefBackend.cmp_eq\n#print axioms RefBackend.add_eq\n#print axioms RefBackend.sub_eq\n#print axioms RefBackend.mul_eq\n#print axioms RefBackend.shl1_eq\n#print axioms RefBackend.testbit_eq\n#print axioms RefBackend.bit_len_spec\n#print axioms RefBackend.divrem_eq\n#print axioms RefBackend.gcd_eq\n#print axioms RefBackend.refBackend_eq_ZQ\n" > axiom_audit.lean
-            # Capture the Lean exit status FIRST: a non-compiling audit file (a renamed or
-            # missing theorem) must fail CI, not slip through because its error output happens
-            # to lack the string "sorryAx".
-            if ! lake env lean axiom_audit.lean > axiom_audit.out 2>&1; then
-              echo "AXIOM AUDIT FAILED: the audit file did not compile" >&2
-              cat axiom_audit.out >&2
-              rm -f axiom_audit.lean axiom_audit.out; exit 1
-            fi
-            # Axiom-clean means the ONLY axioms are [propext, Classical.choice, Quot.sound].
-            # Flag anything else — sorryAx OR a newly-introduced named axiom, which the old
-            # sorryAx-only grep let through despite the docs claiming "axiom-clean".
-            bad=$(grep "depends on axioms:" axiom_audit.out \
-              | sed -E "s/.*axioms:[[:space:]]*\[//; s/\].*//" \
-              | tr "," "\n" | sed "s/[[:blank:]]//g" \
-              | grep -vE "^(propext|Classical\.choice|Quot\.sound)$" | grep -v "^$" || true)
-            if [ -n "$bad" ]; then
-              echo "AXIOM AUDIT FAILED: non-allowlisted axiom(s):" >&2
-              printf "%s\n" "$bad" | sort -u >&2
-              rm -f axiom_audit.lean axiom_audit.out; exit 1
-            fi
-            rm -f axiom_audit.lean axiom_audit.out'
+        run: nix develop --command bash scripts/check-axioms.sh
 
       # Extraction TCB guard: every `core` item Aeneas externalises has a faithful
       # `def` model in Lattice/FunsExternal.lean (no `axiom` — which would enter the
