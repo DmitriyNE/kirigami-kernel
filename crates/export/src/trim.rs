@@ -1470,28 +1470,13 @@ mod tests {
             other => panic!("outer_loop: {}", tag(&other)),
         };
         let (inner, outer_ch) = trim_rail_chains(&outer).expect("rail chains");
-        let d4_hole = match hole_loop(
-            &chart,
-            &d4[0],
-            &d4[1],
-            &d4[2],
-            &span,
-            lowfit,
-            &clearance,
-            &cfg,
-            &Q::new(1, 200),
-            4,
-        ) {
+        let d4_hole = match hole_loop(&chart, &d4[0], &d4[1], &d4[2], &span, &clearance, &cfg, 32) {
             Verdict::Verified(h) => hole_rail(&h).expect("D4 hole rail"),
             other => panic!("hole_loop: {}", tag(&other)),
         };
         let konst = |n: i128, dd: i128| RatFunc::<Bignum>::from_poly(Poly::constant(Q::new(n, dd)));
-        let quad = HoleRail {
-            near: konst(43, 20),
-            far: konst(47, 20),
-            s1: Q::new(-9, 20),
-            s2: Q::new(-6, 20),
-        };
+        // The authored quad: each branch is a single rail over the whole σ-extent.
+        let quad = HoleRail::uniform(konst(43, 20), konst(47, 20), Q::new(-9, 20), Q::new(-6, 20));
         let w = Interval {
             lo: Q::from_i128(0),
             hi: Q::new(1, 8),

@@ -19,6 +19,17 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Two CI gaps the OPT.3 pre-push gate exposed — neither is a code bug, both hide real failures.**
+  **(1) The self-hosted Linux runner is dead in the water** (#241): `nix-installer-action` hangs and the
+  job dies at the 6 h cap before running a single gate step, so half the matrix — and the *only* leg
+  covering `x86_64-linux` — reports nothing. Fix the runner or pin the installer action. **(2) Nothing
+  locally type-checks feature-gated code** (#242): `--features step` / `--features cgal` / `--features
+  fuzzing` targets are compiled out of the default `--workspace` legs, which is how a PC.5/PC.6 call-site
+  break survived two weeks (see Findings). Cheapest fix is a `cargo check --workspace --all-targets
+  --all-features` in the fast loop; the fuller one is a `cargo xtask gate` that replays the CI step list
+  so "run the gate" is one command instead of a hand-assembled script.
+  *2026-08-15 · open · `.github/workflows/ci.yml`, #241, #242*
+
 - **The driving requirement (product north star): the bidirectional multilayer flex-PCB transform.** The kernel
   exists to (**① develop** 3D→flat — generate the flat PCB outline by intersecting the generating shape with 3D
   geometry, then unroll) and (**② fold** flat→3D — fold flat ECAD data into folded 3D geometry). Framing + the
@@ -647,6 +658,26 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **A feature-gated test is only as good as the leg that compiles it — and a CI matrix is only as good
+  as the legs you actually read.** Running the full gate locally before pushing the OPT.3 arc turned up
+  a hard compile failure in `cargo clippy -p export --features step --all-targets`:
+  `trim::tests::full_panel_solid_exports` still called the pre-PC.6 **10-arg** `hole_loop` (with the
+  deleted `fit`/`margin` ladder args) and still built `HoleRail` with the pre-PC.5 **scalar** `near`/`far`,
+  which PC.5 had widened to `Vec<(Interval, RatFunc)>`. Nothing in the OPT.0–OPT.3 arc touched `trim.rs`;
+  the break was ~2 weeks stale. **Mechanism:** the test is `#[cfg(feature = "step")]`, and the default
+  `--workspace` clippy/nextest legs pass no `--features`, so it is *compiled out* of every fast local
+  check. Exactly one of the thirteen CI steps builds it, and it sits eighth — so the whole cheap prefix
+  stays green and the local loop never types the code at all. The sibling *flat* test
+  `full_panel_assembles`, two screens up in the same module, had been migrated by PC.6 correctly; the
+  gated one was simply invisible. **The remote agrees and adds a second failure:** run `31800967684`
+  (the PC.5 commit) failed the macOS leg at precisely that step, exit 101, and every push since
+  (PC.6 → OPT.0–3 → VV.1 → MAP.1) is still `queued`/`in_progress` behind a backlog — so no green run
+  exists for any of it. Meanwhile `build (self-hosted, Linux, x64)` hung *inside*
+  `DeterminateSystems/nix-installer-action@main` and was killed by the 6 h job cap without reaching step
+  one, so `x86_64-linux` — a first-class target per `environment-and-crate-layout.md §4` — has had **zero**
+  signal for days. Both failure modes are silent in the way that matters: one hides behind a feature
+  flag, the other behind a queue. *2026-08-15 · the break resolved, the two gaps open · `crates/export/src/trim.rs`, #241, #242*
 
 - **The OPT.3 re-proof hits a TCB question, not a proof-difficulty question: `trailing_zeros` is an
   intrinsic Aeneas cannot model.** Regenerating the model (`nix run .#extract`, clean) lifts the new
