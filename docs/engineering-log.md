@@ -688,6 +688,33 @@ fine — this is a log, not a schema.
   what the pullback needs) and that was silently read as also fixing the *metric class*, which it
   does not.
 
+- **A lap is made of support, not of charts — so a span counts regions.** AUTH.1d started from the
+  design's phrase "neutral surfaces (chart embeddings)" and the obvious reading, one chart = one
+  surface, is wrong on the very device the acceptance test uses. Cast down the seam-drill axis at
+  the *bare* wrap chart and it reports **three** crossings — but two of them are at the **same 3-D
+  point**, because with `h ≡ 0` the flap and the body coincide exactly; the chart is a double cover
+  there and the two σ are the same material. Give each region its own support law and they separate
+  by the ramp height (measured: `2.892` vs `3.042` along the ray, a gap of `0.149`). So the unit of
+  counting is a **region**, and a span computed against a bare chart counts a double cover rather
+  than layers. Two smaller things fell out of the same probe: the ordering must be by **ray
+  parameter**, which on this device is the *reverse* of the σ order — an ordinal read off σ inverts
+  the lap — and a `Ray` is a ray, not a line, so the far wall the same line meets at `t = −3.04` is
+  not a crossing. Both are now filters, and both are in the named test.
+
+- **A backward-error bound can be blind to the quantity that matters downstream.** AUTH.1c's
+  obvious residual is the distance from the picked frame's origin to the cast ray's *line*, and it
+  is a perfectly good bound — of the wrong thing. The ray parameter `t` is what the span (§5) orders
+  hits by, and a `t` of the **wrong sign** puts the point on the same line, so the line bound
+  certifies it happily. There was in fact a sign error in the 2×2 Cramer solve (`t` negated), and it
+  survived the first green test run: ε was ~10⁻¹⁵ and every certificate passed. What exposed it was
+  not the certificate but an ordering test that turned out to be **vacuous** — the probe ray crossed
+  the cone once, so the `windows(2)` loop asserted nothing. Fixing the fixture to a ray that crosses
+  twice made `t` observable, and the exact corroboration `t₀ + t₁ = 10` (the crossings are symmetric
+  about the axis the ray is aimed at) pinned it. The residual is now point-to-point, which is
+  strictly stronger at no cost and certifies `t` along with the position. Two habits earned their
+  keep: **be suspicious of tests that pass first try**, and check that a bound constrains the
+  quantity a consumer will actually read, not merely a quantity that sounds like it.
+
 - **Building walls from carriers instead of endpoints deleted three problems at once.** AUTH.1a
   built a wall from the *endpoints* of a profile edge (`segment_wall`: one determinant through two
   3-D points and the apex), following the GO-gate's §4 wording. AUTH.1b needed the same thing for a

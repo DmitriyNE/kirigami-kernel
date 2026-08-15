@@ -1936,10 +1936,22 @@ excludes — are `None`, never a guess.
 
 **AUTH.1c — ray-pick frames are certified by backward error.** A ray meeting a rational developable
 solves a polynomial, so the hit is algebraic; carrying it as such would push `AlgReal` into every
-downstream cut. The float ray-cast is therefore a **search**, and the rational frame it produces
-carries a certificate bounding its distance to a true surface hit and its in-plane direction against
-the local ruling — the same search/certificate split MAP.1 installed in `fold`, and testable the same
-way: the certificate must hold under a deliberately degraded searcher.
+downstream cut. The hit-finding is therefore a **search**, and the frame it produces carries a
+certificate rather than trust — the same split MAP.1 installed in `fold`, and testable the same way:
+**the certificate must hold under a deliberately degraded searcher**, which means not a fixed
+threshold but the sharp statement that the DRC tracks the reported ε at *every* damage level (a
+perturbation small enough to stay inside the clearance should still certify, and does).
+
+Two things the criterion has to be stated carefully about. The frame is **exact** — chart fields at a
+rational σ are exact rational vectors, so the origin is *on* the surface and the axes *are* the local
+ruling and normal; only σ is approximate, which is why one residual suffices. And that residual must
+be **point-to-point, not point-to-line**: the distance to the ray's line is blind to the sign of the
+ray parameter `t`, and `t` is what the span orders hits by. A test that only checks the line distance
+certifies a sign-flipped solve.
+
+The pick's ε covers **geometry, not ordinal**. A root scan can step over a double root or two roots
+in one cell, and no backward error detects a miscount — so an ordinal claim needs a root **count**,
+which is AUTH.1d's problem, not this one's.
 
 **AUTH.1d — the span, and the criterion that distinguishes it from a layer index.** `ToNext |
 NextN(k) | Through | Range(start..=end)` over the neutral surfaces the reference ray meets, ordered
@@ -1947,6 +1959,20 @@ by ray parameter. **The named test:** on the self-lapping cone, a ray through th
 chart twice, so `ToNext` cuts the flap only while `NextN(2)` and `Through` cut flap **and** body. No
 new fixture — the geometry is already certified, so the test measures span semantics rather than
 re-testing the device. A ray that misses, or grazes within tolerance, is `Unresolved`/`Refuted`.
+
+The unit of counting is a **region**, not a chart, and the test has to show why: taken bare, the wrap
+chart sends two σ to the *same* 3-D point at the lap, and only the per-region support separates them.
+The named test must therefore pin three things a weaker one would miss — that both crossings come
+from **one** chart distinguished only by support law; that the ordering is by **ray parameter**, which
+on this device is the *reverse* of the σ order, so an ordinal read off σ inverts the lap; and that the
+far wall the same *line* meets at `t < 0` is not counted.
+
+An ordinal needs a **certified count**, which is what §9.1 left open: roots isolated by a Sturm chain
+whose hypothesis is checked at runtime, tangency refused exactly (`gcd(g, g′)` of positive degree),
+and crossings closer than the clearance refused as unorderable — with the gap reported so a caller
+can see what clearance the geometry would need. The scan-based searcher remains a valid second
+opinion on the *values* and is tested against the Sturm one differentially; it is only the
+*completeness* claim it cannot make.
 
 **AUTH.1e — no special case survives the generalization.** `Cutter::surface() -> CutSurface` cannot
 represent a multi-wall cutter and is replaced; the `Subtract`+`Cutter::Cylinder` station-sampling

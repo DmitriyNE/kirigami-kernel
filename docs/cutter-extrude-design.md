@@ -208,6 +208,36 @@ The ordering must handle **the same chart hit twice by one ray**, which is not h
 self-lapping cone's flap laps its body, so a ray through the lap meets two neutral surfaces. That
 case is the acceptance test (§7) precisely because a layer-index model would get it wrong.
 
+### 5.1 A neutral surface is a *region*, not a chart
+
+Built as AUTH.1d, and the first thing it settled is what the unit of counting is. A part carries one
+frame and several **regions** differing only in their support law `h(σ)` — and it is the support that
+separates a lap from the sheet it laps. Measured on the device: the wrap chart taken **bare** sends
+two different σ to the *same 3-D point* at the lap, because with `h ≡ 0` the flap and the body
+coincide exactly. Give each region its own support and they separate by the ramp height. So a span
+computed against a bare chart would be counting a double cover, not layers.
+
+### 5.2 What makes an ordinal trustworthy
+
+An ordinal needs more than a position does, and each of these is a refusal rather than a hope:
+
+- **A certified count.** The crossings are the roots of the coplanarity residual, isolated by a
+  **Sturm chain whose hypothesis is checked at runtime** — so none is missed. §9.1 flagged this as
+  the gap AUTH.1c left open, and it is where it closes: a scan owns a density and can step over a
+  double root or two roots in one cell, and an ordinal computed from a scan is a guess.
+- **Tangency refused.** A repeated root means the ray grazes, where "how many surfaces" has no
+  stable answer. Detected exactly as `gcd(g, g′)` having positive degree.
+- **Indistinct crossings refused.** Two surfaces closer along the ray than the clearance cannot be
+  ordered at that tolerance, and naming one "next" would be fiction. The verdict carries the gap, so
+  a caller can see what clearance the geometry would need.
+
+Two exact filters complete the count: a crossing of the ruling **line** outside the region's µ̂-trim
+is not a crossing of the material, and one at **`t < 0`** is behind the caster — the surface may well
+continue there (the device's far wall does) but a cut does not reach backwards.
+
+The ordering is by **ray parameter**, never by σ. On the device those two disagree: the flap is
+nearer the caster but has the *larger* σ, so an ordinal read off σ inverts the lap.
+
 ## 6. What has to change in existing code
 
 - `Cutter::surface() -> CutSurface` (`crates/author/src/part.rs:119`) cannot survive — an extruded
@@ -225,8 +255,8 @@ case is the acceptance test (§7) precisely because a layer-index model would ge
 | **AUTH.1.0** | this document + `vv-guide` criteria + `vv-matrix` rows + tasks (the GO-gate) |
 | **AUTH.1a** | `Apex` (homogeneous) + `CutSurface::Quadric` + its pullback in `cut_mu_form`; the §4.1 refusals; the §4.2 first-order distance bound — **done** (`develop::extrude`) |
 | **AUTH.1b** | `Frame` (affine, with reported distortion) + the §2.3 carrier pullback + the projective inside predicate — **done** (`develop::extrude::Cast`) |
-| **AUTH.1c** | ray-pick frames: float search → rational snap → **backward-error certificate** (§9) |
-| **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test |
+| **AUTH.1c** | ray-pick frames: search → **backward-error certificate** (§9) — **done** (`develop::pick`) |
+| **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test — **done** (`develop::pick::{Sheet,Span,ray_crossings}`) |
 | **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) |
 | **AUTH.1f** | acceptance demo through develop → fold → STEP; full gate; vv-matrix rows to ✅ |
 
@@ -251,8 +281,40 @@ Recorded so they read as scope decisions rather than oversights:
 A ray meeting a rational developable solves a polynomial, so the hit point is in general
 **algebraic**. Carrying it as such would push `AlgReal` arithmetic into every downstream cut.
 
-Instead this follows the split MAP.1 established for `fold`: the float ray-cast is a *search*; the
-frame it produces is **snapped to exact rationals** and then certified by backward error — "this
-rational frame lies within ε of a true surface hit, with its in-plane direction within δ of the
-local ruling". Everything downstream stays exactly rational, and the searcher may be replaced freely
-without touching the certificate, which is the same property that let MAP.1 swap the bisection.
+Instead this follows the split MAP.1 established for `fold`: the hit-finding is a *search*, and the
+frame it produces is certified by backward error rather than trusted. Everything downstream stays
+exactly rational, and the searcher may be replaced freely without touching the certificate — the
+same property that let MAP.1 swap its bisection.
+
+**Built as AUTH.1c, with three refinements the sketch above did not anticipate.**
+
+*The frame is exact; only σ is not.* A chart's `pedal`, `ruling` and `normal` are rational functions
+of σ, so at a **rational** σ they evaluate to exact rational vectors. A frame built there has an
+origin **exactly on the surface** and axes that are **exactly** the chart's own fields. Nothing is
+"snapped". The whole backward error therefore collapses into one quantity, and the certificate reads:
+*this frame is the exact pick of a ray parallel to the one you asked for, displaced by at most ε*.
+
+*The residual is point-to-point, not point-to-line.* The obvious bound — distance from the frame
+origin to the ray's line — is **blind to the sign of the ray parameter `t`**, because a negated `t`
+lands on the same line. `t` is exactly what the span (§5) orders hits by, so the certificate measures
+the distance to the ray's own point at `t` instead. That is a strictly stronger bound at no cost, and
+it caught a sign error in the solve that the weaker one certified happily.
+
+*No float is needed.* The ray meets the ruling at σ exactly where the two lines are coplanar, so the
+hits are the roots of `g(σ) = det[base(σ) − origin, ruling(σ), dir]` — rational in σ, isolated to
+rationals by the existing `scan_roots` bisection. This is not a change of doctrine but a
+demonstration of it: the certificate never asked how σ was found. A float cast drops in for speed
+with an identical guarantee.
+
+The **in-plane** half of the statement turns out to be free or exactly measurable rather than
+approximate: with the normal taken from the surface, the ruling already lies in the frame plane, so
+the deviation is **exactly zero**; with the normal taken from the ray, it is nonzero by construction —
+not an error but the geometry of that choice — and is reported as an exact `sin²`.
+
+### 9.1 What the pick does not certify
+
+The ε bound covers the frame's **geometry**, not the hit's **ordinal**. The root scan owns a density
+and can step over a double root or two roots inside one cell, so "the third surface the ray meets" is
+only as reliable as that scan, and no backward error detects a miscount. The span in §5 selects *by
+ordinal*, so it needs a root **count** it can trust — a Sturm question, not a backward-error one, and
+the first thing AUTH.1d has to settle.
