@@ -465,6 +465,55 @@ pub fn surface_hole_loop<B: Backend>(
     }
 }
 
+/// Build the interior-hole boundary loop of a cutter bounded by **several walls** — an extruded
+/// polygon, a rounded slot, any multi-carrier outline: the [`surface_hole_loop`] idiom over
+/// [`develop::cut::shadow_cut_loop`] instead of the single-surface `quadric_cut_loop`.
+///
+/// `walls` are the cutter's boundary surfaces and `inside(σ, µ̂)` its fill rule on this chart — the
+/// two-view split of `docs/cutter-extrude-design.md` §2.1. `span` may be a **superset** of the
+/// hole's own σ-extent (that is what station targeting can offer an all-affine profile); the loop
+/// finds the extent itself, which is why there is no `surface_tangents` pre-pass here.
+///
+/// Fail-closed exactly as the single-surface path: a coarse loop is `Unresolved`, and a footprint
+/// that is not one band — a non-convex profile, or one with its own hole — is
+/// `Refuted(ShadowNotSimple)`.
+#[allow(clippy::too_many_arguments)]
+pub fn shadow_hole_loop<B: Backend, F>(
+    chart: &Chart<B>,
+    walls: &[CutSurface<B>],
+    inside: F,
+    span: &Interval<B>,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+    segments: usize,
+) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    match develop::cut::shadow_cut_loop(
+        chart,
+        walls,
+        inside,
+        span,
+        &Rat::from_i128(0),
+        segments.max(8),
+        clearance,
+        cfg,
+    ) {
+        Verdict::Verified(l) => Verdict::Verified(HoleLoop {
+            arcs: l
+                .pieces
+                .into_iter()
+                .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
+                .collect(),
+            eps: l.eps,
+            tangent_gap: l.tangent_gap,
+        }),
+        Verdict::Unresolved(e) => Verdict::Unresolved(e),
+        Verdict::Refuted(f) => Verdict::Refuted(f),
+    }
+}
+
 /// A developed panel outer boundary: the notched annulus loop, the max rail ε, and the largest
 /// micro-cap (the D1∩D3-crossing snap residual).
 pub struct OuterLoop<B: Backend = Bignum> {
@@ -945,6 +994,92 @@ mod tests {
             }
             other => panic!("annulus unroll not Verified: {}", tag(&other)),
         }
+    }
+
+    /// **The multi-wall loop is readable by the solid builder too.** [`hole_rail`] splits a hole
+    /// loop at its two σ-extremes into near/far chains of linear rails, and it refuses any pair of
+    /// consecutive vertices sharing a σ — which a multi-wall loop deliberately produces, since each
+    /// profile corner is bracketed by two nodes one `2⁻³⁰` grid step apart, and `hole_rail` re-snaps
+    /// through `f64`. So the flat path certifying is not evidence the solid path can consume it.
+    #[test]
+    fn a_multi_wall_hole_loop_splits_into_solid_rails() {
+        use develop::extrude::{Apex, Cast, Frame};
+        let chart = cone();
+        let cfg = DevConfig::tight();
+        let (cx, cy, h) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 5));
+        // The square prism the AUTH.1e.4 acceptance test drills, on the same device.
+        let pts: Vec<(Q, Q)> = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+            .into_iter()
+            .map(|(i, j)| {
+                (
+                    cx.add(&h.mul(&Q::from_i128(i))),
+                    cy.add(&h.mul(&Q::from_i128(j))),
+                )
+            })
+            .collect();
+        let profile: Vec<geom::content::Edge<Bignum>> = (0..4)
+            .map(|i| {
+                let ((sx, sy), (ex, ey)) = (&pts[i], &pts[(i + 1) % 4]);
+                let (a, b) = (sy.sub(ey), ex.sub(sx));
+                let c = a.mul(sx).add(&b.mul(sy)).neg();
+                geom::content::Edge::Seg(Box::new(geom::content::SegPiece {
+                    line: geom::content::Line { a, b, c },
+                    start: geom::content::Point2::from_rat(sx.clone(), sy.clone()),
+                    end: geom::content::Point2::from_rat(ex.clone(), ey.clone()),
+                    orient: geom::content::Orient::Ccw,
+                    source: geom::content::CurveId(0),
+                }))
+            })
+            .collect();
+        let cast = Cast::new(
+            Frame::new(
+                [Q::from_i128(0), Q::from_i128(0), Q::from_i128(0)],
+                [Q::from_i128(1), Q::from_i128(0), Q::from_i128(0)],
+                [Q::from_i128(0), Q::from_i128(1), Q::from_i128(0)],
+            )
+            .expect("independent axes"),
+            Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("four carriers");
+        let zero = Q::from_i128(0);
+        let span = Interval {
+            lo: Q::new(-1, 4),
+            hi: Q::new(1, 4),
+        };
+        let hole = match shadow_hole_loop(
+            &chart,
+            &walls,
+            |sigma: &Q, mu: &Q| {
+                let p = chart.surface(mu, &zero).eval(sigma)?;
+                cast.contains(&p, &profile)
+            },
+            &span,
+            &Q::from_i128(1),
+            &cfg,
+            32,
+        ) {
+            Verdict::Verified(h) => h,
+            other => panic!("the square's hole loop must certify: {}", tag(&other)),
+        };
+        let rail = hole_rail(&hole).expect("the solid builder must be able to read the loop");
+        assert!(
+            !rail.near.is_empty() && !rail.far.is_empty(),
+            "both branches must produce rails"
+        );
+        // The far branch really is the far one, over the shared σ-band.
+        let probe = rail.near[rail.near.len() / 2].0.lo.clone();
+        let (n, fr) = (
+            crate::brep_build::chain_eval(&rail.near, &probe).expect("near defined"),
+            crate::brep_build::chain_eval(&rail.far, &probe).expect("far defined"),
+        );
+        assert!(
+            n.cmp(&fr) == core::cmp::Ordering::Less,
+            "near {} must sit below far {}",
+            f(&n),
+            f(&fr)
+        );
     }
 
     /// An interior circular hole (D4) develops to a certified loop: near + far cut branches

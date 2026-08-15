@@ -294,6 +294,25 @@ What caught it is worth recording: not the unit tests of the shadow — all gree
 but the end-to-end differential that authors the *same solid* two ways and compares the resolved
 structures. The defect lived in the layer above the function under test.
 
+### 6.3 A bracket has two sides
+
+`Extrusion::extent` is what `bounding_wall` and `reference_point` are both built on, and it took
+segment endpoints through `arrange2d::locate::rational_above` — correctly, because a boolean can
+leave an endpoint algebraic — and then used that one value as **both** sides of the box. But
+`rational_above` brackets by *doubling from zero*: `1/5 ↦ 1`, `2 ↦ 3`, `−1/5 ↦ 0`. Used for both
+sides, a square at `(0, 11/5) ± 1/5` came out as `[0, 1] × [3, 3]` — not a loose box but a **wrong**
+one, of zero height, containing none of the profile. The bounding circle derived from it missed the
+square, so the hole's σ-window did too, and the multi-wall loop rightly refused a perfectly good cut.
+
+Two things are worth keeping from it. The fix is `[rational_below, rational_above]` **bisected** to
+`2⁻⁴⁸` — the raw doubling bracket is correct but answers at integer scale, which for a
+millimetre-scale profile is a bounding circle an order of magnitude too large. And the defect
+survived two slices because until AUTH.1e.4 **nothing consumed the box geometrically**: the arc path
+never touches it (a circle's extent comes from its exact centre and `rational_sqrt_above`), the
+polygonal-slot test only asked that the role was not `Inactive`, and `reference_point` is
+short-circuited for a `Through` span. A quantity that no test reads *quantitatively* is unverified
+however many tests run through it.
+
 ## 7. Slices
 
 | slice | content |
@@ -305,6 +324,7 @@ structures. The defect lived in the layer above the function under test.
 | **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test — **done** (`develop::pick::{Sheet,Span,ray_crossings}`) |
 | **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) — **done** (1e.1 shadow union, 1e.2 the cutter, 1e.3 the span) |
 | **AUTH.1f** | acceptance demo + faithfulness tests + full gate + landing — **done** (`author/examples/sketch_cutter.rs`, `author/tests/sketch_cutter_part.rs`) |
+| **AUTH.1e.4** | multi-wall hole loops (§10) — **done** (`develop::cut::shadow_cut_loop`, `export::trim::shadow_hole_loop`) |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
 the lap satisfies: `ToNext` cuts the flap only; `NextN(2)` and `Through` cut flap **and** body. No
@@ -386,3 +406,81 @@ and can step over a double root or two roots inside one cell, so "the third surf
 only as reliable as that scan, and no backward error detects a miscount. The span in §5 selects *by
 ordinal*, so it needs a root **count** it can trust — a Sturm question, not a backward-error one, and
 the first thing AUTH.1d has to settle.
+
+## 10. The multi-wall hole loop (AUTH.1e.4)
+
+AUTH.1f shipped profiles with **one** carrier: a disc, drafted or parallel. A polygon, a rounded
+slot, a capsule — anything with several carriers — resolved correctly (§6's labelled shadow) and
+received σ-stations (§6's bounding wall), but could not be *realized*. `certify_holes` handed
+`walls[0]` to `surface_hole_loop`, and one wall of several is not a hole's boundary; the affine wall
+of a straight profile edge has no tangent-ruling window at all, so the loop builder declined and the
+part came back `Unresolved`. That hardcode is what this section replaces.
+
+### 10.1 The footprint is a band, and that is the scope
+
+On one ruling, a solid cutter shows up as the µ̂ stretches it covers. For a **single quadric** wall
+that is the pair `m(σ) ± h(σ)` off one µ̂-quadratic — the whole of `quadric_cut_loop`. For several
+walls there is no such quadratic: every wall contributes its crossings, and which of them bounds the
+solid is decided by the profile's own fill rule, stretch by stretch. So the boundary is read the way
+§2.1 reads everything else — **walls give the crossings, the region gives the inside** — and the
+governing wall *changes along the loop*, at every profile corner.
+
+An interior hole is emitted as a **band**: one lower boundary, one upper, closing at two pinch
+vertices. That is exactly what a convex profile gives (a cone over a convex set from a point is
+convex, and a line meets a convex body in one interval), and exactly what a non-convex or holed one
+does not:
+
+| profile | ruling meets it in | verdict |
+|---|---|---|
+| polygon, disc, capsule, rounded slot (convex) | one stretch | realized |
+| L-shape, star (non-convex) | two or more stretches at some σ | `ShadowNotSimple` → `PartFault::ProfileNotSimple` |
+| ring, any profile with its own hole | two stretches wherever the island is | same |
+
+The refusal is **deliberate, not incidental**. Before 1e.4 a ring failed closed only by accident, on
+a window search declining a shape it could not read; now it is refused by name, so the author learns
+that the profile is the problem. Lifting it is not a bigger loop — it needs holes to be *regions*
+end to end, through the flat boolean and into the B-rep builder, which is its own piece of work.
+
+### 10.2 Three things follow from the wall changing
+
+1. **The window is found, not given.** An all-affine profile has no tangent-ruling window of its
+   own, so station targeting hands over its *bounding circle's* — a strict superset (§6). The loop
+   scans that window for the σ where the patch is non-empty and bisects each end. A footprint that
+   reaches the window's own edge is `ShadowUnbounded`: there is no pinch vertex to close on.
+2. **Corners get their own nodes.** `quadric_cut_loop` grades nodes toward the two tangent rulings,
+   where the branch turns like a square root. A corner is a *different* singularity — a kink, at an
+   arbitrary σ — and a straight piece spanning one follows neither wall. Each governing-wall change
+   is bisected and bracketed by two grid-adjacent nodes, so the kink is crossed by a single 2⁻³⁰
+   bridge instead of a chord across a whole node interval.
+3. **Certification is per piece, against the wall that piece's own endpoints name.** A bridge whose
+   two ends disagree is certified against **both** walls, larger bound wins — never a silent choice.
+
+### 10.3 Why the certificate is not enough on its own, and what fixes it
+
+`pcurve_cut_fit` bounds a piece's distance to *a surface*. That the piece is on the **boundary** is a
+separate claim, and the two come apart in one specific way: if a corner is missed — two of them
+inside one node interval, say — the emitted chord stays close to wall A the whole way and certifies
+happily, while the true boundary dips onto wall B in between. The hole ships slightly too large and
+nothing objects.
+
+So every piece is also compared, at its own σ-midpoint, against the boundary the **fill rule**
+reports there, and the deviation folded into `ε`. A missed corner then reads as a loose bound and an
+`Unresolved` — refine `segments` — rather than as a quietly wrong hole. Soundness rests on the fill
+rule, which is exact; the corner search only buys tightness.
+
+`ε` for a multi-wall loop is therefore the max of: each piece's `pcurve_cut_fit` bound, each piece's
+midpoint deviation from the true boundary, and the pinch half-widths at the two closing vertices
+(`tangent_gap`, as before).
+
+### 10.4 The resolver stays float, and that is not an inconsistency
+
+`resolve::extruded_shadow` and `develop::cut::ruling_patch` compute the same thing — the crossings,
+sorted, classified by one membership test per stretch — one in `f64` and one in exact rationals.
+That is the D2 contract, not duplication to clean up: the resolver makes a *structural* decision
+that is re-checked downstream, so it is allowed to be fast; the loop builder emits *geometry*, so it
+must be exact. The two use the same footprint definition deliberately, so the certified loop bounds
+the region the structure was resolved from and the flat boolean's topology check stays meaningful.
+
+One consequence worth naming: neither applies the §4.1 nappe restriction when reading membership —
+`Cast::contains` asks about the whole generatrix, both nappes. A loop that reached the mirror nappe
+is caught downstream by `pcurve_cut_fit` as `NappeCrossed`, a refusal.

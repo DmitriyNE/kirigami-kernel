@@ -11,7 +11,9 @@ use certify_core::Verdict;
 use develop::extrude::{Apex, Frame};
 use export::approx::rat_to_f64;
 use fixtures::devices::cone;
-use geom::content::{ArcPiece, Circle, CurveId, Edge, Half, Orient, Point2, Winding};
+use geom::content::{
+    ArcPiece, Circle, CurveId, Edge, Half, Line, Orient, Point2, SegPiece, Winding,
+};
 use lattice::{Bignum, Rat, Surd};
 
 type Q = Rat<Bignum>;
@@ -51,6 +53,34 @@ fn disc(cx: Q, cy: Q, r: Q, src: u32) -> Vec<Edge<Bignum>> {
         .collect()
 }
 
+/// A closed rectilinear profile, as `arrange2d` segment edges.
+fn poly(pts: &[(Q, Q)], src: u32) -> Vec<Edge<Bignum>> {
+    let n = pts.len();
+    (0..n)
+        .map(|i| {
+            let ((sx, sy), (ex, ey)) = (&pts[i], &pts[(i + 1) % n]);
+            let (a, b) = (sy.sub(ey), ex.sub(sx));
+            let c = a.mul(sx).add(&b.mul(sy)).neg();
+            Edge::Seg(Box::new(SegPiece {
+                line: Line { a, b, c },
+                start: Point2::from_rat(sx.clone(), sy.clone()),
+                end: Point2::from_rat(ex.clone(), ey.clone()),
+                orient: Orient::Ccw,
+                source: CurveId(src),
+            }))
+        })
+        .collect()
+}
+
+/// The axis-aligned square of half-side `h` about `(cx, cy)`.
+fn square(cx: Q, cy: Q, h: Q, src: u32) -> Vec<Edge<Bignum>> {
+    let pts: Vec<(Q, Q)> = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+        .into_iter()
+        .map(|(i, j)| (cx.add(&h.mul(&qi(i))), cy.add(&h.mul(&qi(j)))))
+        .collect();
+    poly(&pts, src)
+}
+
 fn sketch_plane() -> Frame<Bignum> {
     Frame::new(
         [qi(0), qi(0), qi(0)],
@@ -60,8 +90,8 @@ fn sketch_plane() -> Frame<Bignum> {
     .expect("the axes are independent")
 }
 
-/// The Stage-1 gore with its interior hole cut by an extrusion from `apex`.
-fn panel(apex: Apex<Bignum>) -> Part<Bignum> {
+/// The Stage-1 gore with its interior hole cut by `profile` swept from `apex`.
+fn panel_with(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
     let witness = cone()
         .surface(&qi(2), &qi(0))
         .eval(&qi(0))
@@ -72,14 +102,42 @@ fn panel(apex: Apex<Bignum>) -> Part<Bignum> {
         .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
         .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
         .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
-        .subtract(Cutter::extrude(
-            sketch_plane(),
-            apex,
-            disc(qi(0), q(11, 5), q(1, 5), 0),
-        ))
+        .subtract(Cutter::extrude(sketch_plane(), apex, profile))
         .clearance(qi(1))
         .thickness(q(1, 8))
         .segments(72)
+}
+
+/// The AUTH.1f panel: the same gore, its feature a disc of radius `1/5`.
+fn panel(apex: Apex<Bignum>) -> Part<Bignum> {
+    panel_with(apex, disc(qi(0), q(11, 5), q(1, 5), 0))
+}
+
+/// The same gore with a **metric** cylinder of squared radius `r2` in place of the extrusion —
+/// the control both faithfulness tests compare against.
+fn metric_panel(r2: Q) -> Part<Bignum> {
+    let witness = cone()
+        .surface(&qi(2), &qi(0))
+        .eval(&qi(0))
+        .expect("the device cone is regular at σ = 0");
+    construct::from_chart::<Bignum>(&cone())
+        .region_sigma(q(-7, 2), q(7, 2), SupportFn::inherit())
+        .keep_near(witness)
+        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
+        .subtract(Cutter::vertical_cylinder(qi(0), q(11, 5), r2))
+        .clearance(qi(1))
+        .thickness(q(1, 8))
+        .segments(72)
+}
+
+fn develop_or_panic(part: Part<Bignum>, name: &str) -> author::part::FlatPattern<Bignum> {
+    match part.develop() {
+        Verdict::Verified(f) => f,
+        Verdict::Refuted(fault) => panic!("{name}: refuted: {fault:?}"),
+        Verdict::Unresolved(e) => panic!("{name}: unresolved at ε ≈ {}", rat_to_f64(&e)),
+    }
 }
 
 fn developed(apex: Apex<Bignum>) -> author::part::FlatPattern<Bignum> {
@@ -141,31 +199,7 @@ fn a_drafted_hole_is_smaller_by_exactly_its_taper() {
 #[test]
 fn a_parallel_extrusion_reproduces_the_metric_cylinder() {
     let extruded = developed(Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"));
-    let witness = cone()
-        .surface(&qi(2), &qi(0))
-        .eval(&qi(0))
-        .expect("regular at σ = 0");
-    let metric = match construct::from_chart::<Bignum>(&cone())
-        .region_sigma(q(-7, 2), q(7, 2), SupportFn::inherit())
-        .keep_near(witness)
-        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
-        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(11, 5), q(1, 25)))
-        .clearance(qi(1))
-        .thickness(q(1, 8))
-        .segments(72)
-        .develop()
-    {
-        Verdict::Verified(f) => f,
-        Verdict::Refuted(f) => panic!("the metric control must develop: Refuted({f:?})"),
-        Verdict::Unresolved(e) => {
-            panic!(
-                "the metric control must develop: Unresolved at ε ≈ {}",
-                rat_to_f64(&e)
-            )
-        }
-    };
+    let metric = develop_or_panic(metric_panel(q(1, 25)), "the metric control");
 
     let (a, b) = (hole_width(&extruded), hole_width(&metric));
     assert!(
@@ -176,4 +210,73 @@ fn a_parallel_extrusion_reproduces_the_metric_cylinder() {
         rat_to_f64(extruded.eps()) - rat_to_f64(metric.eps()) < 1e-12,
         "and certify at the same ε"
     );
+}
+
+/// **AUTH.1e.4 — a many-walled profile realizes, and cuts the shape it was drawn as.**
+///
+/// A square prism's hole must contain the hole of the cylinder inscribed in it and sit inside the
+/// hole of the one circumscribing it: `disc(h) ⊂ square(h) ⊂ disc(h√2)` as 3-D solids, and the
+/// development is a bijection on the panel, so the same inclusion holds for the developed holes and
+/// therefore for their widths. Both bounds come from the **metric** cylinder path, which shares no
+/// code with the wall-crossing band builder — a differential, not a restatement.
+///
+/// This is the check AUTH.1f's disc could not make. Its hole is bounded by *one* wall, so it never
+/// exercises the thing 1e.4 adds: a boundary whose governing wall changes at every profile corner.
+#[test]
+fn a_square_prism_cuts_a_hole_between_its_inscribed_and_circumscribed_discs() {
+    let h = q(1, 5);
+    let square_hole = develop_or_panic(
+        panel_with(
+            Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
+            square(qi(0), q(11, 5), h.clone(), 0),
+        ),
+        "the square prism",
+    );
+    // One face, one interior hole — the same topology the disc gives.
+    assert_eq!(square_hole.region().faces.len(), 1, "one face");
+    assert_eq!(
+        square_hole.region().faces[0].holes.len(),
+        1,
+        "one interior hole"
+    );
+
+    let inscribed = develop_or_panic(metric_panel(h.mul(&h)), "the inscribed cylinder");
+    let circumscribed = develop_or_panic(
+        metric_panel(h.mul(&h).mul(&qi(2))),
+        "the circumscribed cylinder",
+    );
+    let (sq, lo, hi) = (
+        hole_width(&square_hole),
+        hole_width(&inscribed),
+        hole_width(&circumscribed),
+    );
+    assert!(
+        lo < sq && sq < hi,
+        "the square's hole must sit strictly between its two discs': {lo:.4} < {sq:.4} < {hi:.4}"
+    );
+}
+
+/// **The ring is refused by name.** A profile with a hole of its own shadows every ruling in two
+/// stretches, which the band representation cannot express — so the part reports
+/// [`PartFault::ProfileNotSimple`] rather than shipping a hole that is not the one drawn. Before
+/// 1e.4 this failed closed only by accident, on a window search declining a shape it could not read.
+#[test]
+fn a_ring_profile_is_refused_by_name() {
+    let mut profile = disc(qi(0), q(11, 5), q(1, 5), 0);
+    profile.extend(disc(qi(0), q(11, 5), q(1, 10), 1));
+    let part = panel_with(
+        Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
+        profile,
+    );
+    match part.develop() {
+        Verdict::Refuted(author::part::PartFault::ProfileNotSimple { .. }) => {}
+        other => panic!(
+            "a ring must be refused as not-a-band, got {}",
+            match other {
+                Verdict::Verified(_) => "Verified".to_string(),
+                Verdict::Refuted(f) => format!("Refuted({f:?})"),
+                Verdict::Unresolved(e) => format!("Unresolved({})", rat_to_f64(&e)),
+            }
+        ),
+    }
 }

@@ -2023,6 +2023,41 @@ the *composition*: a duplicated wall (edges are not carriers) and a polygonal sl
 targeted stations. A milestone whose slices are each tested in isolation still needs the end-to-end
 run before it can be called done.
 
+**AUTH.1e.4 — the multi-wall hole loop.** A profile with several carriers realizes end-to-end, and a
+footprint the band representation cannot express is refused **by name**. The criteria:
+
+*A two-sided differential, not a golden.* A square prism's hole must contain the hole of the
+cylinder inscribed in it and sit inside the one circumscribing it — `disc(h) ⊂ square(h) ⊂ disc(h√2)`
+as solids, hence for the developed holes, hence for their widths. Both bounds come from the metric
+cylinder path, which shares no line of code with the wall-crossing band builder. Asserted twice: on
+the emitted `(σ, µ̂)` loop in `develop` (measured 0.2364 / 0.2342 / 0.2323 against inner 0.1615 /
+0.2303 / 0.1639 and outer 0.2841 / 0.3257 / 0.2800 — a 1.7% squeeze at the middle ruling), and
+end-to-end on the developed pattern in `author`.
+
+*The loop must be seen to use several walls.* AUTH.1e.2's failure mode was following one wall
+silently, so a size check alone is not enough: every emitted vertex is tested against all four
+planes and must sit on one of them, and the vertices between them must use at least three. A loop
+that had quietly stayed on `walls[0]` passes the ε gate and fails this.
+
+*The scope refusal is a test, not a comment.* A ring profile must come back
+`PartFault::ProfileNotSimple`, and the point of asserting it is that it used to fail closed by
+*accident* — on a window search declining a shape it could not read. An accidental refusal is one
+refactor away from becoming an accidental acceptance.
+
+*The end-to-end run is where the derived quantities get read.* AUTH.1e.4 found that
+`Extrusion::extent` — AUTH.1f's own code, feeding both the hole's σ-window and the span's reference
+ray — bracketed segment endpoints with an upper bound on *both* sides, producing a box of zero
+height that contained none of the profile. Two slices of tests passed over it because none read the
+box quantitatively: the disc path never builds one from a `Surd`, and the polygonal-slot test only
+asked that the role was not `Inactive`. The criterion: a derived quantity is unverified until some
+test asserts its **value**, not merely that the pipeline it feeds returns a verdict.
+
+*Soundness may not rest on a search.* The corner bisection is a tightness device; what keeps the
+loop honest is that each piece is also compared, at its own σ-midpoint, against the boundary the
+exact fill rule reports there, with the deviation folded into ε. State it as a criterion because the
+failure it guards is invisible to the per-piece certificate: a chord that stays on wall A across a
+missed corner certifies perfectly while the true boundary dips onto wall B beneath it.
+
 ---
 
 ## 9. Sequencing

@@ -18,7 +18,7 @@
 //!   into a certified watertight solid.
 
 use crate::part::{
-    BuiltRegions, FlatPattern, OpReport, Part, PartFault, RegionEcho, ResolveReport,
+    BuiltRegions, Cutter, FlatPattern, OpReport, Part, PartFault, RegionEcho, ResolveReport,
 };
 use crate::resolve::{BranchSide, Label, Structure};
 use certify_core::Verdict;
@@ -29,7 +29,7 @@ use export::brep_build::{HoleRail, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
     HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_rail,
-    surface_hole_loop,
+    shadow_hole_loop, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
 
@@ -429,22 +429,58 @@ fn certify_holes<B: Backend>(
             lo: rmax(&window.lo.sub(&pad), &part.regions[ri].band.lo),
             hi: rmin(&window.hi.add(&pad), &part.regions[ri].band.hi),
         };
-        let walls = part.ops[op]
-            .1
+        let cutter = &part.ops[op].1;
+        let walls = cutter
             .walls()
             .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
-        match surface_hole_loop(
-            &built.charts[ri],
-            &walls[0],
-            &span,
-            &part.clearance,
-            &part.cfg,
-            segments,
-        ) {
+        // One wall is its own boundary, and its two branches come off one µ̂-quadratic. Several
+        // walls have no such quadratic: which one bounds the hole changes along the loop, at every
+        // profile corner, so the boundary is read from the cutter's own fill rule instead.
+        let verdict = match (walls.len(), cutter) {
+            (1, _) => surface_hole_loop(
+                &built.charts[ri],
+                &walls[0],
+                &span,
+                &part.clearance,
+                &part.cfg,
+                segments,
+            ),
+            (_, Cutter::Extrude(e)) => {
+                let cast = e
+                    .cast()
+                    .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+                let chart = &built.charts[ri];
+                let zero = Rat::from_i128(0);
+                // The same footprint the resolver read — `Cast::contains` on the chart's own
+                // surface point — so the certified loop bounds the region the structure was
+                // resolved from, not a stricter one. (The authored nappe is enforced downstream:
+                // a loop reaching the mirror nappe is `NappeCrossed`, a refusal.)
+                shadow_hole_loop(
+                    chart,
+                    &walls,
+                    |sigma: &Rat<B>, mu: &Rat<B>| {
+                        let p = chart.surface(mu, &zero).eval(sigma)?;
+                        cast.contains(&p, &e.profile)
+                    },
+                    &span,
+                    &part.clearance,
+                    &part.cfg,
+                    segments,
+                )
+            }
+            // Unreachable today: only an extrusion has several walls.
+            _ => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
+        };
+        match verdict {
             Verdict::Verified(h) => out.push(h),
             Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
             Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
                 return Err(RErr::Fault(PartFault::Pole));
+            }
+            // A deliberate scope refusal, not a looseness: say which, so the author learns that the
+            // profile is the problem rather than the resolution.
+            Verdict::Refuted(develop::cut::CutFitFault::ShadowNotSimple) => {
+                return Err(RErr::Fault(PartFault::ProfileNotSimple { op }));
             }
             Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
         }

@@ -1657,6 +1657,46 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **A quantity no test reads quantitatively is unverified, however many tests run through it.**
+  `Extrusion::extent` (AUTH.1f) bracketed segment endpoints with `arrange2d::locate::rational_above`
+  — a strict upper bound found by *doubling from zero* — and used it for **both** sides of the box.
+  A square at `(0, 11/5) ± 1/5` came out `[0, 1] × [3, 3]`: zero height, containing none of the
+  profile. Everything built on it (`bounding_wall`'s σ-window, `reference_point`'s span ray) was
+  therefore wrong for every polygonal profile. It survived two slices because nothing *read* the box:
+  the arc path derives its extent from an exact centre and never calls `rational_above`; the
+  polygonal-slot test only asserts the role is not `Inactive`; and `reference_point` is
+  short-circuited for a `Through` span. AUTH.1e.4 was the first consumer that needed the number to be
+  right, and it surfaced as a `ShadowUnbounded` refusal on a cut that should have realized.
+  **Fix:** `[rational_below, rational_above]` bisected to `2⁻⁴⁸` — the raw doubling bracket is sound
+  but answers at integer scale, and a bounding circle an order of magnitude too big is its own
+  problem. Regression test asserts the extent brackets the corners *tightly*, and was checked against
+  a re-introduction of the bug.
+  *2026-08-15 · finding · `crates/author/src/part.rs`, `docs/cutter-extrude-design.md` §6.3 (AUTH.1e.4)*
+
+- **A cut piece can be certified against the right *surface* and still be the wrong *boundary*.**
+  AUTH.1e.4's multi-wall loop reads each ruling's boundary from every wall's crossings, classified by
+  the profile's own fill rule, so the governing wall changes at every profile corner. The obvious
+  design — bisect each governing-wall change, insert a node, certify each piece against the wall its
+  endpoints name — is sound only where the corner search succeeds. Where it misses one (two corners
+  inside a node interval), the emitted chord **stays on wall A the whole way and certifies perfectly**
+  while the true boundary dips onto wall B beneath it: a hole quietly too large, with a green
+  certificate. `pcurve_cut_fit` cannot see it, because distance-to-a-surface is not the claim being
+  made. **Resolution:** every piece is additionally compared at its own σ-midpoint against the
+  boundary the exact fill rule reports there, and the deviation folded into ε — so soundness rests on
+  the fill rule (exact) and the corner search only buys tightness. Worth generalizing: whenever a
+  certificate bounds distance to *one* member of a family, ask what pins the choice of member.
+  *2026-08-15 · finding · `crates/develop/src/cut.rs`, `docs/cutter-extrude-design.md` §10.3 (AUTH.1e.4)*
+
+- **The negative control fired through a different door than expected, which is itself the finding.**
+  To check the square-prism band test was not vacuous, the profile was mutated 1.5× larger. It failed
+  — but on `"the square's loop must certify"`, not on the inscribed/circumscribed bounds: an enlarged
+  profile overruns the bounding-circle window it was handed, and the loop refuses `ShadowUnbounded`
+  rather than emitting a band that reaches the window's edge. The fail-closed path works, and the
+  band-size assertions were left unproven by that mutation. What settled them instead was printing the
+  measurements: band 0.2364/0.2342/0.2323 against inner 0.1615/0.2303/0.1639 — a 1.7% squeeze at the
+  middle ruling, plainly neither disc. A mutation that trips a *different* guard has not exercised the
+  assertion you were testing. *2026-08-15 · finding · `crates/develop/src/cut.rs` tests (AUTH.1e.4)*
+
 ## Deferred (by milestone)
 
 - **DEV / Tier-C — the transcendental ANCHOR backward-error bound (its own milestone, M-E).** D4.3 Stage 1

@@ -204,6 +204,19 @@ pub enum CutFitFault {
     /// where "inside" inverts. Both `docs/cutter-extrude-design.md` §4.1 conditions land here, and
     /// both are refusals — re-author the cut or move the cast point, never refine.
     NappeCrossed,
+    /// A ruling meets the cutter in **more than one stretch** — a non-convex profile, or one with a
+    /// hole of its own. [`shadow_cut_loop`] emits a *band* (one lower boundary, one upper), which
+    /// cannot express that, so it refuses rather than picking a stretch and shipping a hole that is
+    /// not the one drawn. `docs/cutter-extrude-design.md` §10.1.
+    ShadowNotSimple,
+    /// The cutter is not an **interior** hole over this window: it swallows a whole ruling, or its
+    /// footprint reaches the window's own edge instead of closing inside it. Either way there is no
+    /// closed loop to build here — widen the window, or author the cut as a boundary op.
+    ShadowUnbounded,
+    /// The cutter's own fill rule could not be read at a sample, even after the genericity nudge
+    /// ([`Cast::contains`](crate::extrude::Cast::contains) returning `None` at every offset tried).
+    /// A refusal, not a guess.
+    ShadowUndecided,
 }
 
 /// A constant vector as a degree-0 [`Vec3Rat`] (denominator `1`), so it dots with the
@@ -313,6 +326,38 @@ impl<B: Backend> MuCut<B> {
         }
         let h = sqrt(&disc, sqrt_eps).mid().div(&abs_rat(&two_a));
         Some((m, h))
+    }
+
+    /// Where the ruling at `sigma` **crosses** this cut: 0, 1 or 2 µ̂ values in increasing order,
+    /// each flagged `true` for the upper root. `None` only on a coefficient pole.
+    ///
+    /// [`branch_at`](Self::branch_at) is the two-root special case, and deliberately returns `None`
+    /// where `a` vanishes — a genuine quadric window has no such σ, and one branch escaping to
+    /// infinity there is not a window end. A **wall** of an extruded profile has no such guarantee:
+    /// the wall of a straight profile edge is a plane, whose pullback is affine at *every* σ and
+    /// crosses the ruling exactly once. Both cases are ordinary here, and the empty return
+    /// (`a = b = 0`, or a negative discriminant) means the ruling misses this wall — not a fault,
+    /// since the profile's own fill rule decides what that implies.
+    pub fn roots_at(&self, sigma: &Rat<B>, sqrt_eps: &Rat<B>) -> Option<Vec<(Rat<B>, bool)>> {
+        let a = self.a.eval(sigma)?;
+        let b = self.b.eval(sigma)?;
+        let c = self.c.eval(sigma)?;
+        // Exact, not a tolerance: the coefficients are rationals here, so `a = 0` is decidable.
+        // (The resolver's float mirror of this needs a tolerance; this one must not have one.)
+        if a.sign() == 0 {
+            if b.sign() == 0 {
+                return Some(Vec::new());
+            }
+            return Some(vec![(c.neg().div(&b), false)]);
+        }
+        let disc = b.mul(&b).sub(&a.mul(&c).mul(&Rat::from_i128(4)));
+        if disc.sign() < 0 {
+            return Some(Vec::new());
+        }
+        let two_a = a.mul(&Rat::from_i128(2));
+        let m = Rat::from_i128(0).sub(&b).div(&two_a);
+        let h = sqrt(&disc, sqrt_eps).mid().div(&abs_rat(&two_a));
+        Some(vec![(m.sub(&h), false), (m.add(&h), true)])
     }
 }
 
@@ -512,6 +557,479 @@ pub fn quadric_cut_loop<B: Backend>(
     } else {
         Verdict::Unresolved(eps)
     }
+}
+
+/// Which wall of a multi-walled cutter, and which of its roots, produced a µ̂ value:
+/// `(wall index, upper root)`. The mirror of the resolver's `BranchSide::Wall`.
+pub type WallRoot = (usize, bool);
+
+/// One stretch of a ruling lying **inside** a cutter whose boundary is several walls: the µ̂
+/// interval `[lo, hi]`, each end tagged with the wall and root that produced it.
+pub struct RulingPatch<B: Backend = Bignum> {
+    /// The stretch's lower µ̂ end.
+    pub lo: Rat<B>,
+    /// The stretch's upper µ̂ end.
+    pub hi: Rat<B>,
+    /// Which wall and root gives [`lo`](Self::lo).
+    pub lo_at: WallRoot,
+    /// Which wall and root gives [`hi`](Self::hi).
+    pub hi_at: WallRoot,
+}
+
+/// The ruling at `sigma`, intersected with the solid whose **boundary** is `forms` (one µ̂-form per
+/// wall) and whose **inside** is `inside(σ, µ̂)` — the two-view split of
+/// `docs/cutter-extrude-design.md` §2.1, read along one ruling.
+///
+/// Every wall contributes its crossings; sorted, they cut the ruling into stretches, each wholly
+/// inside the solid or wholly outside, so one membership test per stretch classifies it exactly.
+/// This is the exact sibling of the resolver's float `extruded_shadow` — same construction, but the
+/// crossings are rationals rather than `f64`, because what is built from them is emitted geometry
+/// rather than a structural decision.
+///
+/// `Ok(None)` when the ruling misses the solid. Refuses rather than guessing: several inside
+/// stretches are [`ShadowNotSimple`](CutFitFault::ShadowNotSimple), an inside stretch running to
+/// infinity is [`ShadowUnbounded`](CutFitFault::ShadowUnbounded), an unreadable fill is
+/// [`ShadowUndecided`](CutFitFault::ShadowUndecided).
+fn ruling_patch<B: Backend, F>(
+    forms: &[MuCut<B>],
+    sigma: &Rat<B>,
+    inside: &F,
+    sqrt_eps: &Rat<B>,
+) -> Result<Option<RulingPatch<B>>, CutFitFault>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    use core::cmp::Ordering;
+    let mut cuts: Vec<(Rat<B>, WallRoot)> = Vec::new();
+    for (wi, form) in forms.iter().enumerate() {
+        let roots = form
+            .roots_at(sigma, sqrt_eps)
+            .ok_or(CutFitFault::PoleInEval)?;
+        for (mu, upper) in roots {
+            cuts.push((mu, (wi, upper)));
+        }
+    }
+    cuts.sort_by(|x, y| x.0.cmp(&y.0));
+
+    // Membership is constant *between* consecutive crossings — that is what makes one midpoint
+    // sample exact — so the genericity nudge must stay inside the stretch being classified, which
+    // is why `scale` is the stretch's own width and never a global one.
+    let decide = |mu: &Rat<B>, scale: &Rat<B>| -> Result<bool, CutFitFault> {
+        for k in 0..4i128 {
+            let sign = if k % 2 == 0 { 1 } else { -1 };
+            let jitter = scale.mul(&Rat::new(sign * k, 1000));
+            if let Some(v) = inside(sigma, &mu.add(&jitter)) {
+                return Ok(v);
+            }
+        }
+        Err(CutFitFault::ShadowUndecided)
+    };
+
+    let one = Rat::from_i128(1);
+    if cuts.is_empty() {
+        // No wall meets this ruling: it is wholly inside the solid or wholly outside.
+        return if decide(&Rat::from_i128(0), &one)? {
+            Err(CutFitFault::ShadowUnbounded)
+        } else {
+            Ok(None)
+        };
+    }
+    let span = cuts[cuts.len() - 1].0.sub(&cuts[0].0);
+    let reach = if span.cmp(&one) == Ordering::Greater {
+        span
+    } else {
+        one
+    };
+    // The two unbounded stretches: inside either of them and this is not an interior hole.
+    for (end, away) in [
+        (&cuts[0].0, reach.neg()),
+        (&cuts[cuts.len() - 1].0, reach.clone()),
+    ] {
+        if decide(&end.add(&away), &reach)? {
+            return Err(CutFitFault::ShadowUnbounded);
+        }
+    }
+    let mut found: Option<RulingPatch<B>> = None;
+    for pair in cuts.windows(2) {
+        let (lo, hi) = (&pair[0], &pair[1]);
+        let width = hi.0.sub(&lo.0);
+        if width.sign() <= 0 {
+            continue;
+        }
+        if !decide(&lo.0.add(&hi.0).mul(&Rat::new(1, 2)), &width)? {
+            continue;
+        }
+        if found.is_some() {
+            return Err(CutFitFault::ShadowNotSimple);
+        }
+        found = Some(RulingPatch {
+            lo: lo.0.clone(),
+            hi: hi.0.clone(),
+            lo_at: lo.1,
+            hi_at: hi.1,
+        });
+    }
+    Ok(found)
+}
+
+/// One vertex of a multi-wall loop's boundary: the ruling, both of its ends, and which wall bounds
+/// it on each side.
+struct BandNode<B: Backend> {
+    sigma: Rat<B>,
+    lo: Rat<B>,
+    hi: Rat<B>,
+    lo_at: WallRoot,
+    hi_at: WallRoot,
+}
+
+/// Build the **closed cut loop** of a cutter bounded by *several* walls — the interior-hole
+/// boundary of an extruded profile that is a polygon, a rounded slot, or any other multi-carrier
+/// outline (`docs/cutter-extrude-design.md` §10).
+///
+/// [`quadric_cut_loop`] reads the two branches `m(σ) ± h(σ)` off **one** µ̂-quadratic, which is
+/// exactly what a multi-walled cutter does not have. Here each ruling's two boundary points come
+/// from [`ruling_patch`] — every wall's crossings, classified by the profile's own fill rule — so
+/// the wall governing the boundary is whichever one the fill rule selects, and it *changes along
+/// the loop*, at every profile corner. Three things follow, and they are the whole design:
+///
+/// 1. **The window is found, not given.** `window` may be a superset (an all-affine profile has no
+///    tangent-ruling window of its own, so station targeting hands over its *bounding circle's* —
+///    §6). The true σ-extent is where the patch vanishes, bisected from a scan.
+/// 2. **Corners get their own nodes.** Where the governing wall changes, the boundary has a kink
+///    that no single wall's rail follows. The crossing σ is bisected and *two* nodes a grid step
+///    apart are inserted, so the kink is spanned by one grid-step bridge rather than by a chord
+///    across a whole node interval.
+/// 3. **Each piece is certified against the wall its own endpoints name**, and a piece whose ends
+///    disagree — the corner bridges — is certified against **both**, taking the larger bound.
+///
+/// Soundness never rests on the corner search: on top of the per-piece
+/// [`pcurve_cut_fit`] bound, every piece is compared at its own σ-midpoint against the *true*
+/// boundary the fill rule reports there, and the deviation folded into `eps`. A corner the search
+/// missed (two of them inside one node interval, say) shows up as a loose `ε` and a
+/// [`Unresolved`](Verdict::Unresolved) — refine `segments` — never as a quietly wrong hole.
+///
+/// **Scope, refused rather than approximated.** The loop is a *band*: one lower boundary, one
+/// upper. A ruling that meets the cutter in several stretches — a non-convex profile, or one with
+/// its own hole — is [`ShadowNotSimple`](CutFitFault::ShadowNotSimple). Those footprints are not
+/// bands and want holes to be regions end-to-end, through to the B-rep builder.
+#[allow(clippy::too_many_arguments)]
+pub fn shadow_cut_loop<B: Backend, F>(
+    chart: &Chart<B>,
+    walls: &[CutSurface<B>],
+    inside: F,
+    window: &Interval<B>,
+    w: &Rat<B>,
+    segments: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<CutLoop<B>, CutFitFault, Rat<B>>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    use core::cmp::Ordering;
+    match shadow_loop_inner(chart, walls, &inside, window, w, segments, clearance, cfg) {
+        Err(f) => Verdict::Refuted(f),
+        Ok(l) => {
+            let drc = clearance.mul(&Rat::new(1, 2));
+            if l.eps.cmp(&drc) == Ordering::Less {
+                Verdict::Verified(l)
+            } else {
+                Verdict::Unresolved(l.eps)
+            }
+        }
+    }
+}
+
+/// [`shadow_cut_loop`]'s body, in `Result` form so the refusals read as `?`.
+#[allow(clippy::too_many_arguments)]
+fn shadow_loop_inner<B: Backend, F>(
+    chart: &Chart<B>,
+    walls: &[CutSurface<B>],
+    inside: &F,
+    window: &Interval<B>,
+    w: &Rat<B>,
+    segments: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Result<CutLoop<B>, CutFitFault>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    use crate::pcurve::snap;
+    use core::cmp::Ordering;
+    /// The dyadic grid every emitted coordinate is snapped to (see [`quadric_cut_loop`]).
+    const BITS: u32 = 30;
+    /// Sub-intervals per piece for the per-piece certificate.
+    const PIECE_SUBDIV: usize = 64;
+    /// Bisection steps for a window end and for a corner — well past the `BITS` grid.
+    const BISECT: usize = 32;
+    /// How many corner-insertion sweeps to run (a sweep resolves one corner per node interval).
+    const CORNER_SWEEPS: usize = 3;
+    /// How many grid steps an end may be walked inward before the window is judged unreal.
+    const MAX_NUDGE: usize = 64;
+
+    if window.lo.cmp(&window.hi) != Ordering::Less {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+    if walls.is_empty() {
+        return Err(CutFitFault::DegenerateSurface);
+    }
+    let mut forms = Vec::with_capacity(walls.len());
+    for wall in walls {
+        forms.push(cut_mu_form(chart, wall, w).ok_or(CutFitFault::DegenerateSurface)?);
+    }
+    let patch = |s: &Rat<B>| ruling_patch(&forms, s, inside, &cfg.sqrt_eps);
+    let n = segments.max(2);
+    let unit = Rat::new(1, 1i128 << BITS);
+    let half_of = |a: &Rat<B>, b: &Rat<B>| a.add(b).mul(&Rat::new(1, 2));
+
+    // — 1. The footprint's σ-extent inside the (possibly oversized) window. —
+    let scan = (4 * n).max(48);
+    let width = window.hi.sub(&window.lo);
+    let at = |k: usize| {
+        window
+            .lo
+            .add(&width.mul(&Rat::new(k as i128, scan as i128)))
+    };
+    let (mut first, mut last) = (None, None);
+    for k in 0..=scan {
+        if patch(&at(k))?.is_some() {
+            first.get_or_insert(k);
+            last = Some(k);
+        }
+    }
+    let (first, last) = match (first, last) {
+        (Some(f), Some(l)) => (f, l),
+        _ => return Err(CutFitFault::DegenerateSpan),
+    };
+    // A footprint touching the window's own edge has no closing vertex there.
+    if first == 0 || last == scan {
+        return Err(CutFitFault::ShadowUnbounded);
+    }
+    // One band means one σ-window: a gap between the ends is a second window, not a corner.
+    for k in first..=last {
+        if patch(&at(k))?.is_none() {
+            return Err(CutFitFault::ShadowNotSimple);
+        }
+    }
+    // Bisect each end. `out` has no patch, `inn` does; the inside witness is kept.
+    let edge = |out: Rat<B>, inn: Rat<B>| -> Result<Rat<B>, CutFitFault> {
+        let (mut out, mut inn) = (out, inn);
+        for _ in 0..BISECT {
+            let m = half_of(&out, &inn);
+            if patch(&m)?.is_some() {
+                inn = m;
+            } else {
+                out = m;
+            }
+        }
+        Ok(inn)
+    };
+    let e_lo = edge(at(first - 1), at(first))?;
+    let e_hi = edge(at(last + 1), at(last))?;
+    // Snapping an end to the grid can push it a step outside; walk back in, exactly as the
+    // single-surface loop does with its bisected tangent rulings.
+    let step_in = |from: &Rat<B>, sign: i128| -> Result<(Rat<B>, RulingPatch<B>), CutFitFault> {
+        let mut s = snap(from, BITS);
+        for _ in 0..MAX_NUDGE {
+            if let Some(p) = patch(&s)? {
+                return Ok((s, p));
+            }
+            s = s.add(&unit.mul(&Rat::from_i128(sign)));
+        }
+        Err(CutFitFault::DegenerateSpan)
+    };
+    let (s_lo, p_lo) = step_in(&e_lo, 1)?;
+    let (s_hi, p_hi) = step_in(&e_hi, -1)?;
+    if s_lo.cmp(&s_hi) != Ordering::Less {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+    // The loop closes to a single vertex at each end, on the patch's midline; this is how far that
+    // vertex can be from the true pinch, and it is inside `eps`.
+    let mut tangent_gap = Rat::from_i128(0);
+    for p in [&p_lo, &p_hi] {
+        let h = p.hi.sub(&p.lo).mul(&Rat::new(1, 2));
+        if h.cmp(&tangent_gap) == Ordering::Greater {
+            tangent_gap = h;
+        }
+    }
+    let end_lo = (s_lo.clone(), snap(&half_of(&p_lo.lo, &p_lo.hi), BITS));
+    let end_hi = (s_hi.clone(), snap(&half_of(&p_hi.lo, &p_hi.hi), BITS));
+
+    // — 2. √-graded interior nodes, as in [`quadric_cut_loop`]: uniform in √(σ − σ_end), so they
+    //   land uniformly along a branch that turns like a square root at the pinch. —
+    let half = s_hi.sub(&s_lo).mul(&Rat::new(1, 2));
+    let graded = |k: usize| -> Rat<B> {
+        let f = Rat::new(k as i128, n as i128);
+        snap(&f.mul(&f).mul(&half), BITS)
+    };
+    let mut sigmas: Vec<Rat<B>> = Vec::with_capacity(2 * n);
+    let push = |s: Rat<B>, into: &mut Vec<Rat<B>>| {
+        if into
+            .last()
+            .map(|p: &Rat<B>| p.cmp(&s) != Ordering::Equal)
+            .unwrap_or(true)
+        {
+            into.push(s);
+        }
+    };
+    for k in 1..n {
+        push(s_lo.add(&graded(k)), &mut sigmas);
+    }
+    for k in (1..n).rev() {
+        push(s_hi.sub(&graded(k)), &mut sigmas);
+    }
+    let mut nodes: Vec<BandNode<B>> = Vec::with_capacity(sigmas.len());
+    for s in sigmas {
+        // Strictly inside the two pinch vertices. On a narrow window the first graded offset can
+        // snap to zero, which would put a node *on* an end and leave a vertical piece there — and a
+        // vertical piece is not a rail, so the loop the solid builder reads would be open.
+        if s.cmp(&s_lo) != Ordering::Greater || s.cmp(&s_hi) != Ordering::Less {
+            continue;
+        }
+        if let Some(p) = patch(&s)? {
+            nodes.push(BandNode {
+                sigma: s,
+                lo: snap(&p.lo, BITS),
+                hi: snap(&p.hi, BITS),
+                lo_at: p.lo_at,
+                hi_at: p.hi_at,
+            });
+        }
+    }
+    if nodes.is_empty() {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+
+    // — 3. Corners: bisect every governing-wall change and bracket it with two grid-adjacent
+    //   nodes, so the kink is spanned by one grid step rather than by a whole node interval. —
+    let four = unit.mul(&Rat::from_i128(4));
+    for _ in 0..CORNER_SWEEPS {
+        let mut extra: Vec<Rat<B>> = Vec::new();
+        for pair in nodes.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            let upper = a.hi_at.0 != b.hi_at.0;
+            if !upper && a.lo_at.0 == b.lo_at.0 {
+                continue;
+            }
+            if b.sigma.sub(&a.sigma).cmp(&four) != Ordering::Greater {
+                continue; // already bracketed to the grid
+            }
+            let want = if upper { a.hi_at.0 } else { a.lo_at.0 };
+            let (mut l, mut r) = (a.sigma.clone(), b.sigma.clone());
+            for _ in 0..BISECT {
+                let m = half_of(&l, &r);
+                match patch(&m)? {
+                    Some(p) if (if upper { p.hi_at.0 } else { p.lo_at.0 }) == want => l = m,
+                    _ => r = m,
+                }
+            }
+            let c = snap(&l, BITS);
+            extra.push(c.add(&unit));
+            extra.push(c);
+        }
+        if extra.is_empty() {
+            break;
+        }
+        for s in extra {
+            if s.cmp(&s_lo) != Ordering::Greater || s.cmp(&s_hi) != Ordering::Less {
+                continue;
+            }
+            if let Some(p) = patch(&s)? {
+                nodes.push(BandNode {
+                    sigma: s,
+                    lo: snap(&p.lo, BITS),
+                    hi: snap(&p.hi, BITS),
+                    lo_at: p.lo_at,
+                    hi_at: p.hi_at,
+                });
+            }
+        }
+        nodes.sort_by(|x, y| x.sigma.cmp(&y.sigma));
+        nodes.dedup_by(|x, y| x.sigma.cmp(&y.sigma) == Ordering::Equal);
+    }
+
+    // — 4. The two chains, then one closed traversal: low pinch → upper boundary → high pinch →
+    //   lower boundary back. A vertex's `WallRoot` is the wall its piece is certified against; the
+    //   two pinch vertices belong to both boundaries and name none. —
+    type Vertex<B> = (Rat<B>, Rat<B>, Option<WallRoot>);
+    let mut upper: Vec<Vertex<B>> = Vec::with_capacity(nodes.len() + 2);
+    let mut lower: Vec<Vertex<B>> = Vec::with_capacity(nodes.len() + 2);
+    upper.push((end_lo.0.clone(), end_lo.1.clone(), None));
+    for nd in &nodes {
+        upper.push((nd.sigma.clone(), nd.hi.clone(), Some(nd.hi_at)));
+    }
+    upper.push((end_hi.0.clone(), end_hi.1.clone(), None));
+    lower.push((end_hi.0.clone(), end_hi.1.clone(), None));
+    for nd in nodes.iter().rev() {
+        lower.push((nd.sigma.clone(), nd.lo.clone(), Some(nd.lo_at)));
+    }
+    lower.push((end_lo.0.clone(), end_lo.1.clone(), None));
+
+    let mut eps = tangent_gap.clone();
+    let mut pieces = Vec::with_capacity(upper.len() + lower.len());
+    for (chain, is_upper) in [(&upper, true), (&lower, false)] {
+        for pair in chain.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            // Nodes are deduped and kept strictly inside the two pinch vertices, so consecutive
+            // σ differ by construction. Refuse rather than skip if that ever fails: a dropped
+            // piece leaves the loop **open**, which the flat boolean would happily stitch into
+            // something else and the solid builder would reject much further downstream.
+            if a.0.cmp(&b.0) == Ordering::Equal {
+                return Err(CutFitFault::DegenerateSpan);
+            }
+            let piece = segment(&(a.0.clone(), a.1.clone()), &(b.0.clone(), b.1.clone()));
+            // Certify against every wall the piece's own endpoints name. Endpoints that disagree
+            // are the corner bridges: both walls, larger bound — never a silent choice.
+            let mut targets: Vec<usize> = Vec::with_capacity(2);
+            for v in [a, b] {
+                if let Some((wi, _)) = v.2
+                    && !targets.contains(&wi)
+                {
+                    targets.push(wi);
+                }
+            }
+            for wi in targets {
+                match pcurve_cut_fit(chart, &piece, &walls[wi], w, PIECE_SUBDIV, clearance, cfg) {
+                    Verdict::Verified(v) => {
+                        if v.eps.cmp(&eps) == Ordering::Greater {
+                            eps = v.eps;
+                        }
+                    }
+                    Verdict::Unresolved(e) => {
+                        if e.cmp(&eps) == Ordering::Greater {
+                            eps = e;
+                        }
+                    }
+                    Verdict::Refuted(f) => return Err(f),
+                }
+            }
+            // The piece is on *a* wall; that it is on the **boundary** is a separate claim, and
+            // this is what checks it: at the piece's own σ-midpoint, compare the emitted chord
+            // against the boundary the fill rule reports there. A corner the bisection missed
+            // lands here as a loose ε rather than as a hole that is quietly the wrong shape.
+            let sm = half_of(&a.0, &b.0);
+            if let Some(p) = patch(&sm)? {
+                let truth = if is_upper { &p.hi } else { &p.lo };
+                let dev = {
+                    let d = half_of(&a.1, &b.1).sub(truth);
+                    abs_rat(&d)
+                };
+                if dev.cmp(&eps) == Ordering::Greater {
+                    eps = dev;
+                }
+            }
+            pieces.push(piece);
+        }
+    }
+    if pieces.len() < 3 {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+    Ok(CutLoop {
+        pieces,
+        eps: crate::pcurve::snap_up(&eps, BITS),
+        tangent_gap,
+    })
 }
 
 /// Pull a [`CutSurface`] back to its µ̂-form [`MuCut`] on `chart` at layer offset `w` (the
@@ -1291,6 +1809,309 @@ mod tests {
             "loop ε must beat the graph model's 0.257, got {}",
             to_f64(&loop_.eps)
         );
+    }
+
+    // — AUTH.1e.4: the multi-wall band loop. —
+
+    /// A closed rectilinear profile in the frame plane, as `arrange2d` segment edges.
+    fn poly_edges(pts: &[(Q, Q)], src: u32) -> Vec<geom::content::Edge<Bignum>> {
+        let n = pts.len();
+        (0..n)
+            .map(|i| {
+                let ((sx, sy), (ex, ey)) = (&pts[i], &pts[(i + 1) % n]);
+                let (a, b) = (sy.sub(ey), ex.sub(sx));
+                let c = a.mul(sx).add(&b.mul(sy)).neg();
+                geom::content::Edge::Seg(Box::new(geom::content::SegPiece {
+                    line: geom::content::Line { a, b, c },
+                    start: geom::content::Point2::from_rat(sx.clone(), sy.clone()),
+                    end: geom::content::Point2::from_rat(ex.clone(), ey.clone()),
+                    orient: geom::content::Orient::Ccw,
+                    source: geom::content::CurveId(src),
+                }))
+            })
+            .collect()
+    }
+
+    /// A whole circle as its two x-monotone halves — `arrange2d`'s canonical decomposition. `r` is
+    /// rational so the halves can name their extreme points exactly.
+    fn circle_edges(cx: &Q, cy: &Q, r: &Q, src: u32) -> Vec<geom::content::Edge<Bignum>> {
+        use geom::content::{ArcPiece, Circle, CurveId, Edge, Half, Orient, Point2, Winding};
+        let (lo, hi) = (cx.sub(r), cx.add(r));
+        let circle = Circle {
+            cx: cx.clone(),
+            cy: cy.clone(),
+            r2: r.mul(r),
+        };
+        [Half::Upper, Half::Lower]
+            .into_iter()
+            .map(|half| {
+                Edge::Arc(Box::new(ArcPiece {
+                    circle: circle.clone(),
+                    half,
+                    x_lo: lattice::Surd::from_rat(lo.clone()),
+                    x_hi: lattice::Surd::from_rat(hi.clone()),
+                    start: Point2::from_rat(lo.clone(), cy.clone()),
+                    end: Point2::from_rat(hi.clone(), cy.clone()),
+                    winding: Winding {
+                        orient: Orient::Ccw,
+                        source_span: None,
+                    },
+                    source: CurveId(src),
+                }))
+            })
+            .collect()
+    }
+
+    /// The frame the test profiles are drawn in: the physical xy-plane.
+    fn xy_frame() -> crate::extrude::Frame<Bignum> {
+        crate::extrude::Frame::new(
+            [Q::from_i128(0), Q::from_i128(0), Q::from_i128(0)],
+            [Q::from_i128(1), Q::from_i128(0), Q::from_i128(0)],
+            [Q::from_i128(0), Q::from_i128(1), Q::from_i128(0)],
+        )
+        .expect("independent axes")
+    }
+
+    /// The σ-window station targeting would hand a multi-walled cutter: the first two tangent
+    /// rulings of its **bounding circle**'s wall (an all-affine profile has no window of its own —
+    /// `docs/cutter-extrude-design.md` §6).
+    fn bounding_window(
+        chart: &geom::chart::Chart<Bignum>,
+        bound: &CutSurface<Bignum>,
+    ) -> Interval<Bignum> {
+        let roots = crate::pcurve::scan_roots(
+            &cut_mu_form(chart, bound, &Q::from_i128(0)).unwrap().disc(),
+            &Q::new(-5, 4),
+            &Q::new(5, 4),
+            512,
+            60,
+        )
+        .expect("the bounding circle's tangent rulings");
+        assert!(roots.len() >= 2, "a bounding window needs two tangents");
+        Interval {
+            lo: roots[0].clone(),
+            hi: roots[1].clone(),
+        }
+    }
+
+    /// Every µ̂ the emitted loop takes at the ruling `s`, by evaluating each straight piece whose
+    /// σ-band contains it. This reads the **emitted geometry**, not the builder's own bookkeeping.
+    fn loop_mu_at(pieces: &[crate::pcurve::PCurve<Bignum>], s: &Q) -> Vec<Q> {
+        use core::cmp::Ordering::{Equal, Less};
+        let mut out = Vec::new();
+        for p in pieces {
+            let a = p
+                .sigma
+                .eval(&p.domain.lo)
+                .expect("a straight piece evaluates");
+            let b = p
+                .sigma
+                .eval(&p.domain.hi)
+                .expect("a straight piece evaluates");
+            if a.cmp(&b) == Equal {
+                continue;
+            }
+            let (lo, hi) = if a.cmp(&b) == Less {
+                (&a, &b)
+            } else {
+                (&b, &a)
+            };
+            if s.cmp(lo) == Less || hi.cmp(s) == Less {
+                continue;
+            }
+            let f = s.sub(&a).div(&b.sub(&a));
+            let t = p.domain.lo.add(&p.domain.hi.sub(&p.domain.lo).mul(&f));
+            out.push(p.mu.eval(&t).expect("a straight piece evaluates"));
+        }
+        out
+    }
+
+    /// **The multi-wall loop is the right size, checked against geometry it does not share.** A
+    /// square prism's hole must be wider than the hole of the cylinder inscribed in it and narrower
+    /// than the one circumscribing it — `disc(h) ⊂ square(h) ⊂ disc(h√2)`, so the same inclusion
+    /// holds for every ruling's chord. Both bounds come from the **metric** cylinder path
+    /// (`MuCut::branch_at` on `CutSurface::Cylinder`), which shares no code with the wall-crossing
+    /// band builder, so this is a differential and not a restatement.
+    ///
+    /// The window handed in is the *bounding circle's* — a strict superset, as station targeting
+    /// supplies for an all-affine profile — so the loop also has to find its own σ-extent.
+    ///
+    /// Measured across the window: band `0.2364 / 0.2342 / 0.2323` against inner `0.1615 / 0.2303 /
+    /// 0.1639` and outer `0.2841 / 0.3257 / 0.2800` — a real squeeze at the middle ruling (1.7%
+    /// above the inscribed chord), and a band that is plainly neither disc.
+    #[test]
+    fn a_square_prism_cuts_a_band_between_its_inscribed_and_circumscribed_discs() {
+        use core::cmp::Ordering::Greater;
+        let chart = fixtures::devices::cone_wrap();
+        let cfg = DevConfig::tight();
+        let (cx, cy, h) = (Q::new(-1, 2), Q::new(27, 10), Q::new(1, 8));
+        let corners: Vec<(Q, Q)> = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+            .into_iter()
+            .map(|(i, j)| {
+                (
+                    cx.add(&h.mul(&Q::from_i128(i))),
+                    cy.add(&h.mul(&Q::from_i128(j))),
+                )
+            })
+            .collect();
+        let profile = poly_edges(&corners, 0);
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("four distinct lines");
+        assert_eq!(walls.len(), 4, "a square has four carriers");
+
+        // The two comparison cylinders, built by the metric path alone.
+        let cyl = |r2: Q| CutSurface::Cylinder {
+            axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2,
+        };
+        let inscribed = cyl(h.mul(&h));
+        let circumscribed = cyl(h.mul(&h).mul(&Q::from_i128(2)));
+
+        let window = bounding_window(&chart, &circumscribed);
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        let loop_ = match shadow_cut_loop(
+            &chart,
+            &walls,
+            inside,
+            &window,
+            &zero,
+            16,
+            &Q::from_i128(1),
+            &cfg,
+        ) {
+            Verdict::Verified(l) => l,
+            other => panic!(
+                "the square's loop must certify, got {:?}",
+                verdict_tag(&other)
+            ),
+        };
+        assert!(loop_.pieces.len() >= 8, "a closed band of pieces");
+
+        // At three rulings across the window, the emitted band sits between the two discs' chords.
+        let mut probed = 0;
+        for k in 1..4 {
+            let s = window.lo.add(&window.hi.sub(&window.lo).mul(&Q::new(k, 4)));
+            let mus = loop_mu_at(&loop_.pieces, &s);
+            let (Some(lo), Some(hi)) = (
+                mus.iter().min_by(|a, b| a.cmp(b)),
+                mus.iter().max_by(|a, b| a.cmp(b)),
+            ) else {
+                continue; // outside the footprint's own extent
+            };
+            let band = hi.sub(lo);
+            let chord = |surface: &CutSurface<Bignum>| -> Option<Q> {
+                let (_, hh) = cut_mu_form(&chart, surface, &zero)?.branch_at(&s, &cfg.sqrt_eps)?;
+                Some(hh.mul(&Q::from_i128(2)))
+            };
+            let (Some(inner), Some(outer)) = (chord(&inscribed), chord(&circumscribed)) else {
+                continue;
+            };
+            probed += 1;
+            let slack = Q::new(1, 1_000_000);
+            assert!(
+                band.add(&slack).cmp(&inner) == Greater,
+                "the square's band must contain the inscribed disc's: {} vs {}",
+                to_f64(&band),
+                to_f64(&inner)
+            );
+            assert!(
+                outer.add(&slack).cmp(&band) == Greater,
+                "and stay inside the circumscribed disc's: {} vs {}",
+                to_f64(&band),
+                to_f64(&outer)
+            );
+        }
+        assert!(probed >= 2, "at least two rulings must be comparable");
+
+        // And the band really is bounded by several walls: each emitted vertex is on one of the
+        // four planes, and between them the vertices use at least three. A loop that had silently
+        // followed one wall — the AUTH.1e.2 hardcode's failure mode — could not.
+        let mut used: Vec<usize> = Vec::new();
+        for p in &loop_.pieces {
+            let [s, mu] = p.eval(&p.domain.lo).expect("a straight piece evaluates");
+            let x = chart
+                .surface(&mu, &zero)
+                .eval(&s)
+                .expect("a regular ruling");
+            let mut best: Option<(usize, Q)> = None;
+            for (wi, wall) in walls.iter().enumerate() {
+                let CutSurface::Plane { n, d } = wall else {
+                    panic!("a straight profile edge sweeps a plane")
+                };
+                let r = dot3(n, &x).sub(d);
+                // Distance², so no root is taken: `(n·X − d)² / |n|²`.
+                let dist2 = r.mul(&r).div(&dot3(n, n));
+                if best.as_ref().is_none_or(|(_, b)| b.cmp(&dist2) == Greater) {
+                    best = Some((wi, dist2));
+                }
+            }
+            let (wi, dist2) = best.expect("four walls");
+            assert!(
+                dist2.cmp(&Q::new(1, 1_000_000)) != Greater,
+                "every loop vertex must sit on one of the walls, got dist² {}",
+                to_f64(&dist2)
+            );
+            if !used.contains(&wi) {
+                used.push(wi);
+            }
+        }
+        assert!(
+            used.len() >= 3,
+            "a square hole's boundary must run on several walls, used {}",
+            used.len()
+        );
+    }
+
+    /// **The ring is refused, deliberately.** A profile with a hole of its own shadows every ruling
+    /// in *two* stretches, which a band cannot express — so the builder says so with a typed fault
+    /// instead of picking a stretch and shipping a hole that is not the one drawn. Before this it
+    /// failed closed only by accident, on the window search declining a shape it could not read.
+    #[test]
+    fn a_ring_profile_is_refused_rather_than_approximated() {
+        let chart = fixtures::devices::cone_wrap();
+        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
+        let mut profile = circle_edges(&cx, &cy, &Q::new(1, 4), 0);
+        profile.extend(circle_edges(&cx, &cy, &Q::new(1, 8), 1));
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("two distinct circles");
+        assert_eq!(walls.len(), 2, "a ring has two carriers");
+        let window = bounding_window(&chart, &walls[0]);
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        match shadow_cut_loop(
+            &chart,
+            &walls,
+            inside,
+            &window,
+            &zero,
+            16,
+            &Q::from_i128(1),
+            &DevConfig::tight(),
+        ) {
+            Verdict::Refuted(CutFitFault::ShadowNotSimple) => {}
+            other => panic!(
+                "a ring must be refused as not-a-band, got {:?}",
+                verdict_tag(&other)
+            ),
+        }
     }
 
     /// The exact offset-plane rail verifies with ε ≈ 0 (the residual is identically 0).
