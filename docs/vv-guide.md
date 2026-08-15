@@ -2074,12 +2074,21 @@ note worth keeping: the first three scout runs refused with `TopologyMismatch`, 
 like the thing being tested, and it took a convex control at the same coordinates to show it was
 placement (the slot sat on the panel's own drill, then on its inner boundary).
 
-*The event set is exact, and its arithmetic is checked against an independent computation.* The
-tracer's σ-partition comes from three polynomial families — `disc_µ̂(f_i)`, `Res_µ̂(f_i,f_j)`, and
-`a_i(σ)` (§11.2). The closed-form resultant for degree-≤2 forms is verified against a full Sylvester
-determinant over random rational pairs plus the degenerate cases (shared root, linear-vs-quadratic)
-before it is trusted, because a wrong resultant produces a *plausible* partition rather than an
-obvious failure.
+*The event set is exact, and its arithmetic is checked against an independent computation — at every
+degree, including the degenerate ones.* The tracer's σ-partition comes from three polynomial
+families: `disc_µ̂(f_i)`, `Res_µ̂(f_i,f_j)`, and `a_i(σ)` (§11.2). The resultant is checked two ways,
+because a wrong one produces a *plausible* partition rather than an obvious failure: against a full
+4×4 Sylvester determinant where both forms are genuinely quadratic, and — at every degree — against
+the property that actually matters, vanishing exactly when the two walls cross the ruling at a common
+µ̂.
+
+The second check is not ceremony. The published quadratic-by-quadratic closed form is the Sylvester
+determinant of the two forms *padded to degree 2*, and with **both** walls affine it is identically
+zero, for meeting and non-meeting walls alike. Every wall of a polygonal profile is affine, so
+using it throughout would have silently erased every corner of the L-slot the milestone is for —
+while still passing a differential built only from quadratics. The criterion generalizes: **when a
+formula has degenerate cases, the test set must contain the case the feature is for**, not just the
+generic one.
 
 *The exact events buy tightness, not soundness — demonstrated, not asserted.* The design doc's
 §10.3 discipline carries over unchanged: every piece is compared at its own σ-midpoint against the

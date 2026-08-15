@@ -217,6 +217,206 @@ pub enum CutFitFault {
     /// ([`Cast::contains`](crate::extrude::Cast::contains) returning `None` at every offset tried).
     /// A refusal, not a guess.
     ShadowUndecided,
+    /// A [`structure_events`] Sturm chain failed its own runtime hypothesis check
+    /// ([`SturmChain::verify_chain`]). The root count it would give is not one to be trusted, so
+    /// the event set is refused rather than taken on faith — the same discipline
+    /// [`crate::pick::ray_crossings`] applies to the span's crossing count.
+    EventChainUnverified,
+}
+
+/// Which structural change a [`StructureEvent`] is — the three ways a ruling's stretch structure
+/// can change (`docs/cutter-extrude-design.md` §11.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EventKind {
+    /// `disc_µ̂(f_i) = 0`: wall `i`'s own two crossings collide. A stretch is born or dies — §10's
+    /// tangent ruling, now one class among others rather than the two ends of everything.
+    Tangent(usize),
+    /// `Res_µ̂(f_i, f_j) = 0`: walls `i` and `j` cross the ruling at the same µ̂. This is the
+    /// merge/split saddle where two stretches coalesce **and** the governing-wall corner of §10.2 —
+    /// one event seen from two sides.
+    Meet(usize, usize),
+    /// `a_i(σ) = 0`: wall `i`'s form degenerates from a conic to a line in µ̂ and one crossing
+    /// escapes to infinity. Nothing *meets*, which is what makes it easy to miss, but the stretch
+    /// count changes all the same.
+    Escape(usize),
+}
+
+/// One σ-bracket in which the ruling's stretch structure changes, and the wall(s) responsible.
+///
+/// The bracket is what the tracer partitions on: cells are the gaps *between* brackets, where the
+/// stretch count is constant, so a bracket is treated as a thin event zone rather than a point.
+pub struct StructureEvent<B: Backend = Bignum> {
+    /// A bracket containing the event σ (or several, if two events were closer than `tol`).
+    pub at: Interval<B>,
+    /// Every class that put an event in this bracket, in discovery order.
+    pub kinds: Vec<EventKind>,
+}
+
+impl<B: Backend> MuCut<B> {
+    /// The **resultant** `Res_µ̂(self, other)` — zero exactly at the σ where the two walls cross the
+    /// ruling at a common µ̂ (`docs/cutter-extrude-design.md` §11.2).
+    ///
+    /// Taken at each form's **actual** µ̂-degree, which is a correctness requirement and not a
+    /// tidiness one. The quadratic-by-quadratic closed form
+    /// `(a₁c₂ − a₂c₁)² − (a₁b₂ − a₂b₁)(b₁c₂ − b₂c₁)` is the 4×4 Sylvester determinant of the two
+    /// forms *padded to degree 2*, and padding a genuinely affine form adds a shared root at
+    /// infinity: with **both** walls affine — every wall of a polygonal profile, so the L-slot this
+    /// milestone is for — it collapses to `0` for meeting and non-meeting walls alike. So:
+    ///
+    /// | degrees | resultant |
+    /// |---|---|
+    /// | 2 × 2 | `(a₁c₂ − a₂c₁)² − (a₁b₂ − a₂b₁)(b₁c₂ − b₂c₁)` |
+    /// | 2 × 1 | `a₁c₂² − b₁b₂c₂ + c₁b₂²` (the conic evaluated at the line's root, cleared) |
+    /// | 1 × 1 | `b₁c₂ − b₂c₁` |
+    ///
+    /// The dispatch is on `a ≡ 0` as a *rational function* — a plane wall, decidable and static.
+    /// An isolated σ where a genuine conic's `a(σ)` vanishes needs no special case: the 2 × 2 form
+    /// there factors as `a_j·(a_j c_i² + b_i² c_j − b_i b_j c_i)`, whose vanishing (given `a_j ≠ 0`)
+    /// is exactly the 2 × 1 condition. Those σ are also [`EventKind::Escape`] events in their own
+    /// right.
+    pub fn resultant(&self, other: &MuCut<B>) -> RatFunc<B> {
+        // `f` quadratic, `g` affine: `b_g²·f(−c_g/b_g)`, denominator cleared.
+        let mixed = |f: &MuCut<B>, g: &MuCut<B>| {
+            f.a.mul(&g.c)
+                .mul(&g.c)
+                .sub(&f.b.mul(&g.b).mul(&g.c))
+                .add(&f.c.mul(&g.b).mul(&g.b))
+        };
+        match (self.a.is_zero(), other.a.is_zero()) {
+            (true, true) => self.b.mul(&other.c).sub(&other.b.mul(&self.c)),
+            (false, true) => mixed(self, other),
+            (true, false) => mixed(other, self),
+            (false, false) => {
+                let minor = |p: &RatFunc<B>, q: &RatFunc<B>, r: &RatFunc<B>, s: &RatFunc<B>| {
+                    p.mul(s).sub(&q.mul(r)) // det [[p, q], [r, s]]
+                };
+                let ac = minor(&self.a, &self.c, &other.a, &other.c);
+                let ab = minor(&self.a, &self.b, &other.a, &other.b);
+                let bc = minor(&self.b, &self.c, &other.b, &other.c);
+                ac.mul(&ac).sub(&ab.mul(&bc))
+            }
+        }
+    }
+}
+
+/// Every σ in `window` at which the stretch structure of the ruling can change, as disjoint
+/// brackets in increasing order — the exact event set the AUTH.2 tracer sweeps over
+/// (`docs/cutter-extrude-design.md` §11.2).
+///
+/// Three polynomial families, one per [`EventKind`]: each wall's discriminant, each pair's
+/// [`resultant`](MuCut::resultant), and each wall's leading coefficient. All are rational functions
+/// of σ, so their roots are the roots of their numerators, isolated by `lattice`'s Sturm chain —
+/// which counts **distinct** roots even when a polynomial is not squarefree, so a double event (a
+/// tangential touch rather than a transverse crossing) is located rather than refused.
+///
+/// Each bracket is bisected until it is narrower than `tol`; brackets that still overlap are merged
+/// and carry both kinds, so the result partitions `window` no matter how close two events sit.
+///
+/// **This is a tightness device, not a soundness one.** A σ this misses — two events inside one
+/// `tol`-wide bracket, say — costs the tracer accuracy, and the σ-midpoint comparison against the
+/// fill rule is what keeps the emitted boundary honest regardless (§11.4). Erring toward *more*
+/// brackets is therefore free, which is why nothing here works to suppress a spurious root.
+///
+/// `Err` only if a Sturm chain fails its own hypothesis check ([`CutFitFault::EventChainUnverified`]).
+///
+/// ```
+/// use develop::cut::{EventKind, MuCut, structure_events};
+/// use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
+///
+/// type Q = Rat<Bignum>;
+/// let poly = |c: &[i128]| {
+///     RatFunc::from_poly(Poly::from_coeffs(c.iter().map(|v| Q::from_i128(*v)).collect()))
+/// };
+/// // Two walls of a polygonal profile, as µ̂-forms: `µ̂ = σ` and `µ̂ = 1 − σ`.
+/// let walls = [
+///     MuCut { a: poly(&[]), b: poly(&[1]), c: poly(&[0, -1]) },
+///     MuCut { a: poly(&[]), b: poly(&[1]), c: poly(&[-1, 1]) },
+/// ];
+/// let window = Interval { lo: Q::from_i128(0), hi: Q::from_i128(1) };
+/// let events = structure_events(&walls, &window, &Q::new(1, 1024)).unwrap();
+///
+/// // They cross the ruling at a common µ̂ at σ = 1/2 — a profile corner, bracketed exactly.
+/// assert_eq!(events.len(), 1);
+/// assert_eq!(events[0].kinds, vec![EventKind::Meet(0, 1)]);
+/// assert!(events[0].at.lo <= Q::new(1, 2) && Q::new(1, 2) <= events[0].at.hi);
+/// ```
+pub fn structure_events<B: Backend>(
+    forms: &[MuCut<B>],
+    window: &Interval<B>,
+    tol: &Rat<B>,
+) -> Result<Vec<StructureEvent<B>>, CutFitFault> {
+    use core::cmp::Ordering;
+    use lattice::SturmChain;
+    /// Bisection cap per bracket — 2⁻⁶⁴ of the starting width, well past any usable `tol`.
+    const MAX_BISECT: usize = 64;
+
+    let mut found: Vec<(Interval<B>, EventKind)> = Vec::new();
+    let mut collect = |rf: &RatFunc<B>, kind: EventKind| -> Result<(), CutFitFault> {
+        // Reduce before isolating, and it is not a micro-optimization: these families are products
+        // of the chart's own rational fields, so they arrive carrying the chart denominator several
+        // times over. On the AUTH.1e.4 square prism a raw pairwise resultant is **degree 78** and
+        // its reduced form is **degree 4** — the difference between a naive ℚ-PRS Sturm chain over
+        // 78 coefficients and one over 4, measured at 273 ms → 16 ms for the whole event set. The
+        // cancelled factors are shared with the denominator, so their roots are removable
+        // singularities rather than events; dropping them is also the more honest partition.
+        let reduced = rf.reduce();
+        let p = reduced.num();
+        // An identically-zero family (duplicate walls, say) has no *isolated* event, and a nonzero
+        // constant has no root at all. Neither is a fault: the fill rule still decides membership.
+        if p.is_zero() || p.degree().unwrap_or(0) == 0 {
+            return Ok(());
+        }
+        let chain = SturmChain::new(p);
+        if !chain.verify_chain(p) {
+            return Err(CutFitFault::EventChainUnverified);
+        }
+        for iv in chain.isolate(window) {
+            // Narrow by bisection on the Sturm *count*, not on a sign change: an even-multiplicity
+            // root never flips sign, and those are exactly the tangential events worth locating.
+            let (mut lo, mut hi) = (iv.lo, iv.hi);
+            for _ in 0..MAX_BISECT {
+                if hi.sub(&lo).cmp(tol) != Ordering::Greater {
+                    break;
+                }
+                let mid = lo.add(&hi).mul(&Rat::new(1, 2));
+                if chain.count_in(&lo, &mid) > 0 {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            found.push((Interval { lo, hi }, kind));
+        }
+        Ok(())
+    };
+
+    for (i, f) in forms.iter().enumerate() {
+        collect(&f.disc(), EventKind::Tangent(i))?;
+        collect(&f.a, EventKind::Escape(i))?;
+        for (j, g) in forms.iter().enumerate().skip(i + 1) {
+            collect(&f.resultant(g), EventKind::Meet(i, j))?;
+        }
+    }
+
+    found.sort_by(|x, y| x.0.lo.cmp(&y.0.lo));
+    let mut out: Vec<StructureEvent<B>> = Vec::with_capacity(found.len());
+    for (iv, kind) in found {
+        match out.last_mut() {
+            // Overlapping (or touching) brackets become one event zone carrying both kinds — the
+            // partition must stay a partition even where two events are closer than `tol`.
+            Some(prev) if iv.lo.cmp(&prev.at.hi) != Ordering::Greater => {
+                if iv.hi.cmp(&prev.at.hi) == Ordering::Greater {
+                    prev.at.hi = iv.hi;
+                }
+                prev.kinds.push(kind);
+            }
+            _ => out.push(StructureEvent {
+                at: iv,
+                kinds: vec![kind],
+            }),
+        }
+    }
+    Ok(out)
 }
 
 /// A constant vector as a degree-0 [`Vec3Rat`] (denominator `1`), so it dots with the
@@ -2687,6 +2887,356 @@ mod tests {
             widths[0].cmp(&h_par) == core::cmp::Ordering::Less
                 && h_par.cmp(&widths[3]) == core::cmp::Ordering::Less,
             "and must bracket the parallel drill"
+        );
+    }
+
+    /// **The event polynomials must stay low-degree, and that is a correctness-shaped budget rather
+    /// than a speed preference.** These families are products of the chart's own rational fields, so
+    /// they arrive carrying its denominator several times over: on this square prism a raw pairwise
+    /// resultant is degree **78**, and its reduced form is degree **4**. Sturm's chain is a naive
+    /// ℚ-PRS, so that difference is the whole cost of the event set (measured 273 ms → 16 ms).
+    ///
+    /// Asserted as a degree rather than a duration, for the reason VV.1 counts work instead of
+    /// timing it: a wall-clock threshold flakes, and a degree does not.
+    #[test]
+    fn the_event_polynomials_stay_low_degree() {
+        let chart = fixtures::devices::cone_wrap();
+        let (cx, cy, h) = (Q::new(-1, 2), Q::new(27, 10), Q::new(1, 8));
+        let profile = arrange2d::profile::Profile::new()
+            .rect(cx.clone(), cy.clone(), h.clone(), h.clone())
+            .into_edges();
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("four distinct lines");
+        let zero = Q::from_i128(0);
+        let forms: Vec<MuCut<Bignum>> = walls
+            .iter()
+            .map(|w| cut_mu_form(&chart, w, &zero).expect("each wall pulls back"))
+            .collect();
+        for (i, f) in forms.iter().enumerate() {
+            for (j, g) in forms.iter().enumerate().skip(i + 1) {
+                let raw = f.resultant(g);
+                let deg = raw.reduce().num().degree().unwrap_or(0);
+                assert!(
+                    deg <= 8,
+                    "the reduced resultant of walls {i} and {j} must stay low-degree, got {deg} \
+                     (raw {:?})",
+                    raw.num().degree()
+                );
+            }
+        }
+    }
+
+    // ── AUTH.2a: the exact event set ────────────────────────────────────────────────────────
+
+    /// A µ̂-form from constant coefficients.
+    fn form(a: i128, b: i128, c: i128) -> MuCut<Bignum> {
+        let k = |v: i128| RatFunc::from_poly(Poly::constant(Q::from_i128(v)));
+        MuCut {
+            a: k(a),
+            b: k(b),
+            c: k(c),
+        }
+    }
+    /// A µ̂-form whose coefficients are polynomials in σ (low-order coefficient first).
+    fn form_poly(a: &[i128], b: &[i128], c: &[i128]) -> MuCut<Bignum> {
+        let p = |v: &[i128]| {
+            RatFunc::from_poly(Poly::from_coeffs(
+                v.iter().map(|k| Q::from_i128(*k)).collect(),
+            ))
+        };
+        MuCut {
+            a: p(a),
+            b: p(b),
+            c: p(c),
+        }
+    }
+
+    /// The 4×4 Sylvester determinant of two µ̂-quadratics at a σ — the textbook resultant, expanded
+    /// by permutations, sharing no line with [`MuCut::resultant`]'s closed form.
+    fn sylvester4(f: (Q, Q, Q), g: (Q, Q, Q)) -> Q {
+        let m = [
+            [f.0.clone(), f.1.clone(), f.2.clone(), Q::from_i128(0)],
+            [Q::from_i128(0), f.0, f.1, f.2],
+            [g.0.clone(), g.1.clone(), g.2.clone(), Q::from_i128(0)],
+            [Q::from_i128(0), g.0, g.1, g.2],
+        ];
+        let perms: [([usize; 4], i128); 24] = [
+            ([0, 1, 2, 3], 1),
+            ([0, 1, 3, 2], -1),
+            ([0, 2, 1, 3], -1),
+            ([0, 2, 3, 1], 1),
+            ([0, 3, 1, 2], 1),
+            ([0, 3, 2, 1], -1),
+            ([1, 0, 2, 3], -1),
+            ([1, 0, 3, 2], 1),
+            ([1, 2, 0, 3], 1),
+            ([1, 2, 3, 0], -1),
+            ([1, 3, 0, 2], -1),
+            ([1, 3, 2, 0], 1),
+            ([2, 0, 1, 3], 1),
+            ([2, 0, 3, 1], -1),
+            ([2, 1, 0, 3], -1),
+            ([2, 1, 3, 0], 1),
+            ([2, 3, 0, 1], 1),
+            ([2, 3, 1, 0], -1),
+            ([3, 0, 1, 2], -1),
+            ([3, 0, 2, 1], 1),
+            ([3, 1, 0, 2], 1),
+            ([3, 1, 2, 0], -1),
+            ([3, 2, 0, 1], -1),
+            ([3, 2, 1, 0], 1),
+        ];
+        let mut total = Q::from_i128(0);
+        for (perm, sign) in perms {
+            let mut prod = Q::from_i128(sign);
+            for (row, col) in perm.iter().enumerate() {
+                prod = prod.mul(&m[row][*col]);
+            }
+            total = total.add(&prod);
+        }
+        total
+    }
+
+    /// **The resultant means what it claims, checked two independent ways.** For genuine quadratics
+    /// it must equal the 4×4 Sylvester determinant; and at every µ̂-degree it must vanish *exactly*
+    /// when the two walls cross the ruling at a common µ̂ — which is the property the tracer relies
+    /// on, and the only one that survives the degenerate cases.
+    #[test]
+    fn the_resultant_vanishes_exactly_when_two_walls_share_a_crossing() {
+        let zero = Q::from_i128(0);
+        let val = |f: &MuCut<Bignum>| {
+            (
+                f.a.eval(&zero).unwrap(),
+                f.b.eval(&zero).unwrap(),
+                f.c.eval(&zero).unwrap(),
+            )
+        };
+        // Quadratic × quadratic: agree with Sylvester, sharing a root or not.
+        for (f, g) in [
+            (form(1, -4, 3), form(1, -1, -6)), // (µ−3)(µ−1), (µ−3)(µ+2): share µ = 3
+            (form(1, -4, 3), form(1, -5, 6)),  // (µ−3)(µ−1), (µ−3)(µ−2): share µ = 3
+            (form(1, -3, 2), form(1, -9, 20)), // {1,2} and {4,5}: share nothing
+            (form(2, 1, -6), form(3, -2, -1)), // arbitrary
+        ] {
+            let closed = f.resultant(&g).eval(&zero).unwrap();
+            assert_eq!(
+                closed,
+                sylvester4(val(&f), val(&g)),
+                "the closed form must be the Sylvester determinant"
+            );
+        }
+        // Quadratic × affine, and — the case the four-term form gets wrong — affine × affine.
+        // `2µ − 6` shares µ = 3 with `(µ−3)(µ+2)`; `2µ − 4` does not.
+        assert_eq!(
+            form(0, 2, -6)
+                .resultant(&form(1, -1, -6))
+                .eval(&zero)
+                .unwrap()
+                .sign(),
+            0
+        );
+        assert_ne!(
+            form(0, 2, -4)
+                .resultant(&form(1, -1, -6))
+                .eval(&zero)
+                .unwrap()
+                .sign(),
+            0
+        );
+        // µ = 1 against µ = 1 (meeting) and against µ = 2 (never meeting).
+        assert_eq!(
+            form(0, 1, -1)
+                .resultant(&form(0, 3, -3))
+                .eval(&zero)
+                .unwrap()
+                .sign(),
+            0,
+            "two affine walls crossing at the same µ̂ must resolve as meeting"
+        );
+        assert_ne!(
+            form(0, 1, -1)
+                .resultant(&form(0, 1, -2))
+                .eval(&zero)
+                .unwrap()
+                .sign(),
+            0,
+            "two affine walls that never meet must not read as meeting everywhere — the 4×4 \
+             Sylvester form of degree-2-padded affine walls is identically zero, which would \
+             erase every corner of a polygonal profile"
+        );
+    }
+
+    /// **Two affine walls' meeting σ is located exactly.** `µ = σ` and `µ = 1 − σ` cross at
+    /// `σ = 1/2` and nowhere else — the elementary shape of a polygon corner, where the wall
+    /// governing the footprint's boundary changes.
+    #[test]
+    fn an_affine_pair_brackets_the_sigma_where_their_crossings_coincide() {
+        let walls = [
+            form_poly(&[], &[1], &[0, -1]), // µ − σ
+            form_poly(&[], &[1], &[-1, 1]), // µ + σ − 1
+        ];
+        let tol = Q::new(1, 1 << 20);
+        let events = structure_events(&walls, &ivl(0, 1), &tol).expect("the chains must verify");
+        let meets: Vec<&StructureEvent<Bignum>> = events
+            .iter()
+            .filter(|e| e.kinds.contains(&EventKind::Meet(0, 1)))
+            .collect();
+        assert_eq!(meets.len(), 1, "exactly one meeting σ in [0, 1]");
+        let at = &meets[0].at;
+        assert!(
+            at.lo.cmp(&Q::new(1, 2)) != core::cmp::Ordering::Greater
+                && Q::new(1, 2).cmp(&at.hi) != core::cmp::Ordering::Greater,
+            "the bracket must contain σ = 1/2, got [{}, {}]",
+            to_f64(&at.lo),
+            to_f64(&at.hi)
+        );
+        assert!(
+            at.hi.sub(&at.lo).cmp(&tol) != core::cmp::Ordering::Greater,
+            "and must be refined to the requested tolerance"
+        );
+    }
+
+    /// **A double event is located, though nothing changes sign there.** A form whose discriminant
+    /// is `(σ−1)²` touches zero without crossing it, so a sign-change scan — the tool AUTH.1e.4
+    /// uses — steps straight over it. Sturm counts *distinct* roots, so the bisection tracks the
+    /// count rather than the sign and finds it.
+    #[test]
+    fn a_tangential_event_is_found_where_a_sign_scan_would_miss_it() {
+        // a = 1, b = 0, c = −(σ−1)²/4  ⇒  disc = b² − 4ac = (σ−1)².
+        let c = Poly::from_coeffs(vec![Q::new(-1, 4), Q::new(1, 2), Q::new(-1, 4)]);
+        let wall = MuCut {
+            a: RatFunc::from_poly(Poly::constant(Q::from_i128(1))),
+            b: RatFunc::from_poly(Poly::constant(Q::from_i128(0))),
+            c: RatFunc::from_poly(c.clone()),
+        };
+        // The premise: the discriminant really does touch without crossing.
+        let disc = wall.disc();
+        for s in [Q::new(1, 2), Q::new(3, 2)] {
+            assert!(
+                disc.eval(&s).unwrap().sign() > 0,
+                "the discriminant is positive on both sides of the double root"
+            );
+        }
+        let events = structure_events(&[wall], &ivl(0, 2), &Q::new(1, 1 << 20))
+            .expect("the chain must verify");
+        assert!(
+            events.iter().any(|e| {
+                e.kinds.contains(&EventKind::Tangent(0))
+                    && e.at.lo.cmp(&Q::from_i128(1)) != core::cmp::Ordering::Greater
+                    && Q::from_i128(1).cmp(&e.at.hi) != core::cmp::Ordering::Greater
+            }),
+            "the double tangency at σ = 1 must be bracketed"
+        );
+    }
+
+    /// **Walls that never interact produce no events at all.** Two parallel affine walls (`µ = 1`,
+    /// `µ = 2`) have constant discriminants, identically-zero leading coefficients and a constant
+    /// resultant, so the partition stays empty and the tracer sweeps the window in one cell.
+    #[test]
+    fn parallel_walls_leave_the_window_unpartitioned() {
+        let events = structure_events(
+            &[form(0, 1, -1), form(0, 1, -2)],
+            &ivl(-3, 3),
+            &Q::new(1, 1 << 20),
+        )
+        .expect("the chains must verify");
+        assert!(
+            events.is_empty(),
+            "expected no events, got {:?}",
+            events.iter().map(|e| &e.kinds).collect::<Vec<_>>()
+        );
+    }
+
+    /// **The event set finds the corners the band builder bisects for.** On the AUTH.1e.4 square
+    /// prism, scan the ruling patch across the footprint and note every σ-cell in which the wall
+    /// governing an end changes — 1e.4's `CORNER_SWEEPS` searches for exactly these. Each one must
+    /// contain an event bracket, and the bracket names the *same two walls* the patch changed
+    /// between.
+    #[test]
+    fn every_governing_wall_change_on_the_square_prism_has_an_event() {
+        let chart = fixtures::devices::cone_wrap();
+        let cfg = DevConfig::tight();
+        let (cx, cy, h) = (Q::new(-1, 2), Q::new(27, 10), Q::new(1, 8));
+        let profile = arrange2d::profile::Profile::new()
+            .rect(cx.clone(), cy.clone(), h.clone(), h.clone())
+            .into_edges();
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("four distinct lines");
+        let zero = Q::from_i128(0);
+        let forms: Vec<MuCut<Bignum>> = walls
+            .iter()
+            .map(|w| cut_mu_form(&chart, w, &zero).expect("each wall pulls back"))
+            .collect();
+        let window = bounding_window(
+            &chart,
+            &CutSurface::Cylinder {
+                axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+                axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+                r2: h.mul(&h).mul(&Q::from_i128(2)),
+            },
+        );
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        let events =
+            structure_events(&forms, &window, &Q::new(1, 1 << 24)).expect("the chains must verify");
+
+        // Scan as 1e.4 does, and record each cell in which a governing wall changed.
+        const SCAN: i128 = 400;
+        let at = |k: i128| {
+            window
+                .lo
+                .add(&window.hi.sub(&window.lo).mul(&Q::new(k, SCAN)))
+        };
+        let mut prev: Option<(Q, WallRoot, WallRoot)> = None;
+        let mut changes = 0;
+        for k in 0..=SCAN {
+            let s = at(k);
+            let p = match ruling_patch(&forms, &s, &inside, &cfg.sqrt_eps) {
+                Ok(Some(p)) => p,
+                _ => {
+                    prev = None;
+                    continue;
+                }
+            };
+            if let Some((ps, plo, phi)) = &prev {
+                for (a, b) in [(*plo, p.lo_at), (*phi, p.hi_at)] {
+                    if a.0 == b.0 {
+                        continue;
+                    }
+                    changes += 1;
+                    let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
+                    assert!(
+                        events.iter().any(|e| {
+                            e.kinds.contains(&EventKind::Meet(lo, hi))
+                                && e.at.lo.cmp(&s) != core::cmp::Ordering::Greater
+                                && ps.cmp(&e.at.hi) != core::cmp::Ordering::Greater
+                        }),
+                        "the corner between walls {lo} and {hi} in σ ∈ [{}, {}] has no event",
+                        to_f64(ps),
+                        to_f64(&s)
+                    );
+                }
+            }
+            prev = Some((s, p.lo_at, p.hi_at));
+        }
+        // Two, and the geometry says two: a ruling family sweeping across a convex quadrilateral
+        // switches the edge it *enters* by once and the edge it *leaves* by once. (Guessing four
+        // here — one per side — was wrong, and the assertion earned its keep by saying so.)
+        assert!(
+            changes >= 2,
+            "the square's band must change governing wall on both branches, saw {changes}"
         );
     }
 

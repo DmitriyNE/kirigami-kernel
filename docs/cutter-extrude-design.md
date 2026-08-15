@@ -545,15 +545,32 @@ crossing or leaves the ruling altogether — three classes, each a polynomial:
   which is `ShadowUnbounded` and must be recognised as such rather than traced). The class is
   already load-bearing elsewhere: both σ-station sites key off this same `a ≢ 0` test (§6).
 
-All three are polynomials in σ over ℚ once denominators are cleared, and all three are cheap: with
-degree ≤ 2 in µ̂ the resultant is the classical closed form
-`(a₁c₂ − a₂c₁)² − (a₁b₂ − a₂b₁)(b₁c₂ − b₂c₁)`, three 2×2 minors rather than a Sylvester matrix of
-unknown size. Root isolation is `lattice`'s existing Sturm chain. **None of the CM machinery is
-needed** — `Biv`,
-the resultant-cofactor certificate and `AlgReal` exist for transverse *curve × curve* intersection
-(CM.1); this is the resultant of two low-degree forms in one variable, which is a different and much
-smaller problem. Affine walls degrade correctly rather than specially: `a_i ≡ 0` makes the
-discriminant vacuous and the resultant that of a line against a conic.
+All three are polynomials in σ over ℚ once denominators are cleared, and all three are cheap — three
+2×2 minors rather than a Sylvester matrix of unknown size. Root isolation is `lattice`'s existing
+Sturm chain, which counts **distinct** roots even when a polynomial is not squarefree, so a
+tangential event (a touch rather than a crossing) is located rather than stepped over. **None of the
+CM machinery is needed** — `Biv`, the resultant-cofactor certificate and `AlgReal` exist for
+transverse *curve × curve* intersection (CM.1); this is the resultant of two low-degree forms in one
+variable, a different and much smaller problem.
+
+**The resultant is taken at each form's actual µ̂-degree, and that is correctness rather than
+tidiness:**
+
+| degrees | `Res_µ̂` |
+|---|---|
+| 2 × 2 | `(a₁c₂ − a₂c₁)² − (a₁b₂ − a₂b₁)(b₁c₂ − b₂c₁)` |
+| 2 × 1 | `a₁c₂² − b₁b₂c₂ + c₁b₂²` — the conic evaluated at the line's root, denominator cleared |
+| 1 × 1 | `b₁c₂ − b₂c₁` |
+
+The 2 × 2 entry is the 4×4 Sylvester determinant of the two forms *padded to degree 2*, and padding
+a genuinely affine form adds a shared root at infinity. With **one** wall affine that is harmless
+(the determinant picks up a nonzero factor of the other's leading coefficient). With **both** affine
+it collapses to `0` — identically, for walls that meet and walls that never do alike. Since every
+wall of a polygonal profile is affine, using the 2 × 2 form throughout would erase every corner of
+the L-slot this milestone exists for. The dispatch is on `a ≡ 0` as a *rational function*, which is
+static and decidable; an isolated σ where a genuine conic's `a(σ)` vanishes needs no case of its own,
+because the 2 × 2 form factors there as `a_j·(a_j c_i² + b_i² c_j − b_i b_j c_i)` — vanishing exactly
+when the 2 × 1 condition does — and those σ are `Escape` events in their own right.
 
 ### 11.3 Between events nothing changes, so the tracer is a sweep
 

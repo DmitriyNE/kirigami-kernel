@@ -683,6 +683,27 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The textbook resultant is identically zero on exactly the case AUTH.2 exists for, and a
+  differential built from generic inputs would not have noticed.** AUTH.2a's event set needs
+  `Res_µ̂(f_i, f_j)` — zero where two walls cross a ruling at the same µ̂ — and the quadratic-by-
+  quadratic closed form `(a₁c₂−a₂c₁)² − (a₁b₂−a₂b₁)(b₁c₂−b₂c₁)` went into the design doc backed by an
+  exact check against a 4×4 Sylvester determinant over 2000 random rational pairs, plus the
+  shared-root and *linear-vs-quadratic* degenerate cases. All green, and all beside the point: that
+  closed form is the Sylvester determinant of the two forms **padded to degree 2**, and padding a
+  genuinely affine form adds a shared root at infinity. With one wall affine the padding is harmless
+  (the determinant picks up a nonzero factor). With **both** affine it collapses to `0` — for walls
+  that meet and walls that never meet alike. Every wall of a polygonal profile is affine, so the
+  L-slot, the T-slot and the keyhole — the shapes the whole milestone is for — would have had every
+  corner erased, presenting as a tracer that quietly found no events rather than as an arithmetic
+  error. Fixed by dispatching on `a ≡ 0` as a rational function (2×2 / 2×1 / 1×1 forms, design doc
+  §11.2); an isolated σ where a genuine conic's `a(σ)` vanishes needs no case, since the 2×2 form
+  factors there into the 2×1 condition times `a_j ≠ 0`. Three tests catch the naive version, one of
+  them end-to-end on the square prism, all mutation-verified against it. *The lesson is about test
+  selection, not resultants:* the differential was real, independent, and exhaustive over the
+  **generic** stratum, and the defect lived in the degenerate one — which is where the feature lives.
+  When a formula has degenerate cases, the test set has to contain the case the feature is for.
+  *2026-08-16 · resolved · `develop::cut::{MuCut::resultant, structure_events}`, #259*
+
 - **AUTH.2's scout: the band lives in one file, and everything downstream already takes a general
   loop.** #256 sized the work as "holes must become regions end to end, through the flat boolean and
   into the B-rep builder", and named `HoleRail`'s band (`brep_build.rs:222`) as the load-bearing
