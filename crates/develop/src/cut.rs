@@ -1256,10 +1256,15 @@ fn chart_point_on<B: Backend>(
     let r = vec3_on(chart.ruling(), sig)?;
     let n = vec3_on(chart.normal(), sig)?;
     let wv = RatIv::point(w.clone());
+    // Round each component (DEV.2a). `eval_ratfunc_on` already hands back ~18-digit enclosures,
+    // but rational **addition multiplies denominators**, so the five ops below chained them to
+    // ~120 digits — on every one of the thousands of sub-interval evaluations a cut certificate
+    // makes. Outward rounding costs `2^-60 ≈ 8.7e-19` per op, fifteen orders below any ε that
+    // matters here, and keeps containment by construction.
     Some([
-        p[0].add(&mu.mul(&r[0])).add(&wv.mul(&n[0])),
-        p[1].add(&mu.mul(&r[1])).add(&wv.mul(&n[1])),
-        p[2].add(&mu.mul(&r[2])).add(&wv.mul(&n[2])),
+        p[0].add(&mu.mul(&r[0])).add(&wv.mul(&n[0])).rounded(),
+        p[1].add(&mu.mul(&r[1])).add(&wv.mul(&n[1])).rounded(),
+        p[2].add(&mu.mul(&r[2])).add(&wv.mul(&n[2])).rounded(),
     ])
 }
 
@@ -1309,7 +1314,8 @@ fn metric_distance_on<B: Backend>(
                 .mul(&RatIv::point(n[0].clone()))
                 .add(&x[1].mul(&RatIv::point(n[1].clone())))
                 .add(&x[2].mul(&RatIv::point(n[2].clone())))
-                .sub(&RatIv::point(d.clone()));
+                .sub(&RatIv::point(d.clone()))
+                .rounded();
             Some(abs_on(&res).mul(&inv_norm).hi().clone())
         }
         CutSurface::Cylinder {
@@ -1329,13 +1335,20 @@ fn metric_distance_on<B: Backend>(
                     .add(&u[1].mul(&RatIv::point(v[1].clone())))
                     .add(&u[2].mul(&RatIv::point(v[2].clone())))
             };
+            // Rounded at each step (DEV.2a): squaring and summing three enclosures, then taking a
+            // root, is where the digits ran away — an exact rational √-enclosure must *narrow* as
+            // its input box narrows, so finer subdivision bought hundreds of digits rather than a
+            // tighter answer. Bounded here instead, outward, so containment is preserved.
             let d2 = dv[0]
                 .mul(&dv[0])
                 .add(&dv[1].mul(&dv[1]))
-                .add(&dv[2].mul(&dv[2]));
-            let ad = dot(&dv, axis_dir);
-            let perp2 = d2.sub(&ad.mul(&ad).mul(&RatIv::point(a2.recip())));
-            let rho = sqrt_on(&perp2, &cfg.sqrt_eps);
+                .add(&dv[2].mul(&dv[2]))
+                .rounded();
+            let ad = dot(&dv, axis_dir).rounded();
+            let perp2 = d2
+                .sub(&ad.mul(&ad).mul(&RatIv::point(a2.recip())))
+                .rounded();
+            let rho = sqrt_on(&perp2, &cfg.sqrt_eps).rounded();
             Some(abs_on(&rho.sub(&sqrt(r2, &cfg.sqrt_eps))).hi().clone())
         }
     }
@@ -2057,6 +2070,83 @@ mod tests {
                 "a ring must be refused as not-a-band, got {:?}",
                 verdict_tag(&other)
             ),
+        }
+    }
+
+    /// **Operand size stays bounded along the certificate's chain (OPT.2.1).**
+    ///
+    /// `eval_ratfunc_on` rounds, so field components arrive ~18 digits — but rational addition
+    /// MULTIPLIES denominators, so `chart_point_on`'s five further ops chained them to ~120 digits
+    /// on every one of the thousands of sub-interval evaluations, and `metric_distance_on` then
+    /// squared, summed and took a root of those, reaching 499 digits at `subdiv ≥ 64`. Measured:
+    /// the cut-certificate path ran 8.5–9× slower for it, with `cut_evals` identical — pure
+    /// cost-per-operation, invisible to a counter-based gate.
+    ///
+    /// This pins the fix. Without the `.rounded()` calls the numbers below go back to ~120 and
+    /// ~500; the bound here is deliberately loose (40) so it fails on a regression, not on noise.
+    #[test]
+    fn the_certificate_chain_keeps_its_operands_bounded() {
+        let chart = fixtures::devices::cone_wrap();
+        let surface = CutSurface::Cylinder {
+            axis_point: [Q::new(-1, 2), Q::new(27, 10), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: Q::new(1, 40),
+        };
+        let cfg = DevConfig::tight();
+        let roots = crate::pcurve::scan_roots(
+            &cut_mu_form(&chart, &surface, &Q::from_i128(0))
+                .unwrap()
+                .disc(),
+            &Q::new(-5, 4),
+            &Q::new(5, 4),
+            512,
+            60,
+        )
+        .expect("roots");
+        let (lo, hi) = (roots[0].clone(), roots[1].clone());
+        let mc = cut_mu_form(&chart, &surface, &Q::from_i128(0)).unwrap();
+        let at = |t: &Q| {
+            let s = crate::pcurve::snap(&lo.add(&hi.sub(&lo).mul(t)), 30);
+            let (m, h) = mc.branch_at(&s, &cfg.sqrt_eps).expect("branch");
+            (s, crate::pcurve::snap(&m.add(&h), 30))
+        };
+        let piece = segment(&at(&Q::new(4, 10)), &at(&Q::new(5, 10)));
+        let dig = |r: &Q| {
+            let (n, d) = r.numer_denom_decimal();
+            n.len().max(d.len())
+        };
+        for n in [16usize, 32, 64, 128] {
+            let width = piece
+                .domain
+                .hi
+                .sub(&piece.domain.lo)
+                .div(&Q::from_i128(n as i128));
+            let (mut dt, mut ds, mut dm) = (0usize, 0usize, 0usize);
+            let (mut dx, mut dd) = (0usize, 0usize);
+            for k in 0..n {
+                let t = subiv(&piece.domain.lo, &width, k);
+                dt = dt.max(dig(t.lo()).max(dig(t.hi())));
+                if let Some([sig, mu]) = piece.eval_on(&t) {
+                    ds = ds.max(dig(sig.lo()).max(dig(sig.hi())));
+                    dm = dm.max(dig(mu.lo()).max(dig(mu.hi())));
+                    if let Some(x) = chart_point_on(&chart, &sig, &mu, &Q::from_i128(0)) {
+                        for c in &x {
+                            dx = dx.max(dig(c.lo()).max(dig(c.hi())));
+                        }
+                        let half = Q::new(1, 2);
+                        if let DistOn::Bound(d) | DistOn::Loose(d) =
+                            surface_distance_on(&surface, &x, &half, &cfg)
+                        {
+                            dd = dd.max(dig(&d));
+                        }
+                    }
+                }
+            }
+            assert!(
+                dx <= 40 && dd <= 40,
+                "subdiv {n}: operands must stay bounded by the DEV.2a outward rounding — \
+                 chart_point {dx} digits, distance {dd} digits (was 120 and 499)"
+            );
         }
     }
 

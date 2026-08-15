@@ -1657,6 +1657,34 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **Rational ADDITION multiplies denominators — five unrounded ops turned 18 digits into 120, on
+  every evaluation.** OPT.2.1. `develop::cut` carried ZERO `.rounded()` calls against `cone.rs`'s 37
+  and `interval.rs`'s 16; it never adopted the DEV.2a outward-rounding discipline. `eval_ratfunc_on`
+  rounds, so chart fields arrived ~18 digits — but `chart_point_on`'s `p + µ̂·r + w·n` is five more
+  ops, and adding coprime-denominator rationals multiplies the denominators, so the point came out
+  ~120 digits. `metric_distance_on` then squared and summed those and took an exact rational √,
+  whose enclosure must *narrow* as its input box narrows — so finer subdivision bought hundreds of
+  digits instead of a tighter answer, reaching **499 digits at subdiv ≥ 64**.
+  **MEASURED:** cut-certificate path 8.5–9× faster (77.2→8.6s, 163.3→19.3s), whole develop 2.9–3.9×
+  (99.1→25.1s, 248.0→84.3s), with **`cut_evals` IDENTICAL** (6144, 4096) — pure cost-per-operation.
+  Cost: `2^-60 ≈ 8.7e-19` per op against ε ≈ 0.15; VV.2's pinned ε and VV.1's counters both pass
+  unchanged.
+  **THE METHODOLOGICAL POINT, which is the durable part.** `develop::counters` counts γ cells and cut
+  evals — and total time was ~LINEAR in subdiv, so a count-based reading said "constant cost per
+  operation, nothing here". The constant was not constant: it doubled at subdiv 64 when operands
+  crossed into bignum. Counts are the right *gate* (machine-independent, cannot flake — VV.1's whole
+  rationale) and are **insufficient for diagnosis**. What found this was measuring operand SIZE
+  (`numer_denom_decimal().len()`) at each link of the chain: t-endpoints 2, σ 11, µ̂ 13, chart_point
+  **120**, distance **499** — the inflation is localised to the two sites with no rounding.
+  Pinned by `the_certificate_chain_keeps_its_operands_bounded`, mutation-verified: deleting one
+  `.rounded()` returns chart_point to 119 digits and fails.
+  **Also corrected en route:** OPT.0's "cut certificates are ~7% of runtime" was STALE — it measured
+  the *demo* before the p-curve milestone multiplied the hole path's node count. On the test payloads
+  `certify_holes` was 66–78% of a develop. And γ is no longer hot: `gamma_cells` is 0 in both
+  boundary and holes on both fixtures; OPT.1 did its job. After this fix the profile INVERTS again —
+  unroll + flat boolean + topology is now 63–72%.
+  *2026-08-15 · finding · `crates/develop/src/cut.rs`, task #233 (OPT.2.1)*
+
 - **A constraint I asserted twice did not exist — the helper had ossified into a believed property.**
   Designing the `Profile` builder I claimed circles need a *rational radius*, because an arc's
   extreme points must be named exactly, and offered the user a refuse-or-bracket decision for a

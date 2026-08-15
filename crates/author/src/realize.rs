@@ -836,3 +836,128 @@ fn last_end<B: Backend>(arcs: &[BoundaryArc<B>]) -> Option<(Rat<B>, Rat<B>)> {
         BoundaryArc::Curve { curve, .. } => curve.eval(&curve.domain.hi).map(|[s, m]| (s, m)),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::construct;
+    use crate::part::{Cutter, SupportFn};
+    use develop::cone::DevConfig;
+    use export::trim::RailFit;
+    use fixtures::devices::{cone, cone_wrap};
+    use lattice::{Bignum, Rat};
+
+    type Q = Rat<Bignum>;
+    fn q(n: i128, d: i128) -> Q {
+        Q::new(n, d)
+    }
+    fn qi(n: i128) -> Q {
+        Q::from_i128(n)
+    }
+
+    /// `acceptance::flex_panel()`, copied verbatim — `acceptance` depends on `author`, so an
+    /// in-crate test cannot use it without linking a second copy of this crate.
+    fn flex_panel() -> Part<Bignum> {
+        construct::from_chart::<Bignum>(&cone())
+            .region_sigma(qi(-1), qi(1), SupportFn::inherit())
+            .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+            .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(11, 5), q(1, 25)))
+            .clearance(qi(1))
+    }
+
+    /// `acceptance::self_lapping_cone(segments, support_panels, true)`, copied verbatim.
+    fn self_lapping_cone(segments: usize, support_panels: usize) -> Part<Bignum> {
+        let d = q(1, 10);
+        let rz0 = cone_wrap()
+            .ruling()
+            .comp(2)
+            .eval(&qi(0))
+            .expect("the wrap chart's ruling is regular at σ = 0");
+        let mu_w = q(-3, 1).div(&rz0);
+        let witness = cone_wrap()
+            .surface(&mu_w, &qi(0))
+            .eval(&qi(0))
+            .expect("the mid-annulus witness point is regular");
+        construct::from_chart::<Bignum>(&cone_wrap())
+            .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
+            .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
+            .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
+            .keep_near(witness)
+            .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
+            .clearance(qi(1))
+            .thickness(q(1, 20))
+            .fit(RailFit {
+                degree: 4,
+                subdiv: 160,
+                bits: 44,
+            })
+            .segments(segments)
+            .support_panels(support_panels)
+            .budget(DevConfig {
+                terms: 14,
+                sqrt_eps: q(1, 1_000_000_000),
+            })
+            .subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)))
+    }
+
+    /// OPT.2.0 Q1 — stage attribution on the real test payloads.
+    ///
+    /// The two fixtures are a **γ-controlled pair by design**: `flex_panel`'s apex cone has a
+    /// vanishing pedal and develops with `γ ≡ 0` throughout, while `self_lapping_cone` carries a
+    /// nonzero flat directrix on its ramp and tail. The difference isolates the quadrature.
+    /// Run with `cargo test -p author --lib stage_attribution -- --ignored --nocapture`.
+    /// Ignored by default: it develops each fixture twice and takes minutes — the very cost
+    /// OPT.2 exists to reduce.
+    #[test]
+    #[ignore = "profiling harness, minutes long; run explicitly"]
+    fn stage_attribution() {
+        let cases: [(&str, Part<Bignum>); 2] = [
+            ("flex_panel   (gamma=0)", flex_panel()),
+            ("self_lapping (gamma!=0)", self_lapping_cone(16, 8)),
+        ];
+        for (name, part) in cases {
+            let clock = std::time::Instant::now();
+            let _ = part.develop();
+            let t_total = clock.elapsed().as_secs_f64();
+
+            let c = std::time::Instant::now();
+            let built = part.build_regions().expect("regions develop");
+            let t_build = c.elapsed().as_secs_f64();
+
+            let c = std::time::Instant::now();
+            let structure = crate::resolve::sweep(&part, &built).expect("the sweep resolves");
+            let t_sweep = c.elapsed().as_secs_f64();
+
+            develop::counters::reset();
+            let c = std::time::Instant::now();
+            let _ = certify_boundary(&part, &built, &structure, part.fit, false);
+            let t_bnd = c.elapsed().as_secs_f64();
+            let (g_b, e_b) = (
+                develop::counters::gamma_cells(),
+                develop::counters::cut_evals(),
+            );
+
+            develop::counters::reset();
+            let c = std::time::Instant::now();
+            let _ = certify_holes(&part, &built, &structure, (part.segments / 2).max(4));
+            let t_holes = c.elapsed().as_secs_f64();
+            let (g_h, e_h) = (
+                develop::counters::gamma_cells(),
+                develop::counters::cut_evals(),
+            );
+
+            let rest = t_total - t_build - t_sweep - t_bnd - t_holes;
+            std::eprintln!(
+                "\n{name}  total {t_total:7.1}s\n\
+                 \x20 build_regions {t_build:7.1}s\n\
+                 \x20 sweep         {t_sweep:7.1}s\n\
+                 \x20 boundary      {t_bnd:7.1}s   (gamma {g_b}, cut_evals {e_b})\n\
+                 \x20 holes         {t_holes:7.1}s   (gamma {g_h}, cut_evals {e_h})\n\
+                 \x20 rest          {rest:7.1}s   (unroll + flat boolean + topology)"
+            );
+        }
+    }
+}
