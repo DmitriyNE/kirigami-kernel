@@ -2002,10 +2002,26 @@ constant, which is what makes one midpoint sample exact — but only while the s
 stretch, so the genericity nudge must be scaled to the **stretch**, not to the profile. The test is a
 lobe two orders of magnitude thinner than its neighbour, measured at its true width.
 
-**AUTH.1f — the demo cuts something real.** A drafted, spanned cut authored on a picked frame, taken
-through develop → fold → STEP: per-stage `Verified`, the emitted geometry checked **faithful to the
-authored profile** (not merely certificate-green), OCCT `audit valid ∧ free_edges == 0`, and the full
-gate. vv-matrix rows go ✅ and `[AUTH.1]` joins the landed set in `cargo xtask lint`.
+**AUTH.1f — the demo cuts something real.** A drafted cut authored on a rational frame, taken
+through develop → STEP: per-stage `Verified`, the emitted geometry checked **faithful to the
+authored profile** (not merely certificate-green), and the full gate. vv-matrix rows go ✅ and
+`[AUTH.1]` joins the landed set in `cargo xtask lint`.
+
+**Why "faithful" cannot be an ε assertion here, stated as a criterion.** `ε` is the max over
+pipeline stages, and on this device the panel boundary dominates it — so a drafted hole and an
+undrafted one certify at *the same* `ε`. Any test asserting only `Verified`, or only an ε bound,
+passes on a cutter that ignores its apex entirely. The faithfulness check must therefore measure
+**geometry**: the developed hole's size against the taper law the cast point implies
+(`1 − z/z_apex`), and a parallel sweep against the metric cylinder it reproduces. Measure through the
+quarantined exact→`f64` bridge, never a hand-rolled conversion — that returns NaN on large rationals
+and `min`/`max` swallow it, turning a real measurement into a silent "could not measure".
+
+**The demo is a gate on the composition, and it earns that place.** Two defects reached it through
+six commits of unit and integration tests, both invisible to every layer test because they lived in
+the *composition*: a duplicated wall (edges are not carriers) and a polygonal slot deriving
+`Inactive` — a green certificate on a cut that did nothing, because affine-walled cutters received no
+targeted stations. A milestone whose slices are each tested in isolation still needs the end-to-end
+run before it can be called done.
 
 ---
 

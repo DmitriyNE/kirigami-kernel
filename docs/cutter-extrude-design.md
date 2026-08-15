@@ -304,12 +304,29 @@ structures. The defect lived in the layer above the function under test.
 | **AUTH.1c** | ray-pick frames: search → **backward-error certificate** (§9) — **done** (`develop::pick`) |
 | **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test — **done** (`develop::pick::{Sheet,Span,ray_crossings}`) |
 | **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) — **done** (1e.1 shadow union, 1e.2 the cutter, 1e.3 the span) |
-| **AUTH.1f** | acceptance demo through develop → fold → STEP; full gate; vv-matrix rows to ✅ |
+| **AUTH.1f** | acceptance demo + faithfulness tests + full gate + landing — **done** (`author/examples/sketch_cutter.rs`, `author/tests/sketch_cutter_part.rs`) |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
 the lap satisfies: `ToNext` cuts the flap only; `NextN(2)` and `Through` cut flap **and** body. No
 new fixture — the geometry is already certified, so the test measures span semantics rather than
 re-testing the device.
+
+### 7.1 What the demo had to check, and why ε could not
+
+`ε` is the **max over pipeline stages**, and on this device the panel's boundary dominates it — so a
+drafted hole and an undrafted one certify at *the same* `ε` (measured: 4.879e-1 both). A demo or test
+asserting only `Verified` would therefore pass just as happily on a cutter that ignored its apex
+entirely. Faithfulness has to be **geometric**:
+
+| check | measured |
+|---|---|
+| the draft is the *right* draft | developed hole 0.4759 drafted vs 0.5969 parallel, **ratio 0.797** against the taper law `1 − z/z_apex` = 0.797 at `z ≈ 2.44`, `z_apex = 12` |
+| the general cutter *is* the special one | a parallel-swept disc cuts the same hole as `Cutter::vertical_cylinder` to 1e-6, at the same `ε`, through `develop()` |
+
+Both are tests, not just demo output. The measurement goes through
+`export::svg::region_to_polys` — the quarantined exact→`f64` bridge — because a hand-rolled
+conversion returns NaN on large rationals, and `min`/`max` then swallow it into a silent "could not
+measure" rather than a failure.
 
 ## 8. Deferred, deliberately
 

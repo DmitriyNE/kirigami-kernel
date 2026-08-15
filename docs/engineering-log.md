@@ -688,6 +688,36 @@ fine — this is a log, not a schema.
   what the pullback needs) and that was silently read as also fixing the *metric class*, which it
   does not.
 
+- **A green certificate on a cut that did nothing — and the doc had predicted it.** AUTH.1e.2's
+  station criterion is "a wall whose µ̂-pullback is a genuine quadratic (`a ≢ 0`) has tangent windows
+  and needs targeted stations; an affine one does not." That reproduces `Cylinder` vs `HalfSpace`
+  exactly — and gives a **polygon zero stations**, because every wall of a polygon is affine. A
+  square slot subtending ≈0.045 in σ against ≈0.146 sample cells fell between them and the resolver
+  derived `OpRole::Inactive`: the part certified, the authored cut was simply absent. That is
+  verbatim `docs/cutter-extrude-design.md` §6's prediction — "an extruded cutter would silently
+  receive no targeted stations and drop small features between cells" — reintroduced *while*
+  carefully preserving the behaviour §6 was warning about. Fixed with the profile's bounding circle
+  as a probe: its wall is a quadric, so it has one tangent window, and that window contains the whole
+  profile's σ-support. A **superset is the right error** here — extra stations sample where the cut
+  is absent and cost nothing, a missing one loses the cut silently.
+
+- **ε cannot see a draft angle, so the acceptance check had to be geometric.** The drafted and
+  parallel variants of the same hole certify at *the same* ε (4.879e-1 both), because ε is the max
+  over pipeline stages and the panel's boundary dominates. Every certificate in the pipeline was
+  green on a cut whose *shape* was the entire point. The check that distinguishes them measures the
+  developed hole — 0.4759 vs 0.5969, ratio 0.797 against the taper law's 0.797 — and is a test, not
+  demo output. Worth generalising: when a feature's headline property is a *shape*, a residual bound
+  that is dominated by something else is not evidence about it, however green.
+
+- **Four wrong diagnoses before one controlled comparison.** Chasing why the demo failed, I: read
+  ε ≈ 0.94 as the `Unresolved(clearance)` sentinel (it is exactly 1.0 — I quoted the number without
+  checking what it implied); blamed `fit_cut_rail` declining `Quadric` (real code fact, wrong
+  culprit — extruded cuts derive `Hole` and take the p-curve route, which works); predicted the ring
+  would silently emit a disc (it fails closed); and estimated the fix as PC.3-scale (the half that
+  mattered was 30 lines). The actual cause was my demo recipe dropping the rim notch — nothing to do
+  with AUTH.1. What ended it was authoring the *same solid* two ways and comparing, which is the
+  first thing I should have done. **Write a new recipe by changing one line of a working one.**
+
 - **Edges are not carriers, and the difference cost a duplicated hole.** AUTH.1b built
   `Cast::walls` per *edge* and documented that as deliberate: "carriers are not deduplicated, which
   is what the caller wants when it is walking edges." AUTH.1e.2's caller wants the opposite and the
