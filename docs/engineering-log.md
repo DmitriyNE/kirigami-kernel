@@ -1657,6 +1657,32 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **The test suite had no `[profile]` section at all — every test ran at `opt-level = 0`.** The
+  single largest factor in the suite's runtime, and it was configuration, not code: **185.0s → 25.6s
+  (7.2×)**; the heaviest test 157.6s → 22.0s. Counters byte-identical (2 256 / 2 640 / 4 096), so
+  only code generation changed.
+  **HOW IT SURFACED — the profile named it, twice removed.** A flat `sample` profile showed
+  `copy_nonoverlapping::precondition_check` 537, `is_aligned_to` 361, `from_raw_parts::
+  precondition_check` 283, `ub_checks::maybe_is_nonoverlapping` 250 — ~6% of samples in **std's debug
+  preconditions**, which exist only in an unoptimized build. Those lines are not a cost to optimize;
+  they are a *fingerprint* of the whole build being unoptimized. Reading a profile for what its
+  presence implies, not just for its hot rows.
+  KEPT ON DELIBERATELY: `debug-assertions` and `overflow-checks`. A two-tier lattice that silently
+  wrapped would be a correctness bug, and these are the tests that would catch it; `opt-level` is
+  orthogonal to both.
+  **SCOPE — this is a developer-time win, NOT a product win.** Demos and production already build in
+  release. OPT.2.1/2.2 were genuine engine wins that help release too; this one only shortens the
+  measure-fix-measure loop. Worth separating, or a 25× headline gets attributed to the engine.
+  **LTO DOES NOT PAY HERE** (checked, since the crate chain lattice→geom→develop→export→author looks
+  like a cross-crate-inlining candidate): fat LTO + cgu=1 ran 22.9s but cost ~112s to build vs ~74s —
+  ~11% run for ~50% build, a loss for iteration AND for CI, which builds cold anyway. Thin LTO was
+  dominated on both axes (27.1s run, ~127s build). **The ceiling is low for a structural reason: the
+  hot arithmetic is generic over `Backend`, so `Rat`'s methods are monomorphized into each consuming
+  crate — cross-crate inlining already happens without LTO.** O3 gives a real but marginal ~3%
+  (7.61s vs 7.83s on the heavy test, repeatable) for ~8% more build; kept O2, and note the ambient
+  run-to-run variance (~5%) is larger than that gap.
+  *2026-08-16 · finding · `Cargo.toml`, task #233*
+
 - **A vector-valued integrand integrated component-by-component evaluates itself once per
   component.** OPT.2.2. `directrix_accumulated`'s cell integrated `γ` by calling
   `integrate_on_slope` twice — once with `|p| directrix_velocity(..).map(|f| f[0])`, once with
