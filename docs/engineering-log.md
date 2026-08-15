@@ -19,6 +19,17 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **AUTH.1 deferrals — scope decisions, taken with the user, not oversights.** Recorded so the
+  narrower first slice reads as a choice: **(a) per-edge draft slope** — a single cast point forces
+  one projective taper and cannot give edge A 5° and edge B 0°, which is real fab practice; wanted
+  later. **(b) p-curve profile edges** — lines and arcs keep every wall a plane-or-quadric (degree
+  ≤2 over ℚ(σ)); admitting the PC p-curves pushes walls past degree 2 into new certificate
+  territory. **(c) per-generatrix span** — each generatrix terminating on its own hit count, so cut
+  depth varies across the profile; the reference-ray ordinal ships first. **(d) cutting a real
+  stackup** per-layer — cuts currently happen at flow stage 2, *before* a stackup exists, so a span
+  counts neutral surfaces; nothing in the span rule forecloses layers later.
+  *2026-08-15 · deferred(→post-AUTH.1) · `docs/cutter-extrude-design.md` §8, #237*
+
 - **Two CI gaps the OPT.3 pre-push gate exposed — neither is a code bug, both hide real failures.**
   **(1) The self-hosted Linux runner is dead in the water** (#241): `nix-installer-action` hangs and the
   job dies at the 6 h cap before running a single gate step, so half the matrix — and the *only* leg

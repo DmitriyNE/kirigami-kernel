@@ -1,0 +1,181 @@
+# AUTH.1 — the sketch-extrude cutter (frame × profile × apex × span)
+
+The design for `Cutter::Extrude`, the step-1 blocker named in
+[`atlas-transform-design.md`](atlas-transform-design.md) §5. Acceptance criteria live in
+[`vv-guide.md`](vv-guide.md) ("AUTH.1 acceptance criteria"); rows in [`../vv-matrix.md`](../vv-matrix.md).
+
+## 1. Where this sits in the product flow
+
+Cuts authored here happen at **stage 2** of the flow, before any stackup exists:
+
+> define atlas → **cut the substrate boundary** → develop → export to ECAD → define stackup →
+> lay out the PCB → import → refold
+
+So a cutter meets **neutral surfaces** — the locations where charts are embedded — not copper
+layers and not the two faces of a layer. Cutting a real stackup is a later capability; nothing here
+forecloses it, because the span rule (§5) already counts hits generically.
+
+## 2. The model
+
+A cutter is four orthogonal pieces:
+
+| piece | what it is |
+|---|---|
+| **Frame** | a plane: origin + two spanning directions, all rational (§3) |
+| **Profile** | an `arrange2d` region in frame coordinates, inside-designation included |
+| **Apex** | one homogeneous point — finite cast point *or* direction (§4) |
+| **Span** | which of the neutral surfaces the ray meets actually get cut (§5) |
+
+The profile is **not** restricted to convex, and needs no decomposition: the arrangement engine
+already carries faces-with-holes and the inside designation. Nothing in this milestone builds a
+polygon-CSG layer.
+
+### 2.1 Why the evaluation is exact rather than an approximation
+
+Preimage commutes with every boolean operation, so for the sheet map `S(σ,µ,w)`
+
+```text
+footprint(A ∩ B) = { (σ,µ) : S(σ,µ) ∈ A ∩ B } = footprint(A) ∩ footprint(B)
+```
+
+and likewise for `∪` and complement. A cutter's footprint on the sheet may therefore be assembled
+from its pieces **in the 2-D domain** with no loss — this is an identity, not a bound. It is the
+licence for the whole approach and the reason no 3-D boolean kernel appears anywhere
+(`docs/agent-glossary.md`: reference bodies are predicates only).
+
+Two views follow, and the spec keeps them apart:
+
+- **Predicate view** (containment, side choice): project the 3-D point onto the frame plane —
+  through the apex, §4 — then test membership in the region. Both maps are rational, so this is
+  exact and cheap.
+- **Boundary view** (the cut curve on the sheet): pull each profile *edge*'s wall back to a rail,
+  which is what `develop::cut` already does per surface.
+
+### 2.2 The surface-class table
+
+The wall class is decided by the profile edge class, and the apex does not change it:
+
+| profile edge | apex at infinity (`w = 0`) | finite apex (`w ≠ 0`) |
+|---|---|---|
+| line segment | **Plane** | **Plane** (through the apex and the edge) |
+| circular arc | **Cylinder** | **Cone** |
+
+Everything stays degree ≤ 2, so every wall pulls back to the existing deg-≤2 rail machinery over
+ℚ(σ). **`CutSurface::Cone` is the only new surface in this milestone.** A cast point costs no more
+than a drill does: it swaps a translation for a projection, and both are rational.
+
+## 3. The frame, and why it is affine rather than orthonormal
+
+A frame is an origin `o` and two independent spanning vectors `u, v`, all rational. A profile point
+`(a, b)` maps to `o + a·u + b·v`, an exact rational affine map; the plane normal is `u × v`, also
+rational.
+
+Requiring `u ⊥ v` with `|u| = |v| = 1` would be a trap: rational orthonormal frames exist only for
+special normals, so a general picked frame could not be represented exactly. The affine frame has no
+such restriction, and **the surface-class table above is unaffected** — under a non-orthonormal
+frame a profile "circle" maps to an ellipse in 3-D, whose cylinder/cone is still a quadric.
+
+The consequence is honest rather than hidden: a circle drawn in frame coordinates is a circle *in
+those coordinates*, and is a true metric circle only when the frame is orthonormal. The frame
+therefore **reports its metric distortion** (how far `u·v`, `|u|²−|v|²` are from zero) so a caller
+that needs a true circle can see that it has one. Where a true-metric frame is wanted, note that
+rational points on the unit sphere are dense — a picked normal can be snapped to a rational unit
+vector as closely as required.
+
+## 4. The apex is one homogeneous point
+
+```text
+Apex = [a : w]        w ≠ 0  →  finite cast point
+                      w = 0  →  direction (today's parallel drill)
+```
+
+A parallel extrusion *is* a projection from a point at infinity, so these are one object, not two
+variants. The generatrix through profile point `Q` is the line joining `[Q:1]` and `[a:w]`; the wall
+over a profile edge is the plane spanned by the edge's endpoints and the apex — a single
+determinant, which at `w = 0` yields the plane containing direction `a`. One formula, one code path,
+**one cut-fit certificate derivation** instead of two.
+
+This is idiomatic for this kernel rather than clever: `σ = tan(φ/2)` is already a projective
+parameter, and Stage 2's seam result was that the seam sits at `σ = ±∞` and is removed by the exact
+Möbius `σ' = −1/σ`. Treating "parallel" as "apex at infinity" is the same move, and it avoids
+re-introducing the coordinate-singularity special-casing that re-centering exists to remove.
+
+`w == 0` is an exact test on `Rat` — no float, no tolerance. Ergonomics are recovered with
+`Apex::direction(d)` / `Apex::point(p)` over homogeneous storage. A useful side effect: pushing the
+apex outward degrades the taper to parallel continuously, with no API discontinuity.
+
+### 4.1 Two validity conditions, both fail-closed and exact
+
+- **One nappe.** A finite apex generates a *double* cone. The cutter is the single nappe on the
+  authored side; without this the cut reappears mirrored beyond the apex.
+- **Apex clearance.** An apex lying between the frame plane and the surface being cut inverts
+  "inside". That is a refusal (`Refuted`), never a repair.
+
+## 5. The span counts neutral-surface hits
+
+Along the reference ray, the neutral surfaces met are ordered by ray parameter, and the span selects
+which are cut:
+
+```text
+Span = ToNext | NextN(k) | Through | Range(start..=end)
+```
+
+**Two ordinal modes exist; this milestone builds the first.**
+
+- **Reference ray** (built): one ray — the pick ray, or a designated profile point — fixes the
+  ordinal for the whole cut.
+- **Per-generatrix** (deferred, §8): each generatrix terminates on its own hit count, so the cut
+  depth varies across the profile.
+
+The ordering must handle **the same chart hit twice by one ray**, which is not hypothetical: the
+self-lapping cone's flap laps its body, so a ray through the lap meets two neutral surfaces. That
+case is the acceptance test (§7) precisely because a layer-index model would get it wrong.
+
+## 6. What has to change in existing code
+
+- `Cutter::surface() -> CutSurface` (`crates/author/src/part.rs:119`) cannot survive — an extruded
+  cutter has many walls. It becomes a walk yielding the wall surfaces plus the projective predicate.
+- `crates/author/src/resolve.rs:521` special-cases `Subtract` + `Cutter::Cylinder` when choosing σ
+  sample stations. An extruded cutter would silently receive no targeted stations and drop small
+  features between cells. This generalizes to "the σ-windows where any wall of the cutter is
+  active" — a de-ossification in the sense of the standing rule, not an addition beside it.
+- `crates/author/src/realize.rs:223` dispatches per `Cutter` variant; same treatment.
+
+## 7. Slices
+
+| slice | content |
+|---|---|
+| **AUTH.1.0** | this document + `vv-guide` criteria + `vv-matrix` rows + tasks (the GO-gate) |
+| **AUTH.1a** | `Apex` (homogeneous) + `CutSurface::Cone` + its pullback in `cut_mu_form`; the §4.1 refusals |
+| **AUTH.1b** | `Frame` (affine, with reported distortion) + profile-edge → wall mapping + the projective inside predicate |
+| **AUTH.1c** | ray-pick frames: float search → rational snap → **backward-error certificate** (§9) |
+| **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test |
+| **AUTH.1e** | `Cutter::Extrude` wired into `Part`; de-ossify `resolve.rs` / `realize.rs` (§6) |
+| **AUTH.1f** | acceptance demo through develop → fold → STEP; full gate; vv-matrix rows to ✅ |
+
+**Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
+the lap satisfies: `ToNext` cuts the flap only; `NextN(2)` and `Through` cut flap **and** body. No
+new fixture — the geometry is already certified, so the test measures span semantics rather than
+re-testing the device.
+
+## 8. Deferred, deliberately
+
+Recorded so they read as scope decisions rather than oversights:
+
+- **Per-edge draft slope.** A single apex forces one projective taper and cannot give edge A 5° and
+  edge B 0°, which is real fab practice. Wanted later; not required now.
+- **p-curve profile edges.** Lines and arcs keep every wall a plane-or-quadric. Admitting the PC
+  p-curves would push walls past degree 2 and into new certificate territory.
+- **Per-generatrix span** (§5).
+- **Cutting a real stackup** (per-layer, §1), once a stackup exists in the flow.
+
+## 9. Ray pick is a search, not a certificate
+
+A ray meeting a rational developable solves a polynomial, so the hit point is in general
+**algebraic**. Carrying it as such would push `AlgReal` arithmetic into every downstream cut.
+
+Instead this follows the split MAP.1 established for `fold`: the float ray-cast is a *search*; the
+frame it produces is **snapped to exact rationals** and then certified by backward error — "this
+rational frame lies within ε of a true surface hit, with its in-plane direction within δ of the
+local ruling". Everything downstream stays exactly rational, and the searcher may be replaced freely
+without touching the certificate, which is the same property that let MAP.1 swap the bisection.

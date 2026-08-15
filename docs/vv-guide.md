@@ -1888,6 +1888,55 @@ SHEAR δ=18/65≈0.28 mm ∧ CLEAR), and the two sheets emit as **two certified 
 each OCCT `audit valid ∧ free_edges==0 ∧ nonmanifold==0`). Both product directions, on the real γ≠0
 self-lapping geometry, bonded — the flex-PCB spine's acceptance.
 
+### AUTH.1 acceptance criteria (the sketch-extrude cutter — frame × profile × apex × span)
+
+Full design in [`cutter-extrude-design.md`](cutter-extrude-design.md). The step-1 blocker: authoring
+a real substrate boundary needs cuts defined by a **2-D arrangement placed in a plane and extruded**,
+with taper and with control over how deep the cut reaches. Cuts here happen **before any stackup
+exists**, so a span counts **neutral surfaces** (chart embeddings), not copper layers and not faces.
+
+**AUTH.1a — the apex and the cone.** One homogeneous `Apex = [a : w]` covers both extrusion modes
+(`w = 0` is today's parallel drill, `w ≠ 0` a finite cast point), so the generatrix and the wall
+plane are one formula and the cut-fit certificate is derived once. `CutSurface::Cone` is the only new
+surface: by the surface-class table a wall is a Plane for a line edge, and a Cylinder (`w = 0`) or
+Cone (`w ≠ 0`) for an arc edge, so everything stays degree ≤ 2 over ℚ(σ). `w == 0` is an exact `Rat`
+test. Both §4.1 validity conditions **refuse** rather than repair: a cutter must be the single nappe
+on the authored side, and an apex between the frame plane and the cut surface (which inverts
+"inside") is `Refuted`.
+
+**AUTH.1b — frame and profile.** The frame is affine — origin plus two independent rational spanning
+vectors — because rational *orthonormal* frames exist only for special normals and a picked frame
+could not otherwise be represented exactly. The frame reports its metric distortion, so a caller
+needing a true metric circle can tell whether it has one. The profile is an `arrange2d` region with
+its existing inside designation: non-convex profiles and holes need **no** decomposition and no
+polygon-CSG layer. The inside predicate is projection-through-the-apex followed by point-in-region,
+both rational hence exact.
+
+**AUTH.1c — ray-pick frames are certified by backward error.** A ray meeting a rational developable
+solves a polynomial, so the hit is algebraic; carrying it as such would push `AlgReal` into every
+downstream cut. The float ray-cast is therefore a **search**, and the rational frame it produces
+carries a certificate bounding its distance to a true surface hit and its in-plane direction against
+the local ruling — the same search/certificate split MAP.1 installed in `fold`, and testable the same
+way: the certificate must hold under a deliberately degraded searcher.
+
+**AUTH.1d — the span, and the criterion that distinguishes it from a layer index.** `ToNext |
+NextN(k) | Through | Range(start..=end)` over the neutral surfaces the reference ray meets, ordered
+by ray parameter. **The named test:** on the self-lapping cone, a ray through the lap meets the same
+chart twice, so `ToNext` cuts the flap only while `NextN(2)` and `Through` cut flap **and** body. No
+new fixture — the geometry is already certified, so the test measures span semantics rather than
+re-testing the device. A ray that misses, or grazes within tolerance, is `Unresolved`/`Refuted`.
+
+**AUTH.1e — no special case survives the generalization.** `Cutter::surface() -> CutSurface` cannot
+represent a multi-wall cutter and is replaced; the `Subtract`+`Cutter::Cylinder` station-sampling
+special case in `resolve.rs` becomes "the σ-windows where any wall is active" — otherwise an extruded
+cutter gets no targeted stations and drops small features between cells. Existing `HalfSpace` and
+`Cylinder` cutters keep working, with their pinned ε and chord goldens unchanged.
+
+**AUTH.1f — the demo cuts something real.** A drafted, spanned cut authored on a picked frame, taken
+through develop → fold → STEP: per-stage `Verified`, the emitted geometry checked **faithful to the
+authored profile** (not merely certificate-green), OCCT `audit valid ∧ free_edges == 0`, and the full
+gate. vv-matrix rows go ✅ and `[AUTH.1]` joins the landed set in `cargo xtask lint`.
+
 ---
 
 ## 9. Sequencing
