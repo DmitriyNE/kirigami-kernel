@@ -81,19 +81,25 @@
           pkgs.jq
         ];
 
-        # OCCT is a **runtime** dependency of anything built with `--features step`, and
-        # the build only ever declares it at LINK time (`cargo:rustc-link-search`). A
-        # binary that nix's ld-wrapper happens to give an rpath still loads; one that
-        # does not — notably **rustdoc's doctest binaries**, which cargo links without
-        # passing build-script link args — cannot find `libTKDESTEP.so` at load and dies
-        # with "error while loading shared libraries".
+        # **rustdoc's doctest binaries resolve nothing from the store at load time.** They are
+        # linked without the build script's link args, and without whatever rpath nix's
+        # ld-wrapper gives an ordinary `cargo test` binary — so a `--features step` doctest
+        # dies with "error while loading shared libraries" on the first store library it needs.
         #
-        # That went unnoticed for as long as every machine running it had OCCT reachable
-        # some other way. On a minimal runner with nothing installed globally there is
-        # nothing to fall back on, so the missing declaration surfaces. Declare it.
-        occtRuntimePath = ''
-          export LD_LIBRARY_PATH="${pkgs.opencascade-occt}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          export DYLD_FALLBACK_LIBRARY_PATH="${pkgs.opencascade-occt}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+        # OCCT was merely the *first* one, not the only one. Declaring `opencascade-occt`
+        # alone moved the CI error from `libTKDESTEP.so.7.9` to `libstdc++.so.6` (run
+        # 31891909829) — the C++ runtime the cc-wrapper normally supplies. Hence the list:
+        # every store library those binaries must find at load, named explicitly.
+        #
+        # It went unnoticed for as long as every machine running it had these reachable some
+        # other way; a minimal runner with nothing installed globally has nothing to fall back
+        # on. Linux-only for the C++ runtime: darwin resolves `libc++` through DYLD from the
+        # SDK and `stdenv.cc.cc` there has no such output.
+        doctestRuntimeLibs =
+          [ pkgs.opencascade-occt ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc ];
+        doctestRuntimePath = ''
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath doctestRuntimeLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export DYLD_FALLBACK_LIBRARY_PATH="${pkgs.lib.makeLibraryPath doctestRuntimeLibs}''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
         '';
 
         # `lake`/`git`-in-lake break under the darwin C-toolchain's DEVELOPER_DIR/
@@ -117,7 +123,7 @@
             echo "kirigami dev shell:  $(rustc --version 2>/dev/null || echo 'rust not on PATH')" >&2
             echo "  Lean via elan; run \`nix develop .#extraction\` for hax/charon/aeneas" >&2
             ${leanEnvNote}
-            ${occtRuntimePath}
+            ${doctestRuntimePath}
           '';
         };
 
