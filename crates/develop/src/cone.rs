@@ -21,7 +21,7 @@
 //! *corroborates* it (see `docs/spike-development-report.md`).
 
 use crate::interval::{
-    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on_slope, log, pi,
+    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on_slope_n, log, pi,
     pi_half, sin_on, sqrt, sqrt_on,
 };
 use certify_core::Verdict;
@@ -644,23 +644,19 @@ impl<B: Backend> ConeDevelopment<B> {
             n => n,
         };
         // One cell of the grid, by the same rule the direct quadrature applies to a subinterval.
+        // Both components in ONE pass. Integrating them separately called `directrix_velocity`
+        // (and `directrix_accel`) twice per point — each returns `[x, y]` and each call discarded
+        // half of it — so every γ integrand evaluation happened twice. See
+        // [`integrate_on_slope_n`].
         let cell = |a: &Rat<B>, b: &Rat<B>| -> Option<[RatIv<B>; 2]> {
             crate::counters::bump_gamma_cell();
-            let gx = integrate_on_slope(
-                |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
-                |p| self.directrix_accel(d, p, cfg).map(|f| f[0].clone()),
+            integrate_on_slope_n(
+                |p| self.directrix_velocity(d, p, cfg),
+                |p| self.directrix_accel(d, p, cfg),
                 a,
                 b,
                 1,
-            )?;
-            let gy = integrate_on_slope(
-                |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
-                |p| self.directrix_accel(d, p, cfg).map(|f| f[1].clone()),
-                a,
-                b,
-                1,
-            )?;
-            Some([gx, gy])
+            )
         };
 
         // Anchor a table at `lo`, sized from this query, unless a usable one is already cached.

@@ -1657,6 +1657,35 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **A vector-valued integrand integrated component-by-component evaluates itself once per
+  component.** OPT.2.2. `directrix_accumulated`'s cell integrated `γ` by calling
+  `integrate_on_slope` twice — once with `|p| directrix_velocity(..).map(|f| f[0])`, once with
+  `f[1]`. But `directrix_velocity` (and `directrix_accel`) return **both** components in one call, so
+  each was computed twice and half of each result thrown away. **Every γ integrand evaluation
+  happened twice.**
+  **MEASURED:** `gamma_velocity` 4 896 → **2 640**; `self_lapping`'s develop **85.1s → 58.9s (−31%)**;
+  `flex_panel` (γ≡0) unchanged at 25.8s, which is the check — a change that sped up the γ≡0 fixture
+  would mean something other than the γ integrand had moved. `gamma_cells` and `cut_evals` both
+  unchanged. The residual decomposes exactly: solving `2a + b = 4896`, `a + b = 2640` gives
+  a = 2 256 (one per γ cell, precisely the cell count) and b = 384 (96 lift-bound edges × subdiv 4,
+  the direct `directrix_between_on` tail term) — nothing unexplained.
+  FIX: `integrate_on_slope_n`, the same slope rule generalised over `N` components, evaluating the
+  integrand once per point. The scalar form is now the `N = 1` wrapper, so there is ONE
+  implementation of the rule and no second copy to drift.
+  **THE PROCESS POINT, which is why this was found at all.** The plan was "make each evaluation
+  faster" (the transcendental series at `terms: 14`). Settling *is the count honest?* first was what
+  exposed the doubling — a per-eval speedup would have multiplied against a doubled base and left
+  the waste in place, permanently, looking like a win. Three hypotheses died on the way: anchor-piece
+  over-splitting (exactly 1 piece/edge), `develop_arc` (224 of 4 896), and the code path itself
+  (predicted 384 against 3 392 measured — the 8.8× gap that had to come from somewhere).
+  **AND IT WAS ONLY VISIBLE BECAUSE THE COUNTER HAD JUST BEEN ADDED** one commit earlier: wall clock
+  cannot see it, and `gamma_cells` counts *cells*, which never changed. The instrumentation gap and
+  the waste were the same finding twice.
+  RIDER: the first budget for the new counter was 1.4× of the *pre-fix* 4 896 = 6 900, which could
+  not have caught a revert (4 896 < 6 900). Re-baselined to 3 700. A budget that cannot detect the
+  regression it was written for is decoration.
+  *2026-08-15 · finding · `crates/develop/src/{interval,cone}.rs`, task #233 (OPT.2.2)*
+
 - **Rational ADDITION multiplies denominators — five unrounded ops turned 18 digits into 120, on
   every evaluation.** OPT.2.1. `develop::cut` carried ZERO `.rounded()` calls against `cone.rs`'s 37
   and `interval.rs`'s 16; it never adopted the DEV.2a outward-rounding discipline. `eval_ratfunc_on`

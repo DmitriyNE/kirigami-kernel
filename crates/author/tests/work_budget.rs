@@ -31,14 +31,23 @@ use lattice::Bignum;
 const GAMMA_CELLS_MAX: u64 = 3_200;
 const CUT_EVALS_MAX: u64 = 5_800;
 
-/// The γ **integrand** budget — measured 4 896 `γ′` evaluations on the same device, so ~1.4× above.
+/// The γ **integrand** budget — measured **2 640** `γ′` evaluations on the same device, so ~1.4×.
 ///
 /// This one exists because the gate had a hole. `gamma_cells` counts the quadrature grid, but every
-/// *interval* γ query also evaluates the integrand once, and nothing counted those: 2 256 counted
-/// against 4 896 uncounted, i.e. the budget was watching about a third of the γ work. A change that
-/// doubled the velocity evaluations — the dominant cost of the unroll's lift bound — would have
-/// passed untouched. Counted separately so the 2 256 baseline above keeps meaning what it says.
-const GAMMA_VELOCITY_MAX: u64 = 6_900;
+/// *interval* γ query also evaluates the integrand once, and nothing counted those. Counted
+/// separately so the 2 256 baseline above keeps meaning what it says.
+///
+/// The number it first recorded was **4 896**, because the cell integrator called
+/// `directrix_velocity` (and `directrix_accel`) once per COMPONENT — each returns `[x, y]`, and
+/// each call discarded half — so every γ integrand evaluation happened twice. `integrate_on_slope_n`
+/// integrates both components in one pass; the count halved to 2 640 and `self_lapping`'s develop
+/// fell 85.1s → 58.9s. The residual decomposes exactly: 2 256 (one per γ cell) + 384 (96 lift-bound
+/// edges × subdiv 4, the direct `directrix_between_on` tail term).
+///
+/// **Kept tight on purpose.** At the old 6 900 this gate could not have caught a revert of that fix
+/// — 4 896 would have passed. A budget that cannot detect the regression it was written for is
+/// decoration.
+const GAMMA_VELOCITY_MAX: u64 = 3_700;
 
 fn device() -> Part<Bignum> {
     acceptance::self_lapping_cone(16, 8, true)
