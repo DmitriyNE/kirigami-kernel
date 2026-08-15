@@ -19,6 +19,7 @@ pub mod bonded;
 pub mod cone;
 pub mod counters;
 pub mod cut;
+pub mod extrude;
 pub mod flat;
 pub mod fold;
 pub mod interval;

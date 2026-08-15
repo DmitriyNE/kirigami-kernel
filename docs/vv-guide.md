@@ -1895,14 +1895,25 @@ a real substrate boundary needs cuts defined by a **2-D arrangement placed in a 
 with taper and with control over how deep the cut reaches. Cuts here happen **before any stackup
 exists**, so a span counts **neutral surfaces** (chart embeddings), not copper layers and not faces.
 
-**AUTH.1a — the apex and the cone.** One homogeneous `Apex = [a : w]` covers both extrusion modes
-(`w = 0` is today's parallel drill, `w ≠ 0` a finite cast point), so the generatrix and the wall
-plane are one formula and the cut-fit certificate is derived once. `CutSurface::Cone` is the only new
-surface: by the surface-class table a wall is a Plane for a line edge, and a Cylinder (`w = 0`) or
-Cone (`w ≠ 0`) for an arc edge, so everything stays degree ≤ 2 over ℚ(σ). `w == 0` is an exact `Rat`
-test. Both §4.1 validity conditions **refuse** rather than repair: a cutter must be the single nappe
-on the authored side, and an apex between the frame plane and the cut surface (which inverts
-"inside") is `Refuted`.
+**AUTH.1a — the apex and the wall.** One homogeneous `Apex = [a : w]` covers both extrusion modes
+(`w = 0` is today's parallel drill, `w ≠ 0` a finite cast point), so the generatrix and the wall are
+one formula and the cut-fit certificate is derived once. `w == 0` is an exact `Rat` test. A wall is a
+Plane for a segment edge and `CutSurface::Quadric` — the general `XᵀMX + b·X + c = 0` on one nappe —
+for an arc edge, so everything stays degree ≤ 2 over ℚ(σ). The general form is not optional: a cone
+over a circle from an apex off *that circle's* axis is oblique, hence elliptic, and an affine frame
+makes a profile circle an ellipse to begin with. Both §4.1 validity conditions **refuse** rather than
+repair, and they are one runtime check, because the apex sits on the nappe selector's own boundary:
+the cutter is the single nappe on the authored side, and a band that reaches the apex — where
+"inside" inverts — is `Refuted`.
+
+A quadric has **no closed-form distance**, so the certificate uses the first-order gradient-flow
+bound, whose hypotheses (`|∇F| ≥ g > 0` on the working ball, `|F|/g ≤ R`) are discharged per box at
+runtime. Two things must be shown, not assumed: that the general wall really *is* the special
+surface it generalizes (an extruded metric circle must pull back to the metric cylinder's own
+µ̂-form, up to scale), and that the bound tracks a distance that is independently known — against the
+exact cylinder distance, and against exactly-known geometry. Its limit is stated rather than hidden:
+the working ball must avoid the surface's singular locus, so an error comparable to the feature's own
+radius reads `Unresolved`.
 
 **AUTH.1b — frame and profile.** The frame is affine — origin plus two independent rational spanning
 vectors — because rational *orthonormal* frames exist only for special normals and a picked frame

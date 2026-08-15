@@ -670,6 +670,38 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A drafted round hole is not a round cone, and AUTH.1a's surface-class table said it was.** The
+  GO-gate's table (`docs/cutter-extrude-design.md` §2.2) mapped *arc + finite apex* to a `Cone` and
+  *arc + direction* to the existing `Cylinder`, meaning the two metric surfaces the kernel already
+  had. Both cells are wrong, for two reasons that are independent — either one alone forces the
+  general form. **(1)** The cone over a circle from an apex **off that circle's own axis** is an
+  *oblique* circular cone, which as a quadric is an **elliptic** cone, not a right circular one. A
+  cutter has one cast point serving the whole profile, so it is off-axis for all but one of the
+  profile's arcs — the on-axis case is the exception, not the rule. **(2)** Under the *affine* frame
+  §3 argues for, a profile "circle" is already an ellipse in 3-D, so even the parallel case sweeps an
+  elliptic cylinder. Resolved with **one** new variant, `CutSurface::Quadric` (general `XᵀMX+b·X+c`
+  on one `Nappe`), which is *fewer* new variants than the table implied while being strictly more
+  general; `Plane`/`Cylinder` keep their exact closed-form distances untouched. The knock-on is the
+  real cost: a general quadric **has no closed-form distance**, so the certificate needed new
+  machinery — the first-order gradient-flow bound (see the next entry). Worth noting how the error
+  survived review: the table was checked for *degree* (everything stays ≤ 2, which is true and is
+  what the pullback needs) and that was silently read as also fixing the *metric class*, which it
+  does not.
+
+- **The first-order distance bound wants headroom, and says so.** `Plane` and `Cylinder` have exact
+  distances; a quadric gets `dist ≤ |F|/g` from the gradient-flow lemma, valid when `|∇F| ≥ g > 0` on
+  a ball `B̄(X, R)` and `|F|/g ≤ R`. Three things fell out while building it. **The hypothesis is
+  free**: the largest useful `R` is `clearance/2`, which is exactly the DRC gate, so the lemma holds
+  on precisely the runs that end `Verified`. **`R` must be searched small-first**: `g` is a minimum
+  over the ball, so a smaller ball gives a tighter ε — always using the ceiling would inflate ε by
+  the ratio of the clearance to the true error, i.e. by the whole quantity being measured. And the
+  bound **cannot** work when the ball reaches the surface's singular locus (a cone's apex, a
+  cylinder's axis): measured on the device's `R = 1/5` drill, an error of `5·10⁻⁴` certifies at 1.4×
+  the exact distance, while an error of `6·10⁻²` — a chord across a third of the hole — is
+  `Unresolved`. That is the honest verdict rather than a defect: at that scale "distance to the
+  surface" is not a first-order quantity. The test that first hit this was measuring the wrong thing
+  (a deliberately-coarse chord rail) and its failure was the finding.
+
 - **The axiom gate was rejecting the one axiom the docs say it should accept — and its parser could
   have missed a real one.** `main` has been CI-red since 2026-08-09 on the Lean step, with the build
   itself clean (8823 jobs, every footprint `[propext, Classical.choice, Quot.sound]`) and the failure

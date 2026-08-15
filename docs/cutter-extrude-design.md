@@ -58,11 +58,28 @@ The wall class is decided by the profile edge class, and the apex does not chang
 | profile edge | apex at infinity (`w = 0`) | finite apex (`w ≠ 0`) |
 |---|---|---|
 | line segment | **Plane** | **Plane** (through the apex and the edge) |
-| circular arc | **Cylinder** | **Cone** |
+| circular arc | **elliptic cylinder** | **elliptic cone** |
 
 Everything stays degree ≤ 2, so every wall pulls back to the existing deg-≤2 rail machinery over
-ℚ(σ). **`CutSurface::Cone` is the only new surface in this milestone.** A cast point costs no more
-than a drill does: it swaps a translation for a projection, and both are rational.
+ℚ(σ). **One new surface covers both right-hand cells: `CutSurface::Quadric`** — the general
+`XᵀMX + b·X + c = 0` on one nappe. A cast point costs no more than a drill does: it swaps a
+translation for a projection, and both are rational.
+
+> **Correction, made while building AUTH.1a.** An earlier draft of this table said *Cylinder* and
+> *Cone*, meaning the two metric surfaces the kernel already had. Both cells are wrong at that
+> reading, for two independent reasons, and either one alone forces the general form:
+>
+> - The cone over a circle from an apex **off that circle's own axis** is an *oblique* circular
+>   cone, which is a general quadric cone (elliptic sections), not a right circular one. A single
+>   cast point serves the whole profile, so it is off-axis for all but one of the profile's arcs.
+> - Under an **affine** frame (§3) a profile "circle" is already an ellipse in 3-D, so even the
+>   parallel case sweeps an elliptic cylinder.
+>
+> The general form is *fewer* new variants than the table originally implied, not more, and the
+> existing `Plane`/`Cylinder` keep their exact closed-form distances untouched.
+
+The price of generality is that a quadric has **no closed-form distance**, which the certificate has
+to supply some other way — see §4.2.
 
 ## 3. The frame, and why it is affine rather than orthonormal
 
@@ -72,8 +89,10 @@ rational.
 
 Requiring `u ⊥ v` with `|u| = |v| = 1` would be a trap: rational orthonormal frames exist only for
 special normals, so a general picked frame could not be represented exactly. The affine frame has no
-such restriction, and **the surface-class table above is unaffected** — under a non-orthonormal
-frame a profile "circle" maps to an ellipse in 3-D, whose cylinder/cone is still a quadric.
+such restriction, and it costs the surface-class table nothing **now that the table is stated over
+quadrics** — under a non-orthonormal frame a profile "circle" maps to an ellipse in 3-D, whose
+cylinder or cone is still degree 2. (It is one of the two reasons the table's earlier metric reading
+did not survive; see the correction in §2.2.)
 
 The consequence is honest rather than hidden: a circle drawn in frame coordinates is a circle *in
 those coordinates*, and is a true metric circle only when the frame is orthonormal. The frame
@@ -111,6 +130,35 @@ apex outward degrades the taper to parallel continuously, with no API discontinu
 - **Apex clearance.** An apex lying between the frame plane and the surface being cut inverts
   "inside". That is a refusal (`Refuted`), never a repair.
 
+Both are **one check** in the built cutter, because the apex sits exactly on the boundary plane of
+the nappe selector: requiring the selector *strictly*, over the whole working ball, refuses the
+mirror nappe and the apex neighbourhood together. A third, build-time condition joins them —
+`ExtrudeFault::ApexInPlane`, the apex lying in the profile's own plane, where a finite apex sees the
+profile edge-on and a direction extrudes parallel to it.
+
+### 4.2 The cut-fit certificate for a quadric wall
+
+`Plane` and `Cylinder` carry closed-form distances; a general quadric does not, so its certificate
+uses a **first-order bound**: if `|∇F| ≥ g > 0` on the ball `B̄(X, R)` and `|F(X)| ≤ gR`, then
+`{F = 0}` meets that ball within `|F(X)|/g` of `X` (gradient flow; `F` falls at unit rate while the
+path advances at speed `≤ 1/g`).
+
+Three properties make this fit the existing DRC rather than sit beside it:
+
+- **The hypothesis is the gate.** The bound must fit inside its own ball, and the largest ball worth
+  trying has `R = clearance/2` — which is exactly the DRC threshold. So the lemma holds on precisely
+  the runs that end `Verified`.
+- **It is self-validating.** It never has to be told that `M` really describes a cone: a quadric with
+  no real points nearby cannot pass, because the hypotheses it would need are the ones that fail.
+- **`R` is searched from small upward**, since `g` is a minimum over the ball and a smaller ball has
+  a larger one. A rail actually on the surface succeeds at the smallest `R` on the first try.
+
+Its limit is worth stating plainly: the ball must avoid the surface's **singular locus** (a cone's
+apex, a cylinder's axis), so a cut whose error is an appreciable fraction of the feature's own radius
+cannot be bounded. Measured on the device's `R = 1/5` drill: error `5·10⁻⁴` certifies at 1.4× the
+exact distance; error `6·10⁻²` reads `Unresolved`. That is the right verdict — at that scale the
+distance to the surface is no longer a first-order quantity.
+
 ## 5. The span counts neutral-surface hits
 
 Along the reference ray, the neutral surfaces met are ordered by ray parameter, and the span selects
@@ -146,7 +194,7 @@ case is the acceptance test (§7) precisely because a layer-index model would ge
 | slice | content |
 |---|---|
 | **AUTH.1.0** | this document + `vv-guide` criteria + `vv-matrix` rows + tasks (the GO-gate) |
-| **AUTH.1a** | `Apex` (homogeneous) + `CutSurface::Cone` + its pullback in `cut_mu_form`; the §4.1 refusals |
+| **AUTH.1a** | `Apex` (homogeneous) + `CutSurface::Quadric` + its pullback in `cut_mu_form`; the §4.1 refusals; the §4.2 first-order distance bound — **done** (`develop::extrude`) |
 | **AUTH.1b** | `Frame` (affine, with reported distortion) + profile-edge → wall mapping + the projective inside predicate |
 | **AUTH.1c** | ray-pick frames: float search → rational snap → **backward-error certificate** (§9) |
 | **AUTH.1d** | the span over neutral surfaces, reference-ray mode, with the lap test |

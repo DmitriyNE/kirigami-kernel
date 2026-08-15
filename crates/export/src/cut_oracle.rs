@@ -46,6 +46,11 @@ pub fn fit_cut_rail<B: Backend>(
     bits: u32,
 ) -> Option<RatFunc<B>> {
     match surface {
+        // A graph rail `µ̂ = f(σ)` cannot follow a wall that turns around in σ, which a general
+        // quadric wall routinely does, so this oracle declines rather than fitting half of one. The
+        // general path for those is `develop::cut::quadric_cut_loop` — it walks both branches of the
+        // µ̂-quadratic through their tangent rulings and needs no fit at all.
+        CutSurface::Quadric(_) => None,
         CutSurface::Plane { n, d } => Some(plane_cut_rail(chart, n, d)),
         CutSurface::Cylinder {
             axis_point,

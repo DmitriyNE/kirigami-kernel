@@ -136,6 +136,19 @@ fn clone_surface<B: Backend>(s: &CutSurface<B>) -> CutSurface<B> {
             ],
             r2: r2.clone(),
         },
+        CutSurface::Quadric(q) => CutSurface::Quadric(Box::new(develop::cut::Quadric {
+            m: core::array::from_fn(|i| core::array::from_fn(|j| q.m[i][j].clone())),
+            b: [q.b[0].clone(), q.b[1].clone(), q.b[2].clone()],
+            c: q.c.clone(),
+            nappe: develop::cut::Nappe {
+                n: [
+                    q.nappe.n[0].clone(),
+                    q.nappe.n[1].clone(),
+                    q.nappe.n[2].clone(),
+                ],
+                d: q.nappe.d.clone(),
+            },
+        })),
     }
 }
 

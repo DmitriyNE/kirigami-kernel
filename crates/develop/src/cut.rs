@@ -21,7 +21,7 @@
 //! never a wrong [`Verified`](Verdict::Verified). No float enters this certificate.
 
 use crate::cone::DevConfig;
-use crate::interval::{RatIv, abs_on, eval_ratfunc_on, sqrt, sqrt_on};
+use crate::interval::{ROUND_BITS, RatIv, abs_on, eval_ratfunc_on, sqrt, sqrt_on};
 use certify_core::Verdict;
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Vec3Rat};
@@ -48,6 +48,109 @@ pub enum CutSurface<B: Backend = Bignum> {
         /// The squared radius `R²` (positive).
         r2: Rat<B>,
     },
+    /// A general quadric `{ Xᵀ M X + b·X + c = 0 }`, restricted to the [`Nappe`] half-space.
+    ///
+    /// This is the wall an extruded profile *arc* sweeps
+    /// ([`ellipse_wall`](crate::extrude::ellipse_wall)): an elliptic **cone** under a finite cast
+    /// point, an elliptic **cylinder** under a direction. Neither is in general one of the two
+    /// special surfaces above — the cone over a circle from an apex *off* the circle's own axis is
+    /// oblique, hence elliptic, and a circle authored in a non-orthonormal frame is an ellipse to
+    /// begin with — so this variant carries the general degree-2 form rather than a metric
+    /// parametrization it could not always represent.
+    ///
+    /// Only the **symmetric part** of `m` affects the surface, and the checker uses `M + Mᵀ` for the
+    /// gradient, so an asymmetric `m` is harmless rather than a silent wrong answer.
+    ///
+    /// Unlike the two above, this surface has no closed-form distance: its certificate uses the
+    /// first-order bound in [`cut_fit`], which is why it is the one arm that needs to know the
+    /// clearance.
+    Quadric(Box<Quadric<B>>),
+}
+
+/// The coefficients of a [`CutSurface::Quadric`]: `{ Xᵀ M X + b·X + c = 0 }` on one [`Nappe`].
+///
+/// Boxed inside the enum because it is three times the size of the two special surfaces, which are
+/// what the existing pipelines pass around by value.
+#[derive(Clone)]
+pub struct Quadric<B: Backend = Bignum> {
+    /// The quadratic coefficient matrix `M`.
+    pub m: [[Rat<B>; 3]; 3],
+    /// The linear coefficient `b`.
+    pub b: [Rat<B>; 3],
+    /// The constant coefficient `c`.
+    pub c: Rat<B>,
+    /// The nappe selector — which half of a double cone is the authored cutter.
+    pub nappe: Nappe<B>,
+}
+
+/// The half-space `{ n·X > d }` that selects **one nappe** of a quadric cone.
+///
+/// A finite apex generates a *double* cone, and only the nappe on the authored side is the cutter;
+/// without the selector a cut would reappear mirrored beyond the apex (`docs/cutter-extrude-design.md`
+/// §4.1). A wall with no nappe to choose — a cylinder, whose apex is at infinity — carries the
+/// **vacuous** selector `n = 0`, `d < 0`, so one formula covers both and no branch is needed.
+///
+/// The apex itself sits on the selector's boundary plane, so requiring the selector *strictly* also
+/// discharges §4.1's second condition, apex clearance: a cut band that reaches the apex — where
+/// "inside" inverts — fails the same test.
+#[derive(Clone)]
+pub struct Nappe<B: Backend = Bignum> {
+    /// The selector normal, or `0` when there is no nappe to choose.
+    pub n: [Rat<B>; 3],
+    /// The selector offset.
+    pub d: Rat<B>,
+}
+
+impl<B: Backend> CutSurface<B> {
+    /// The implicit residual at a point — **negative strictly inside** the solid cutter, zero on the
+    /// surface. `None` only for malformed surface data (a zero cylinder axis).
+    ///
+    /// This is the *predicate* view of a cut surface: it is exact, cheap, and it is what a
+    /// containment or side test wants. The *boundary* view — where the cut runs on a sheet — is
+    /// [`cut_mu_form`] instead.
+    pub fn residual(&self, x: &[Rat<B>; 3]) -> Option<Rat<B>> {
+        match self {
+            CutSurface::Plane { n, d } => Some(dot3(n, x).sub(d)),
+            CutSurface::Cylinder {
+                axis_point,
+                axis_dir,
+                r2,
+            } => {
+                let a2 = dot3(axis_dir, axis_dir);
+                if a2.sign() <= 0 {
+                    return None;
+                }
+                let v = [
+                    x[0].sub(&axis_point[0]),
+                    x[1].sub(&axis_point[1]),
+                    x[2].sub(&axis_point[2]),
+                ];
+                let av = dot3(&v, axis_dir);
+                Some(dot3(&v, &v).sub(&av.mul(&av).div(&a2)).sub(r2))
+            }
+            CutSurface::Quadric(q) => {
+                let mut acc = q.c.clone();
+                for i in 0..3 {
+                    acc = acc.add(&q.b[i].mul(&x[i]));
+                    for j in 0..3 {
+                        acc = acc.add(&q.m[i][j].mul(&x[i]).mul(&x[j]));
+                    }
+                }
+                Some(acc)
+            }
+        }
+    }
+
+    /// Whether a point lies on the **authored** nappe. Always true for a surface with no nappe to
+    /// choose; for a [`Quadric`](CutSurface::Quadric) it is the strict `n·X > d`.
+    pub fn on_nappe(&self, x: &[Rat<B>; 3]) -> bool {
+        match self {
+            CutSurface::Quadric(q) => {
+                dot3(&q.nappe.n, x).cmp(&q.nappe.d) == core::cmp::Ordering::Greater
+            }
+            _ => true,
+        }
+    }
 }
 
 /// A cut-fit certificate: a proposed ruling-rail `μ̂(σ)` (at layer offset `w`) that
@@ -96,6 +199,11 @@ pub enum CutFitFault {
     /// denominator enclosure straddling zero on a sub-interval — a possible pole, so
     /// the quotient is unbounded there. Refine, or re-author the span away from the pole.
     PoleInEval,
+    /// The traced band is not strictly on the cutter's authored [`Nappe`]: it reaches the mirror
+    /// nappe of a double cone, or it comes within the certificate's own working radius of the apex,
+    /// where "inside" inverts. Both `docs/cutter-extrude-design.md` §4.1 conditions land here, and
+    /// both are refusals — re-author the cut or move the cast point, never refine.
+    NappeCrossed,
 }
 
 /// A constant vector as a degree-0 [`Vec3Rat`] (denominator `1`), so it dots with the
@@ -463,6 +571,28 @@ pub fn cut_mu_form<B: Backend>(
                 c: c.reduce(),
             })
         }
+        CutSurface::Quadric(q) => {
+            let (m, b, c) = (&q.m, &q.b, &q.c);
+            // `F(base + µ̂·u)` expanded in µ̂. `M` enters through `M + Mᵀ` in the cross term, which
+            // is what makes an asymmetric `m` harmless.
+            let mrow = |i: usize| const_vec3(&[m[i][0].clone(), m[i][1].clone(), m[i][2].clone()]);
+            let quad = |p: &Vec3Rat<B>, q: &Vec3Rat<B>| {
+                (0..3).fold(RatFunc::zero(), |acc, i| {
+                    acc.add(&p.comp(i).mul(&q.dot(&mrow(i))))
+                })
+            };
+            // `baseᵀMu + uᵀM base` — the two orderings differ unless `m` is symmetric.
+            let cross = quad(&base, u).add(&quad(u, &base));
+            let lin = |p: &Vec3Rat<B>| p.dot(&const_vec3(b));
+            Some(MuCut {
+                a: quad(u, u).reduce(),
+                b: cross.add(&lin(u)).reduce(),
+                c: quad(&base, &base)
+                    .add(&lin(&base))
+                    .add(&RatFunc::from_poly(Poly::constant(c.clone())))
+                    .reduce(),
+            })
+        }
     }
 }
 
@@ -545,6 +675,7 @@ pub fn pcurve_cut_fit<B: Backend>(
     }
     let n_sub = subdiv.max(1);
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
+    let half = clearance.mul(&Rat::new(1, 2));
     let mut eps = Rat::from_i128(0);
     for k in 0..n_sub {
         crate::counters::bump_cut_eval();
@@ -565,13 +696,12 @@ pub fn pcurve_cut_fit<B: Backend>(
             Some(x) => x,
             None => return Verdict::Refuted(CutFitFault::PoleInEval),
         };
-        let dist = match surface_distance_on(surface, &x, cfg) {
-            Some(d) => d,
-            None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+        let dist = match surface_distance_on(surface, &x, &half, cfg) {
+            DistOn::Bound(d) | DistOn::Loose(d) => d,
+            DistOn::Fault(f) => return Verdict::Refuted(f),
         };
         eps = max_rat(eps, dist);
     }
-    let half = clearance.mul(&Rat::new(1, 2));
     if eps.cmp(&half) == Ordering::Less {
         Verdict::Verified(ValidCutFit {
             span: curve.domain.clone(),
@@ -583,6 +713,20 @@ pub fn pcurve_cut_fit<B: Backend>(
     }
 }
 
+/// A rational vector field enclosed over a parameter box. `None` where the shared denominator's
+/// enclosure straddles zero — a possible pole, so the quotient is unbounded there.
+fn vec3_on<B: Backend>(f: &Vec3Rat<B>, sig: &RatIv<B>) -> Option<[RatIv<B>; 3]> {
+    let den = eval_poly_on(f.den(), sig);
+    let inv = den
+        .recip_pos()
+        .or_else(|| den.neg().recip_pos().map(|r| r.neg()))?;
+    Some([
+        eval_poly_on(&f.num()[0], sig).mul(&inv),
+        eval_poly_on(&f.num()[1], sig).mul(&inv),
+        eval_poly_on(&f.num()[2], sig).mul(&inv),
+    ])
+}
+
 /// The ruled-surface point `pedal(σ) + µ̂·ruling(σ) + w·normal(σ)` enclosed over σ- and µ̂-boxes.
 fn chart_point_on<B: Backend>(
     chart: &Chart<B>,
@@ -590,20 +734,9 @@ fn chart_point_on<B: Backend>(
     mu: &RatIv<B>,
     w: &Rat<B>,
 ) -> Option<[RatIv<B>; 3]> {
-    let field = |f: &Vec3Rat<B>| -> Option<[RatIv<B>; 3]> {
-        let den = eval_poly_on(f.den(), sig);
-        let inv = den
-            .recip_pos()
-            .or_else(|| den.neg().recip_pos().map(|r| r.neg()))?;
-        Some([
-            eval_poly_on(&f.num()[0], sig).mul(&inv),
-            eval_poly_on(&f.num()[1], sig).mul(&inv),
-            eval_poly_on(&f.num()[2], sig).mul(&inv),
-        ])
-    };
-    let p = field(chart.pedal())?;
-    let r = field(chart.ruling())?;
-    let n = field(chart.normal())?;
+    let p = vec3_on(chart.pedal(), sig)?;
+    let r = vec3_on(chart.ruling(), sig)?;
+    let n = vec3_on(chart.normal(), sig)?;
     let wv = RatIv::point(w.clone());
     Some([
         p[0].add(&mu.mul(&r[0])).add(&wv.mul(&n[0])),
@@ -612,13 +745,46 @@ fn chart_point_on<B: Backend>(
     ])
 }
 
+/// What bounding a box's distance to a surface produced.
+enum DistOn<B: Backend> {
+    /// A **certified** upper bound: every point of the box is within this of the surface.
+    Bound(Rat<B>),
+    /// No bound certified at this box, carrying a value that is guaranteed `≥ radius` — so a caller
+    /// that folds it into `ε` and applies the `ε < radius` DRC gate can only reach `Unresolved`.
+    Loose(Rat<B>),
+    /// The surface data or the cut's placement is malformed — a refusal, not a refinement.
+    Fault(CutFitFault),
+}
+
 /// An upper bound on the geometric distance from every point of a 3-D box to a cut surface.
+///
+/// `radius` is the working radius the caller will gate on (`clearance/2`). The two special surfaces
+/// have closed-form distances and ignore it; [`CutSurface::Quadric`] has none, and uses it as the
+/// radius of the ball its first-order bound is allowed to search — see [`quadric_distance_on`].
 fn surface_distance_on<B: Backend>(
+    surface: &CutSurface<B>,
+    x: &[RatIv<B>; 3],
+    radius: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> DistOn<B> {
+    let closed_form = |d: Option<Rat<B>>| match d {
+        Some(d) => DistOn::Bound(d),
+        None => DistOn::Fault(CutFitFault::DegenerateSurface),
+    };
+    match surface {
+        CutSurface::Quadric(q) => quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, x, radius, cfg),
+        _ => closed_form(metric_distance_on(surface, x, cfg)),
+    }
+}
+
+/// The closed-form distance bound for the two surfaces that have one. `None` on degenerate data.
+fn metric_distance_on<B: Backend>(
     surface: &CutSurface<B>,
     x: &[RatIv<B>; 3],
     cfg: &DevConfig<B>,
 ) -> Option<Rat<B>> {
     match surface {
+        CutSurface::Quadric(_) => None,
         CutSurface::Plane { n, d } => {
             let inv_norm = sqrt(&dot3(n, n), &cfg.sqrt_eps).recip_pos()?;
             let res = x[0]
@@ -657,6 +823,141 @@ fn surface_distance_on<B: Backend>(
     }
 }
 
+/// The **first-order distance bound** for a quadric, which has no closed-form distance.
+///
+/// ## The lemma
+///
+/// Let `F` be `C¹` on the closed ball `B̄(X, R)`, with `|∇F| ≥ g > 0` there. If `|F(X)| ≤ gR` then
+/// `{F = 0}` meets the ball, within `|F(X)|/g` of `X`.
+///
+/// *Proof.* Take `F(X) > 0` (the other sign mirrors, `F(X) = 0` is trivial). Follow
+/// `Y' = −∇F(Y)/|∇F(Y)|²`, so `F(Y(s)) = F(X) − s` falls at unit rate while the path advances at
+/// speed `1/|∇F| ≤ 1/g`. For `s ≤ F(X) ≤ gR` the path has gone at most `s/g ≤ R`, so it is still in
+/// the ball and the solution continues; at `s = F(X)` it stands on `{F = 0}`, at most `F(X)/g`
+/// from `X`. ∎
+///
+/// ## Why the hypothesis is free, and why `R` is searched
+///
+/// The lemma needs `|F|/g ≤ R` — the bound must fit inside the ball it was derived in — and the
+/// largest `R` worth trying is `clearance/2`, since a bound bigger than that fails the caller's DRC
+/// gate anyway. So the hypothesis holds on precisely the runs that end in `Verified`: a bound too
+/// weak to satisfy it is a bound too weak to pass the gate, and nothing is certified on a
+/// hypothesis that failed.
+///
+/// Within that ceiling, `R` is **searched from small upward**, because `g` is a minimum over the
+/// ball and a smaller ball has a larger one. A rail that really is on the surface has a tiny `|F|`
+/// and succeeds at the smallest `R` on the first try; only a rail on its way to `Unresolved` pays
+/// for the search. Reporting the largest `R` that happened to work would be sound but would inflate
+/// ε by the ratio of the clearance to the true error, which is the whole quantity being measured.
+///
+/// The bound is *self-validating*: it never has to be told that `M` really describes a cone. A
+/// quadric with no real points, or none nearby, cannot pass, because the hypotheses it would need
+/// are the ones that fail.
+///
+/// ## What it will not certify
+///
+/// The ball has to avoid the surface's **singular locus** — a cone's apex, a cylinder's axis —
+/// because `∇F` dies there. Since the ball must be at least as big as the bound it carries, this
+/// bites when a cut's error is an appreciable fraction of the feature's own radius: measured on the
+/// device's `R = 1/5` drill, an error of `5·10⁻⁴` certifies at a factor `1.4` off the exact
+/// distance, while an error of `6·10⁻²` — a chord across a third of the hole — cannot be bounded at
+/// all and reads `Unresolved`. That is the honest verdict rather than a defect: at that scale the
+/// distance to the surface is no longer a first-order quantity, and the cut wants re-authoring, not
+/// a looser certificate.
+///
+/// ## The nappe
+///
+/// The zero the lemma finds lies in the ball, so bounding the distance to `{F = 0}` bounds the
+/// distance to the **authored nappe** only if the whole ball is on that nappe's side. That is one
+/// extra enclosure — the selector over the same inflated box — and it discharges both
+/// `docs/cutter-extrude-design.md` §4.1 conditions at once: a band reaching the mirror nappe fails
+/// it, and so does a band reaching the apex, which sits on the selector's own boundary plane.
+fn quadric_distance_on<B: Backend>(
+    m: &[[Rat<B>; 3]; 3],
+    b: &[Rat<B>; 3],
+    c: &Rat<B>,
+    nappe: &Nappe<B>,
+    x: &[RatIv<B>; 3],
+    radius: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> DistOn<B> {
+    let dot_iv = |v: &[Rat<B>; 3], y: &[RatIv<B>; 3]| {
+        y[0].mul(&RatIv::point(v[0].clone()))
+            .add(&y[1].mul(&RatIv::point(v[1].clone())))
+            .add(&y[2].mul(&RatIv::point(v[2].clone())))
+    };
+    let inflate = |r: &Rat<B>| -> [RatIv<B>; 3] {
+        core::array::from_fn(|i| RatIv::new(x[i].lo().sub(r), x[i].hi().add(r)))
+    };
+
+    // The nappe condition is a statement about the *authored geometry*, not about this bound's
+    // working precision, so it is checked at the full working radius however small a ball the
+    // bound below ends up needing: a cut is required to clear the apex by `clearance/2`, since
+    // nearer than that "inside" is not a settled question.
+    if dot_iv(&nappe.n, &inflate(radius))
+        .sub(&RatIv::point(nappe.d.clone()))
+        .lo()
+        .sign()
+        <= 0
+    {
+        return DistOn::Fault(CutFitFault::NappeCrossed);
+    }
+
+    // `|F|` over the box itself — the lemma is applied at each of its points, so this is the only
+    // quantity that does not depend on the ball.
+    let mut f = RatIv::point(c.clone());
+    for i in 0..3 {
+        let row: [Rat<B>; 3] = core::array::from_fn(|j| m[i][j].clone());
+        f = f
+            .add(&x[i].mul(&dot_iv(&row, x)))
+            .add(&x[i].mul(&RatIv::point(b[i].clone())));
+    }
+    let f_hi = abs_on(&f).hi().clone();
+
+    // Grow the ball from small to the full radius and take the **first** one that contains its own
+    // bound. Both the tightness and the cost live here: `g` is a minimum over the ball, so a
+    // smaller ball gives a larger `g` and a tighter `ε` — and a rail that really is on the surface
+    // has a tiny `|F|`, so it succeeds on the first and smallest try. Iterating only happens on the
+    // way to `Unresolved`.
+    const STEPS: u32 = 4;
+    let mut widest = None;
+    for k in (0..=STEPS).rev() {
+        let r = radius.mul(&Rat::new(1, 1i128 << k));
+        let ball = inflate(&r);
+        // `g`: a lower bound on `|∇F| = |(M + Mᵀ)Y + b|` over the ball. A component whose enclosure
+        // straddles zero contributes nothing, which is the sound reading.
+        let mut g2 = Rat::from_i128(0);
+        for i in 0..3 {
+            let row: [Rat<B>; 3] = core::array::from_fn(|j| m[i][j].add(&m[j][i]));
+            let gi = abs_on(&dot_iv(&row, &ball).add(&RatIv::point(b[i].clone())));
+            g2 = g2.add(&gi.lo().mul(gi.lo()));
+        }
+        let g = sqrt(&g2, &cfg.sqrt_eps).lo().clone();
+        if g.sign() <= 0 {
+            // This ball reaches the quadric's own vertex, where the gradient dies and no
+            // first-order bound exists. A smaller ball may still clear it, so try the next one.
+            continue;
+        }
+        // Rounded **up** to the standard fixed-precision budget: the quotient of two
+        // deep-in-the-chart rationals otherwise carries hundreds of digits into an `ε` whose only
+        // uses are `max` and a comparison. Rounding outward keeps it an upper bound.
+        let e = RatIv::point(f_hi.div(&g))
+            .round_out(ROUND_BITS)
+            .hi()
+            .clone();
+        if e.cmp(&r) != core::cmp::Ordering::Greater {
+            return DistOn::Bound(e);
+        }
+        widest = Some(e);
+    }
+    // Nothing certified. Report at least `radius`, so a caller folding this into `ε` and applying
+    // the `ε < radius` DRC gate cannot mistake it for a bound.
+    DistOn::Loose(max_rat(
+        widest.unwrap_or_else(|| radius.clone()),
+        radius.clone(),
+    ))
+}
+
 /// A polynomial enclosed over an interval (interval Horner).
 fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
     let mut acc = RatIv::point(Rat::from_i128(0));
@@ -666,11 +967,11 @@ fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
     acc
 }
 
-/// The shared core: the traced point `c` as a rational vector function of its own parameter, the
+/// The shared core: the `traced` point as a rational vector function of its own parameter, the
 /// rigorous `sup` of its distance to `surface` over `span`, and the DRC gate. Both the graph and
-/// p-curve entry points differ only in how `c` is built.
+/// p-curve entry points differ only in how `traced` is built.
 fn traced_cut_fit<B: Backend>(
-    c: &Vec3Rat<B>,
+    traced: &Vec3Rat<B>,
     surface: &CutSurface<B>,
     span: &Interval<B>,
     subdiv: usize,
@@ -684,8 +985,29 @@ fn traced_cut_fit<B: Backend>(
     }
     let n_sub = subdiv.max(1);
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
+    let half = clearance.mul(&Rat::new(1, 2));
 
     let eps = match surface {
+        // No closed-form distance, so this arm cannot enclose a symbolic residual the way the two
+        // below do: the first-order bound works on a 3-D ball around the traced point, so the point
+        // itself has to be enclosed first. The price is the lost cancellation — a symbolic residual
+        // benefits from the surface equation collapsing against the chart fields, and a box does
+        // not — which shows up as needing more `subdiv` for the same ε, not as a weaker claim.
+        CutSurface::Quadric(q) => {
+            let mut eps = Rat::from_i128(0);
+            for k in 0..n_sub {
+                let sig = subiv(lo, &width, k);
+                let x = match vec3_on(traced, &sig) {
+                    Some(x) => x,
+                    None => return Verdict::Refuted(CutFitFault::PoleInEval),
+                };
+                match quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, &x, &half, cfg) {
+                    DistOn::Bound(d) | DistOn::Loose(d) => eps = max_rat(eps, d),
+                    DistOn::Fault(f) => return Verdict::Refuted(f),
+                }
+            }
+            eps
+        }
         CutSurface::Plane { n, d } => {
             let norm = sqrt(&dot3(n, n), &cfg.sqrt_eps); // |n| enclosure
             let inv_norm = match norm.recip_pos() {
@@ -693,7 +1015,7 @@ fn traced_cut_fit<B: Backend>(
                 None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
             };
             // residual(σ) = n·C(σ) − d, a rational function of σ.
-            let residual = c
+            let residual = traced
                 .dot(&const_vec3(n))
                 .sub(&RatFunc::from_poly(Poly::constant(d.clone())))
                 .reduce();
@@ -720,7 +1042,7 @@ fn traced_cut_fit<B: Backend>(
                 return Verdict::Refuted(CutFitFault::DegenerateSurface);
             }
             let inv_a2 = a2.recip();
-            let dvec = c.sub(&const_vec3(axis_point)); // X − p
+            let dvec = traced.sub(&const_vec3(axis_point)); // X − p
             let ax = const_vec3(axis_dir);
             let axdot = dvec.dot(&ax); // (X − p)·â
             // perp2(σ) = |X−p|² − ((X−p)·â)² / (â·â), the squared distance to the axis.
@@ -744,7 +1066,6 @@ fn traced_cut_fit<B: Backend>(
         }
     };
 
-    let half = clearance.mul(&Rat::new(1, 2));
     if eps.cmp(&half) == Ordering::Less {
         Verdict::Verified(ValidCutFit {
             span: span.clone(),
@@ -1211,6 +1532,305 @@ mod tests {
                 to_f64(&s)
             );
         }
+    }
+
+    // --- the extruded-cutter walls (AUTH.1a) --------------------------------------------------
+
+    /// The demo D4 drill, authored twice: as the metric [`CutSurface::Cylinder`] it has always
+    /// been, and as the wall of a profile circle extruded along `ẑ`.
+    fn d4_two_ways() -> (CutSurface<Bignum>, CutSurface<Bignum>) {
+        let centre = [Q::from_i128(0), Q::new(11, 5), Q::from_i128(0)];
+        let r = Q::new(1, 5);
+        let cyl = CutSurface::Cylinder {
+            axis_point: centre.clone(),
+            axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            r2: r.mul(&r),
+        };
+        let wall = crate::extrude::ellipse_wall(
+            &centre,
+            &[r.clone(), Q::from_i128(0), Q::from_i128(0)],
+            &[Q::from_i128(0), r.clone(), Q::from_i128(0)],
+            &crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .unwrap(),
+        )
+        .expect("a real wall");
+        (cyl, wall)
+    }
+
+    /// An extruded circle and the metric cylinder it *is* pull back to the **same** cut on the
+    /// sheet — the two µ̂-quadratics agree up to the positive scale `r²`, which is no difference at
+    /// all for a zero set. This is the differential check that the general wall did not quietly
+    /// become a different surface than the special case it generalizes.
+    #[test]
+    fn an_extruded_circle_pulls_back_to_the_cylinder_it_is() {
+        let chart = cone();
+        let (cyl, wall) = d4_two_ways();
+        let zero = Q::from_i128(0);
+        let a = cut_mu_form(&chart, &cyl, &zero).unwrap();
+        let b = cut_mu_form(&chart, &wall, &zero).unwrap();
+        let r2 = RatFunc::from_poly(Poly::constant(Q::new(1, 25)));
+        for (lhs, rhs) in [(&a.a, &b.a), (&a.b, &b.b), (&a.c, &b.c)] {
+            assert!(
+                lhs.mul(&r2).sub(rhs).reduce().is_zero(),
+                "the extruded wall must pull back to r²·(the cylinder's own form)"
+            );
+        }
+    }
+
+    /// And the two agree as *certificates*: on the same rail, the general first-order bound lands
+    /// within a small factor of the exact closed-form cylinder distance. The general path costs
+    /// tightness, not soundness — and the factor is what says how much.
+    #[test]
+    fn the_first_order_bound_tracks_the_exact_distance() {
+        let chart = cone();
+        let (cyl, wall) = d4_two_ways();
+        // A rail that genuinely traces the drill: the near branch of the µ̂-quadratic, sampled and
+        // linearly interpolated, so it sits *close to* — not exactly on — the surface.
+        let form = cut_mu_form(&chart, &cyl, &Q::from_i128(0)).unwrap();
+        // The drill subtends `|φ| ≤ arcsin(1/11)` about the `+y` ruling, so with `φ = 2·arctan σ`
+        // its σ-window is about `±0.045`. Stay well inside it: near a tangent ruling the branch
+        // turns hard, and a chord across a wide span leaves the surface by a good fraction of the
+        // drill's own radius — which is the regime the bound below is documented not to reach.
+        let span = Interval {
+            lo: Q::new(-1, 300),
+            hi: Q::new(1, 300),
+        };
+        let cfg = DevConfig::tight();
+        let at = |s: &Q| form.branch_at(s, &cfg.sqrt_eps).map(|(m, h)| m.sub(&h));
+        let (m0, m1) = (at(&span.lo).unwrap(), at(&span.hi).unwrap());
+        let slope = m1.sub(&m0).div(&span.hi.sub(&span.lo));
+        let mu_hat =
+            RatFunc::from_poly(Poly::from_coeffs(vec![m0.sub(&slope.mul(&span.lo)), slope]));
+        let eps_of = |surface: CutSurface<Bignum>| {
+            let cert = CutFitCert {
+                mu_hat: mu_hat.clone(),
+                w: Q::from_i128(0),
+                surface,
+                span: span.clone(),
+                subdiv: 32,
+                clearance: Q::from_i128(1), // generous: we only read ε here
+                cfg: cfg.clone(),
+            };
+            match cut_fit(&chart, &cert) {
+                Verdict::Verified(v) => v.eps,
+                other => panic!("expected Verified, got {:?}", verdict_tag(&other)),
+            }
+        };
+        let (exact, general) = (eps_of(cyl), eps_of(wall));
+        assert!(
+            general.cmp(&exact) != core::cmp::Ordering::Less,
+            "the general bound must not undercut the exact distance: {} vs {}",
+            to_f64(&general),
+            to_f64(&exact)
+        );
+        assert!(
+            general.cmp(&exact.mul(&Q::from_i128(4))) == core::cmp::Ordering::Less,
+            "and must stay within a small factor of it: {} vs {}",
+            to_f64(&general),
+            to_f64(&exact)
+        );
+    }
+
+    /// The first-order bound never *under*states a distance it certifies. Probed directly against
+    /// exactly-known geometry: on the 45° cone `x² + y² = z²`, the point `(1 + δ, 0, 1)` is exactly
+    /// `δ/√2` from the surface, and the certified bound brackets that from above.
+    #[test]
+    fn the_first_order_bound_is_sound_at_a_known_distance() {
+        // `F = x² + y² − z²`, apex at the origin, authored nappe `z > 0`.
+        let (o, i, j) = (Q::from_i128(0), Q::from_i128(1), Q::from_i128(-1));
+        let m = [
+            [i.clone(), o.clone(), o.clone()],
+            [o.clone(), i.clone(), o.clone()],
+            [o.clone(), o.clone(), j],
+        ];
+        let nappe = Nappe {
+            n: [o.clone(), o.clone(), i],
+            d: o.clone(),
+        };
+        let cfg = DevConfig::tight();
+        for (dn, dd) in [(1i128, 100i128), (1, 1000), (1, 10_000)] {
+            let delta = Q::new(dn, dd);
+            let p = [
+                Q::from_i128(1).add(&delta),
+                Q::from_i128(0),
+                Q::from_i128(1),
+            ];
+            let x: [RatIv<Bignum>; 3] = core::array::from_fn(|k| RatIv::point(p[k].clone()));
+            let e = match quadric_distance_on(
+                &m,
+                &[o.clone(), o.clone(), o.clone()],
+                &o,
+                &nappe,
+                &x,
+                &Q::new(1, 10),
+                &cfg,
+            ) {
+                DistOn::Bound(e) => e,
+                _ => panic!("a point {} from the cone must certify", to_f64(&delta)),
+            };
+            // δ/√2 < δ·(707/1000) + a hair; use the safe rational bracket 7/10 < 1/√2 < 71/100.
+            let lo = delta.mul(&Q::new(7, 10));
+            let hi = delta.mul(&Q::new(71, 100)).mul(&Q::new(3, 2));
+            assert!(
+                e.cmp(&lo) != core::cmp::Ordering::Less,
+                "bound {} undercuts the true distance ≈ {}",
+                to_f64(&e),
+                to_f64(&lo)
+            );
+            assert!(
+                e.cmp(&hi) == core::cmp::Ordering::Less,
+                "bound {} is far looser than the true distance ≈ {}",
+                to_f64(&e),
+                to_f64(&lo)
+            );
+        }
+    }
+
+    /// §4.1, fail-closed: a band on the **mirror** nappe carries a residual of zero — it is on the
+    /// same double cone — and is refused anyway, because the cutter is one nappe. Nothing here is
+    /// refinable, so the verdict is `Refuted`, not `Unresolved`.
+    #[test]
+    fn a_band_on_the_mirror_nappe_is_refuted() {
+        let (o, i) = (Q::from_i128(0), Q::from_i128(1));
+        let m = [
+            [i.clone(), o.clone(), o.clone()],
+            [o.clone(), i.clone(), o.clone()],
+            [o.clone(), o.clone(), Q::from_i128(-1)],
+        ];
+        let nappe = Nappe {
+            n: [o.clone(), o.clone(), i],
+            d: o.clone(),
+        };
+        let cfg = DevConfig::tight();
+        let probe = |z: i128| {
+            let p = [Q::from_i128(z.abs()), Q::from_i128(0), Q::from_i128(z)];
+            let x: [RatIv<Bignum>; 3] = core::array::from_fn(|k| RatIv::point(p[k].clone()));
+            quadric_distance_on(
+                &m,
+                &[o.clone(), o.clone(), o.clone()],
+                &o,
+                &nappe,
+                &x,
+                &Q::new(1, 10),
+                &cfg,
+            )
+        };
+        assert!(
+            matches!(probe(4), DistOn::Bound(_)),
+            "a point on the authored nappe certifies"
+        );
+        assert!(
+            matches!(probe(-4), DistOn::Fault(CutFitFault::NappeCrossed)),
+            "and its mirror does not, though the residual is the same zero"
+        );
+        assert!(
+            matches!(probe(0), DistOn::Fault(CutFitFault::NappeCrossed)),
+            "nor does the apex, where inside inverts"
+        );
+    }
+
+    /// **The draft actually drafts.** The same profile circle cast from four different heights
+    /// cuts four different holes in the device cone, and each matches the taper law it claims:
+    /// a cone from apex height `z_a` has shrunk to `|1 − z/z_a|` of its profile radius by height
+    /// `z`, so the ruling's half-chord through it scales the same way. A cutter that merely *had*
+    /// an apex field and ignored it would pass every certificate above and fail here.
+    ///
+    /// The drafted rail also certifies against its own wall, which is the end-to-end AUTH.1a
+    /// claim: author with a cast point, pull back to `(σ, µ̂)`, certify.
+    #[test]
+    fn a_cast_point_tapers_the_hole_by_its_own_law() {
+        let chart = cone();
+        let zero = Q::from_i128(0);
+        let cfg = DevConfig::tight();
+        let centre = [zero.clone(), Q::new(11, 5), zero.clone()];
+        let r = Q::new(1, 5);
+        let e1 = [r.clone(), zero.clone(), zero.clone()];
+        let e2 = [zero.clone(), r.clone(), zero.clone()];
+        let wall = |apex: crate::extrude::Apex<Bignum>| {
+            crate::extrude::ellipse_wall(&centre, &e1, &e2, &apex).expect("a real wall")
+        };
+        let half_width = |surface: &CutSurface<Bignum>| {
+            cut_mu_form(&chart, surface, &zero)
+                .unwrap()
+                .branch_at(&zero, &cfg.sqrt_eps)
+                .expect("the +y ruling crosses the drill")
+        };
+
+        let straight = wall(
+            crate::extrude::Apex::direction([zero.clone(), zero.clone(), Q::from_i128(1)]).unwrap(),
+        );
+        let (m_par, h_par) = half_width(&straight);
+        // The height the cut sits at — the taper law's only input besides the apex.
+        let z = {
+            let p = chart.pedal().eval(&zero).unwrap();
+            let u = chart.ruling().eval(&zero).unwrap();
+            p[2].add(&u[2].mul(&m_par))
+        };
+        assert!(
+            z.sign() > 0,
+            "the fixture's cut must sit above the profile plane"
+        );
+
+        let mut widths = Vec::new();
+        for za in [4i128, 40, -40, -4] {
+            let apex_z = Q::from_i128(za);
+            let cone_wall = wall(crate::extrude::Apex::point([
+                zero.clone(),
+                Q::new(11, 5),
+                apex_z.clone(),
+            ]));
+            let (m, h) = half_width(&cone_wall);
+            // The taper law: `radius(z) = r·|1 − z/z_a|`, so the half-chord scales with it.
+            let scale = Q::from_i128(1).sub(&z.div(&apex_z));
+            let want = h_par.mul(&abs_rat(&scale));
+            let slack = h_par.mul(&Q::new(1, 50)); // 2%: the chord is not exactly radial
+            assert!(
+                abs_rat(&h.sub(&want)).cmp(&slack) == core::cmp::Ordering::Less,
+                "apex z={za}: half-width {} but the taper law says {}",
+                to_f64(&h),
+                to_f64(&want)
+            );
+            widths.push(h.clone());
+
+            // ... and the drafted rail certifies against its own wall.
+            let span = Interval {
+                lo: Q::new(-1, 300),
+                hi: Q::new(1, 300),
+            };
+            let cert = CutFitCert {
+                mu_hat: RatFunc::from_poly(Poly::constant(m.sub(&h))),
+                w: zero.clone(),
+                surface: cone_wall,
+                span,
+                subdiv: 32,
+                clearance: Q::new(1, 20),
+                cfg: cfg.clone(),
+            };
+            match cut_fit(&chart, &cert) {
+                Verdict::Verified(v) => assert!(
+                    v.eps.cmp(&Q::new(1, 100)) == core::cmp::Ordering::Less,
+                    "apex z={za}: ε = {}",
+                    to_f64(&v.eps)
+                ),
+                other => panic!(
+                    "apex z={za}: expected Verified, got {:?}",
+                    verdict_tag(&other)
+                ),
+            }
+        }
+        // Ordered by `1/z_a` from `+1/4` to `−1/4`: the hole widens monotonically as the cast point
+        // swings from just above the cut, out to infinity, and round to just below it.
+        for pair in widths.windows(2) {
+            assert!(
+                pair[0].cmp(&pair[1]) == core::cmp::Ordering::Less,
+                "the taper must be monotone in the cast point"
+            );
+        }
+        assert!(
+            widths[0].cmp(&h_par) == core::cmp::Ordering::Less
+                && h_par.cmp(&widths[3]) == core::cmp::Ordering::Less,
+            "and must bracket the parallel drill"
+        );
     }
 
     fn verdict_tag<E, W: core::fmt::Debug, M>(v: &Verdict<E, W, M>) -> String {
