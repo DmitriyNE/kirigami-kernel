@@ -1657,6 +1657,24 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **A gate that compiles gated code *out* is not a gate over it — `cargo xtask gate`.** The default
+  `--workspace` clippy/nextest legs pass no `--features`, so `export`'s `step` items, `difftest`'s
+  `cgal` items and `lattice`'s `fuzzing` items are absent from the everyday loop entirely. PC.5 and
+  PC.6 each broke `full_panel_solid_exports` and it went unnoticed locally for the whole OPT/VV/MAP
+  arc. The new `cargo xtask gate` mirrors the CI step list and runs `clippy --all-targets` on **each
+  feature combination** (which compiles the gated *tests*, the part that was missing); `--full` adds
+  the test legs. Verified by mutation: a deliberate break inside the step-gated test leaves the plain
+  `clippy` leg **green** and fails only `clippy --features step (export)` — the exact PC.5/PC.6
+  signature. Two design points worth keeping: steps the gate does not run (Kani, dylint, the Lean
+  audit) are **named in the summary with their commands**, because a gate that quietly covers less
+  than it appears to is worse than one that covers less and says so; and it found a real hit on its
+  first run — `ratfuzz.rs`'s `unreachable!()` violates the pure tier's panic-freedom deny, which no
+  CI step evaluated because CI runs `cargo test` on `--features fuzzing`, never `clippy`. Fixed by
+  making `3 => …` the catch-all (`opcode % 4` is `0..=3`), removing the panic path rather than
+  discharging it. **What it does NOT close:** platform-specific *runtime* linkage, e.g. #241(c)'s
+  Linux doctest failure — that is invisible on macOS at any feature setting.
+  *2026-08-15 · finding · `xtask/src/main.rs`, `AGENT.md` (#242)*
+
 - **A quantity no test reads quantitatively is unverified, however many tests run through it.**
   `Extrusion::extent` (AUTH.1f) bracketed segment endpoints with `arrange2d::locate::rational_above`
   — a strict upper bound found by *doubling from zero* — and used it for **both** sides of the box.

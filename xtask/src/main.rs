@@ -289,20 +289,348 @@ fn panic_freedom_discharge(files: &[SrcFile]) -> Vec<Finding> {
     out
 }
 
-fn main() -> ExitCode {
-    let cmd = std::env::args().nth(1);
-    match cmd.as_deref() {
-        Some("lint") | None => {
-            if run_lint() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+// ---------------------------------------------------------------------------------------
+// `cargo xtask gate` — run the CI step list locally.
+// ---------------------------------------------------------------------------------------
+
+/// One gate leg: a `cargo` invocation mirroring a step of `.github/workflows/ci.yml`.
+struct Leg {
+    /// The CI step this mirrors, so a local failure names the job that would have failed.
+    name: &'static str,
+    args: &'static [&'static str],
+    /// Environment the CI step sets.
+    env: &'static [(&'static str, &'static str)],
+    /// Runs tests rather than only compiling — `--full` only.
+    full_only: bool,
+}
+
+/// The gate legs, in CI order.
+///
+/// **The point of the feature legs.** `--workspace` with no `--features` compiles gated code
+/// *out entirely*, so `export`'s `step` items and `difftest`'s `cgal` items are invisible to the
+/// everyday loop. PC.5 and PC.6 each broke `full_panel_solid_exports` and it went unnoticed
+/// locally for the whole OPT/VV/MAP arc. `clippy --all-targets` on each feature combination
+/// compiles the gated **tests** too, which is exactly what was missing.
+const LEGS: &[Leg] = &[
+    Leg {
+        name: "fmt",
+        args: &["fmt", "--all", "--check"],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "clippy",
+        args: &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "clippy --features step (export)",
+        args: &[
+            "clippy",
+            "-p",
+            "export",
+            "--features",
+            "step",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "clippy --features step (author)",
+        args: &[
+            "clippy",
+            "-p",
+            "author",
+            "--features",
+            "step",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "clippy --features diagnostics (export)",
+        args: &[
+            "clippy",
+            "-p",
+            "export",
+            "--features",
+            "diagnostics",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "clippy --features cgal (difftest)",
+        args: &[
+            "clippy",
+            "-p",
+            "difftest",
+            "--features",
+            "cgal",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "clippy --features fuzzing (lattice)",
+        args: &[
+            "clippy",
+            "-p",
+            "lattice",
+            "--features",
+            "fuzzing",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+        full_only: false,
+    },
+    Leg {
+        name: "test (incl. the corpus regression suite)",
+        args: &["nextest", "run", "--workspace"],
+        env: &[],
+        full_only: true,
+    },
+    Leg {
+        name: "doctests (nextest does not run these)",
+        args: &["test", "--workspace", "--doc"],
+        env: &[],
+        full_only: true,
+    },
+    Leg {
+        name: "OCCT STEP export + differential oracle (--features step)",
+        args: &["nextest", "run", "-p", "export", "--features", "step"],
+        env: &[],
+        full_only: true,
+    },
+    Leg {
+        name: "OCCT STEP doctests (--features step)",
+        args: &["test", "-p", "export", "--features", "step", "--doc"],
+        env: &[],
+        full_only: true,
+    },
+    Leg {
+        name: "CGAL differential + degenerate-heavy stratum suite",
+        args: &[
+            "nextest",
+            "run",
+            "-p",
+            "arrange2d",
+            "-p",
+            "difftest",
+            "--features",
+            "cgal",
+        ],
+        env: &[("ARRANGE_STRATUM_WEIGHT", "8")],
+        full_only: true,
+    },
+    Leg {
+        name: "fuzz regression replay (committed crash corpus)",
+        args: &[
+            "test",
+            "-p",
+            "lattice",
+            "--features",
+            "fuzzing",
+            "--test",
+            "fuzz_replay",
+        ],
+        env: &[],
+        full_only: true,
+    },
+    Leg {
+        name: "no_std gate (lattice → thumbv7em-none-eabi)",
+        args: &["build", "-p", "lattice", "--target", "thumbv7em-none-eabi"],
+        env: &[],
+        full_only: true,
+    },
+];
+
+/// CI steps this gate deliberately does **not** run, and why.
+///
+/// Named rather than silently omitted: a gate that quietly covers less than it appears to is
+/// worse than one that covers less and says so.
+const NOT_RUN: &[(&str, &str)] = &[
+    (
+        "Kani (fast-path panic-freedom + cocycle + CLIP-σ)",
+        "40+ min locally (#244); CI owns it",
+    ),
+    (
+        "dylint (no-float in certified paths)",
+        "own pinned nightly + clippy_utils build; `cargo dylint --all -- -p lattice -p certify-core -p arrange2d`",
+    ),
+    (
+        "Lean proof surface + axiom audit",
+        "`bash scripts/check-axioms.sh` (Mathlib oleans); run when a proof or a ledger row moves",
+    ),
+    (
+        "Extraction externals coverage",
+        "`bash scripts/check-externals.sh` (cheap — run it when `FunsExternal.lean` or a `core` use moves)",
+    ),
+    (
+        "extraction-drift (Rust→Lean model)",
+        "needs `nix develop .#extraction`; its own workflow",
+    ),
+    (
+        "fuzz-nightly (coverage-guided search)",
+        "nightly cron; the deterministic replay leg IS run above",
+    ),
+];
+
+/// Every `--features NAME` appearing in a workflow file, in first-appearance order.
+///
+/// The gate's whole value is the claim "CI == local", and that claim rots silently the moment CI
+/// gains a feature leg the gate does not mirror. This makes it checkable (see the `gate_covers_*`
+/// tests): a pure scan, so it is unit-testable both ways like every other check here.
+fn features_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let mut rest = line;
+        while let Some(at) = rest.find("--features") {
+            rest = &rest[at + "--features".len()..];
+            let name: String = rest
+                .trim_start_matches([' ', '='])
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
             }
         }
-        Some(other) => {
-            eprintln!("xtask: unknown command `{other}` (expected `lint`)");
-            ExitCode::FAILURE
+    }
+    out
+}
+
+/// The features the gate's own legs pass.
+fn features_covered() -> Vec<String> {
+    let joined: String = LEGS
+        .iter()
+        .map(|l| l.args.join(" "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    features_in(&joined)
+}
+
+/// Run the CI step list locally. `full` adds every leg that executes tests; without it the gate
+/// is compile-and-lint only, which is the fast pre-push loop.
+///
+/// Run it **inside the pinned devShell** — `nix develop --command cargo xtask gate` — because the
+/// feature legs need OCCT and CGAL from the flake. A missing system dependency shows up as a
+/// build failure on that leg, with the hint printed in the summary.
+fn run_gate(full: bool) -> bool {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let root = repo_root();
+    let mut results: Vec<(&str, bool)> = Vec::new();
+
+    // The gate's own claim, checked first and on every run: if CI exercises a feature this gate
+    // does not pass, the gate covers less than it looks like it does — which is the failure #242
+    // exists to close, reappearing one level up.
+    println!("== ci-mirror (every CI `--features` has a gate leg)");
+    let covered = features_covered();
+    let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap_or_default();
+    let missing: Vec<String> = features_in(&ci)
+        .into_iter()
+        .filter(|f| !covered.contains(f))
+        .collect();
+    if missing.is_empty() {
+        println!("ci-mirror: OK ({} feature leg(s))", covered.len());
+    } else {
+        println!("ci-mirror: FAIL — CI runs --features {missing:?} with no gate leg (add to LEGS)");
+    }
+    results.push(("ci-mirror", missing.is_empty()));
+
+    println!("\n== spec + code invariant lints (:= census, tuple-predicate, vv-matrix gate)");
+    results.push(("xtask lint", run_lint()));
+
+    for leg in LEGS {
+        if leg.full_only && !full {
+            continue;
         }
+        println!("\n== {} ", leg.name);
+        let mut cmd = std::process::Command::new(&cargo);
+        cmd.args(leg.args).current_dir(&root);
+        for (k, v) in leg.env {
+            cmd.env(k, v);
+        }
+        let ok = match cmd.status() {
+            Ok(s) => s.success(),
+            Err(e) => {
+                eprintln!("xtask gate: could not run `{cargo}`: {e}");
+                false
+            }
+        };
+        results.push((leg.name, ok));
+    }
+
+    let failed: Vec<&str> = results
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(n, _)| *n)
+        .collect();
+    println!(
+        "\n───────── gate summary ({}) ─────────",
+        if full {
+            "full"
+        } else {
+            "quick — compile + lint only, pass --full to run tests"
+        }
+    );
+    for (name, ok) in &results {
+        println!("  {} {name}", if *ok { "ok  " } else { "FAIL" });
+    }
+    for (name, why) in NOT_RUN {
+        println!("  skip {name} — {why}");
+    }
+    if !failed.is_empty() {
+        println!(
+            "\n{} leg(s) failed. If a feature leg failed to build (OCCT / CGAL headers or \
+             libraries), run inside the pinned shell: `nix develop --command cargo xtask gate`.",
+            failed.len()
+        );
+    }
+    failed.is_empty()
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let ok = match args.first().map(String::as_str) {
+        Some("lint") | None => run_lint(),
+        Some("gate") => run_gate(args.iter().any(|a| a == "--full")),
+        Some(other) => {
+            eprintln!("xtask: unknown command `{other}` (expected `lint` or `gate [--full]`)");
+            return ExitCode::FAILURE;
+        }
+    };
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -394,5 +722,46 @@ mod tests {
     fn milestone_tag_parses() {
         assert_eq!(milestone_tag("foo ★ [M3d]").as_deref(), Some("M3d"));
         assert_eq!(milestone_tag("no tag"), None);
+    }
+    // --- `cargo xtask gate` --------------------------------------------------------------
+
+    #[test]
+    fn features_in_reads_both_spellings_and_dedupes() {
+        let text = "cargo clippy -p export --features step --all-targets\n                    cargo nextest run -p export --features step\n                    cargo nextest run -p difftest --features=cgal\n";
+        assert_eq!(
+            features_in(text),
+            vec!["step".to_string(), "cgal".to_string()]
+        );
+    }
+
+    /// **The gate's "CI == local" claim, made checkable.** Every `--features` combination the CI
+    /// workflow exercises must have a mirroring gate leg — otherwise the gate silently covers less
+    /// than it appears to the moment CI grows a leg, which is the exact failure #242 exists to fix.
+    #[test]
+    fn gate_covers_every_ci_feature() {
+        let ci = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+            .expect("the CI workflow is committed");
+        let covered = features_covered();
+        let missing: Vec<String> = features_in(&ci)
+            .into_iter()
+            .filter(|f| !covered.contains(f))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "CI exercises feature(s) {missing:?} that `cargo xtask gate` does not mirror — \
+             add a leg to LEGS (covered: {covered:?})"
+        );
+    }
+
+    /// The known-bad half: a workflow gaining a feature the gate does not pass must be detected.
+    #[test]
+    fn gate_coverage_check_fires_on_a_new_ci_feature() {
+        let fake_ci = "run: cargo nextest run -p somewhere --features brand_new_thing";
+        let covered = features_covered();
+        let missing: Vec<String> = features_in(fake_ci)
+            .into_iter()
+            .filter(|f| !covered.contains(f))
+            .collect();
+        assert_eq!(missing, vec!["brand_new_thing".to_string()]);
     }
 }
