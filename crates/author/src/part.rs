@@ -45,7 +45,7 @@ use develop::pick::{Ray, Span};
 use develop::unroll::FlatOutline;
 use export::trim::RailFit;
 use geom::chart::Chart;
-use geom::content::Edge;
+use geom::content::{Circle, Edge};
 use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
 
 /// The σ-bisection depth of the facade's fold evaluators (`(4/7)⁶⁰ ≈ 3·10⁻¹⁵` of the piece
@@ -127,6 +127,62 @@ fn rational_sqrt_above<B: Backend>(r2: &Rat<B>) -> Rat<B> {
     t
 }
 
+/// The profile's extent in frame coordinates: `(lo_a, lo_b, hi_a, hi_b)`.
+type Extent<B> = (Rat<B>, Rat<B>, Rat<B>, Rat<B>);
+
+impl<B: Backend> Extrusion<B> {
+    /// A rectangle containing the whole profile, in frame coordinates.
+    ///
+    /// A segment endpoint may be algebraic (`Surd`, after a boolean), so it is bracketed rather
+    /// than used exactly — an extent only has to *contain*.
+    pub(crate) fn extent(&self) -> Option<Extent<B>> {
+        let mut bbox: Option<Extent<B>> = None;
+        let mut grow = |x: Rat<B>, y: Rat<B>, r: Rat<B>| {
+            let (lo_x, hi_x) = (x.sub(&r), x.add(&r));
+            let (lo_y, hi_y) = (y.sub(&r), y.add(&r));
+            let least = |p: Rat<B>, q: Rat<B>| {
+                if p.cmp(&q) == core::cmp::Ordering::Less {
+                    p
+                } else {
+                    q
+                }
+            };
+            let most = |p: Rat<B>, q: Rat<B>| {
+                if p.cmp(&q) == core::cmp::Ordering::Greater {
+                    p
+                } else {
+                    q
+                }
+            };
+            bbox = Some(match bbox.take() {
+                None => (lo_x, lo_y, hi_x, hi_y),
+                Some((a, b, c, d)) => {
+                    (least(lo_x, a), least(lo_y, b), most(hi_x, c), most(hi_y, d))
+                }
+            });
+        };
+        for e in &self.profile {
+            match e {
+                Edge::Arc(a) => grow(
+                    a.circle.cx.clone(),
+                    a.circle.cy.clone(),
+                    rational_sqrt_above(&a.circle.r2),
+                ),
+                Edge::Seg(sg) => {
+                    for p in [&sg.start, &sg.end] {
+                        let (x, y) = (
+                            arrange2d::locate::rational_above(&p.x),
+                            arrange2d::locate::rational_above(&p.y),
+                        );
+                        grow(x, y, Rat::from_i128(0));
+                    }
+                }
+            }
+        }
+        bbox
+    }
+}
+
 impl<B: Backend> Extrusion<B> {
     /// The projection this extrusion works through, or the fault its authoring carries.
     pub(crate) fn cast(&self) -> Result<Cast<B>, ExtrudeFault> {
@@ -149,62 +205,7 @@ impl<B: Backend> Extrusion<B> {
     /// The grid's odd-fraction offsets keep samples off those rows.
     pub(crate) fn reference_point(&self) -> Option<(Rat<B>, Rat<B>)> {
         let cast = self.cast().ok()?;
-        // The profile's extent, from its carriers' own reference data.
-        /// The profile's extent in frame coordinates: `(lo_a, lo_b, hi_a, hi_b)`.
-        type Extent<B> = (Rat<B>, Rat<B>, Rat<B>, Rat<B>);
-        let mut bbox: Option<Extent<B>> = None;
-        let mut grow = |x: Rat<B>, y: Rat<B>, r: Rat<B>| {
-            let (lo_x, hi_x) = (x.sub(&r), x.add(&r));
-            let (lo_y, hi_y) = (y.sub(&r), y.add(&r));
-            bbox = Some(match bbox.take() {
-                None => (lo_x, lo_y, hi_x, hi_y),
-                Some((a, b, c, d)) => (
-                    if lo_x.cmp(&a) == core::cmp::Ordering::Less {
-                        lo_x
-                    } else {
-                        a
-                    },
-                    if lo_y.cmp(&b) == core::cmp::Ordering::Less {
-                        lo_y
-                    } else {
-                        b
-                    },
-                    if hi_x.cmp(&c) == core::cmp::Ordering::Greater {
-                        hi_x
-                    } else {
-                        c
-                    },
-                    if hi_y.cmp(&d) == core::cmp::Ordering::Greater {
-                        hi_y
-                    } else {
-                        d
-                    },
-                ),
-            });
-        };
-        for e in &self.profile {
-            match e {
-                Edge::Arc(a) => {
-                    grow(
-                        a.circle.cx.clone(),
-                        a.circle.cy.clone(),
-                        rational_sqrt_above(&a.circle.r2),
-                    );
-                }
-                Edge::Seg(sg) => {
-                    for p in [&sg.start, &sg.end] {
-                        // A segment endpoint may be algebraic; its rational bracket is enough for
-                        // an extent.
-                        let (x, y) = (
-                            arrange2d::locate::rational_above(&p.x),
-                            arrange2d::locate::rational_above(&p.y),
-                        );
-                        grow(x, y, Rat::from_i128(1));
-                    }
-                }
-            }
-        }
-        let (lo_x, lo_y, hi_x, hi_y) = bbox?;
+        let (lo_x, lo_y, hi_x, hi_y) = self.extent()?;
         // **Even** on purpose. The samples sit at `lo + (2j+1)·w/(2K)`, and with an odd `K` the
         // middle one lands exactly on the extent's centre — which for a disc is the circle's own
         // centre row, the one row exact ray-casting excludes. An even `K` can never produce it,
@@ -221,6 +222,35 @@ impl<B: Backend> Extrusion<B> {
             }
         }
         None
+    }
+
+    /// A single wall whose σ-window **contains** the whole profile's: the wall of the profile's
+    /// bounding circle, cast the same way.
+    ///
+    /// Station targeting needs the σ-range where a cutter is active, and for a quadric wall that is
+    /// its tangent-ruling window. A profile of straight edges has **no** such window — every wall is
+    /// affine — so a polygonal slot would receive no targeted stations and be dropped between sample
+    /// cells, which is exactly the failure `docs/cutter-extrude-design.md` §6 predicted. Bounding the
+    /// profile by a circle restores one window for the whole cutter, and a *superset* is the right
+    /// error: extra stations sample where the cut is absent and cost nothing, whereas a missing one
+    /// loses the feature silently.
+    pub(crate) fn bounding_wall(&self) -> Option<CutSurface<B>> {
+        let cast = self.cast().ok()?;
+        let (lo_a, lo_b, hi_a, hi_b) = self.extent()?;
+        let (cx, cy) = (
+            lo_a.add(&hi_a).mul(&Rat::new(1, 2)),
+            lo_b.add(&hi_b).mul(&Rat::new(1, 2)),
+        );
+        // The circumscribing radius², from the half-diagonal.
+        let (wa, wb) = (
+            hi_a.sub(&lo_a).mul(&Rat::new(1, 2)),
+            hi_b.sub(&lo_b).mul(&Rat::new(1, 2)),
+        );
+        let r2 = wa.mul(&wa).add(&wb.mul(&wb));
+        if r2.sign() <= 0 {
+            return None;
+        }
+        cast.circle_wall(&Circle { cx, cy, r2 }).ok()
     }
 
     /// The **reference ray** the span counts along: the generatrix through

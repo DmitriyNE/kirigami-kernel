@@ -21,7 +21,7 @@
 use crate::part::Extrusion;
 use crate::part::{BuiltRegions, Cutter, OpKind, OpRole, Part, PartFault, RegionPick};
 use certify_core::Verdict;
-use develop::cut::{MuCut, cut_mu_form};
+use develop::cut::{CutSurface, MuCut, cut_mu_form};
 use develop::pick::{Sheet, Span, ray_crossings, select};
 use export::approx::{f64_to_rat, rat_to_f64};
 use export::trim::surface_disc_roots;
@@ -770,18 +770,44 @@ pub(crate) fn sweep<B: Backend>(
             let walls = cutter
                 .walls()
                 .map_err(|_| PartFault::CutUnresolved { op })?;
-            for (wi, wall) in walls.iter().enumerate() {
-                let form = &regions[ri].forms[op][wi];
-                if form.a.is_zero() {
-                    continue;
+            // A cutter whose walls are ALL affine has no tangent window to target — which is
+            // exactly a polygonal profile, whose σ-support would then never be sampled and whose
+            // feature would be dropped between cells (the §6 failure). Its bounding circle's wall
+            // supplies one window covering the whole profile; a superset costs only stations where
+            // the cut is absent, while a missing one loses the cut silently.
+            let quadric: Vec<usize> = (0..walls.len())
+                .filter(|wi| !regions[ri].forms[op][*wi].a.is_zero())
+                .collect();
+            let bound = if quadric.is_empty() {
+                match cutter {
+                    Cutter::Extrude(e) => e.bounding_wall(),
+                    _ => None,
                 }
+            } else {
+                None
+            };
+            let probes: Vec<(usize, &CutSurface<B>)> = match &bound {
+                Some(b) => vec![(0, b)],
+                None => quadric.iter().map(|wi| (*wi, &walls[*wi])).collect(),
+            };
+            for (wi, wall) in probes {
+                let form = &regions[ri].forms[op][wi];
                 let roots = surface_disc_roots(&built.charts[ri], wall, &rf.band, 256, 60)
                     .unwrap_or_default();
                 for w in roots.windows(2) {
                     let (t1, t2) = (&w[0], &w[1]);
                     let mid = t1.add(t2).mul(&Rat::new(1, 2));
-                    // Only windows where the wall is real (disc > 0 at the midpoint).
-                    let real = form
+                    // Only windows where the probe surface is real (disc > 0 at the midpoint).
+                    // For a genuine wall that is its own pullback; for the bounding proxy of an
+                    // all-affine profile it is the proxy's, which is what defines the window.
+                    let probe_form = if form.a.is_zero() {
+                        cut_mu_form(&built.charts[ri], wall, &zero)
+                    } else {
+                        None
+                    };
+                    let real = probe_form
+                        .as_ref()
+                        .unwrap_or(form)
                         .disc()
                         .eval(&mid)
                         .map(|v| v.sign() > 0)
@@ -1163,6 +1189,68 @@ mod tests {
         assert!(
             (fat - 0.603).abs() < 5e-3,
             "the wide lobe should measure ≈0.603 in µ̂, got {fat:.6}"
+        );
+    }
+
+    /// **A polygonal slot must be SEEN, however small.** Every wall of a polygon is affine, so it
+    /// has no tangent-ruling window — and station targeting keyed on exactly that. The result was
+    /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
+    /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
+    /// `Inactive` — a green certificate on a cut that did nothing.
+    ///
+    /// The profile's bounding circle supplies the missing window. A superset is the right error:
+    /// extra stations sample where the cut is absent and cost nothing, a missing one loses the cut.
+    #[test]
+    fn a_polygonal_slot_is_not_dropped_between_sample_cells() {
+        use crate::construct;
+        use crate::part::SupportFn;
+        // A square the same size and place as the disc that already resolves.
+        let (cx, cy, h) = (q(0), Q::new(11, 5), Q::new(1, 5));
+        let pts = [
+            (cx.sub(&h), cy.sub(&h)),
+            (cx.add(&h), cy.sub(&h)),
+            (cx.add(&h), cy.add(&h)),
+            (cx.sub(&h), cy.add(&h)),
+        ];
+        let square: Vec<Edge<Bignum>> = (0..4)
+            .map(|i| {
+                let ((sx, sy), (ex, ey)) = (pts[i].clone(), pts[(i + 1) % 4].clone());
+                let a = ey.sub(&sy).neg();
+                let b = ex.sub(&sx);
+                let c = a.mul(&sx).add(&b.mul(&sy)).neg();
+                Edge::Seg(Box::new(geom::content::SegPiece {
+                    line: geom::content::Line { a, b, c },
+                    start: Point2::from_rat(sx, sy),
+                    end: Point2::from_rat(ex, ey),
+                    orient: Orient::Ccw,
+                    source: CurveId(0),
+                }))
+            })
+            .collect();
+
+        let part = construct::from_chart::<Bignum>(&cone())
+            .region_sigma(Q::new(-7, 2), Q::new(7, 2), SupportFn::inherit())
+            .keep_near(
+                cone()
+                    .surface(&q(2), &q(0))
+                    .eval(&q(0))
+                    .expect("regular at σ = 0"),
+            )
+            .intersect(Cutter::half_space([q(0), q(0), q(1)], q(3)))
+            .subtract(Cutter::vertical_cylinder(q(0), Q::new(1, 2), q(2)))
+            .subtract(Cutter::vertical_cylinder(
+                Q::new(-9, 4),
+                Q::new(9, 4),
+                Q::new(9, 16),
+            ))
+            .subtract(drilled(square))
+            .clearance(q(1));
+        let built = part.build_regions().expect("the regions develop");
+        let st = sweep(&part, &built).expect("the sweep resolves");
+        assert!(
+            !matches!(st.roles[3], crate::part::OpRole::Inactive),
+            "the slot must be sampled, not dropped between cells — got {:?}",
+            st.roles[3]
         );
     }
 
