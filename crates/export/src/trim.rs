@@ -465,20 +465,21 @@ pub fn surface_hole_loop<B: Backend>(
     }
 }
 
-/// Build the interior-hole boundary loop of a cutter bounded by **several walls** — an extruded
-/// polygon, a rounded slot, any multi-carrier outline: the [`surface_hole_loop`] idiom over
-/// [`develop::cut::shadow_cut_loop`] instead of the single-surface `quadric_cut_loop`.
+/// Build the interior-hole boundary **loops** of a cutter bounded by **several walls** — an
+/// extruded polygon, a rounded slot, an L-slot, any multi-carrier outline: the [`surface_hole_loop`]
+/// idiom over [`develop::cut::shadow_cut_loops`] instead of the single-surface `quadric_cut_loop`.
 ///
 /// `walls` are the cutter's boundary surfaces and `inside(σ, µ̂)` its fill rule on this chart — the
 /// two-view split of `docs/cutter-extrude-design.md` §2.1. `span` may be a **superset** of the
-/// hole's own σ-extent (that is what station targeting can offer an all-affine profile); the loop
+/// hole's own σ-extent (that is what station targeting can offer an all-affine profile); the tracer
 /// finds the extent itself, which is why there is no `surface_tangents` pre-pass here.
 ///
-/// Fail-closed exactly as the single-surface path: a coarse loop is `Unresolved`, and a footprint
-/// that is not one band — a non-convex profile, or one with its own hole — is
-/// `Refuted(ShadowNotSimple)`.
+/// **One cutter may yield several loops** — a footprint in two pieces is two holes, and the flat
+/// boolean takes them as readily as one. What it may not yield is a loop *inside* another: that is
+/// the ring, refused as `ShadowNested` (§11.6). Fail-closed otherwise exactly as the single-surface
+/// path: a coarse loop is `Unresolved`.
 #[allow(clippy::too_many_arguments)]
-pub fn shadow_hole_loop<B: Backend, F>(
+pub fn shadow_hole_loops<B: Backend, F>(
     chart: &Chart<B>,
     walls: &[CutSurface<B>],
     inside: F,
@@ -486,11 +487,11 @@ pub fn shadow_hole_loop<B: Backend, F>(
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
     segments: usize,
-) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>>
+) -> Verdict<Vec<HoleLoop<B>>, CutFitFault, Rat<B>>
 where
     F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
 {
-    match develop::cut::shadow_cut_loop(
+    match develop::cut::shadow_cut_loops(
         chart,
         walls,
         inside,
@@ -500,15 +501,19 @@ where
         clearance,
         cfg,
     ) {
-        Verdict::Verified(l) => Verdict::Verified(HoleLoop {
-            arcs: l
-                .pieces
-                .into_iter()
-                .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
+        Verdict::Verified(ls) => Verdict::Verified(
+            ls.into_iter()
+                .map(|l| HoleLoop {
+                    arcs: l
+                        .pieces
+                        .into_iter()
+                        .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
+                        .collect(),
+                    eps: l.eps,
+                    tangent_gap: l.tangent_gap,
+                })
                 .collect(),
-            eps: l.eps,
-            tangent_gap: l.tangent_gap,
-        }),
+        ),
         Verdict::Unresolved(e) => Verdict::Unresolved(e),
         Verdict::Refuted(f) => Verdict::Refuted(f),
     }
@@ -770,6 +775,40 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
     if pts.len() < 4 {
         return None;
     }
+    // **A band turns around in σ exactly twice**, at its two tangent rulings, and each branch is
+    // then a function of σ. A traced non-convex loop (AUTH.2c) turns around more often — that is
+    // what a rail chain cannot express — and it must be refused here rather than split anyway:
+    // `chain` below would swap the ends of every backward step and sort, quietly producing
+    // overlapping σ-bands that the slice builder reads as a hole of a different shape. Newly
+    // reachable since the tracer replaced the band builder, and silent until this check: the L-slot
+    // part built a certified solid whose hole was not the loop that had been certified.
+    let reversals = {
+        let n = pts.len();
+        let (mut dir, mut first) = (0i8, 0i8);
+        let mut count = 0usize;
+        for k in 0..n {
+            let d = match pts[k].0.cmp(&pts[(k + 1) % n].0) {
+                Less => 1i8,
+                Greater => -1i8,
+                Equal => continue,
+            };
+            if dir == 0 {
+                first = d;
+            } else if d != dir {
+                count += 1;
+            }
+            dir = d;
+        }
+        // The loop is a **cycle**: the step from the last vertex back to the first is a step like
+        // any other, and leaving it out counts a band's two turns as one.
+        if dir != 0 && first != 0 && dir != first {
+            count += 1;
+        }
+        count
+    };
+    if reversals != 2 {
+        return None;
+    }
     // The two σ-extremes are the tangent rulings; they split the loop into its two branches.
     let idx_min = (0..pts.len()).min_by(|&a, &b| pts[a].0.cmp(&pts[b].0))?;
     let idx_max = (0..pts.len()).max_by(|&a, &b| pts[a].0.cmp(&pts[b].0))?;
@@ -1008,7 +1047,7 @@ mod tests {
             lo: Q::new(-1, 4),
             hi: Q::new(1, 4),
         };
-        let hole = match shadow_hole_loop(
+        let mut holes = match shadow_hole_loops(
             &chart,
             &walls,
             |sigma: &Q, mu: &Q| {
@@ -1023,6 +1062,8 @@ mod tests {
             Verdict::Verified(h) => h,
             other => panic!("the square's hole loop must certify: {}", tag(&other)),
         };
+        assert_eq!(holes.len(), 1, "a convex profile traces one loop");
+        let hole = holes.remove(0);
         let rail = hole_rail(&hole).expect("the solid builder must be able to read the loop");
         assert!(
             !rail.near.is_empty() && !rail.far.is_empty(),

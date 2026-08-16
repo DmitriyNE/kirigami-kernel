@@ -683,6 +683,38 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A non-convex profile does not give a non-convex footprint, and a reflex corner in the flat
+  pattern does not prove one either.** AUTH.2d's fixture is an L-slot cutter, and the first two
+  attempts were *false negatives that looked like tracer bugs*. **(1)** This cone's rulings project
+  to radial rays, so an L whose arms lie along the radius is met by every ray exactly once: the
+  notch never appears in `(σ, µ̂)` at all and the footprint is an ordinary band. An L is only
+  non-band when the notch opens **across** the rulings, which took an exact `(3,4,5)` rotation of
+  the profile's axes to arrange — and then a placement that keeps every vertex in the material (the
+  first landed on the panel's inner carve and came back `AmbiguousRegion`, a resolver fault two
+  stages upstream of the thing being tested). **(2)** Worse, the obvious check is not a check: the
+  developed hole had a genuine reflex corner and *still* came from a band, because a band
+  `[lo(σ), hi(σ)]` can be a perfectly non-convex planar region. The signature that actually
+  distinguishes them is a ruling meeting the cutter twice — pinned here as `solid()` refusing with
+  `LoopBroken`, since the near/far rail adapter is exactly what a non-band loop breaks. What AUTH.2
+  lifts is a restriction on **footprints**; "non-convex profile" is neither necessary nor sufficient
+  and the fixtures have to demonstrate the real thing.
+  *2026-08-16 · resolved · `author/tests/sketch_cutter_part.rs`, design §11.6*
+
+- **`hole_rail` accepted a loop it cannot represent and built a certified solid around the wrong
+  hole.** The near/far rail adapter splits an interior loop at its two σ-extremes, which assumes the
+  loop turns around in σ exactly twice — true of every band, and false of a traced non-convex loop.
+  Handed one, `chain` swapped the ends of each backward step and sorted, producing **overlapping**
+  σ-bands that the slice builder read as a hole of a different shape: the L-slot part came back
+  `Verified` with a solid whose hole was not the loop that had been certified. Nothing in the
+  pipeline objected, because every certificate along the way is about the *loop*, and the loop was
+  fine. Newly reachable the moment AUTH.2c's tracer replaced the band builder, and found only
+  because a test asserted the refusal that ought to happen — the pin written to make AUTH.2e's
+  landing visible caught a live defect instead. Fixed by counting σ-direction reversals and refusing
+  anything but two. *Own-goal worth recording:* the first version of that count walked `0..n` and
+  never compared the last step back to the first, so a band counted **one** reversal and every hole
+  was refused — a cycle is a cycle, including its wrap.
+  *2026-08-16 · resolved · `export::trim::hole_rail`*
+
 - **A differential whose tolerance is built from the quantity under test cannot fail — and it looks
   more rigorous than the sound version.** AUTH.2c's headline check is that the new general tracer
   reproduces AUTH.1e.4's band builder on the band's own square-prism fixture. Written the obvious

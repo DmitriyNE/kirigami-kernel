@@ -2111,9 +2111,17 @@ passed a mutation that made the tracer's ε **8× worse**, silently. The toleran
 multiple of the *band's* bound alone, and the mutation fails it. State it as a criterion because the
 vacuous version looks more rigorous than the sound one: it cites both certificates instead of one.
 
+*A fixture must produce the phenomenon, not merely resemble it.* The L-slot fixture went through
+two false negatives that read as tracer failures: an L whose arms lie along this cone's radial
+rulings has a perfectly ordinary **band** footprint, and even once rotated, the reflex corner
+visible in its flat pattern proves nothing (a band can be a non-convex region). The property under
+test is a ruling meeting the cutter twice, and the fixture has to be checked against *that* — here
+by `solid()` refusing the loop its rail adapter cannot represent. A test whose fixture does not
+exhibit the phenomenon passes for the wrong reason and hides the capability it claims to prove.
+
 *The ring stays refused, and for its own reason.* A footprint with its own hole is not a
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two
-parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.6).
+parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.7).
 
 ---
 

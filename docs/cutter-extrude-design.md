@@ -451,7 +451,7 @@ The refusal is **deliberate, not incidental**. Before 1e.4 a ring failed closed 
 a window search declining a shape it could not read; now it is refused by name, so the author learns
 that the profile is the problem.
 
-The non-convex row is lifted in §11. The ring's is not, and §11.6 says why the two were never the
+The non-convex row is lifted in §11. The ring's is not, and §11.7 says why the two were never the
 same problem.
 
 ### 10.2 Three things follow from the wall changing
@@ -503,7 +503,7 @@ is caught downstream by `pcurve_cut_fit` as `NappeCrossed`, a refusal.
 An L-slot, a T-slot, a keyhole, a dogbone — the shapes fab actually asks for — are **non-convex but
 connected**, and §10's band cannot hold them: a ruling meets such a cutter in several stretches, and
 how many changes with σ as the stretches merge and split. This section lifts that restriction. It
-does **not** lift the ring's (§11.6).
+does **not** lift the ring's (§11.7).
 
 ### 11.1 The band is confined to one file, and that is a measurement
 
@@ -637,7 +637,19 @@ the deviation folded into `ε`. An event the sweep stepped over shows up as a lo
 performance improvement over bisection sweeps, not a soundness dependency, and the milestone carries
 a test that says so: perturb the event set and `ε` degrades while the geometry stays honest.
 
-### 11.6 What stays refused, and why each is its own feature
+### 11.6 A non-convex profile is not a non-convex footprint
+
+Worth saying because two fixtures were built before it was noticed. What §11 lifts is a restriction
+on **footprints** — the region in `(σ, µ̂)` — and the profile only reaches that through the ruling
+family. On a cone whose rulings project to radial rays, an L-slot whose arms lie along the radius is
+met by every ray exactly once: its footprint is an ordinary band and the notch never appears in the
+domain at all. The same L rotated so the notch opens *across* the rulings is genuinely non-band.
+
+Nor is the developed shape evidence. A band `[lo(σ), hi(σ)]` can be a thoroughly non-convex planar
+region, so a reflex corner in the flat pattern proves nothing about the footprint. The signature that
+does distinguish them is the one §11 is built on: **a ruling meeting the cutter more than once**.
+
+### 11.7 What stays refused, and why each is its own feature
 
 - **A footprint with its own hole** (the ring, §10.1's third row). An annular through-cut leaves a
   disc of material floating, disconnected from the rest — that is two parts, not one hole, and the

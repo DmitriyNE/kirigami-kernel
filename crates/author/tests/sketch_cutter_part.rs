@@ -61,6 +61,40 @@ fn panel_with(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
         .segments(72)
 }
 
+/// An L-shape with its corner at `(cx, cy)`, arm `a`, thickness `t`, CCW — but laid out on the
+/// **rotated** axes `u = (3/5, 4/5)`, `v = (−4/5, 3/5)` rather than on `x`/`y`.
+///
+/// The rotation is the point, and it is geometry rather than decoration. This cone's rulings
+/// project to *radial* rays, so an L whose arms lie along the radius is met by every ray exactly
+/// once: its footprint is a band and the notch never appears in `(σ, µ̂)` at all. **Non-convex
+/// profile does not imply non-convex footprint** — what AUTH.2 lifts is a restriction on
+/// footprints, and a fixture has to produce one. Nor is a reflex corner in the flat pattern
+/// evidence: a band `[lo(σ), hi(σ)]` can be a perfectly non-convex *region*. The signature that
+/// counts is a ruling meeting the cutter **twice**, which needs the notch to open **across** the
+/// rulings rather than along them — hence these axes rather than the first pair tried. The
+/// `(3,4,5)` triple keeps every vertex rational, so the frame is exact rather than a rounded 45°.
+fn ell(cx: Q, cy: Q, a: Q, t: Q) -> Vec<Edge<Bignum>> {
+    let (ux, uy) = (q(4, 5), q(-3, 5));
+    let (vx, vy) = (q(3, 5), q(4, 5));
+    let p = |su: &Q, sv: &Q| {
+        [
+            cx.add(&ux.mul(su)).add(&vx.mul(sv)),
+            cy.add(&uy.mul(su)).add(&vy.mul(sv)),
+        ]
+    };
+    let z = qi(0);
+    Profile::new()
+        .polygon(&[
+            p(&z, &z),
+            p(&a, &z),
+            p(&a, &t),
+            p(&t, &t),
+            p(&t, &a),
+            p(&z, &a),
+        ])
+        .into_edges()
+}
+
 /// The AUTH.1f panel: the same gore, its feature a disc of radius `1/5`.
 fn panel(apex: Apex<Bignum>) -> Part<Bignum> {
     panel_with(apex, disc(qi(0), q(11, 5), q(1, 5)))
@@ -209,10 +243,12 @@ fn a_square_prism_cuts_a_hole_between_its_inscribed_and_circumscribed_discs() {
     );
 }
 
-/// **The ring is refused by name.** A profile with a hole of its own shadows every ruling in two
-/// stretches, which the band representation cannot express — so the part reports
-/// [`PartFault::ProfileNotSimple`] rather than shipping a hole that is not the one drawn. Before
-/// 1e.4 this failed closed only by accident, on a window search declining a shape it could not read.
+/// **The ring is refused by name — and since AUTH.2c, for its own reason.** The tracer has no
+/// trouble reading an annular footprint: it is two loops, one inside the other. What makes it a
+/// refusal is the geometry that would describe — a through-cut leaving a disc of material floating
+/// free, which is two parts rather than one hole. So the part still reports
+/// [`PartFault::ProfileNotSimple`], now off `ShadowNested` rather than off a band representation
+/// that could not express two stretches.
 #[test]
 fn a_ring_profile_is_refused_by_name() {
     let mut profile = disc(qi(0), q(11, 5), q(1, 5));
@@ -225,6 +261,89 @@ fn a_ring_profile_is_refused_by_name() {
         Verdict::Refuted(author::part::PartFault::ProfileNotSimple { .. }) => {}
         other => panic!(
             "a ring must be refused as not-a-band, got {}",
+            match other {
+                Verdict::Verified(_) => "Verified".to_string(),
+                Verdict::Refuted(f) => format!("Refuted({f:?})"),
+                Verdict::Unresolved(e) => format!("Unresolved({})", rat_to_f64(&e)),
+            }
+        ),
+    }
+}
+
+/// **AUTH.2d — a non-convex cutter develops, and the flat pattern keeps its reflex corner.**
+///
+/// This is the capability the milestone exists for, end to end: an L-slot authored as a
+/// `Cutter::extrude`, resolved, traced, developed and cut into the exact flat boolean. Two things
+/// are checked beyond the verdict, because a verdict cannot see either:
+///
+/// *The topology is what an L should give* — one face, one hole. A footprint the tracer split into
+/// two loops, or one it silently closed around the notch, changes this count.
+///
+/// *The hole is still non-convex where it matters.* A developed L must turn **both ways**: the
+/// reflex corner is the whole point, and a hole quietly convexified to its bounding band passes
+/// every ε gate ever written. Measured on the emitted polygon, through the quarantined exact→`f64`
+/// bridge rather than a hand-rolled conversion.
+#[test]
+fn an_l_slot_develops_and_keeps_its_reflex_corner() {
+    let flat = develop_or_panic(
+        panel_with(
+            Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
+            ell(q(-1, 10), q(11, 5), q(1, 4), q(1, 8)),
+        ),
+        "the L-slot",
+    );
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    assert_eq!(flat.region().faces[0].holes.len(), 1, "one interior hole");
+
+    let polys = export::svg::region_to_polys(flat.region());
+    let face = polys.faces.first().expect("one face");
+    let ring = face.rings.get(1).expect("the outer ring, then the hole");
+    let n = ring.len();
+    assert!(
+        n >= 6,
+        "an L's developed hole needs at least its six corners"
+    );
+    let cross = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+    };
+    // Chords along a curved rail turn very slightly; the reflex corner turns by a right angle, so
+    // the test asks for a turn of real size rather than merely a sign.
+    let scale: f64 = (0..n)
+        .map(|i| cross(ring[i], ring[(i + 1) % n], ring[(i + 2) % n]).abs())
+        .fold(0.0, f64::max);
+    let (mut left, mut right) = (false, false);
+    for i in 0..n {
+        let t = cross(ring[i], ring[(i + 1) % n], ring[(i + 2) % n]);
+        if t > 0.05 * scale {
+            left = true;
+        }
+        if t < -0.05 * scale {
+            right = true;
+        }
+    }
+    assert!(
+        left && right,
+        "the developed L must turn both ways — a convexified hole turns only one"
+    );
+}
+
+/// **AUTH.2d's boundary, pinned: the same L is refused by the *solid* builder, by name.** The flat
+/// path takes a traced non-convex loop (above); the solid path still consumes an interior hole as a
+/// near/far band, which is what `hole_rail` produces and what a loop turning around in σ is not.
+///
+/// This is the last piece of the milestone, AUTH.2e, and the test exists so its landing is visible:
+/// when the solid builder clips a general loop per σ-slice, this expectation flips to a certified
+/// shell. Until then the refusal is typed rather than a mis-built solid.
+#[test]
+fn the_solid_builder_still_refuses_a_traced_non_convex_loop() {
+    let part = panel_with(
+        Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
+        ell(q(-1, 10), q(11, 5), q(1, 4), q(1, 8)),
+    );
+    match part.solid() {
+        Verdict::Refuted(author::part::PartFault::LoopBroken) => {}
+        other => panic!(
+            "the solid path must refuse a non-band loop by name until AUTH.2e, got {}",
             match other {
                 Verdict::Verified(_) => "Verified".to_string(),
                 Verdict::Refuted(f) => format!("Refuted({f:?})"),

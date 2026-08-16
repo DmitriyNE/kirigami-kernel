@@ -29,7 +29,7 @@ use export::brep_build::{HoleRail, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
     HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_rail,
-    shadow_hole_loop, surface_hole_loop,
+    shadow_hole_loops, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
 
@@ -437,14 +437,20 @@ fn certify_holes<B: Backend>(
         // walls have no such quadratic: which one bounds the hole changes along the loop, at every
         // profile corner, so the boundary is read from the cutter's own fill rule instead.
         let verdict = match (walls.len(), cutter) {
-            (1, _) => surface_hole_loop(
+            (1, _) => match surface_hole_loop(
                 &built.charts[ri],
                 &walls[0],
                 &span,
                 &part.clearance,
                 &part.cfg,
                 segments,
-            ),
+            ) {
+                // One wall is its own boundary and gives one loop; the plural shape is the general
+                // one, so the single-surface path joins it rather than being special-cased around.
+                Verdict::Verified(h) => Verdict::Verified(vec![h]),
+                Verdict::Unresolved(e) => Verdict::Unresolved(e),
+                Verdict::Refuted(f) => Verdict::Refuted(f),
+            },
             (_, Cutter::Extrude(e)) => {
                 let cast = e
                     .cast()
@@ -455,7 +461,7 @@ fn certify_holes<B: Backend>(
                 // surface point — so the certified loop bounds the region the structure was
                 // resolved from, not a stricter one. (The authored nappe is enforced downstream:
                 // a loop reaching the mirror nappe is `NappeCrossed`, a refusal.)
-                shadow_hole_loop(
+                shadow_hole_loops(
                     chart,
                     &walls,
                     |sigma: &Rat<B>, mu: &Rat<B>| {
@@ -472,14 +478,16 @@ fn certify_holes<B: Backend>(
             _ => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
         };
         match verdict {
-            Verdict::Verified(h) => out.push(h),
+            Verdict::Verified(hs) => out.extend(hs),
             Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
             Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
                 return Err(RErr::Fault(PartFault::Pole));
             }
             // A deliberate scope refusal, not a looseness: say which, so the author learns that the
-            // profile is the problem rather than the resolution.
-            Verdict::Refuted(develop::cut::CutFitFault::ShadowNotSimple) => {
+            // profile is the problem rather than the resolution. Since AUTH.2c the tracer reads a
+            // non-convex footprint directly, so this is the **ring** — a hole with a hole of its
+            // own, which would leave an island of material floating free.
+            Verdict::Refuted(develop::cut::CutFitFault::ShadowNested) => {
                 return Err(RErr::Fault(PartFault::ProfileNotSimple { op }));
             }
             Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
