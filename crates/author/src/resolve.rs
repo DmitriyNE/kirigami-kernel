@@ -21,7 +21,7 @@
 use crate::part::Extrusion;
 use crate::part::{BuiltRegions, Cutter, OpKind, OpRole, Part, PartFault, RegionPick};
 use certify_core::Verdict;
-use develop::cut::{CutSurface, MuCut, cut_mu_form, tangent_events};
+use develop::cut::{CutSurface, EventKind, MuCut, coverage_events, cut_mu_form, tangent_events};
 use develop::pick::{Sheet, Span, ray_crossings, select};
 use export::approx::{f64_to_rat, rat_to_f64};
 use lattice::{Backend, Interval, Rat};
@@ -79,9 +79,44 @@ impl<B: Backend> Clone for Run<B> {
     }
 }
 
+/// How the material's σ-extent ends on one side (`docs/cutter-extrude-design.md` §12.2).
+pub(crate) enum SigmaEnd<B: Backend> {
+    /// The material reaches the authored band edge — every recipe before AUTH.3, and still the
+    /// common case. The extent *is* the declared domain on this side.
+    Band,
+    /// The material closes inside the band, in this exact isolating bracket, by these events.
+    /// `pinch` distinguishes the two termination shapes §12.4 names: rails converging (a `Meet` or
+    /// `Tangent`) versus a µ̂-degenerate wall flipping its coverage at full width.
+    Closed {
+        at: Interval<B>,
+        kinds: Vec<EventKind>,
+        pinch: bool,
+    },
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for SigmaEnd<B> {
+    fn clone(&self) -> Self {
+        match self {
+            SigmaEnd::Band => SigmaEnd::Band,
+            SigmaEnd::Closed { at, kinds, pinch } => SigmaEnd::Closed {
+                at: at.clone(),
+                kinds: kinds.clone(),
+                pinch: *pinch,
+            },
+        }
+    }
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
-    /// The boundary runs, in σ order, covering the declared domain.
+    /// The material's **derived** σ-extent — the sub-interval of the authored domain the ops
+    /// actually leave material over. Equal to the authored domain unless a cutter terminates the
+    /// blank, which is the AUTH.3 case; the runs below cover exactly this.
+    pub domain: Interval<B>,
+    /// How the extent ends, lower then upper.
+    pub ends: [SigmaEnd<B>; 2],
+    /// The boundary runs, in σ order, covering the derived domain.
     pub runs: Vec<Run<B>>,
     /// Ops classified as interior holes: `(op, region, the disc-positive σ-window)`.
     pub holes: Vec<(usize, usize, Interval<B>)>,
@@ -97,6 +132,8 @@ pub(crate) struct Structure<B: Backend> {
 impl<B: Backend> Clone for Structure<B> {
     fn clone(&self) -> Self {
         Structure {
+            domain: self.domain.clone(),
+            ends: [self.ends[0].clone(), self.ends[1].clone()],
             runs: self.runs.clone(),
             holes: self.holes.clone(),
             roles: self.roles.clone(),
@@ -180,6 +217,14 @@ pub(crate) struct RegionForms<B: Backend> {
     pub band: Interval<B>,
     /// Per op, one µ̂-pullback **per wall** — a metric cutter contributes exactly one.
     pub forms: Vec<Vec<MuCut<B>>>,
+    /// The same pullbacks in **one flat list, across every op** — the argument list the σ-extent's
+    /// ends are located from ([`locate_end`]). Flat rather than per-op because the two walls that
+    /// close the kept µ̂-interval need not belong to the same cutter: a contour's band can slide
+    /// entirely inside a subtract's carve, and the end is then the crossing of their two rails
+    /// (`docs/cutter-extrude-design.md` §12.2). No fixture exercises that case yet — the ones that
+    /// exist close on the contour's own walls — so it is a soundness requirement rather than a
+    /// measured one, and cheap either way.
+    pub flat: Vec<MuCut<B>>,
     pub detj_c: lattice::RatFunc<B>,
     pub detj_m: lattice::RatFunc<B>,
 }
@@ -493,14 +538,21 @@ fn sample_comps<B: Backend>(
         comps = next;
     }
     // Stock discipline: unbounded components are not part material.
+    //
+    // The two ways this can come out empty are **not** the same thing, and separating them is what
+    // lets σ become a derived extent (`docs/cutter-extrude-design.md` §12.1). Material that is
+    // *absent* — every op's shadow left nothing, which is what an intersect does past its own
+    // footprint — puts this σ outside the part, and the sweep records that rather than faulting.
+    // Material that is *unbounded* is a stock error at this σ: it is not missing, it is unbounded,
+    // and trimming the extent to where the blank happens to be bounded would ship a part whose end
+    // is the unboundedness frontier rather than a cut. So that one stays a refusal.
     let had_unbounded = comps.iter().any(|k| k.lo.is_none() || k.hi.is_none());
     comps.retain(|k| k.lo.is_some() && k.hi.is_some());
     if comps.is_empty() {
-        return Err(if had_unbounded {
-            PartFault::UnboundedRegion
-        } else {
-            PartFault::EmptyRegion
-        });
+        if had_unbounded {
+            return Err(PartFault::UnboundedRegion);
+        }
+        return Ok(Vec::new());
     }
     comps.sort_by(|a, b| {
         a.lo.as_ref()
@@ -544,6 +596,158 @@ fn sample_comps<B: Backend>(
         }
     }
     Ok(merged)
+}
+
+/// Where the material's σ-extent ends on one side, located **exactly** — the AUTH.3a derivation
+/// (`docs/cutter-extrude-design.md` §12.2).
+///
+/// `live` is the outermost σ that carries material and `dead` the neighbouring one that does not
+/// (a sample, or the authored band edge). The end lies between them, and it is a **root**, not a
+/// width to bisect: where material stops, the wall bounding the kept µ̂-interval from below and the
+/// wall bounding it from above cross the ruling at a common µ̂ — `Res_µ̂ = 0` for two different
+/// walls, `disc_µ̂ = 0` for one wall's own two roots — or a µ̂-degenerate wall flips its coverage at
+/// a root of `c` ([`coverage_events`]). All three are already exact and Sturm-isolated.
+///
+/// Which of several candidate brackets actually closes the material is **not** decided by
+/// proximity, and the fixtures show why: the quadric contour's end-cell holds two candidates
+/// `2·10⁻³` apart, and the nearer one ends nothing — it is where the *lower* bound hands over from
+/// the panel's carve to the contour's own lower root, after which both bounds are the contour's and
+/// the interval narrows for another `2·10⁻³` before pinching shut. The brackets are *isolating*, so
+/// each gap between two of them is proved free of structural change and one evaluation of the
+/// component algebra decides that whole gap. That is #268's recipe one level out — the reason a
+/// search is not needed and would not be sound.
+///
+/// The returned bracket's **inner** edge becomes the domain end, so the realized part stops at
+/// most one bracket width (`2⁻⁴⁰ ≈ 9·10⁻¹³`) short of the true end — three orders below the `2⁻³⁰`
+/// grid every emitted vertex is snapped to, and on the side that keeps the rails real.
+#[allow(clippy::too_many_arguments)]
+fn locate_end<B: Backend>(
+    part: &Part<B>,
+    forms: &[RegionForms<B>],
+    chart: &geom::chart::Chart<B>,
+    reach: &[Option<Vec<usize>>],
+    ri: usize,
+    live: &Rat<B>,
+    dead: &Rat<B>,
+) -> Result<SigmaEnd<B>, PartFault> {
+    use core::cmp::Ordering;
+    let ascending = live.cmp(dead) == Ordering::Less;
+    let window = if ascending {
+        Interval {
+            lo: live.clone(),
+            hi: dead.clone(),
+        }
+    } else {
+        Interval {
+            lo: dead.clone(),
+            hi: live.clone(),
+        }
+    };
+    let tol = tangent_tol::<B>();
+
+    // Every candidate in the window, from all three families, over every op's walls at once.
+    let mut zones: Vec<(Interval<B>, Vec<EventKind>, bool)> =
+        develop::cut::structure_events(&forms[ri].flat, &window, &tol)
+            .map_err(|_| PartFault::SigmaEndUnattributed)?
+            .into_iter()
+            .map(|e| {
+                let pinch = e
+                    .kinds
+                    .iter()
+                    .any(|k| matches!(k, EventKind::Meet(..) | EventKind::Tangent(..)));
+                (e.at, e.kinds, pinch)
+            })
+            .collect();
+    // The third class, folded in so the derivation matches its own claim rather than the cases a
+    // fixture happens to reach — and **unreachable today**, measured rather than assumed. A wall
+    // degenerate in µ̂ needs `n ⊥ ruling(σ)` for every σ, so the rulings must all point one way:
+    // a cylinder chart. The cylinder the fixtures ship has `h ≡ 0`, which puts its whole `w = 0`
+    // surface in one plane and leaves `c` constant (no root, no flip); give it a moving support and
+    // `c` does vary — measured `2.2, 0, −1, −2, −4.2` with a root at `σ = −1` — but the chart is
+    // then `NotDevelopable`, refused a step earlier. So the branch below is correct, cheap and
+    // presently dead, and the restriction that makes it dead is in the development tier, not here.
+    for form in &forms[ri].flat {
+        for at in
+            coverage_events(form, &window, &tol).map_err(|_| PartFault::SigmaEndUnattributed)?
+        {
+            // A coverage flip carries no `EventKind` — it is precisely the change none of the three
+            // structure families names — so it is recorded as an empty kind list and `pinch = false`
+            // (the material ends at full width, a jump rather than a pinch: §12.4).
+            zones.push((at, Vec::new(), false));
+        }
+    }
+    // Merge overlapping brackets, exactly as `structure_events` does within its own families: the
+    // partition must stay a partition even where two candidates land closer than `tol`, or the gap
+    // between them is degenerate and decides nothing.
+    zones.sort_by(|x, y| x.0.lo.cmp(&y.0.lo));
+    let mut merged: Vec<(Interval<B>, Vec<EventKind>, bool)> = Vec::with_capacity(zones.len());
+    for (at, kinds, pinch) in zones {
+        match merged.last_mut() {
+            Some(prev) if at.lo.cmp(&prev.0.hi) != Ordering::Greater => {
+                if at.hi.cmp(&prev.0.hi) == Ordering::Greater {
+                    prev.0.hi = at.hi;
+                }
+                prev.1.extend(kinds);
+                prev.2 |= pinch;
+            }
+            _ => merged.push((at, kinds, pinch)),
+        }
+    }
+    if !ascending {
+        merged.reverse();
+    }
+
+    // Walk the gaps from the live side: `live → b₀ → b₁ → … → dead`. Each gap is structure-free,
+    // so one midpoint evaluation decides the whole of it, and the first **dead** gap names the
+    // bracket just crossed. A degenerate gap (two brackets touching after the merge) decides
+    // nothing and is skipped, which only defers the decision to the next one.
+    let n = merged.len();
+    if n == 0 {
+        return Err(PartFault::SigmaEndUnattributed);
+    }
+    let near_of = |i: usize| {
+        let at = &merged[i].0;
+        if ascending {
+            at.lo.clone()
+        } else {
+            at.hi.clone()
+        }
+    };
+    let far_of = |i: usize| {
+        let at = &merged[i].0;
+        if ascending {
+            at.hi.clone()
+        } else {
+            at.lo.clone()
+        }
+    };
+    let alive = |sigma: &Rat<B>| -> Result<bool, PartFault> {
+        Ok(!sample_comps(part, forms, chart, reach, ri, sigma)?.is_empty())
+    };
+    let mut prev = live.clone();
+    let mut closed: Option<usize> = None;
+    for i in 0..=n {
+        let stop = if i < n { near_of(i) } else { dead.clone() };
+        if prev.cmp(&stop) != Ordering::Equal {
+            let mid = prev.add(&stop).mul(&Rat::new(1, 2));
+            if !alive(&mid)? {
+                if i == 0 {
+                    // Dead before any candidate: the end is one the window did not contain, so
+                    // refuse rather than name an event that did not close it.
+                    return Err(PartFault::SigmaEndUnattributed);
+                }
+                closed = Some(i - 1);
+                break;
+            }
+        }
+        if i < n {
+            prev = far_of(i);
+        }
+    }
+    // Every gap live or degenerate: `dead` is dead by the caller's contract, so the transition
+    // happened across the last bracket.
+    let (at, kinds, pinch) = merged.swap_remove(closed.unwrap_or(n - 1));
+    Ok(SigmaEnd::Closed { at, kinds, pinch })
 }
 
 /// Choose the kept component at every sample: **seed** where the designation is most decisive,
@@ -747,10 +951,12 @@ pub(crate) fn sweep<B: Backend>(
             }
             forms.push(per_wall);
         }
+        let flat: Vec<MuCut<B>> = forms.iter().flatten().cloned().collect();
         let dj = chart.det_j();
         regions.push(RegionForms {
             band: r.band.clone(),
             forms,
+            flat,
             detj_c: dj.constant,
             detj_m: dj.mu,
         });
@@ -769,10 +975,15 @@ pub(crate) fn sweep<B: Backend>(
             let t = Rat::new((2 * k as i128) + 1, 2 * CELLS as i128);
             samples.push((ri, rf.band.lo.add(&width.mul(&t))));
         }
-        for (op, (kind, cutter)) in part.ops.iter().enumerate() {
-            if !matches!(kind, OpKind::Subtract) {
-                continue;
-            }
+        for (op, (_kind, cutter)) in part.ops.iter().enumerate() {
+            // Both senses are targeted, and that is AUTH.3a's second change. Station targeting was
+            // `Subtract`-only, so an intersect's footprint was never sampled deliberately and the
+            // uniform grid does not find it by luck — a square subtending ≈0.128 in σ is narrower
+            // than one cell of a `±3.5` band, and not one of the 48 samples lands inside it. A
+            // σ-extent derived from a grid that cannot see the contour comes back empty for a cause
+            // unrelated to the geometry: fail-closed but misattributed, which is what #268 was.
+            // Nothing else moves — hole attribution reads `hole_ops`, which only a `Subtract` can
+            // populate, so an intersect can never be classified `Hole` by gaining stations here.
             // Windows belong to WALLS, not to cutter variants. A wall whose pullback is a genuine
             // quadratic (`a ≢ 0`) is real only between its tangent rulings and needs targeted
             // stations there; an affine one needs none. That criterion reproduces the old
@@ -844,21 +1055,108 @@ pub(crate) fn sweep<B: Backend>(
     samples.dedup_by(|a, b| a.1.cmp(&b.1) == core::cmp::Ordering::Equal);
 
     // Resolve every sample: the component algebra everywhere first, then the seeded
-    // continuity-propagated choice (see [`choose_comps`]).
-    let mut at: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
+    // continuity-propagated choice (see [`choose_comps`]). A sample may now come back with **no**
+    // components — that σ simply carries no material — so the extent is derived before the choice.
+    let mut all: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
     for (ri, sigma) in samples {
         let comps = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
-        at.push((ri, sigma, comps));
+        all.push((ri, sigma, comps));
     }
-    let chosen = choose_comps(part, built, &at)?;
+
+    // — The derived σ-extent (AUTH.3a, `docs/cutter-extrude-design.md` §12). —
+    let (first, last) = {
+        let live = |i: &usize| !all[*i].2.is_empty();
+        let lo = (0..all.len()).find(live);
+        let hi = (0..all.len()).rev().find(live);
+        match (lo, hi) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Err(PartFault::EmptyRegion),
+        }
+    };
+    // A part is one connected piece. Two live runs with a gap between them is not a part the
+    // resolver may pick from, so it refuses rather than choosing one or emitting both.
+    if all[first..=last].iter().any(|(_, _, c)| c.is_empty()) {
+        return Err(PartFault::DisconnectedRegion);
+    }
+    // Each end is either the authored band edge or a located event. The band edges themselves are
+    // never sample stations (the grid is mid-cell), so they are probed here rather than assumed:
+    // "no dead sample below the first live one" is not the same claim as "the material reaches the
+    // edge", and the difference is exactly a contour that dies inside the first half-cell.
+    let outer_live = |edge: &Rat<B>, ri: usize| -> Result<bool, PartFault> {
+        Ok(!sample_comps(part, &regions, &built.charts[ri], &reach, ri, edge)?.is_empty())
+    };
+    let band_lo = regions[0].band.lo.clone();
+    let band_hi = regions[regions.len() - 1].band.hi.clone();
+    let (ri_lo, ri_hi) = (all[first].0, all[last].0);
+    let lower = if first > 0 {
+        locate_end(
+            part,
+            &regions,
+            &built.charts[ri_lo],
+            &reach,
+            ri_lo,
+            &all[first].1,
+            &all[first - 1].1,
+        )?
+    } else if outer_live(&band_lo, ri_lo)? {
+        SigmaEnd::Band
+    } else {
+        locate_end(
+            part,
+            &regions,
+            &built.charts[ri_lo],
+            &reach,
+            ri_lo,
+            &all[first].1,
+            &band_lo,
+        )?
+    };
+    let upper = if last + 1 < all.len() {
+        locate_end(
+            part,
+            &regions,
+            &built.charts[ri_hi],
+            &reach,
+            ri_hi,
+            &all[last].1,
+            &all[last + 1].1,
+        )?
+    } else if outer_live(&band_hi, ri_hi)? {
+        SigmaEnd::Band
+    } else {
+        locate_end(
+            part,
+            &regions,
+            &built.charts[ri_hi],
+            &reach,
+            ri_hi,
+            &all[last].1,
+            &band_hi,
+        )?
+    };
+    // The bracket's **inner** edge is the domain end — inside the material, where the rails are
+    // still real, and short of the true end by at most one bracket width (`2⁻⁴⁰`).
+    let domain = Interval {
+        lo: match &lower {
+            SigmaEnd::Band => band_lo,
+            SigmaEnd::Closed { at, .. } => at.hi.clone(),
+        },
+        hi: match &upper {
+            SigmaEnd::Band => band_hi,
+            SigmaEnd::Closed { at, .. } => at.lo.clone(),
+        },
+    };
+
+    let at = &all[first..=last];
+    let chosen = choose_comps(part, built, at)?;
     let mut recs: Vec<SampleRec<B>> = Vec::with_capacity(at.len());
-    for ((_, sigma, comps), pick) in at.into_iter().zip(chosen) {
+    for ((_, sigma, comps), pick) in at.iter().zip(chosen) {
         let m = &comps[pick];
         let (lo_end, hi_end) = (m.comp.lo.as_ref().unwrap(), m.comp.hi.as_ref().unwrap());
         let mut hole_ops = m.hole_ops.clone();
         hole_ops.sort_unstable();
         recs.push(SampleRec {
-            sigma,
+            sigma: sigma.clone(),
             lower: lo_end.1,
             upper: hi_end.1,
             hole_ops,
@@ -968,6 +1266,8 @@ pub(crate) fn sweep<B: Backend>(
     };
 
     Ok(Structure {
+        domain,
+        ends: [lower, upper],
         runs,
         holes,
         roles,
@@ -1380,10 +1680,15 @@ mod tests {
             .clearance(q(1))
     }
 
-    /// Which sample σ carry material, on a uniform grid of `cells` over the single region — the
-    /// resolver's own algebra, read one sample at a time instead of through the sweep (which
-    /// aborts on the first empty one). Replicates `sweep`'s prologue.
-    fn live_samples(part: &Part<Bignum>, cells: usize) -> Vec<(Q, bool)> {
+    /// The derived σ-extent and its two ends, or the fault.
+    fn extent(part: &Part<Bignum>) -> Result<Structure<Bignum>, PartFault> {
+        let built = part.build_regions()?;
+        sweep(part, &built)
+    }
+
+    /// The merged material components at one σ as `(µ̂_lo, µ̂_hi, op_lo, op_hi)` — the resolver's own
+    /// algebra at a single sample, which the sweep's grid need not contain.
+    fn comps_at(part: &Part<Bignum>, sigma: &Q) -> Vec<(f64, f64, usize, usize)> {
         let built = part.build_regions().expect("the regions develop");
         let reach = span_reach(part, &built).expect("the cast resolves");
         let zero = q(0);
@@ -1399,154 +1704,252 @@ mod tests {
             );
         }
         let dj = chart.det_j();
+        let flat: Vec<MuCut<Bignum>> = forms.iter().flatten().cloned().collect();
         let regions = vec![RegionForms {
             band: part.regions[0].band.clone(),
             forms,
+            flat,
             detj_c: dj.constant,
             detj_m: dj.mu,
         }];
-        let band = &regions[0].band;
-        let width = band.hi.sub(&band.lo);
-        (0..cells)
-            .map(|k| {
-                let t = Rat::new((2 * k as i128) + 1, 2 * cells as i128);
-                let sigma = band.lo.add(&width.mul(&t));
-                let live = sample_comps(part, &regions, chart, &reach, 0, &sigma).is_ok();
-                (sigma, live)
+        sample_comps(part, &regions, chart, &reach, 0, sigma)
+            .expect("the fixture resolves at every sample")
+            .iter()
+            .map(|m| {
+                let (lo, hi) = (m.comp.lo.expect("bounded"), m.comp.hi.expect("bounded"));
+                (lo.0, hi.0, lo.1.0, hi.1.0)
             })
             .collect()
     }
 
-    /// **The claim AUTH.3a rests on, measured before it is built** (`docs/cutter-extrude-design.md`
-    /// §12): the σ where a contour stops leaving material is a root the kernel *already isolates
-    /// exactly*, so deriving the material's σ-extent needs no new arithmetic.
+    /// **The nearest candidate is not the one that ends the material, and only evaluating between
+    /// the brackets can tell.**
     ///
-    /// Where the kept µ̂-interval closes, its two bounding walls cross the ruling at a common µ̂ —
-    /// `Res_µ̂(f_l, f_u) = 0` for different walls, `disc_µ̂(f) = 0` for one wall's own two roots.
-    /// Both are [`develop::cut::structure_events`] families; the only change is to run them over the
-    /// union of **every op's** walls rather than one cutter's, since the two walls that close the
-    /// interval need not belong to the same cutter.
+    /// The quadric fixture's end-cell holds two events `2·10⁻³` apart, and this is what happens
+    /// across them — measured, not argued. Before `Meet(1, 2)` (σ ≈ −0.2384) the material is bounded
+    /// below by the panel's annulus **carve** and above by the contour. After it, **both** bounds
+    /// are the contour's own walls, and the interval narrows for another `2·10⁻³` before pinching
+    /// shut at `Tangent(2)` (σ ≈ −0.2404). So the `Meet` is a *handover*, not an end.
     ///
-    /// Asserted on two fixtures that terminate by different mechanisms — the polygon closes at one
-    /// of its **own corners** (`Meet` between two of its walls), the quadric at a **cross-op**
-    /// crossing (`Meet` between its wall and the panel's annulus carve, inside its own `Tangent`) —
-    /// and the bracket must be *sharp*, not merely present: five orders below the sample spacing
-    /// that found the end. A grid-width bracket would satisfy "an event lies between the last live
-    /// sample and the first dead one" while localizing nothing at all.
+    /// A derivation that took the nearest event — or that read the labels at the last live sample
+    /// and assumed they persisted — would stop the part at the handover, in the middle of material
+    /// the ops leave. This is the assertion that fails for it, and it is the reason the σ-ends are
+    /// decided by one evaluation per gap rather than by proximity.
     #[test]
-    fn the_material_stops_inside_an_event_bracket_of_the_ops_own_walls() {
+    fn the_nearest_event_in_the_cell_is_not_the_one_that_ends_the_material() {
+        let part = blank(Q::new(-7, 2), Q::new(7, 2)).intersect(Cutter::vertical_cylinder(
+            q(0),
+            Q::new(11, 5),
+            q(1),
+        ));
+        // Before the handover: the carve (op 1) below, the contour (op 2) above.
+        let before = comps_at(&part, &Rat::new(-238_400, 1_000_000));
+        assert_eq!(before.len(), 1, "one component");
+        assert_eq!(
+            (before[0].2, before[0].3),
+            (1, 2),
+            "before the Meet the carve still bounds from below — got {before:?}"
+        );
+        // Across the stretch between the two candidates: the contour bounds BOTH sides, and the
+        // material is still there. Widths taken at the same σ, so they must shrink monotonically.
+        let mut last = f64::INFINITY;
+        for milli in [-238_500i128, -239_000, -240_000, -240_400] {
+            let cs = comps_at(&part, &Rat::new(milli, 1_000_000));
+            assert_eq!(
+                cs.len(),
+                1,
+                "σ = {}e-6 must still carry material — the Meet does not end it",
+                milli
+            );
+            assert_eq!(
+                (cs[0].2, cs[0].3),
+                (2, 2),
+                "past the handover both bounds are the contour's own walls — got {cs:?}"
+            );
+            let width = cs[0].1 - cs[0].0;
+            assert!(
+                width < last,
+                "the interval must be closing: {width:.6} after {last:.6}"
+            );
+            last = width;
+        }
+        // And past the tangent it is gone.
+        assert!(
+            comps_at(&part, &Rat::new(-240_500, 1_000_000)).is_empty(),
+            "past Tangent(2) the contour leaves nothing"
+        );
+    }
+
+    /// σ as a float, for messages.
+    fn ff(x: &Q) -> f64 {
+        rat_to_f64(x)
+    }
+
+    /// **The invariant that lets AUTH.3a land without moving a single pinned number.** Deriving
+    /// the σ-extent instead of assuming it may not *change* it where nothing terminates the
+    /// material: on a recipe whose ops only trim laterally, the derived domain must be the authored
+    /// band exactly — not to a tolerance, the same rationals — and both ends must report
+    /// [`SigmaEnd::Band`].
+    ///
+    /// Asserted structurally rather than by re-running the goldens, because it is the *reason* the
+    /// goldens hold: every ε, work counter and chord metric in the repo is measured over a domain
+    /// this function now computes rather than reads.
+    #[test]
+    fn a_laterally_trimmed_recipe_derives_exactly_the_band_it_declared() {
+        let part = blank(Q::new(-7, 2), Q::new(7, 2));
+        let st = extent(&part).expect("the blank resolves");
+        let band = &part.regions[0].band;
+        assert!(
+            st.domain.lo.cmp(&band.lo) == core::cmp::Ordering::Equal
+                && st.domain.hi.cmp(&band.hi) == core::cmp::Ordering::Equal,
+            "derived [{:.9}, {:.9}] against the authored [{:.9}, {:.9}]",
+            ff(&st.domain.lo),
+            ff(&st.domain.hi),
+            ff(&band.lo),
+            ff(&band.hi)
+        );
+        assert!(
+            matches!(st.ends, [SigmaEnd::Band, SigmaEnd::Band]),
+            "a lateral trim ends at the band on both sides"
+        );
+    }
+
+    /// **The derivation itself** (`docs/cutter-extrude-design.md` §12.2): a contour that terminates
+    /// the material derives a strict sub-extent, and each end is an *exactly located event* rather
+    /// than a sampled width.
+    ///
+    /// The two fixtures close by different events — the quadric at its own **tangent ruling**, the
+    /// polygon at one of its own **corners** — and the quadric is the one that shows why the choice
+    /// among candidates cannot be made by proximity. Its end-cell holds **two** events `2·10⁻³`
+    /// apart, and the *nearer* one does not end anything: at `Meet(1, 2)` the lower bound merely
+    /// hands over from the panel's annulus carve to the contour's own lower root, after which both
+    /// bounds are the contour's walls and the material narrows for another `2·10⁻³` before pinching
+    /// at `Tangent(2)`. Measured, at four σ across that stretch — see the `handover` assertion.
+    /// Taking the nearest event would have ended the part too early, in the middle of material the
+    /// ops leave; only evaluating the component algebra **in the gaps between brackets** decides it,
+    /// which is what the isolation buys (#268's recipe one level out).
+    ///
+    /// The bracket is asserted to be **sharp** — five orders below the sample spacing that found
+    /// the end — because "an event lies between the last live sample and the first dead one" is
+    /// satisfied by an event set that localizes nothing.
+    #[test]
+    fn a_contour_that_terminates_the_material_derives_its_ends_exactly() {
         use core::cmp::Ordering;
-        use develop::cut::{EventKind, structure_events};
-        const CELLS_FINE: usize = 2400;
-        let a_le = |x: &Q, y: &Q| x.cmp(y) != Ordering::Greater;
-        let band = Interval {
-            lo: Q::new(-7, 2),
-            hi: Q::new(7, 2),
-        };
-        let cases: [(&str, Cutter<Bignum>); 2] = [
+        let cases: [(&str, Cutter<Bignum>, f64, bool); 2] = [
             (
-                "a quadric contour — closes against another op",
+                "a quadric contour — closes at its own tangent ruling",
                 Cutter::vertical_cylinder(q(0), Q::new(11, 5), q(1)),
+                0.240_408_206,
+                true,
             ),
             (
                 "a polygonal contour — closes at its own corner",
                 drilled(square_edges(q(0), Q::new(11, 5), Q::new(1, 4))),
+                0.063_841_301,
+                true,
             ),
         ];
-        for (name, cutter) in cases {
-            let part = blank(band.lo.clone(), band.hi.clone()).intersect(cutter);
-            let rows = live_samples(&part, CELLS_FINE);
-            let first = rows.iter().position(|(_, l)| *l);
-            let last = rows.iter().rposition(|(_, l)| *l);
-            let (first, last) = match (first, last) {
-                (Some(a), Some(b)) => (a, b),
-                _ => panic!("{name}: the contour must leave material somewhere"),
+        for (name, cutter, want, want_pinch) in cases {
+            let part = blank(Q::new(-7, 2), Q::new(7, 2)).intersect(cutter);
+            let st = extent(&part).expect("the contour resolves");
+            let band = &part.regions[0].band;
+            assert!(
+                st.domain.lo.cmp(&band.lo) == Ordering::Greater
+                    && st.domain.hi.cmp(&band.hi) == Ordering::Less,
+                "{name}: the extent must be a strict sub-interval — got [{:.9}, {:.9}]",
+                ff(&st.domain.lo),
+                ff(&st.domain.hi)
+            );
+            // The fixtures are mirror-symmetric, so both ends must land on ∓ the same σ.
+            for (end, sign) in st.ends.iter().zip([-1.0, 1.0]) {
+                let SigmaEnd::Closed { at, kinds, pinch } = end else {
+                    panic!("{name}: both ends close inside the band")
+                };
+                assert!(
+                    (ff(&at.lo) - sign * want).abs() < 1e-8,
+                    "{name}: end bracketed at [{:.9}, {:.9}], expected ≈{:+.9} — {kinds:?}",
+                    ff(&at.lo),
+                    ff(&at.hi),
+                    sign * want
+                );
+                // Sharp: `2⁻⁴⁰ ≈ 9·10⁻¹³` against the 48-cell grid's `7/48 ≈ 0.146`.
+                assert!(
+                    ff(&at.hi) - ff(&at.lo) < 1e-8,
+                    "{name}: the bracket is {:.3e} wide — an event that only localizes to the \
+                     sample grid localizes nothing",
+                    ff(&at.hi) - ff(&at.lo)
+                );
+                assert_eq!(
+                    *pinch, want_pinch,
+                    "{name}: the rails converge here, so the end is a pinch — kinds {kinds:?}"
+                );
+                // Named by the contour's own wall. Ops 0 and 1 contribute one wall each, so the
+                // contour's are indices 2 and up in the union.
+                assert!(
+                    kinds.iter().any(|k| match k {
+                        EventKind::Tangent(i) | EventKind::Escape(i) => *i >= 2,
+                        EventKind::Meet(i, j) => *i >= 2 || *j >= 2,
+                    }),
+                    "{name}: the end must name the contour that made it — got {kinds:?}"
+                );
+            }
+            // And the domain stops *inside* the brackets, never past them: the realized part is
+            // short of the true end by at most one bracket width, on the side that keeps the rails
+            // real.
+            let [
+                SigmaEnd::Closed { at: lo, .. },
+                SigmaEnd::Closed { at: hi, .. },
+            ] = &st.ends
+            else {
+                unreachable!("checked above")
             };
             assert!(
-                rows[first..=last].iter().all(|(_, l)| *l),
-                "{name}: the live samples must form ONE run — a gap would be a disconnected part, \
-                 which AUTH.3a refuses by name rather than deriving an extent across"
+                st.domain.lo.cmp(&lo.hi) != Ordering::Greater
+                    && st.domain.lo.cmp(&lo.lo) != Ordering::Less
+                    && st.domain.hi.cmp(&hi.lo) != Ordering::Greater
+                    && st.domain.hi.cmp(&hi.hi) != Ordering::Greater,
+                "{name}: the domain ends must sit on the inner edge of their own brackets"
             );
-            assert!(
-                first > 0 && last + 1 < rows.len(),
-                "{name}: the material must stop inside the declared band, else there is nothing \
-                 to derive (live {first}..={last} of {})",
-                rows.len()
-            );
-
-            // Every op's walls, in one list — the union the crossing of two *different* ops' rails
-            // needs.
-            let chart = cone();
-            let mut forms: Vec<MuCut<Bignum>> = Vec::new();
-            for (_, c) in part.ops.iter() {
-                for w in c.walls().expect("a well-formed cutter").iter() {
-                    forms.push(cut_mu_form(&chart, w, &q(0)).expect("a pullback"));
-                }
-            }
-            let events = structure_events(&forms, &band, &tangent_tol()).expect("isolable");
-
-            // On each side: an event bracket separates the last live sample from the first dead one.
-            let spacing = band.hi.sub(&band.lo).mul(&Rat::new(1, CELLS_FINE as i128));
-            for (lo, hi, side) in [
-                (&rows[first - 1].0, &rows[first].0, "lower"),
-                (&rows[last].0, &rows[last + 1].0, "upper"),
-            ] {
-                // Every event in the cell, not the first one — several may land in a single cell,
-                // and taking the first would report a mechanism the fixture does not have. Which of
-                // them actually closes the material is not a question the grid can answer; it is
-                // #268's shape one level out (the gaps between brackets are structure-constant, so
-                // one evaluation per gap decides), and answering it is AUTH.3a's job.
-                let hits: Vec<_> = events
-                    .iter()
-                    .filter(|e| a_le(lo, &e.at.lo) && a_le(&e.at.hi, hi))
-                    .collect();
-                assert!(
-                    !hits.is_empty(),
-                    "{name}: no event brackets the {side} end, which lies in [{:.6}, {:.6}] — \
-                     the σ-extent would have to be derived by search",
-                    rat_to_f64(lo),
-                    rat_to_f64(hi)
-                );
-                // Sharp, not merely present.
-                for e in &hits {
-                    let w = e.at.hi.sub(&e.at.lo);
-                    assert!(
-                        w.mul(&Rat::from_i128(100_000)).cmp(&spacing) == Ordering::Less,
-                        "{name}: a {side} bracket is {:.3e} wide against a {:.3e} sample spacing — \
-                         an event that only localizes to the grid localizes nothing",
-                        rat_to_f64(&w),
-                        rat_to_f64(&spacing)
-                    );
-                }
-                let e = hits[0];
-                // The contour's own wall is named — but not necessarily *alone*, and that is the
-                // measurement that sizes the slice. The interval closes where the wall bounding it
-                // from below meets the wall bounding it from above, and those two need not belong
-                // to the same cutter: on the quadric fixture the end is `Meet(1, 2)`, the contour's
-                // wall against the panel's annulus carve, and it lands *before* the contour's own
-                // tangent ruling. So the event set has to run over the union of every op's walls —
-                // per-cutter events would place this end at the wrong σ and would be a wrong part,
-                // not a refused one. (Ops 0 and 1 supply one wall each, so the contour's are 2 up.)
-                let names_contour = hits.iter().flat_map(|e| e.kinds.iter()).any(|k| match k {
-                    EventKind::Tangent(i) | EventKind::Escape(i) => *i >= 2,
-                    EventKind::Meet(i, j) => *i >= 2 || *j >= 2,
-                });
-                assert!(
-                    names_contour,
-                    "{name}: the {side} end must name the contour that made it — got {:?}",
-                    e.kinds
-                );
-                std::eprintln!(
-                    "  {name}: {side} end — samples bracket it to [{:+.6}, {:+.6}], which holds \
-                     {} event(s):",
-                    rat_to_f64(lo),
-                    rat_to_f64(hi),
-                    hits.len()
-                );
-                for e in &hits {
-                    std::eprintln!("      σ = {:+.9}  {:?}", rat_to_f64(&e.at.lo), e.kinds);
-                }
-            }
         }
+    }
+
+    /// **A part is one connected piece, and a wrapping chart is where that stops being obvious.**
+    ///
+    /// `cone_wrap` covers more than one full turn, so a cutter placed off the axis is met by the
+    /// chart **twice** — the same solid contour, two disjoint σ-runs of material. Deriving an
+    /// extent across the gap would weld two pieces of the cone into one part through material the
+    /// ops removed; picking one silently discards the other. Refused by name instead.
+    ///
+    /// Not a contrived fixture: this is the self-lapping device's own geometry, and the cutter sits
+    /// where its seam drill does.
+    #[test]
+    fn material_in_two_sigma_runs_is_refused_by_name() {
+        use crate::construct;
+        use crate::part::SupportFn;
+        use fixtures::devices::cone_wrap;
+        let rz0 = cone_wrap()
+            .ruling()
+            .comp(2)
+            .eval(&q(0))
+            .expect("the wrap chart's ruling is regular at σ = 0");
+        let witness = cone_wrap()
+            .surface(&q(-3).div(&rz0), &q(0))
+            .eval(&q(0))
+            .expect("the mid-annulus witness is regular");
+        let part = construct::from_chart::<Bignum>(&cone_wrap())
+            .region_sigma(Q::new(-5, 4), Q::new(5, 4), SupportFn::constant(q(0)))
+            .keep_near(witness)
+            .intersect(Cutter::vertical_cylinder(q(0), q(0), Q::new(471, 50)))
+            .subtract(Cutter::vertical_cylinder(q(0), Q::new(1, 2), q(4)))
+            .clearance(q(1))
+            .intersect(Cutter::vertical_cylinder(
+                Q::new(-1, 2),
+                Q::new(27, 10),
+                q(1),
+            ));
+        assert!(
+            matches!(extent(&part), Err(PartFault::DisconnectedRegion)),
+            "one contour met twice by a wrapping chart must refuse, not weld or choose"
+        );
     }
 }

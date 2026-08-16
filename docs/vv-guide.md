@@ -2293,15 +2293,25 @@ own, since a test comparing two identical computations passes forever, so the sa
 control: a *biting* lateral intersect must move those very vertices. State it generally — **an
 equality assertion needs a nearby inequality that fails when the comparison stops being sensitive.**
 
-*The end of the material is a root, and the fixture must show which root.* Where material stops, the
-kept µ̂-interval closes, so its two bounding walls cross at a common µ̂ — `Res_µ̂` for different
-walls, `disc_µ̂` for one wall's own two roots, both already exact in `structure_events`. The naive
-reading is that a contour's σ-extent is its own tangent rulings; the criterion is a test that can
-tell the two apart, and on the quadric fixture they **differ**: the material closes at
-`Meet(1, 2)` — the contour's wall against the panel's annulus carve — `2·10⁻³` inside the contour's
-own `Tangent(2)`. Trimming to the tangent would emit a sliver the ops do not leave, which is a wrong
-part rather than a refused one. So the event set has to run over the union of *every op's* walls, and
-the test asserts the located end against the brackets rather than against a golden number.
+*The end of the material is a root, and which root is not decided by proximity.* Where material
+stops, the kept µ̂-interval closes, so its two bounding walls cross at a common µ̂ — `Res_µ̂` for
+different walls, `disc_µ̂` for one wall's own two roots, both already exact in `structure_events`.
+Several candidates can land in one sample cell, and the criterion is a test that shows the nearest
+one is the **wrong** answer. On the quadric fixture the end-cell holds two events `2·10⁻³` apart and
+the inner one ends nothing: at `Meet(1, 2)` the lower bound merely hands over from the panel's
+annulus carve to the contour's own lower root, after which *both* bounds are the contour's walls and
+the interval narrows for another `2·10⁻³` before pinching at `Tangent(2)`. A derivation that took the
+nearest event, or that read the labels at the last live sample and assumed they persisted, stops the
+part in the middle of material the ops leave — a wrong part, not a refused one. What decides it is
+one evaluation of the component algebra **per gap between brackets**, which the isolation makes
+sound (#268's recipe one level out). The test asserts the located end against the brackets rather
+than a golden, and asserts the handover stretch directly, because that stretch is what the wrong
+answer denies.
+
+Worth recording as method: **this is the claim the GO-gate got backwards** — it named the handover as
+the end — and what caught it was building the mechanism the design specified and letting it disagree.
+A design note that reasons from a sampled scan about which of two sub-cell events matters is a
+hypothesis; only the gap evaluation is evidence.
 
 *A bracket must be sharp, not merely present.* "An event lies between the last live sample and the
 first dead one" is satisfied by an event set that localizes nothing. The assertion is that each

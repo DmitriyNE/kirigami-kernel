@@ -927,35 +927,59 @@ roots — the `Meet` and `Tangent` families of AUTH.2a's event set (§11.2), alr
 Sturm-isolated, already bisected to `2⁻⁴⁰` by `structure_events`.
 
 One change, and it is the whole of the derivation: run them over the union of **every op's** walls
-rather than one cutter's. The two walls that close the interval need not belong to the same cutter,
-and on the quadric fixture they do not — measured, both ends, symmetric:
+rather than one cutter's. The two walls that close the interval need not belong to the same cutter —
+a contour's upper root can descend onto a *subtract's* rail, and past that σ its whole band lies
+inside the carve — so a per-cutter event set is not sound. That case is a **soundness requirement
+with no fixture yet** (see below); what the fixtures do exercise, measured on both ends and
+symmetric, is this:
 
 ```
 quadric contour, each end — the sample cell holds TWO events
-    σ = ±0.238427501   Meet(1, 2)     the contour's wall against the panel's annulus carve
-    σ = ±0.240408206   Tangent(2)     the contour's own tangent ruling, 2·10⁻³ further out
+    σ = ±0.238427501   Meet(1, 2)     the contour's wall meeting the panel's annulus carve
+    σ = ±0.240408206   Tangent(2)     the contour's own tangent ruling — THIS is the end
 polygonal contour, each end — one event
     σ = ±0.063841301   Meet(2, 3) / Meet(2, 5)     two of the square's own walls: a corner
 ```
 
-Two things follow, and both are load-bearing.
+**The nearest candidate is not the end, and only evaluating between the brackets can tell.** Both
+quadric ends have two candidates `2·10⁻³` apart against a `2.9·10⁻³` sample cell, and the *inner*
+one ends nothing. Measured across that stretch:
 
-**Per-cutter events would put this end at the wrong σ.** The naive reading — "a contour's σ-extent is
-its own tangent rulings" — is what `surface_tangents` and `tangent_events` compute today, and on this
-fixture it is wrong by `2·10⁻³`: the material closes at the `Meet` against the carve, *inside* the
-contour's tangent. Trimming to the tangent would emit a sliver of material the ops do not leave —
-a wrong part, not a refused one.
+| σ | kept µ̂-interval | bounded by |
+|---|---|---|
+| −0.238400 | `[1.95723, 2.21527]` | carve below, contour above |
+| −0.238500 | `[1.95953, 2.21192]` | **both the contour's own walls** — `Meet(1,2)` handed the lower bound over |
+| −0.240000 | `[2.02568, 2.14259]` | contour, narrowing |
+| −0.240400 | `[2.07542, 2.09200]` | contour, nearly shut |
+| −0.240500 | — | gone: `Tangent(2)` |
 
-**Several events can share a sample cell, so which one closes the material is not a grid question.**
-Both quadric ends have two candidates `2·10⁻³` apart against a `2.9·10⁻³` cell. This is #268's shape
-one level out, and it takes #268's answer: the events are *isolating brackets*, so the gap between
-two consecutive brackets is proved free of structural change, and one evaluation of the component
-algebra per gap decides the whole gap. No search, no tolerance.
+So `Meet(1, 2)` is a **handover**, not an end: it is where the lower bound stops being the carve and
+becomes the contour's own lower root. A derivation that took the nearest event, or that read the
+labels at the last live sample and assumed they persisted, would stop the part `2·10⁻³` early — in
+the middle of material the ops leave, which is a wrong part rather than a refused one.
+
+This is #268's shape one level out, and it takes #268's answer: the events are *isolating brackets*,
+so the gap between two consecutive brackets is proved free of structural change, and **one
+evaluation of the component algebra per gap** decides the whole gap. No search, no tolerance, no
+appeal to which candidate is closer.
+
+*(This paragraph replaces the claim AUTH.3.0 shipped, which had the two events the other way round —
+the σ where the material ends versus the σ where its lower bound changes hands. The derivation's own
+gap evaluation is what caught it; the correction is in the engineering log.)*
 
 The third class is small and belongs here for completeness: a wall whose pullback degenerates to a
 constant in µ̂ (`a ≡ b ≡ 0` — a plane containing the ruling) flips `Patch::All` to empty at a root of
-`c_i(σ)`. That is a **jump** rather than a pinch, Sturm-isolable the same way, and it is the only
-termination whose end cap is not degenerate.
+`c_i(σ)`. That is a **jump** rather than a pinch, Sturm-isolable the same way
+(`develop::cut::coverage_events`), and it is the only termination whose end cap is not degenerate.
+
+It is also **unreachable today**, which is worth stating rather than discovering later. Such a wall
+needs `n ⊥ ruling(σ)` for every σ, so every ruling must point one way — a cylinder chart. The
+cylinder the fixtures ship has `h ≡ 0`, which puts its whole `w = 0` surface in one plane and leaves
+`c` constant (measured: `c ≡ −1`, no root, no flip). Give it a moving support and `c` does vary
+(measured `2.2, 0, −1, −2, −4.2`, a root at `σ = −1`) — but that chart comes back
+`NotDevelopable`, refused a step earlier. So the family is folded into the derivation, correct and
+cheap, and presently dead; the restriction that makes it dead lives in the **development** tier, not
+in the resolver.
 
 ### 12.3 The boundary geometry is already built, and already unrollable
 
@@ -1020,7 +1044,7 @@ from being decided by whatever is easiest at the time.
 | slice | content |
 |---|---|
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
-| **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations |
+| **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
 | **AUTH.3b** | the boundary that closes in σ: `certify_boundary` over the derived domain, pinch ends as p-curve arcs (§12.4); the flat path |
 | **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |

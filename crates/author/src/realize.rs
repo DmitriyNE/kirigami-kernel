@@ -163,6 +163,17 @@ fn certify_boundary<B: Backend>(
         lo: bands[0].lo.clone(),
         hi: bands[bands.len() - 1].hi.clone(),
     };
+    // AUTH.3a derives the material's σ-extent; **AUTH.3b** is what teaches this function to use it
+    // (`docs/cutter-extrude-design.md` §12.4 — the ends become p-curve pinches or real caps, and
+    // the chains are cut to them). Until then an extent narrower than the authored band is refused
+    // rather than realized over a domain the material does not fill: everything below assumes the
+    // boundary reaches `domain.lo` and `domain.hi`, and a loop closed over a σ the ops left empty
+    // is a wrong part, not a loose one.
+    if structure.domain.lo.cmp(&domain.lo) != Ordering::Equal
+        || structure.domain.hi.cmp(&domain.hi) != Ordering::Equal
+    {
+        return Err(RErr::Fault(PartFault::EmptyRegion));
+    }
     let domain_width = domain.hi.sub(&domain.lo);
     let runs = &structure.runs;
     if runs.is_empty() {

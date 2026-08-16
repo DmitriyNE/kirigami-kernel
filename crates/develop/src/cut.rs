@@ -493,6 +493,58 @@ pub fn tangent_events<B: Backend>(
     Ok(out)
 }
 
+/// One wall's **coverage flips**: the σ where a wall that is *degenerate in µ̂* (`a ≡ b ≡ 0` — a
+/// plane containing the whole ruling family, which happens on a cylinder chart) switches between
+/// covering the entire ruling and covering none of it, as disjoint isolating brackets in σ order.
+///
+/// This is the third way a ruling's stretch structure can change, and it is the one the other two
+/// families cannot see. [`structure_events`]' `Tangent` reads `disc = b² − 4ac`, which for such a
+/// wall is identically zero; `Escape` reads `a`, also identically zero. Nothing *meets* and nothing
+/// *escapes* — the shadow simply flips between `Patch::All` and empty at a root of `c`. Where the
+/// other families bound material by a **pinch** (the two bounding rails converge), this one bounds
+/// it by a **jump**: the material ends at full width.
+///
+/// Returns the empty vector for any wall that is not degenerate, so a caller can fold it over every
+/// wall unconditionally. Kept separate from [`structure_events`] on purpose: adding a family there
+/// would refine the tracer's σ-partition on charts where it is not needed.
+///
+/// ```
+/// use develop::cut::{MuCut, coverage_events};
+/// use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
+///
+/// type Q = Rat<Bignum>;
+/// let poly = |cs: &[i128]| {
+///     RatFunc::<Bignum>::from_poly(Poly::from_coeffs(
+///         cs.iter().map(|&c| Q::from_i128(c)).collect(),
+///     ))
+/// };
+/// let window = Interval { lo: Q::from_i128(-2), hi: Q::from_i128(2) };
+/// let tol = Q::new(1, 1024);
+///
+/// // Degenerate in µ̂ (`a ≡ b ≡ 0`) with `c(σ) = σ − 1/2`: the ruling is wholly inside the cutter
+/// // while `c < 0`, wholly outside after, and the flip is at σ = 1/2.
+/// let flip = MuCut { a: poly(&[]), b: poly(&[]), c: poly(&[-1, 2]) };
+/// let got = coverage_events(&flip, &window, &tol).unwrap();
+/// assert_eq!(got.len(), 1);
+/// assert!(got[0].lo <= Q::new(1, 2) && Q::new(1, 2) <= got[0].hi);
+///
+/// // A wall that bounds µ̂ at all is not this class, however its `c` behaves.
+/// let ordinary = MuCut { a: poly(&[]), b: poly(&[1]), c: poly(&[-1, 2]) };
+/// assert!(coverage_events(&ordinary, &window, &tol).unwrap().is_empty());
+/// ```
+pub fn coverage_events<B: Backend>(
+    form: &MuCut<B>,
+    window: &Interval<B>,
+    tol: &Rat<B>,
+) -> Result<Vec<Interval<B>>, CutFitFault> {
+    if !form.a.is_zero() || !form.b.is_zero() {
+        return Ok(Vec::new());
+    }
+    let mut out = isolate_roots(&form.c, window, tol)?;
+    out.sort_by(|a, b| a.lo.cmp(&b.lo));
+    Ok(out)
+}
+
 /// A constant vector as a degree-0 [`Vec3Rat`] (denominator `1`), so it dots with the
 /// chart's σ-rational fields. (Local copy of `closure::trim`'s helper — `develop`
 /// does not depend on `closure`.)
@@ -540,6 +592,17 @@ pub struct MuCut<B: Backend = Bignum> {
     pub b: RatFunc<B>,
     /// The µ̂⁰ term.
     pub c: RatFunc<B>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for MuCut<B> {
+    fn clone(&self) -> Self {
+        MuCut {
+            a: self.a.clone(),
+            b: self.b.clone(),
+            c: self.c.clone(),
+        }
+    }
 }
 
 impl<B: Backend> MuCut<B> {

@@ -698,25 +698,52 @@ fine — this is a log, not a schema.
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
 
-- **The naive reading of a contour's σ-extent is measurably wrong, and wrong in the unsafe
-  direction.** AUTH.3 has to derive where an intersect stops leaving material. The obvious answer —
-  "a contour's σ-extent is its own two tangent rulings", which is exactly what `surface_tangents` and
-  `tangent_events` compute — is what the shipped code already knows how to do, so it is the answer
-  one reaches for. On the scout's quadric fixture it is off by `2·10⁻³`: the material closes at
-  `Meet(1, 2)` (σ = ±0.238427501), the contour's wall crossing the *panel's own annulus carve*,
-  which lies **inside** the contour's `Tangent(2)` (σ = ±0.240408206). Trimming to the tangent emits
-  a sliver of material the ops do not leave — a wrong part, not a refused one. The correct rule falls
-  out of what "the material stops here" means: the kept µ̂-interval closes, so its two bounding walls
-  cross at a common µ̂, which is `Res_µ̂` for different walls and `disc_µ̂` for one wall's own two
-  roots — AUTH.2a's families, run over the union of **every op's** walls rather than one cutter's.
-  No new arithmetic; a different argument list. Two further notes from the same measurement: both
-  candidates sit inside one sample cell (`2·10⁻³` apart against `2.9·10⁻³`), so which one closes the
-  material is #268's question one level out and takes #268's answer (the gaps between isolating
-  brackets are structure-free, one evaluation each); and the first version of the test reported
-  `Tangent` at one end and `Meet` at the other on a **mirror-symmetric** fixture, because it took the
-  first event in the cell — *a locator that can return several candidates must be displayed in full,
-  or the test reports a mechanism the fixture does not have.*
-  *2026-08-16 · AUTH.3.0, branch `auth-3`*
+- **Which of two sub-cell events ends the material — the GO-gate got it backwards, and the mechanism
+  it specified is what caught that.** AUTH.3.0 claimed the quadric fixture's material closes at
+  `Meet(1, 2)` (σ = ±0.238427501), *inside* the contour's own `Tangent(2)` (σ = ±0.240408206), and
+  billed that as proof the naive "a contour's σ-extent is its own tangent rulings" was unsafe. **The
+  two are the other way round.** Measured across the stretch once AUTH.3a's gap evaluation existed:
+
+  | σ | kept µ̂-interval | bounded by |
+  |---|---|---|
+  | −0.238400 | `[1.95723, 2.21527]` | carve below, contour above |
+  | −0.238500 | `[1.95953, 2.21192]` | **both the contour's own walls** |
+  | −0.240000 | `[2.02568, 2.14259]` | contour, narrowing |
+  | −0.240400 | `[2.07542, 2.09200]` | contour, nearly shut |
+  | −0.240500 | — | gone |
+
+  `Meet(1, 2)` is a **handover** — where the lower bound stops being the annulus carve and becomes
+  the contour's own lower root — and the material lives another `2·10⁻³` past it before pinching at
+  the contour's tangent. The gate's reasoning had inferred the mechanism from a sampled scan: it read
+  the labels at the last live sample (`[carve, contour]`) and assumed they persisted to the end. They
+  do not. **The lesson is about evidence rather than geometry: a design note that reasons from a
+  sampled scan about which of two sub-cell events matters is a hypothesis, and the only evidence is
+  the evaluation the design itself specifies.** The derivation disagreed with its author the first
+  time it ran, which is the cheapest place this could have surfaced.
+
+  Two things survive. The union over every op's walls is still required — the two rails that close
+  the interval genuinely need not belong to one cutter, since a contour's band can slide entirely
+  inside a subtract's carve — but that case now has **no fixture**, and it is filed rather than
+  claimed. And the replacement assertion is stronger than the one it replaces: the handover stretch
+  is asserted directly (`both bounds are the contour's own walls, and the interval narrows`), because
+  that is precisely what a nearest-event derivation denies. The near-miss recorded at the gate —
+  a locator that returned the *first* event in the cell and so reported an asymmetry a
+  mirror-symmetric fixture cannot have — has the same root, and was the warning shot.
+  *2026-08-16 · corrected at AUTH.3a, branch `auth-3`*
+
+- **The third σ-end class exists, is implemented, and is unreachable — and the reason lives in
+  another tier.** §12.2 names three ways material can end: two rails converging (`Meet`/`Tangent`)
+  and a wall degenerate in µ̂ flipping its coverage at a root of `c`
+  (`develop::cut::coverage_events`, added here). The third needs `n ⊥ ruling(σ)` for every σ, so
+  every ruling must point one way — a cylinder chart. The shipped cylinder has `h ≡ 0`, which puts
+  its whole `w = 0` surface in one plane and leaves `c` constant (measured `c ≡ −1`: no root, no
+  flip). Give it a moving support and `c` does vary (measured `2.2, 0, −1, −2, −4.2`, root at
+  `σ = −1`) — but that chart comes back `NotDevelopable`, refused a step earlier. So the family is
+  folded in, correct, cheap, and presently dead code. Worth recording because the instinct is to call
+  that over-engineering: it is unreachable *from the resolver's side*, and what would make it
+  reachable is a development-tier capability, so the branch starts firing the day a supported
+  cylinder develops rather than the day someone edits `resolve.rs`.
+  *2026-08-16 · AUTH.3a, branch `auth-3`*
 
 - **A measurement can stop being valid when the fixture moves, and stay green: `max_ray_crossings` on
   a chart whose support curves.** AUTH.2's headline property — a ruling meets the cutter twice — is
