@@ -768,6 +768,37 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **IO.0: most of an import is exact, and "files are floats" is wrong twice over (2026-08-17).**
+  The reflex design for a CAD reader is "snap to a tolerance". Two facts kill it. First, a decimal
+  literal **is** a rational — `12.345` is `12345/1000` — so the only loss in reading a coordinate is
+  the `f64` the parser transports it through, and Rust's shortest-round-trip `Display` gives the
+  literal back exactly for anything under 17 significant digits. Every `LINE`, `CIRCLE`,
+  `LWPOLYLINE` vertex, SVG `L`/`M`/`H`/`V`, unit conversion (`1mm = 480/127 px` exactly; DXF names
+  its unit) and `matrix`/`translate`/`scale` transform imports at **δ = 0**.
+
+  Second, where δ ≠ 0 does arise it is a *consistency* failure, not a rounding: a DXF `ARC` states
+  centre, radius **and** two angles — four exact rationals describing an irrational point — so one
+  datum must move, and *which* one differs per source form. The surprise is the ranking. A DXF
+  `LWPOLYLINE` **bulge** is exact and free: with `d = P₁ − P₀`, `n = perp(d)` and `b = tan(Δθ/4)`
+  from the file, the centre `c = mid + ((1−b²)/(4b))·n` is rational (the normalization of `n` cancels
+  against the half-chord, since `cot(Δθ/2) = (1−b²)/(2b)`), and `r² := |P₀−c|²` seats *both* vertices
+  on the circle — `P₁` because `c` is on their perpendicular bisector by construction. SVG `A` is
+  the same trick read backwards: hold the two rational endpoints, choose the centre on their rational
+  bisector, and δ becomes a **radius** deviation rather than an endpoint one. Only DXF `ARC` is
+  genuinely lossy, and its δ is certified by the shipped `develop::interval` `arctan`/`pi`/`sin_on`
+  enclosures over a rational tangent-half-angle rotation `M(t) = [[1−t², −2t], [2t, 1−t²]]/(1+t²)`,
+  which is exactly on the circle for every rational `t` because `(1−t²)² + (2t)² = (1+t²)²`.
+
+  *Actionable, and the reason this is a Finding rather than a design note:* **export your outline as
+  `LWPOLYLINE` with bulges and the import is exact; export the same outline as `ARC` entities and it
+  costs a certified δ.** That is a sentence for the user-facing docs.
+
+  Same construction, one level up: a rational-quadratic circular arc needs weight `cos(Δθ/2)`, which
+  is rational exactly when `1 + tan²(Δθ/2)` is a rational square — i.e. at **Pythagorean** angles
+  (`t = 3/4 → w = 4/5`). Those are dense, so exact conic edges in the B-rep are reachable by
+  subdividing at Pythagorean rotations rather than chording. Recorded as the escalation path for
+  IO.3, not taken there.
+
 - **#275: the cross-op σ-end, and why it took a *placement* rather than a mechanism (2026-08-17).**
   §12.2 derives the σ-ends from the union of **every op's** walls, because the two walls closing the
   kept µ̂-interval need not belong to the same cutter. Every fixture closed on the contour's own

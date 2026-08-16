@@ -2345,6 +2345,98 @@ is made on measurement rather than on whatever is cheapest once the deadline is 
 
 ---
 
+### IO acceptance criteria (the interchange boundary — DXF/SVG in and out, and the diagnostic dump)
+
+Until a fab-house outline can be read and a flat pattern written, every device in this repo is a
+Rust literal. IO is the milestone that makes the kernel usable on a real board. Design in
+[`interchange-design.md`](interchange-design.md).
+
+*Most of an import is exact, and a design that starts from "files are floats" gets that backwards.*
+A decimal literal **is** a rational: `12.345` is `12345/1000`, and the only loss in reading it is
+the `f64` the parser hands over — recoverable exactly, since Rust's shortest-round-trip `Display`
+returns the literal itself for anything under 17 significant digits. Every `LINE`, `CIRCLE`,
+`LWPOLYLINE` vertex, SVG `L`/`M`/`H`/`V`, unit conversion and `matrix()`/`translate()`/`scale()`
+transform imports with **δ = 0**, and the criterion asserts that rather than assuming a tolerance
+everywhere: a test that reads a file of straight geometry and finds any nonzero δ has found a bug in
+the number bridge, not a rounding. **A "tolerance" parameter applied uniformly would be a
+correctness claim weaker than what the data supports** — and would make the one genuinely inexact
+construction invisible by putting it in the same bucket as the seventeen exact ones.
+
+*What costs δ is an over-determined curve, and which datum moves is not a free choice.* A DXF `ARC`
+states centre, radius **and** two angles — four exact rationals describing a point that is
+irrational — so exactly one of them must move, and the three source forms answer differently:
+`ARC` holds the circle and moves the endpoints onto it via a rational tangent-half-angle rotation
+(δ = an endpoint distance, bounded by the existing certified `arctan`/`pi`/`sin_on` enclosures);
+`LWPOLYLINE` **bulge** is exact with δ = 0, because `c = midpoint + ((1−b²)/(4b))·perp(d)` is
+rational and puts both vertices on the circle by construction; SVG `A` holds the endpoints and moves
+the **centre** along their rational perpendicular bisector, so δ is a *radius* deviation and never
+an endpoint one. The criterion is a test per form asserting **which quantity moved**, not merely
+that δ is small — a translator that quietly moved an endpoint where the design says it moves a
+radius is wrong in a way a magnitude check passes.
+
+*The importer's exactness claim is a runtime-checked hypothesis, and it must be checked where it is
+consumed.* `Profile::arc` is total: an arc whose endpoints are off its circle is emitted **as
+drawn**, and the arrangement downstream then receives inconsistent data rather than earning a
+refusal. So "the constructed endpoints lie exactly on the constructed circle" cannot be an argument
+in a design document — it is an exact rational equality evaluated on every arc before it leaves the
+translator, with a refusal on failure. This is the ★ row: the hazard is not a wrong number, it is a
+*silently* wrong arrangement.
+
+*Two error numbers, never one.* δ measures what the translator did to the data; the **closure gap**
+measures how far the file's own adjacent entities were from meeting. Folding the second into the
+first lets a sloppy file masquerade as a lossy importer, and hides a real importer regression behind
+whichever file happened to be worst that week. The junction rule that makes an outline closable —
+**arcs pin the vertex, segments follow**, since a segment through two rational points is exact
+wherever they are and an arc has a condition it can violate — moves distance, and that distance is
+reported as closure gap, not as δ.
+
+*Refuse, name the entity, and never heal.* A translator that repairs its input silently is worse
+than one that refuses, because the repair is invisible in the part that comes out. Elliptical arcs,
+Bézier segments, non-similarity transforms over arc geometry, DXF entities outside the subset,
+undeclared units, unclosed loops and an over-budget δ each refuse **by name and by entity**, and the
+test suite asserts the *variant*, not merely that something failed. The one sanctioned escape is
+explicit: cubics may be chorded when the caller opts in with a tolerance, and the chord deviation is
+its own reported δ — written down at the gate because many SVG exporters emit cubics for every
+circle, and that decision must not be made under deadline pressure by whoever first hits one.
+
+*A unit that is inferred is a 25.4× part that looks plausible.* Every CSS absolute unit is a
+rational multiple of px (`1mm = 480/127 px`) and DXF `$INSUNITS` names its unit outright, so
+conversion is exact and guessing is never necessary. A file that declares no unit is refused unless
+the caller supplies one; the unit found, the unit produced and the exact factor all appear in the
+report. The criterion has a control: the same outline in mm and in inches must produce parts whose
+ε and vertex coordinates differ by exactly the factor, which is what makes the conversion path
+testable at all.
+
+*The round trip composes two different errors and must report them separately.* A DXF bulge imports
+exactly and exports approximately — going out, the bulge of an exact arc between two rational
+endpoints is `tan(Δθ/4)`, irrational. So `import(export(P))` versus `P` is not a single number, and
+a test that reports one has averaged an exact leg with an inexact one. Measure both legs.
+
+*The acceptance criterion is a real device file, not a synthetic one.* A fixture written alongside
+the parser proves it handles what we thought to write. Only a file a fab house actually emits proves
+it handles what arrives. IO.1 can be implemented without one but cannot be *accepted* without one,
+and that is stated at the gate so the distinction is not renegotiated at the end.
+
+*The dumped sketch occupies the plane it cuts from — and that is the whole point of dumping it.*
+Every vertex of an emitted cutter sketch is `Frame::point(a, b)`, the same exact map the wall
+equations are built from: never a plane re-derived for the picture, never the profile drawn at the
+origin. A picked plane is a *search result* (AUTH.1c's snap + backward-error certificate), and the
+one thing a picture can check that a certificate cannot is whether the pick landed where the author
+meant. A sketch rendered skew to the surface it cut says the pick is wrong; a sketch rendered
+anywhere else cannot say anything at all. The criterion is metric, not visual: every emitted sketch
+vertex satisfies the frame's own plane equation exactly, and a deliberately perturbed frame moves
+those vertices off the cut surface by the amount the perturbation predicts.
+
+*Diagnostic geometry must be structurally incapable of carrying a certificate.* The dump routes
+through the raw `write_brep`, never `emit_certified_step` — a picture that arrives with a verdict
+attached is a lie about what was checked. The two halves of the dump also answer different questions
+and are kept apart: the **authored sketch face** is the importer's faithfulness echo ("did you read
+my file right?"), while the cutter body's near cap is projected back from the *traced* far cap and
+therefore inherits the tracer's sampling. Conflating them would let a sampling artifact read as an
+import error.
+
+---
+
 ## 9. Sequencing
 
 M0 grows Kani harnesses with the code (fast-path lattice verified before anything consumes it) and runs the §7 spike. `certify-core` splits out at M2 as the Lean target from birth. Stratum-weighted generators land with M3a (arrangement). The V&V matrix and `docs/proofs/ledger.md` start as stubs in the repo skeleton.
