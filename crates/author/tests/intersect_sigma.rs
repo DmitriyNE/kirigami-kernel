@@ -14,11 +14,13 @@
 //! - a **quadric** contour is a certified part too, and its σ-ends are tangent rulings no graph rail
 //!   can reach — so the boundary carries a **p-curve turn arc** there. Where the contour bounds the
 //!   part alone the whole boundary is its traced loop; where it shares the boundary with other ops,
-//!   the arc is spliced into the graph chain at the junctions the corner refinement locates;
+//!   the arc is spliced into the graph chain at the junctions the corner refinement locates — one
+//!   arc per end where it takes over near each, and a single arc wrapping **both** tangents where it
+//!   bounds one whole side;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
-use author::part::{Cutter, OpRole, Part, PartFault, SupportFn};
+use author::part::{Cutter, OpRole, Part, SupportFn};
 use certify_core::Verdict;
 use develop::extrude::{Apex, Frame};
 use fixtures::devices::cone;
@@ -92,18 +94,16 @@ fn name<E, W: core::fmt::Debug, M: core::fmt::Debug>(v: &Verdict<E, W, M>) -> St
 /// trivially" reading. Its footprint on the cone subtends `|σ| ≤ 0.101020514` — its two tangent
 /// rulings, measured by the same `structure_events` the derivation uses.
 ///
-/// Declare a band inside that and the part certifies. Declare one wider and it still refuses — and
-/// the refusal has moved twice now, each move being the measurement. It was `EmptyRegion` (σ was an
-/// authored quantity, so a σ the ops left empty was a contradiction); AUTH.3a made the extent derived
-/// and AUTH.3b closed the boundary at it, leaving `RailSpanShort` (a graph rail cannot reach a
-/// tangent ruling); AUTH.3b″ splices a p-curve arc in at each end, and **this** fixture is the shape
-/// that splice does not yet cover.
+/// Declare a band inside that and the part certifies. Declare one **wider** — so the contour now
+/// terminates the material rather than merely trimming it — and it certifies too. That is the whole
+/// of AUTH.3 in one fixture, and the route it took is the milestone: `EmptyRegion` (σ was authored,
+/// so a σ the ops left empty was a contradiction) → `RailSpanShort` (the extent became derived, and
+/// a graph rail cannot reach a tangent ruling) → certified, once the boundary could carry a p-curve.
 ///
-/// Why this one and not the `r² = 1` contour of the next test: here the contour bounds the **whole**
-/// lower side, so the lower chain is a *single* segment rather than one per end. The two tangents
-/// are then joined by one continuous run of contour boundary, and the arc has to wrap **both** of
-/// them — where the splice currently takes one arc per end, each replacing that end's outermost
-/// segment on each chain. One segment cannot be the outermost one twice.
+/// This is the **whole-side** shape, the hardest of the three: the contour bounds the entire lower
+/// side, so its chain is a *single* segment and the two tangents are joined by one continuous run of
+/// contour boundary. The boundary is therefore the panel's `z ≤ 3` rail out and **one** turn arc
+/// wrapping *both* tangents all the way back — not one arc per end.
 #[test]
 fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
     let cutter = || Cutter::vertical_cylinder(qi(0), q(5, 2), q(1, 4));
@@ -127,16 +127,66 @@ fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
         "and it must bound it *instead of* the annulus carve. roles {roles:?}"
     );
 
-    // Past the footprint's end: the contour bounds one whole side, so the arc must wrap both
-    // tangents — the shape the per-end splice does not carry. Refused by name until it does.
+    // Past the footprint's end: the contour terminates the material, and that is a part now. Here
+    // it bounds one **whole** side, so the boundary is the panel's `z ≤ 3` rail out and a single
+    // turn arc wrapping **both** tangents all the way back — one arc, not one per end.
     let wide = panel(q(-1, 8), q(1, 8)).intersect(cutter());
-    assert!(
-        matches!(
-            wide.develop(),
-            Verdict::Refuted(PartFault::RailSpanShort { op: 2 })
+    let flat = match wide.develop() {
+        Verdict::Verified(f) => f,
+        v => panic!(
+            "a band wider than the contour's own σ-footprint must certify, got {}",
+            name(&v)
         ),
-        "a contour bounding one whole side needs one arc around both tangents — got {}",
-        name(&wide.develop())
+    };
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    assert_eq!(flat.region().faces[0].holes.len(), 0, "no holes");
+    let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
+    assert!(
+        roles[0] != OpRole::Inactive && roles[2] != OpRole::Inactive,
+        "the plane and the contour must BOTH bound — else this is not the shared-boundary shape \
+         at all. roles {roles:?}"
+    );
+
+    // Faithfulness: every boundary vertex folded back lies on the authored cylinder OR on the
+    // authored plane — the two surfaces that bound it — and the arc really wraps, so the folded
+    // boundary spans the contour's full diameter rather than stopping at a tangent.
+    let verts: Vec<[Q; 2]> = flat
+        .outline()
+        .vertices
+        .iter()
+        .map(|b| {
+            let (x, y) = b.center();
+            [x, y]
+        })
+        .collect();
+    let wire = match wide.fold(&verts, &qi(0)) {
+        Verdict::Verified(w) => w,
+        v => panic!("the emitted boundary must fold back, got {}", name(&v)),
+    };
+    let (cyf, rf) = (2.5, 0.5);
+    let (mut worst, mut lo_x, mut hi_x) = (0.0f64, f64::MAX, f64::MIN);
+    for p in &wire.points {
+        let (x, y, z) = (
+            to_f64(&p[0].mid()),
+            to_f64(&p[1].mid()),
+            to_f64(&p[2].mid()),
+        );
+        let on_cyl = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+        let on_plane = (z - 3.0).abs();
+        worst = worst.max(on_cyl.min(on_plane));
+        lo_x = lo_x.min(x);
+        hi_x = hi_x.max(x);
+    }
+    assert!(
+        worst < 5e-3,
+        "every boundary vertex must lie on the cylinder or the plane: worst is {worst:.3e} off both"
+    );
+    assert!(
+        (hi_x - lo_x) > 1.9 * rf,
+        "the arc must wrap the contour, not stop at a tangent — folded x-span {:.4} against a \
+         diameter {:.4}",
+        hi_x - lo_x,
+        2.0 * rf
     );
 }
 

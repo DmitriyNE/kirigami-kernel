@@ -627,28 +627,39 @@ impl<B: Backend> MuCut<B> {
     }
 }
 
-/// The arc of a [`CutLoop`] that **turns around one of its two tangent rulings** — the piece of a
-/// contour's footprint that no graph `µ̂ = f(σ)` can carry.
+/// The arc of a [`CutLoop`] running from one junction to another — the piece of a contour's
+/// footprint that no graph `µ̂ = f(σ)` can carry, because it **turns around** a tangent ruling.
 ///
 /// A loop from [`quadric_cut_loop`] traverses `left tangent → upper branch (σ ascending) → right
 /// tangent → lower branch (σ descending) → close`, which is the same sense an outer boundary runs
-/// (up the near cap, right along the top, down the far cap, left along the bottom). So the arc that
-/// replaces `[upper rail tail] + [cap] + [lower rail head]` at a σ-end is a **contiguous run** of
-/// the loop's pieces, and the only work is finding its two ends and trimming them exactly.
+/// (up the near cap, right along the top, down the far cap, left along the bottom). So the arc is a
+/// **contiguous run** of the loop's pieces, and the only work is finding its two ends and trimming
+/// them exactly.
 ///
-/// `from` is the σ where the arc leaves the upper-branch graph rail and `to` where it rejoins the
-/// lower-branch one — the junctions the run-corner refinement already located. Both boundary pieces
-/// are cut at the exact parameter where σ meets the junction (a piece is a chord, so σ is linear in
-/// its parameter and the cut is one division), leaving no sliver for a micro-cap to paper over.
+/// The junctions are where the chains hand the boundary to the contour, which the run-corner
+/// refinement already located; `from_upper`/`to_upper` say which branch each sits on, and that
+/// alone determines how many tangents the arc wraps:
 ///
-/// `None` if the loop does not turn (fewer than two σ-extremes), or if either junction lies outside
-/// the branch it is supposed to join — both of which mean the caller's structure and this loop
+/// | `from_upper` | `to_upper` | tangents wrapped | when |
+/// |---|---|---|---|
+/// | upper | lower | **one** (the σ-max) | the contour takes over near the `σ_hi` end |
+/// | lower | upper | **one** (the σ-min) | …near the `σ_lo` end |
+/// | upper | upper | **two** | the contour bounds the whole *lower* side, so its two tangents are joined by one continuous run of contour boundary |
+/// | lower | lower | **two** | the same, on the upper side |
+///
+/// Both boundary pieces are cut at the exact parameter where σ meets the junction — a piece is a
+/// chord, so σ is linear in its parameter and the cut is one division in ℚ, leaving no sliver for a
+/// micro-cap to paper over and nothing for the unroll's exact chaining check to reject.
+///
+/// `None` if the loop does not turn (fewer than two σ-extremes), or if a junction is not found on
+/// the branch it was said to be on — both of which mean the caller's structure and this loop
 /// disagree, which is a refusal rather than something to approximate.
 pub fn tangent_turn_arc<B: Backend>(
     cut: &CutLoop<B>,
-    upper_end: bool,
     from: &Rat<B>,
+    from_upper: bool,
     to: &Rat<B>,
+    to_upper: bool,
 ) -> Option<Vec<crate::pcurve::PCurve<B>>> {
     use core::cmp::Ordering;
     let n = cut.pieces.len();
@@ -676,24 +687,29 @@ pub fn tangent_turn_arc<B: Backend>(
     if at_max == at_min {
         return None;
     }
-    // Walk the cycle in traversal order starting at the turn we are **not** using, so the run we
-    // want — approach, turn, retreat — is contiguous and forward.
-    let (begin, turn) = if upper_end {
-        (at_min, at_max)
-    } else {
-        (at_max, at_min)
-    };
-    let order: Vec<usize> = (0..n).map(|i| (begin + i) % n).collect();
-    let turn_pos = order.iter().position(|&k| k == turn)?;
-
+    // Walk the cycle in traversal order from the turn the `from` run **begins** at — the upper
+    // (ascending) run starts at the σ-min turn, the lower (descending) one at the σ-max — so the
+    // run we want is contiguous and forward from the first piece.
+    let begin = if from_upper { at_min } else { at_max };
+    // Twice round: a two-turn arc leaves its start run, crosses both extremes, and finishes on that
+    // same run — which is only reachable on a second pass. One pass caps the walk at a single turn,
+    // so the two-turn case can never complete and (correctly, but uselessly) returns `None`.
+    let order: Vec<usize> = (0..2 * n).map(|i| (begin + i) % n).collect();
     // σ alone does not say which branch a junction is on — both branches cover the same σ. What
-    // distinguishes them is **which side of the turn** the walk is on, so `from` is matched only
-    // before it and `to` only after. (The first version guarded with an index count instead and
-    // matched `to` on the approach, producing an "arc" that ran up to the tangent and stopped:
-    // a graph, which is the one thing this function exists not to return.)
+    // distinguishes them is **how many turns the walk has taken**, so `to` is matched only once the
+    // arc has wrapped as many tangents as the two branch flags imply: one to cross to the other
+    // branch, two to come back to the same one. (The first version guarded with an index count and
+    // matched `to` on the approach, producing an "arc" that ran up to the tangent and stopped — a
+    // graph, which is the one thing this function exists not to return.)
+    let turns_needed = if from_upper == to_upper { 2 } else { 1 };
+
     let mut out: Vec<crate::pcurve::PCurve<B>> = Vec::new();
     let mut started = false;
+    let mut turns = 0usize;
     for (i, &k) in order.iter().enumerate() {
+        if i > 0 && (k == at_max || k == at_min) {
+            turns += 1;
+        }
         let piece = &cut.pieces[k];
         let [a, _] = piece.eval(&piece.domain.lo)?;
         let [b, _] = piece.eval(&piece.domain.hi)?;
@@ -745,7 +761,8 @@ pub fn tangent_turn_arc<B: Backend>(
             Some(piece.restrict(&span))
         };
         if !started {
-            if i > turn_pos || !spans(from) {
+            // `from` lies on the run the walk opens with, so it is matched before any turn.
+            if turns > 0 || !spans(from) {
                 continue;
             }
             if let Some(tail) = cut_at(true, from)? {
@@ -754,7 +771,7 @@ pub fn tangent_turn_arc<B: Backend>(
             started = true;
             continue;
         }
-        if i > turn_pos && spans(to) {
+        if turns >= turns_needed && spans(to) {
             if let Some(head) = cut_at(false, to)? {
                 out.push(head);
             }
@@ -2339,7 +2356,7 @@ mod tests {
         let mid = window.lo.add(&window.hi).mul(&Q::new(1, 2));
         let from = mid.add(&window.hi.sub(&mid).mul(&Q::new(1, 4)));
         let to = mid.add(&window.hi.sub(&mid).mul(&Q::new(1, 2)));
-        let arc = tangent_turn_arc(&cut, true, &from, &to).expect("the loop turns");
+        let arc = tangent_turn_arc(&cut, &from, true, &to, false).expect("the loop turns");
         assert!(
             arc.len() >= 3,
             "a turn needs several pieces, got {}",
@@ -2383,6 +2400,46 @@ mod tests {
             peak > to_f64(&to) && peak > to_f64(&from),
             "the arc must reach the tangent (σ ≈ {:.6}), peaked at {peak:.6}",
             to_f64(&window.hi)
+        );
+
+        // **Both junctions on the same branch ⇒ the arc wraps BOTH tangents.** This is what a
+        // contour bounding one whole side of a part needs: its two tangents are joined by one
+        // continuous run of contour boundary, so there is no second junction to end at after the
+        // first turn. Same call, one flag different — and it must reach *both* extremes, which the
+        // one-turn arc above does not.
+        //
+        // The junctions run the *long* way round here — leaving the upper branch at the larger σ and
+        // rejoining it at the smaller — which is the order a boundary traverses them in: the upper
+        // chain hands over at its `σ_hi` end and gets the boundary back at its `σ_lo` one.
+        let both = tangent_turn_arc(&cut, &to, true, &from, true).expect("the loop turns twice");
+        let ends2: Vec<(f64, f64)> = both
+            .iter()
+            .map(|p| {
+                let [a, _] = p.eval(&p.domain.lo).expect("evaluable");
+                let [b, _] = p.eval(&p.domain.hi).expect("evaluable");
+                (to_f64(&a), to_f64(&b))
+            })
+            .collect();
+        let hi = ends2.iter().map(|(_, b)| *b).fold(f64::MIN, f64::max);
+        let lo = ends2.iter().map(|(_, b)| *b).fold(f64::MAX, f64::min);
+        assert!(
+            hi > to_f64(&window.hi) - 1e-6 && lo < to_f64(&window.lo) + 1e-6,
+            "a two-turn arc must reach both tangents (σ ≈ {:.6} and {:.6}), spanned [{lo:.6}, \
+             {hi:.6}]",
+            to_f64(&window.lo),
+            to_f64(&window.hi)
+        );
+        assert!(
+            both.len() > arc.len(),
+            "and it must be the longer way round: {} pieces against the one-turn arc's {}",
+            both.len(),
+            arc.len()
+        );
+        // It still starts and ends exactly where it was told.
+        assert!(
+            (ends2[0].0 - to_f64(&to)).abs() < 1e-12
+                && (ends2[ends2.len() - 1].1 - to_f64(&from)).abs() < 1e-12,
+            "the two-turn arc must also land on its junctions exactly"
         );
     }
 

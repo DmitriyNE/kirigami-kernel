@@ -1031,12 +1031,21 @@ so the run is contiguous; its pieces are chords, so each junction cut is one exa
 arc joins the chain through the same micro-cap every rail-to-rail junction uses — the arc starts at
 the wall's *true* branch value and the rail ends at its *fitted* one, an ε-wide ruling gap.
 
-One shape is still open (task #278): a contour that bounds one **whole side**. Its chain on that side
-is a *single* segment, which cannot be the outermost one at both ends, so the per-end framing has
-nothing to remove twice. The general statement drops that framing — **the arc is the run of the
-contour's loop between the two σ where a non-contour rail takes over**, wrapping zero, one or two
-tangents — and the whole-side case is the two-tangent one. Declined rather than half-built, so it
-refuses `RailSpanShort`.
+The third shape is a contour that bounds one **whole side**, and it is what made the per-end framing
+give way. Its chain on that side is a *single* segment, which cannot be the outermost one at both
+ends, so there was nothing to remove twice. The general statement drops the framing: **an arc is the
+run of the contour's loop between the two σ where a non-contour rail takes over**, wrapping zero, one
+or two tangents, and the whole-side case is simply the two-tangent one. `tangent_turn_arc` therefore
+takes *which branch* each junction sits on rather than inferring it, and turns as many times as that
+demands — once when the junctions are on opposite branches, **twice** when they are on the same one,
+which is why its walk goes twice round the loop (a second turn is only reachable on a second pass).
+The splice then removes the single chain entirely and the *other* chain's two contour segments,
+leaving that chain's middle rail: the boundary is that rail out, and the arc all the way back.
+
+Both distinctions were mistakes worth recording, because each one was a guess that read as a fact.
+The first version chose the branch by σ alone, which does not determine it — σ occurs twice on a loop
+that turns — and the second capped the walk at one lap, which silently made the two-turn case
+unreachable rather than wrong-looking. Neither showed up as bad geometry; both showed up as `None`.
 
 `brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
 between them **over the region bands**, so a derived extent narrower than them would sweep a solid
@@ -1081,7 +1090,7 @@ from being decided by whatever is easiest at the time.
 |---|---|
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
-| **AUTH.3b** | the boundary that closes in σ; the flat path. **Done**: polygonal contours (exact affine rails through the corner); quadric contours bounding the part **alone** (the traced loop as an outline — `sole_pinched_contour`); and quadric contours **sharing** the boundary, via a p-curve turn arc spliced in per end (`develop::cut::tangent_turn_arc`). **Open**: a contour bounding one whole side, where one arc must wrap both tangents (#278) |
+| **AUTH.3b** | the boundary that closes in σ; the flat path — **done**, in all three shapes: polygonal contours (exact affine rails through the corner); quadric contours bounding the part **alone** (the traced loop as an outline — `sole_pinched_contour`); and quadric contours **sharing** the boundary, spliced from `develop::cut::tangent_turn_arc` — one arc per end where the contour takes over near each, or a single two-turn arc where it bounds a whole side |
 | **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
 

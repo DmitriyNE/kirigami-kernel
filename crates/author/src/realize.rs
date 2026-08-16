@@ -17,10 +17,11 @@
 //!   emitted as the piecewise inner/outer chains + hole rails `brep_trim_solid_regions` sews
 //!   into a certified watertight solid.
 
+use crate::part::OpKind;
 use crate::part::{
     BuiltRegions, Cutter, FlatPattern, OpReport, Part, PartFault, RegionEcho, ResolveReport,
 };
-use crate::resolve::{BranchSide, Label, Structure};
+use crate::resolve::{BranchSide, Label, Structure, wall_of};
 use certify_core::Verdict;
 use develop::part::Development;
 use develop::unroll::{BoundaryArc, FlatOutline, UnrollFault, unroll_trim_loop};
@@ -423,21 +424,57 @@ fn certify_boundary<B: Backend>(
     // one. The remaining rails then sit well inside their windows, so the coverage check below
     // passes for the reason it should rather than by being skipped.
     let mut end_arcs: [Option<Vec<develop::pcurve::PCurve<B>>>; 2] = [None, None];
+    let both_pinched = structure
+        .ends
+        .iter()
+        .all(|e| matches!(e, crate::resolve::SigmaEnd::Closed { pinch: true, .. }));
+    // The contour's two branches meeting at one wall: what the outermost segment of each chain must
+    // be for a turn arc to belong there at all.
+    let one_wall = |a: Label, b: Label| a.0 == b.0 && wall_of(a) == wall_of(b);
+
+    // **(i) The contour bounds one whole side.** That chain is a *single* segment, so there is no
+    // second junction on it: the two tangents are joined by one continuous run of contour boundary
+    // and the answer is ONE arc wrapping both, not two per-end arcs. It takes the whole single chain
+    // and both of the other chain's contour segments, leaving the other chain's middle rail — so the
+    // boundary is that rail out, and the arc all the way back.
+    if both_pinched
+        && lower_segs.len() == 1
+        && upper_segs.len() >= 3
+        && one_wall(upper_segs[0].2, lower_segs[0].2)
+        && one_wall(upper_segs[upper_segs.len() - 1].2, lower_segs[0].2)
+    {
+        let op = lower_segs[0].2.0;
+        if matches!(part.ops[op].0, OpKind::Intersect)
+            && let Some(cut) = contour_loop(part, built, &bands[0], op, wall_of(lower_segs[0].2))?
+        {
+            eps = rmax(&eps, &cut.eps);
+            // Leave the upper branch at its σ_hi junction, wrap both tangents, rejoin at σ_lo.
+            let from = upper_segs[upper_segs.len() - 1].0.clone();
+            let to = upper_segs[0].1.clone();
+            let arc = develop::cut::tangent_turn_arc(&cut, &from, true, &to, true)
+                .ok_or(RErr::Fault(PartFault::CutUnresolved { op }))?;
+            upper_segs.pop();
+            upper_segs.remove(0);
+            lower_segs.clear();
+            end_arcs[1] = Some(arc);
+        }
+    }
+
+    // **(ii) The contour takes over near each end.** One arc per end, each replacing that end's
+    // outermost segment on **both** chains.
     for side in [1usize, 0] {
         let upper_end = side == 1;
-        if !matches!(
-            structure.ends[side],
-            crate::resolve::SigmaEnd::Closed { pinch: true, .. }
-        ) {
-            continue;
-        }
-        // One arc per end, each replacing that end's outermost segment on **both** chains — so a
-        // chain that is a single segment has nothing to give twice. That happens when the contour
-        // bounds one whole side of the part: its two tangents are then joined by one continuous run
-        // of contour boundary, and the correct answer is a single arc wrapping *both* of them
-        // rather than two per-end arcs. Declined here, so the coverage check below refuses it by
-        // name (`RailSpanShort`) instead of this producing half a boundary.
-        if upper_segs.len() < 2 || lower_segs.len() < 2 {
+        // Already taken by (i), not a smooth pinch, or a chain with nothing to give at both ends —
+        // the last of which is (i)'s shape when (i) declined it, and refuses below by name rather
+        // than producing half a boundary here.
+        if end_arcs[side].is_some()
+            || !matches!(
+                structure.ends[side],
+                crate::resolve::SigmaEnd::Closed { pinch: true, .. }
+            )
+            || upper_segs.len() < 2
+            || lower_segs.len() < 2
+        {
             continue;
         }
         let (ui, li) = if upper_end {
@@ -446,44 +483,12 @@ fn certify_boundary<B: Backend>(
             (0, 0)
         };
         let (ul, ll) = (upper_segs[ui].2, lower_segs[li].2);
-        // One wall's two branches, and a genuine quadratic — an affine wall has no smooth pinch.
-        if ul.0 != ll.0 || crate::resolve::wall_of(ul) != crate::resolve::wall_of(ll) {
+        if !one_wall(ul, ll) || !matches!(part.ops[ul.0].0, OpKind::Intersect) {
             continue;
         }
         let op = ul.0;
-        let walls = part.ops[op]
-            .1
-            .walls()
-            .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
-        let wall = &walls[crate::resolve::wall_of(ul)];
-        let zero = Rat::from_i128(0);
-        let form = match develop::cut::cut_mu_form(&built.charts[0], wall, &zero) {
-            Some(f) if !f.a.is_zero() => f,
-            _ => continue,
-        };
-        // The wall's own tangent window, from the same isolation the extent was derived with.
-        let brackets =
-            develop::cut::tangent_events(&form, &bands[0], &crate::resolve::tangent_tol())
-                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
-        if brackets.len() < 2 {
+        let Some(cut) = contour_loop(part, built, &bands[0], op, wall_of(ul))? else {
             continue;
-        }
-        let window = Interval {
-            lo: brackets[0].hi.clone(),
-            hi: brackets[brackets.len() - 1].lo.clone(),
-        };
-        let cut = match develop::cut::quadric_cut_loop(
-            &built.charts[0],
-            wall,
-            &window,
-            &zero,
-            part.segments,
-            &part.clearance,
-            &part.cfg,
-        ) {
-            Verdict::Verified(l) => l,
-            Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
-            Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
         };
         eps = rmax(&eps, &cut.eps);
         // The junctions: where each chain hands the boundary to the contour.
@@ -492,7 +497,9 @@ fn certify_boundary<B: Backend>(
         } else {
             (lower_segs[li].1.clone(), upper_segs[ui].1.clone())
         };
-        let arc = develop::cut::tangent_turn_arc(&cut, upper_end, &from, &to)
+        // One tangent per end: the arc leaves the upper branch and rejoins the lower at a σ_hi end,
+        // and the other way round at σ_lo.
+        let arc = develop::cut::tangent_turn_arc(&cut, &from, upper_end, &to, !upper_end)
             .ok_or(RErr::Fault(PartFault::CutUnresolved { op }))?;
         upper_segs.remove(ui);
         lower_segs.remove(li);
@@ -622,6 +629,53 @@ fn certify_holes<B: Backend>(
         }
     }
     Ok(out)
+}
+
+/// One contour wall's own footprint loop over its two tangent rulings — the object every turn arc
+/// is cut out of. `None` when the wall is not a genuine quadratic or has no two tangents in the
+/// band, i.e. when there is no smooth pinch to turn around.
+///
+/// The tangent window comes from the same `tangent_events` isolation the σ-extent was derived from,
+/// so the loop this traces and the end the resolver located are brackets of the *same* roots.
+fn contour_loop<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    band: &Interval<B>,
+    op: usize,
+    wall_ix: usize,
+) -> Result<Option<develop::cut::CutLoop<B>>, RErr<B>> {
+    let walls = part.ops[op]
+        .1
+        .walls()
+        .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+    let wall = &walls[wall_ix];
+    let zero = Rat::from_i128(0);
+    let form = match develop::cut::cut_mu_form(&built.charts[0], wall, &zero) {
+        Some(f) if !f.a.is_zero() => f,
+        _ => return Ok(None),
+    };
+    let brackets = develop::cut::tangent_events(&form, band, &crate::resolve::tangent_tol())
+        .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+    if brackets.len() < 2 {
+        return Ok(None);
+    }
+    let window = Interval {
+        lo: brackets[0].hi.clone(),
+        hi: brackets[brackets.len() - 1].lo.clone(),
+    };
+    match develop::cut::quadric_cut_loop(
+        &built.charts[0],
+        wall,
+        &window,
+        &zero,
+        part.segments,
+        &part.clearance,
+        &part.cfg,
+    ) {
+        Verdict::Verified(l) => Ok(Some(l)),
+        Verdict::Unresolved(e) => Err(RErr::Loose(e)),
+        Verdict::Refuted(_) => Err(RErr::Fault(PartFault::CutUnresolved { op })),
+    }
 }
 
 /// The op whose **own footprint loop is the whole outer boundary** — every run bounded above and
@@ -771,11 +825,14 @@ pub(crate) fn flat_pattern<B: Backend>(
         }
         Some(())
     };
+    // A cap is only needed where two *chains* meet. A turn arc already carries the boundary from one
+    // side to the other, and where the contour bounds a whole side that chain is **empty** — the arc
+    // is the entire path between the other chain's two ends, so there is nothing here to cap.
     if boundary.end_arcs[0].is_some() {
         if push_turn(&mut arcs, 0).is_none() {
             return Verdict::Refuted(PartFault::LoopBroken);
         }
-    } else {
+    } else if !boundary.lower_segs.is_empty() && !boundary.upper_segs.is_empty() {
         let (lo0, up0) = match (
             eval(boundary.lower_segs[0].2, &domain.lo),
             eval(boundary.upper_segs[0].2, &domain.lo),
@@ -841,7 +898,7 @@ pub(crate) fn flat_pattern<B: Backend>(
         if push_turn(&mut arcs, 1).is_none() {
             return Verdict::Refuted(PartFault::LoopBroken);
         }
-    } else {
+    } else if !boundary.lower_segs.is_empty() && !boundary.upper_segs.is_empty() {
         let lo1 = match eval(
             boundary.lower_segs[boundary.lower_segs.len() - 1].2,
             &domain.hi,

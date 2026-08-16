@@ -698,6 +698,29 @@ fine — this is a log, not a schema.
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
 
+- **Two guesses that read as facts, and both failed as `None` rather than as bad geometry.** The
+  last boundary shape AUTH.3b owed (#278) is a contour bounding one **whole side**: its chain there
+  is a single segment, so the per-end splice — "remove that end's outermost segment from both chains"
+  — has nothing to remove twice, and the framing had to go. The general statement is that **an arc is
+  the run of the contour's loop between the two σ where a non-contour rail takes over**, wrapping
+  zero, one or two tangents. Making `tangent_turn_arc` general surfaced two assumptions that had been
+  correct only for the one-turn case:
+
+  - *σ does not say which branch a junction is on.* The first version picked the starting piece by σ,
+    but a loop that turns visits each σ twice; the arc came back as a graph. Fixed by taking
+    `from_upper`/`to_upper` from the caller — the chains already know which side they are — rather
+    than inferring them.
+  - *the walk covered the cycle once.* A two-turn arc leaves the upper branch, turns, crosses the
+    lower branch, turns again and rejoins the upper — so its end lies **after** a full lap and was
+    unreachable. Fixed by walking `2·n` pieces and stopping on turn count, not index count.
+
+  Neither produced a wrong boundary; both produced `None`, which routes to `CutUnresolved` — safe,
+  and uninformative. **A total function over a partial traversal fails silently by construction: the
+  case it cannot reach is indistinguishable from the case that does not exist.** Worth pairing with
+  the `params_at_sigma` entry below, which is the same milestone's opposite failure — an *inexact*
+  value that looked right (closing "to 1e-12") where this is a *correct* value that never arrived.
+  *2026-08-16 · AUTH.3b‴, branch `auth-3`*
+
 - **A searched parameter is not a join: `params_at_sigma` bisects, and an exactly-checked chain says
   so.** Splicing a p-curve turn arc into a graph chain, the arc has to start exactly where the rail
   it follows ends. `PCurve::params_at_sigma` looked like the tool for it — "the parameters where the
