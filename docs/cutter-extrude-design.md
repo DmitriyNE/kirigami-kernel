@@ -334,7 +334,7 @@ however many tests run through it.
 | **AUTH.2b** | `ruling_patch` → `ruling_patches`: every inside stretch, merged at interior carriers (§11.3) |
 | **AUTH.2c** | the cell/graph tracer — `shadow_cut_loop` → closed loops over the event partition (§11.4) |
 | **AUTH.2d** | the flat path: several loops per hole op |
-| **AUTH.2e** | the solid path: clip a general loop per σ-slice, lifting the station restriction (§11.1) |
+| **AUTH.2e** | the solid path: clip a general loop per σ-slice, lifting the station restriction (§11.7) |
 | **AUTH.2f** | acceptance: an L-slot through the device, developed, folded, exported; the ring still refused by name |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
@@ -451,7 +451,7 @@ The refusal is **deliberate, not incidental**. Before 1e.4 a ring failed closed 
 a window search declining a shape it could not read; now it is refused by name, so the author learns
 that the profile is the problem.
 
-The non-convex row is lifted in §11. The ring's is not, and §11.7 says why the two were never the
+The non-convex row is lifted in §11. The ring's is not, and §11.8 says why the two were never the
 same problem.
 
 ### 10.2 Three things follow from the wall changing
@@ -503,7 +503,7 @@ is caught downstream by `pcurve_cut_fit` as `NappeCrossed`, a refusal.
 An L-slot, a T-slot, a keyhole, a dogbone — the shapes fab actually asks for — are **non-convex but
 connected**, and §10's band cannot hold them: a ruling meets such a cutter in several stretches, and
 how many changes with σ as the stretches merge and split. This section lifts that restriction. It
-does **not** lift the ring's (§11.7).
+does **not** lift the ring's (§11.8).
 
 ### 11.1 The band is confined to one file, and that is a measurement
 
@@ -649,7 +649,68 @@ Nor is the developed shape evidence. A band `[lo(σ), hi(σ)]` can be a thorough
 region, so a reflex corner in the flat pattern proves nothing about the footprint. The signature that
 does distinguish them is the one §11 is built on: **a ruling meeting the cutter more than once**.
 
-### 11.7 What stays refused, and why each is its own feature
+### 11.7 The solid path clips per slice, against a straight-rail proxy
+
+§11.1 measured two independent restrictions downstream, and they closed separately. The first was
+`hole_rail`'s **band**: a loop turning around in σ more than twice has no near/far split, and now
+goes to the builder's general `(σ, µ̂)` polygon channel instead. The second was that channel's
+**one-slice** rule, and lifting it is a clipping problem: the builder cuts the panel at σ-stations
+(the positive-weight partition ∪ every rail-piece boundary), and a hole has no reason to respect
+them.
+
+Clipping is done by the same exact `arrange2d` boolean the flat path uses, once per slice, with two
+choices worth recording.
+
+**The strip is replaced by a straight-rail proxy.** The boolean's operands are polygons and the
+slice's µ̂-boundaries are curved rails, so operand `A` is the rectangle `[sk,sk1] × [m_lo,m_hi]` with
+the horizontals set clear of every hole vertex. Every hole is strictly interior to the band — checked
+at the vertices, and refused rather than trimmed, because a vertex outside would make the
+*combinatorics* wrong rather than the fit loose — so the proxy is isotopic to the true strip through
+an isotopy fixing every hole: the boolean's combinatorics is the true one. The emitted geometry then
+restores the real boundary (`railed_corners`): a vertex on a proxy horizontal is the corner
+`(σ, µ̂_in)`/`(σ, µ̂_out)`, and an edge along one is the curved rail itself, which is exact because no
+hole ever touches a horizontal, so such an edge always runs the full slice width. Nothing about the
+lid's surface changes — only which wire trims it.
+
+**Each slice's boolean takes the whole loop, not a pre-clipped one.** Clipping the polygon first
+(Sutherland–Hodgman against the two station lines) is the obvious move and it is worse in two ways:
+it produces degenerate zero-width connections for a non-convex subject, and it destroys the property
+the next paragraph rests on. `BoolOp::Diff` against the unclipped loop does the clipping exactly,
+including the case one loop meets a slice in **several** components — a `C` opening across the
+rulings is one notch on one side of the station and two on the other.
+
+**A cross-ring is shared only if both slices say so.** The builder emits a wall per footprint edge
+except a radial at an interior station, which it treated as a shared cross-ring — correct while every
+hole was a `HoleRail`, whose branches are continuous in σ, so both slices always cut the station at
+the same two µ̂. A polygon hole with a `σ = const` edge *on* a station breaks that: one side keeps
+material there and the other does not, and the step between the two lids is a real wall. Skipping it
+anyway leaves four free edges under a `Verified` verdict — an open shell reported as a solid, found
+by measuring a fixture whose L-step lands exactly on σ = 0, which is where an authored corner tends
+to fall. The rule now asks the neighbouring slice for its segments on that station and emits the wall
+unless one matches exactly; a partial overlap is refused. Exact matching is enough *because* both
+slices ran the boolean against the whole loop, so they see the same crossings on the shared line.
+
+The two channels then agree where they overlap: on a `(σ, µ̂)` rectangle — the one shape both express
+— they build the same solid down to the vertex coordinates. That is not a coincidence of the
+fixture. `hole_rail` and `hole_poly` read the *same* vertex sequence off a developed loop
+(`curve.eval` at each arc's domain start), and `hole_rail` joins consecutive vertices with **linear**
+rails, so both channels carry the same polyline in `(σ, µ̂)`; what the band adds is not geometry but
+a refusal — of loops turning around more than twice. `HoleRail` is therefore a fast path over the
+general engine rather than a second representation, and retiring it is a **measurement** (do the
+device's derived holes build identically, and no slower, through the boolean?) rather than a design
+question. Kept for now on that footing.
+
+That is also what lets the two channels **share a slice**, which the ordinary panel needs — an
+authored slot next to a derived drill. The first attempt refused such a slice, reasoning that a rail
+branch is not a polygon operand and so there is no single boolean to run; the gate rejected it
+immediately, because the doctest panel is exactly that case. The premise was false for every hole
+the kernel actually produces: a band whose branches are affine per piece *is* a polygon, so it is
+converted (`rail_hole_poly`) and joins the boolean as another operand. Slices with no polygon hole
+keep the cheaper hand-built `slice_footprint`, and the two paths agree on the station between them
+because both evaluate the same affine rail there. A genuinely curved branch — which nothing upstream
+emits today — is what is left to refuse.
+
+### 11.8 What stays refused, and why each is its own feature
 
 - **A footprint with its own hole** (the ring, §10.1's third row). An annular through-cut leaves a
   disc of material floating, disconnected from the rest — that is two parts, not one hole, and the

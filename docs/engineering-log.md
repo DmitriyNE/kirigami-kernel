@@ -683,6 +683,41 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **"A radial at an interior station is a shared cross-ring" was a property of `HoleRail`, not of
+  the builder — and reading it as the builder's made a `Verified` solid with four free edges.** The
+  trim builder emits a wall per footprint edge except a radial at an interior σ-station, which two
+  adjacent slices are assumed to share. That assumption held for as long as every interior hole was
+  a `HoleRail`: its near/far branches are *continuous in σ*, so both slices cut the station at the
+  same two µ̂ and the two lids really do meet along one edge. AUTH.2e's polygon channel breaks it —
+  a hole with a `σ = const` edge sitting **on** a station keeps material on one side and not the
+  other, so the two lids differ there and the step between them is a wall. Skipped, it left four
+  free edges under a `Verified` verdict: an open shell reported as a solid, and the pipeline had
+  nothing to object with, since `Part::solid()`'s verdict is about the *certificates* upstream and
+  not about the shell it hands back. Found by measuring rather than reasoning — the fixture already
+  in the suite (`fold_part`'s authored L, whose step lands exactly on σ = 0, which is where an
+  authored corner tends to fall) was about to be flipped from `SolidRefused` to green on the
+  strength of the verdict alone. The rule now asks the neighbouring slice for its segments on that
+  station and emits the wall unless one matches exactly; a partial overlap is refused rather than
+  sewn. Exact matching is sound *because* each slice runs its boolean against the whole loop rather
+  than a pre-clipped one, so both sides see the same crossings on the shared line.
+  *Generalizable:* when lifting a restriction, the invariants the old special case *supplied* are as
+  load-bearing as the ones it required — and they are invisible, because nothing states them.
+  *2026-08-16 · resolved · `export::brep_build::{cross_ring,radial_segments}`, design §11.7*
+
+- **A fail-closed refusal is only as honest as the premise it rests on — and mine was false for
+  every hole the kernel emits.** Bringing the general polygon channel up to per-slice clipping, I
+  refused any slice reached by *both* a polygon hole and a `HoleRail`, reasoning that a rail's
+  branches are curved and a boolean has no operand for a curve. The gate rejected it in the first
+  run: the doctest panel is precisely that case (an authored slot beside a derived drill), and the
+  leg the milestone was explicitly not allowed to regress is the one that broke. The premise was
+  wrong — `hole_rail` builds **linear** rails between consecutive loop vertices, so a band *is* a
+  polygon, and converting it (`rail_hole_poly`) lets both kinds join one boolean. Two things worth
+  keeping: a refusal added because "I cannot represent that" deserves the same scrutiny as a claim,
+  since it encodes a belief about the data; and it was cheap to be wrong here only because the
+  regression suite already owned the case — the design doc's §11.1 measurement said the
+  within-slice mixture worked, and the test said so too.
+  *2026-08-16 · resolved · `export::brep_build::rail_hole_poly`, design §11.7*
+
 - **A non-convex profile does not give a non-convex footprint, and a reflex corner in the flat
   pattern does not prove one either.** AUTH.2d's fixture is an L-slot cutter, and the first two
   attempts were *false negatives that looked like tracer bugs*. **(1)** This cone's rulings project

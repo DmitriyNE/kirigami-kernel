@@ -1246,6 +1246,10 @@ fn lift_trim_edge<B: Backend>(
 /// One slice's footprint: an outer loop with its inner (hole) loops.
 type SliceFace<B> = (Vec<TrimCorner<B>>, Vec<Vec<TrimCorner<B>>>);
 
+/// The `µ̂`-segments a slice's lids occupy on its two σ-stations, low station first — what tells a
+/// shared cross-ring from a one-sided one ([`cross_ring`]).
+type StationSegs<B> = [Vec<(Rat<B>, Rat<B>)>; 2];
+
 /// Drop corners that repeat the previous corner's `(σ, µ̂)` **point** — a degenerate edge.
 ///
 /// A hole now meets its tangent ruling at a single point (both branches evaluate to the midline
@@ -1597,6 +1601,197 @@ pub fn brep_trim_solid<B: Backend>(
     Some(bld.into_brep())
 }
 
+/// A `(σ,µ̂)` loop from the straight-rail proxy boolean ([`slice_poly_footprint`]) as `TrimCorner`s,
+/// with the proxy horizontals read back as the strip's **curved** rails.
+///
+/// Corner `i` carries the rail of its **outgoing** edge — the line through `(σ_i,µ̂_i)` and the next
+/// vertex for a polygon edge, the constant `µ̂_i` for a radial (`σ=const`) one. A vertex sitting on a
+/// proxy horizontal (`µ̂ = m_lo`/`m_hi`, which no hole ever touches) instead carries `µ̂_in`/`µ̂_out`,
+/// so both the vertex *and* its outgoing edge land back on the true boundary: an edge along a
+/// horizontal is the curved rail itself, and one leaving it radially still starts on the rail.
+///
+/// `None` if a non-radial edge runs between a rail vertex and an interior one — a hole touching the
+/// boundary, which the proxy does not model (and the caller refuses at the vertices).
+fn railed_corners<B: Backend>(
+    pts: &[SigMu<B>],
+    mu_in: &RatFunc<B>,
+    mu_out: &RatFunc<B>,
+    m_lo: &Rat<B>,
+    m_hi: &Rat<B>,
+) -> Option<Vec<TrimCorner<B>>> {
+    /// Which boundary of the proxy strip a vertex sits on, if any.
+    enum Side {
+        In,
+        Out,
+        Free,
+    }
+    let side = |m: &Rat<B>| {
+        if req(m, m_lo) {
+            Side::In
+        } else if req(m, m_hi) {
+            Side::Out
+        } else {
+            Side::Free
+        }
+    };
+    let at = |sd: &Side, m: &Rat<B>| match sd {
+        Side::In => mu_in.clone(),
+        Side::Out => mu_out.clone(),
+        Side::Free => RatFunc::from_poly(Poly::constant(m.clone())),
+    };
+    let n = pts.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (s0, m0) = &pts[i];
+        let (s1, m1) = &pts[(i + 1) % n];
+        let (a, b) = (side(m0), side(m1));
+        let rail = match (&a, &b) {
+            (Side::In, Side::In) => mu_in.clone(),
+            (Side::Out, Side::Out) => mu_out.clone(),
+            _ if req(s0, s1) => at(&a, m0), // radial — the vertex's own rail
+            (Side::Free, Side::Free) => {
+                let slope = m1.sub(m0).div(&s1.sub(s0));
+                let intercept = m0.sub(&slope.mul(s0));
+                RatFunc::from_poly(Poly::from_coeffs(vec![intercept, slope]))
+            }
+            _ => return None,
+        };
+        out.push((s0.clone(), rail));
+    }
+    Some(out)
+}
+
+/// A [`HoleRail`] as a `(σ,µ̂)` polygon — the near branch forward, the far branch back, with a vertex
+/// at every chain-piece boundary — so a band can join the general channel's boolean as an operand.
+///
+/// Exact wherever the branches are **affine per piece**, which is what a developed loop's chains
+/// are: `export::trim::hole_rail` joins consecutive loop vertices with linear rails, off the same
+/// vertex sequence `hole_poly` reads, so a band and its polygon are the same curve. A genuinely
+/// curved branch is not a polygon and returns `None`. Consecutive coincident vertices collapse: at a
+/// tangent ruling the two branches meet at a point, and a zero-length edge is not an edge.
+fn rail_hole_poly<B: Backend>(h: &HoleRail<B>) -> Option<Vec<SigMu<B>>> {
+    let affine = |chain: &[(Interval<B>, RatFunc<B>)]| {
+        chain.iter().all(|(_, mu)| {
+            let m = mu.reduce();
+            m.den().degree().unwrap_or(0) == 0 && m.num().degree().unwrap_or(0) <= 1
+        })
+    };
+    if !affine(&h.near) || !affine(&h.far) {
+        return None;
+    }
+    let run = rail_run(&h.near, &h.s1, &h.s2)?;
+    let back = rail_run(&h.far, &h.s2, &h.s1)?;
+    let mut pts: Vec<SigMu<B>> = Vec::with_capacity(run.len() + back.len());
+    for c in run.iter().chain(back.iter()) {
+        let p = (c.0.clone(), c.1.eval(&c.0)?);
+        if pts.last().is_none_or(|q| !pt_eq(q, &p)) {
+            pts.push(p);
+        }
+    }
+    if pts.len() > 1 && pt_eq(&pts[0], pts.last()?) {
+        pts.pop();
+    }
+    (pts.len() >= 3).then_some(pts)
+}
+
+/// One slice's `(σ,µ̂)` footprint when general **polygon** holes overlap it: the strip
+/// `[sk,sk1] × [µ̂_in(σ), µ̂_out(σ)]` minus the polygons, as `(outer-loop, hole-loops)` faces — the
+/// [`slice_footprint`] of the general channel.
+///
+/// A polygon hole crosses σ-stations freely: this clips it *per slice* with the exact `arrange2d`
+/// boolean, so the piece inside a slice stays an interior wire, opens a station edge as a **notch**,
+/// or splits the strip into two µ̂-bands — the three shapes [`slice_footprint`] hand-builds for a
+/// near/far [`HoleRail`], decided here with no special case, and correct for the loops a band cannot
+/// express at all. The whole loop is fed to *every* overlapping slice rather than a pre-clipped
+/// piece, so the two slices meeting at a crossed station see the same crossings on it — which is
+/// what lets [`cross_ring`] match their segments exactly.
+///
+/// The boolean's operands are polygons and the strip's µ̂-boundaries are curved, so operand `A` is a
+/// **straight-rail proxy** `[sk,sk1] × [m_lo,m_hi]` with the horizontals set clear of every hole
+/// vertex. Every hole is strictly interior to the band (the caller checks it), so the proxy is
+/// isotopic to the true strip through an isotopy fixing the holes: the boolean's *combinatorics* is
+/// the true one, and [`railed_corners`] restores the real rails in the emitted geometry.
+///
+/// Holes must be pairwise disjoint (`BoolOp::Diff` reads `B` under even-odd parity, so overlapping
+/// loops would leave material where they meet). `None` on a degenerate polygon, a boolean fault, a
+/// self-touch pinch, or a loop the rails cannot be read back into — never a silent mis-build.
+fn slice_poly_footprint<B: Backend>(
+    sk: &Rat<B>,
+    sk1: &Rat<B>,
+    mu_in: &RatFunc<B>,
+    mu_out: &RatFunc<B>,
+    polys: &[&[SigMu<B>]],
+) -> Option<Vec<SliceFace<B>>> {
+    use core::cmp::Ordering::{Greater, Less};
+    // The proxy horizontals, clear of every hole vertex — hence of every hole edge, a segment
+    // staying within its endpoints' µ̂-range.
+    let seed = polys.first()?.first()?.1.clone();
+    let (mut m_lo, mut m_hi) = (seed.clone(), seed);
+    for p in polys {
+        for (_, m) in p.iter() {
+            if m.cmp(&m_lo) == Less {
+                m_lo = m.clone();
+            }
+            if m.cmp(&m_hi) == Greater {
+                m_hi = m.clone();
+            }
+        }
+    }
+    let one = Rat::from_i128(1);
+    let (m_lo, m_hi) = (m_lo.sub(&one), m_hi.add(&one));
+
+    let mut edges = rect_edges(sk, sk1, &m_lo, &m_hi, 0);
+    for (j, p) in polys.iter().enumerate() {
+        let n = p.len();
+        if n < 3 {
+            return None;
+        }
+        for i in 0..n {
+            let (sx, sy) = &p[i];
+            let (ex, ey) = &p[(i + 1) % n];
+            edges.push(seg_edge(sx, sy, ex, ey, (j + 1) as u32));
+        }
+    }
+    let operand_of = |cv: CurveId| {
+        if cv.0 == 0 {
+            OperandId::A
+        } else {
+            OperandId::B
+        }
+    };
+    let region = match ledge_dom_certified(&edges, &operand_of, BoolOp::Diff) {
+        Verdict::Verified(cap) => {
+            let (region, _v_boundary, pinches) = cap.into_parts();
+            if !pinches.is_empty() {
+                return None; // a self-touching cut — refuse rather than mis-build
+            }
+            region
+        }
+        _ => return None,
+    };
+
+    let mut faces = Vec::with_capacity(region.faces.len());
+    for face in &region.faces {
+        let outer = railed_corners(
+            &ordered_loop(&face.outer, true)?,
+            mu_in,
+            mu_out,
+            &m_lo,
+            &m_hi,
+        )?;
+        let holes: Vec<Vec<TrimCorner<B>>> = face
+            .holes
+            .iter()
+            .map(|h| {
+                let lp = ordered_loop(h, false)?;
+                railed_corners(&lp, mu_in, mu_out, &m_lo, &m_hi)
+            })
+            .collect::<Option<_>>()?;
+        faces.push((outer, holes));
+    }
+    Some(faces)
+}
+
 /// A **trimmed developable solid** whose surface is **piecewise across σ-regions** that share the
 /// ruling/normal frame (`r`, `n`) but differ in support (pedal `c`) — the self-lapping / offset-tail
 /// device. `charts` are the region charts with their σ-sub-bands (contiguous, ascending); `inner` /
@@ -1608,29 +1803,21 @@ pub fn brep_trim_solid<B: Backend>(
 /// The per-region intrinsic positive-weight partition (from each chart's own [`sigma_stations`]) and
 /// every region/rail-piece boundary become stations, so each slice lies within one region, one inner
 /// and one outer rail piece; its `c, r, n` are read from that region's chart.
-/// A general `(σ,µ̂)` polygon hole loop as `TrimCorner`s: corner `i` carries the **line** through
-/// `(σ_i,µ̂_i)` and the next vertex (its outgoing edge's rail), or the constant `µ̂_i` for a radial
-/// (`σ=const`) edge. So the lifting reads each edge as a straight `(σ,µ̂)` segment — a round drill or a
-/// polygon cut, not just a near/far µ̂-band.
-fn poly_to_corners<B: Backend>(poly: &[(Rat<B>, Rat<B>)]) -> Vec<TrimCorner<B>> {
-    use core::cmp::Ordering;
-    let m = poly.len();
-    (0..m)
-        .map(|i| {
-            let (s0, m0) = &poly[i];
-            let (s1, m1) = &poly[(i + 1) % m];
-            let rail = if s0.cmp(s1) == Ordering::Equal {
-                RatFunc::from_poly(Poly::constant(m0.clone()))
-            } else {
-                let slope = m1.sub(m0).div(&s1.sub(s0));
-                let intercept = m0.sub(&slope.mul(s0));
-                RatFunc::from_poly(Poly::from_coeffs(vec![intercept, slope]))
-            };
-            (s0.clone(), rail)
-        })
-        .collect()
-}
-
+///
+/// Interior cuts arrive as either kind of hole, both **through-holes** (strictly interior to the
+/// panel, each raising the genus) and both free to cross σ-stations:
+///
+/// - `holes` — a near/far µ̂-band per σ ([`HoleRail`]), carried by [`slice_footprint`]; pairwise
+///   disjoint in σ, since each notches or spans slices on its own.
+/// - `poly_holes` — a general `(σ,µ̂)` polygon loop (a drill, a folded flat-authored cut, or a
+///   traced non-convex footprint), clipped per slice by [`slice_poly_footprint`]'s exact boolean.
+///   Vertices must lie strictly inside the µ̂-band, and the loops must be pairwise disjoint.
+///
+/// The two kinds may share a slice — the ordinary authored-slot-beside-derived-drill panel: a band
+/// with affine branches converts to a polygon ([`rail_hole_poly`]) and joins the same boolean.
+/// Refused, never mis-built: a **curved** branch sharing a slice with a polygon hole (not a polygon
+/// operand), a hole touching a boundary, a σ-overlapping [`HoleRail`] pair, two lids that cannot be
+/// sewn along a station, a degenerate partition, or an arrangement fault.
 pub fn brep_trim_solid_regions<B: Backend>(
     charts: &[(Interval<B>, &Chart<B>)],
     w: &Interval<B>,
@@ -1712,9 +1899,9 @@ pub fn brep_trim_solid_regions<B: Backend>(
         }
     }
 
-    // Polygon holes: each must lie strictly interior to a single slice (its whole σ-extent inside one
-    // `[station_k, station_{k+1}]`) — a general `(σ,µ̂)` loop cut from that slice's lid, unlike a
-    // `HoleRail` (which is a near/far µ̂-band and can span slices via the σ-caps).
+    // Polygon holes: general `(σ,µ̂)` loops, strictly interior to the panel in σ — they may cross
+    // σ-stations freely, each slice taking the exact boolean of its strip against them
+    // ([`slice_poly_footprint`]).
     let poly_bounds: Vec<(Rat<B>, Rat<B>)> = poly_holes
         .iter()
         .map(|p| {
@@ -1732,16 +1919,35 @@ pub fn brep_trim_solid_regions<B: Backend>(
         })
         .collect();
     for (lo, hi) in &poly_bounds {
-        let inside = (0..nst - 1).any(|k| {
-            stations[k].cmp(lo) == Ordering::Less && hi.cmp(&stations[k + 1]) == Ordering::Less
-        });
-        if !inside {
-            return None; // crosses a σ-station (would need per-slice clipping)
+        if !(sigma.lo.cmp(lo) == Ordering::Less
+            && lo.cmp(hi) == Ordering::Less
+            && hi.cmp(&sigma.hi) == Ordering::Less)
+        {
+            return None; // a through-hole, not a boundary slot
         }
     }
 
     let inner = stitched_poly_chain(inner);
     let outer = stitched_poly_chain(outer);
+
+    // …and strictly interior in µ̂ at every vertex. The per-slice boolean models a hole clear of
+    // both rails (`slice_poly_footprint`'s proxy), so a vertex outside the band would make the
+    // footprint's *combinatorics* wrong — a silently mis-built solid rather than a loose fit.
+    let inside_band = |p: &[SigMu<B>]| -> Option<bool> {
+        for (s, m) in p {
+            let lo = piece_at(&inner, s)?.eval(s)?;
+            let hi = piece_at(&outer, s)?.eval(s)?;
+            if !(lo.cmp(m) == Ordering::Less && m.cmp(&hi) == Ordering::Less) {
+                return Some(false);
+            }
+        }
+        Some(true)
+    };
+    for p in poly_holes {
+        if !inside_band(p)? {
+            return None;
+        }
+    }
     let holes: Vec<HoleRail<B>> = holes
         .iter()
         .map(|h| HoleRail {
@@ -1751,9 +1957,69 @@ pub fn brep_trim_solid_regions<B: Backend>(
             s2: h.s2.clone(),
         })
         .collect();
+    // A rail hole reaching the same slice as a polygon hole joins the boolean **as a polygon** —
+    // which it is, whenever its branches are affine per piece, and a developed loop's chains are
+    // (`export::trim::hole_rail` joins consecutive loop vertices with linear rails, off the same
+    // vertex sequence `hole_poly` reads). Converted once here, used by whichever slices need it;
+    // slices with no polygon hole keep the cheaper `slice_footprint`, and the two agree on a
+    // station because both evaluate the same affine rail there.
+    let rail_polys: Vec<Option<Vec<SigMu<B>>>> = holes.iter().map(rail_hole_poly).collect();
 
     let interior_station = |s: &Rat<B>| stations[1..nst - 1].iter().any(|st| req(st, s));
 
+    // Pass 1 — every slice's `(σ,µ̂)` footprint, plus the µ̂-segments its lids occupy on each of its
+    // two σ-stations. Pass 2 needs both sides of a station to tell a **shared** cross-ring (the two
+    // lids meet along the same segment — one edge, no wall) from a **one-sided** one (they do not,
+    // and the step between them is a real wall). What makes a station one-sided is a `σ = const`
+    // hole edge sitting on it — material on one side, hole on the other. A [`HoleRail`]'s branches
+    // are continuous in σ and it has such an edge only at its two σ-caps, which are deliberately
+    // kept off the stations, so in practice this is the polygon channel's case.
+    let mut foot: Vec<Vec<SliceFace<B>>> = Vec::with_capacity(nst - 1);
+    let mut rails: Vec<(RatFunc<B>, RatFunc<B>)> = Vec::with_capacity(nst - 1);
+    let mut ends: Vec<StationSegs<B>> = Vec::with_capacity(nst - 1);
+    for k in 0..nst - 1 {
+        let (sk, sk1) = (&stations[k], &stations[k + 1]);
+        let smid = sk.add(sk1).mul(&Rat::new(1, 2));
+        let mu_in = piece_at(&inner, &smid)?.clone();
+        let mu_out = piece_at(&outer, &smid)?.clone();
+        // The polygon holes reaching this slice. They take the whole footprint with them — every
+        // rail hole reaching it converts to a polygon and joins the same boolean.
+        let mut slice_polys: Vec<&[SigMu<B>]> = poly_holes
+            .iter()
+            .zip(&poly_bounds)
+            .filter(|(_, (lo, hi))| lo.cmp(sk1) == Ordering::Less && sk.cmp(hi) == Ordering::Less)
+            .map(|(p, _)| p.as_slice())
+            .collect();
+        let raw = if slice_polys.is_empty() {
+            slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?
+        } else {
+            for (h, rp) in holes.iter().zip(&rail_polys) {
+                if h.s1.cmp(sk1) == Ordering::Less && sk.cmp(&h.s2) == Ordering::Less {
+                    // A genuinely curved branch is not a polygon operand: refuse, never mis-build.
+                    let p = rp.as_deref()?;
+                    if !inside_band(p)? {
+                        return None;
+                    }
+                    slice_polys.push(p);
+                }
+            }
+            slice_poly_footprint(sk, sk1, &mu_in, &mu_out, &slice_polys)?
+        };
+        let faces: Vec<SliceFace<B>> = raw
+            .into_iter()
+            .map(|(o, hs)| {
+                (
+                    dedup_trim_corners(&o),
+                    hs.iter().map(|h| dedup_trim_corners(h)).collect(),
+                )
+            })
+            .collect();
+        ends.push([radial_segments(&faces, sk)?, radial_segments(&faces, sk1)?]);
+        foot.push(faces);
+        rails.push((mu_in, mu_out));
+    }
+
+    // Pass 2 — lift each footprint to its two lids and sweep its edges into walls.
     let mut bld = Builder::new();
     for k in 0..nst - 1 {
         let (sk, sk1) = (&stations[k], &stations[k + 1]);
@@ -1763,32 +2029,16 @@ pub fn brep_trim_solid_regions<B: Backend>(
         let surf = |mu_hat: &RatFunc<B>, wl: &Rat<B>| {
             c.add(&r.scale(mu_hat)).reduce().add(&n.scale_rat(wl))
         };
-        let mu_in = piece_at(&inner, &smid)?.clone();
-        let mu_out = piece_at(&outer, &smid)?.clone();
-        let mut faces: Vec<SliceFace<B>> = slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?
-            .into_iter()
-            .map(|(o, hs)| {
-                (
-                    dedup_trim_corners(&o),
-                    hs.iter().map(|h| dedup_trim_corners(h)).collect(),
-                )
-            })
-            .collect();
-        // Append the polygon holes interior to this slice as inner loops of its (outer) lid face.
-        let extra: Vec<Vec<TrimCorner<B>>> = poly_holes
-            .iter()
-            .zip(&poly_bounds)
-            .filter(|(_, (lo, hi))| sk.cmp(lo) == Ordering::Less && hi.cmp(sk1) == Ordering::Less)
-            .map(|(p, _)| poly_to_corners(p))
-            .collect();
-        if !extra.is_empty() {
-            if let Some(first) = faces.first_mut() {
-                first.1.extend(extra);
-            }
-        }
-        for (outer_loop, hole_loops) in &faces {
-            let surf_top = ruled_common(&surf(&mu_in, &ws[1]), &surf(&mu_out, &ws[1]), sk, sk1);
-            let surf_bot = ruled_common(&surf(&mu_in, &ws[0]), &surf(&mu_out, &ws[0]), sk, sk1);
+        let (mu_in, mu_out) = &rails[k];
+        // The neighbouring slice's segments on each of this slice's stations (empty outside the
+        // panel, so a σ-cap radial is always one-sided — it gets its wall, as it always did).
+        let across = [
+            k.checked_sub(1).map(|j| &ends[j][1]),
+            ends.get(k + 1).map(|e| &e[0]),
+        ];
+        for (outer_loop, hole_loops) in &foot[k] {
+            let surf_top = ruled_common(&surf(mu_in, &ws[1]), &surf(mu_out, &ws[1]), sk, sk1);
+            let surf_bot = ruled_common(&surf(mu_in, &ws[0]), &surf(mu_out, &ws[0]), sk, sk1);
             let top_outer = lift_trim_loop(&mut bld, c, r, n, outer_loop, &ws[1]);
             let top_holes: Vec<Vec<HalfEdge>> = hole_loops
                 .iter()
@@ -1807,7 +2057,12 @@ pub fn brep_trim_solid_regions<B: Backend>(
                     let a = &corners[i];
                     let b = &corners[(i + 1) % m];
                     if req(&a.0, &b.0) && interior_station(&a.0) {
-                        continue;
+                        let other = if req(&a.0, sk) { across[0] } else { across[1] };
+                        match cross_ring(&segment(a, b)?, other.map_or(&[][..], |v| &v[..])) {
+                            CrossRing::Shared => continue, // one edge, two lids — no wall
+                            CrossRing::OneSided => {}      // a step between the two lids — a wall
+                            CrossRing::Mismatch => return None,
+                        }
                     }
                     emit_trim_wall(&mut bld, c, r, n, a, b, &ws[0], &ws[1]);
                 }
@@ -1815,6 +2070,65 @@ pub fn brep_trim_solid_regions<B: Backend>(
         }
     }
     Some(bld.into_brep())
+}
+
+/// The `µ̂`-span of a radial (`σ = const`) footprint edge, low first.
+fn segment<B: Backend>(a: &TrimCorner<B>, b: &TrimCorner<B>) -> Option<(Rat<B>, Rat<B>)> {
+    let (x, y) = (a.1.eval(&a.0)?, b.1.eval(&b.0)?);
+    Some(if x.cmp(&y) == core::cmp::Ordering::Greater {
+        (y, x)
+    } else {
+        (x, y)
+    })
+}
+
+/// The `µ̂`-segments a slice's lids occupy on the station `s` — its radial footprint edges there,
+/// which is exactly where its material meets that ruling.
+fn radial_segments<B: Backend>(
+    faces: &[SliceFace<B>],
+    s: &Rat<B>,
+) -> Option<Vec<(Rat<B>, Rat<B>)>> {
+    let mut out = Vec::new();
+    for (o, hs) in faces {
+        for corners in core::iter::once(o).chain(hs.iter()) {
+            let m = corners.len();
+            for i in 0..m {
+                let (a, b) = (&corners[i], &corners[(i + 1) % m]);
+                if req(&a.0, &b.0) && req(&a.0, s) {
+                    out.push(segment(a, b)?);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// How a radial footprint segment on a σ-station meets the neighbouring slice's footprint there.
+enum CrossRing {
+    /// Matched exactly — the two lids share one cross-ring edge, so no wall (the common case: a
+    /// hole-free station, or a [`HoleRail`] whose branches are continuous across it).
+    Shared,
+    /// Disjoint from every segment across — one lid steps past the other, and the step is a wall
+    /// (a σ-cap at the panel's ends; a polygon hole with a `σ = const` edge on the station).
+    OneSided,
+    /// Overlapping without matching. Both slices see the same crossings on a station (each slice's
+    /// boolean takes the *whole* hole loop, not a pre-clipped one), so a segment is either shared
+    /// or one-sided; anything else means the two lids cannot be sewn and is refused.
+    Mismatch,
+}
+
+fn cross_ring<B: Backend>(seg: &(Rat<B>, Rat<B>), other: &[(Rat<B>, Rat<B>)]) -> CrossRing {
+    use core::cmp::Ordering::Less;
+    if other.iter().any(|o| req(&o.0, &seg.0) && req(&o.1, &seg.1)) {
+        return CrossRing::Shared;
+    }
+    if other
+        .iter()
+        .any(|o| o.0.cmp(&seg.1) == Less && seg.0.cmp(&o.1) == Less)
+    {
+        return CrossRing::Mismatch;
+    }
+    CrossRing::OneSided
 }
 
 // ============================================================================
@@ -3347,6 +3661,278 @@ mod tests {
             muf(-2),
             muf(-1),
         )
+    }
+
+    /// The gore through the **regions** builder (one chart, one rail piece per side), with both
+    /// hole channels open — the entry the `author` crate drives.
+    #[allow(clippy::type_complexity)]
+    fn gore_solid(
+        holes: &[HoleRail<lattice::Bignum>],
+        polys: &[Vec<(Rat<lattice::Bignum>, Rat<lattice::Bignum>)>],
+    ) -> Option<Brep<lattice::Bignum>> {
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        let inner = [(sigma.clone(), mu_lo)];
+        let outer = [(sigma.clone(), mu_hi)];
+        let charts = [(sigma, &chart)];
+        brep_trim_solid_regions(&charts, &w, &inner, &outer, holes, polys)
+    }
+
+    /// A watertight, manifold, certified closed 2-manifold of the stated genus.
+    fn assert_certified(b: &Brep<lattice::Bignum>, g: i64, what: &str) {
+        use certify_core::shell::closed_shell_holed;
+        assert!(b.indices_in_range(), "{what}: indices in range");
+        for f in 0..b.faces().len() {
+            assert!(b.all_loops_closed(f), "{what}: face {f} loops close");
+        }
+        assert_eq!(b.free_edges(), 0, "{what} is watertight");
+        assert_eq!(b.nonmanifold_edges(), 0, "{what} is manifold");
+        assert_eq!(genus(b), g, "{what} has genus {g}");
+        let sc = b.to_shell_certificate();
+        assert!(
+            matches!(
+                closed_shell_holed(
+                    sc.n_verts,
+                    &sc.edge_start,
+                    &sc.edge_end,
+                    &sc.wire_edge,
+                    &sc.wire_reversed,
+                    &sc.loop_start,
+                    &sc.face_start,
+                ),
+                Verdict::Verified(_)
+            ),
+            "{what} is a certified closed 2-manifold"
+        );
+    }
+
+    /// A solid's vertex coordinates, sorted — the identity two builds are compared on. Every
+    /// vertex of a trim solid is rational (the surds carry no radical part).
+    fn rational_verts(b: &Brep<lattice::Bignum>) -> Vec<[Rat<lattice::Bignum>; 3]> {
+        let mut v: Vec<[Rat<lattice::Bignum>; 3]> = b
+            .verts()
+            .iter()
+            .map(|v| {
+                core::array::from_fn(|i| {
+                    let (a, bb, _) = v[i].parts();
+                    assert!(bb.is_zero(), "a trim-solid vertex is rational");
+                    a.clone()
+                })
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// σ = 0 is the gore's only interior station — the phenomenon every polygon fixture below
+    /// needs, asserted rather than assumed (a hole that missed it would test nothing).
+    fn assert_crosses_a_station(lo: &Rat<lattice::Bignum>, hi: &Rat<lattice::Bignum>) {
+        use core::cmp::Ordering::{Greater, Less};
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        assert!(
+            sigma_stations(&chart, &sigma, &w, &mu_lo, &mu_hi)
+                .iter()
+                .any(|s| s.cmp(lo) == Greater && s.cmp(hi) == Less),
+            "the fixture must straddle a σ-station"
+        );
+    }
+
+    /// **AUTH.2e.** A polygon hole may now cross a σ-station: the per-slice boolean clips it, and on
+    /// the one shape *both* channels can express — a `(σ,µ̂)` rectangle — the general polygon channel
+    /// builds exactly what the near/far [`HoleRail`] band builds, vertex for vertex.
+    ///
+    /// That equality is what licenses routing a loop to either channel: the band is a fast path over
+    /// the boolean, not a different geometry.
+    #[test]
+    fn a_polygon_hole_crossing_a_station_builds_what_the_band_channel_builds() {
+        use lattice::Poly;
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let konst = |n: i128, d: i128| {
+            RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(n, d)]))
+        };
+        let (s1, s2) = (q(-1, 4), q(1, 4));
+        let (m1, m2) = (q(-7, 4), q(-5, 4));
+        assert_crosses_a_station(&s1, &s2);
+
+        let band = gore_solid(
+            &[HoleRail::uniform(
+                konst(-7, 4),
+                konst(-5, 4),
+                s1.clone(),
+                s2.clone(),
+            )],
+            &[],
+        )
+        .expect("the band channel takes a station-crossing rail hole");
+        let poly = gore_solid(
+            &[],
+            &[vec![
+                (s1.clone(), m1.clone()),
+                (s2.clone(), m1),
+                (s2, m2.clone()),
+                (s1, m2),
+            ]],
+        )
+        .expect("the polygon channel takes a station-crossing loop");
+
+        assert_certified(&band, 1, "the band hole");
+        assert_certified(&poly, 1, "the polygon hole");
+        assert_eq!(
+            (poly.edges().len(), poly.faces().len()),
+            (band.edges().len(), band.faces().len()),
+            "the two channels build the same solid for the shape both express"
+        );
+        assert_eq!(
+            rational_verts(&poly),
+            rational_verts(&band),
+            "…down to the vertex coordinates"
+        );
+    }
+
+    /// **AUTH.2e.** The shape a band cannot express at all: a `C` opening in `+σ`, straddling the
+    /// station. The ruling at σ = 0 meets it **twice**, so one slice sees a single notch that bites
+    /// the station edge twice and the next sees the C's two arms as *two* separate notches — one
+    /// authored loop, three components across two slices, decided by the boolean with no case
+    /// analysis. The solid is still one certified genus-1 shell, and the authored corners are in it.
+    #[test]
+    fn a_non_band_polygon_clips_into_several_pieces_per_slice() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let c_slot = vec![
+            (q(-1, 2), q(-7, 4)),
+            (q(1, 2), q(-7, 4)),
+            (q(1, 2), q(-13, 8)),
+            (q(-1, 4), q(-13, 8)),
+            (q(-1, 4), q(-11, 8)),
+            (q(1, 2), q(-11, 8)),
+            (q(1, 2), q(-5, 4)),
+            (q(-1, 2), q(-5, 4)),
+        ];
+        assert_crosses_a_station(&q(-1, 2), &q(1, 2));
+        let solid = gore_solid(&[], core::slice::from_ref(&c_slot)).expect("the C clips per slice");
+        assert_certified(&solid, 1, "the C-slot solid");
+
+        // Faithfulness: the authored corners are vertices of the solid, at both thickness levels…
+        let (chart, _, w, _, _) = cone_gore();
+        let (c, r, n) = (
+            chart.pedal().reduce(),
+            chart.ruling().reduce(),
+            chart.normal().reduce(),
+        );
+        let verts = rational_verts(&solid);
+        let has = |s: &Rat<lattice::Bignum>, m: &Rat<lattice::Bignum>| {
+            [&w.lo, &w.hi].iter().all(|wl| {
+                let rail = RatFunc::from_poly(lattice::Poly::constant(m.clone()));
+                let p = trim_surf(&c, &r, &n, &rail, wl)
+                    .eval(s)
+                    .expect("a (σ,µ̂) corner lifts");
+                verts.binary_search(&p).is_ok()
+            })
+        };
+        for (s, m) in &c_slot {
+            assert!(
+                has(s, m),
+                "the authored corner ({s:?}, {m:?}) is in the solid"
+            );
+        }
+        // …and the ruling σ = 0 is cut **twice**: four crossings, so the station edge is bitten by
+        // the C's two arms separately. A near/far band has two crossings there, never four.
+        for m in [q(-7, 4), q(-13, 8), q(-11, 8), q(-5, 4)] {
+            assert!(
+                has(&q(0, 1), &m),
+                "the station ruling is cut at µ̂ = {m:?} — the two-interval signature"
+            );
+        }
+    }
+
+    /// **AUTH.2e.** A polygon hole whose `σ = const` edge lands *on* a station — the step of an
+    /// authored L, which is exactly where a domain-authored corner tends to fall. The two slices
+    /// then see **different** material on that ruling, so the cross-ring the builder skips is not
+    /// shared there: the step between the two lids is a real wall.
+    ///
+    /// Skipping it anyway (the rule that was correct while every hole was a `HoleRail`, whose
+    /// branches are continuous across a station) leaves four free edges under a `Verified` verdict —
+    /// an open shell reported as a solid. The rule now asks the neighbouring slice.
+    #[test]
+    fn a_polygon_hole_stepping_on_a_station_walls_the_step() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        // Hole = [−1/2, 0] × [−7/4, −5/4] ∪ [0, 1/2] × [−7/4, −3/2]: at σ = 0 the left slice keeps
+        // material above −5/4, the right slice above −3/2, and [−3/2, −5/4] belongs to one lid only.
+        let step = vec![
+            (q(-1, 2), q(-7, 4)),
+            (q(1, 2), q(-7, 4)),
+            (q(1, 2), q(-3, 2)),
+            (q(0, 1), q(-3, 2)),
+            (q(0, 1), q(-5, 4)),
+            (q(-1, 2), q(-5, 4)),
+        ];
+        assert_crosses_a_station(&q(-1, 2), &q(1, 2));
+        let solid = gore_solid(&[], &[step]).expect("the stepped hole builds");
+        assert_certified(&solid, 1, "the station-stepping hole");
+    }
+
+    /// **AUTH.2e.** The two channels **share** a slice: a rail hole and a polygon hole reaching the
+    /// same one compose into a genus-2 solid, because a band whose branches are affine per piece
+    /// *is* a polygon and joins the same boolean as another operand ([`rail_hole_poly`]). The
+    /// authored-plus-derived panel is the ordinary case, not an exotic one.
+    #[test]
+    fn a_rail_hole_and_a_polygon_hole_share_a_slice() {
+        use lattice::Poly;
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let konst = |n: i128, d: i128| {
+            RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![Rat::new(n, d)]))
+        };
+        let rect = vec![
+            (q(-1, 4), q(-7, 4)),
+            (q(1, 4), q(-7, 4)),
+            (q(1, 4), q(-5, 4)),
+            (q(-1, 4), q(-5, 4)),
+        ];
+        // Same slice as the rectangle's right half, disjoint from it in µ̂.
+        let rail = HoleRail::uniform(konst(-3, 2), konst(-11, 8), q(1, 2), q(3, 2));
+        let solid = gore_solid(&[rail], &[rect]).expect("both kinds in one slice");
+        assert_certified(&solid, 2, "the mixed-channel solid");
+    }
+
+    /// The polygon channel's two refusals, both fail-closed: a vertex outside the µ̂-band (the
+    /// straight-rail proxy models a hole *clear* of the rails, so this would mis-build rather than
+    /// mis-fit), and a **curved** rail branch sharing a slice with a polygon hole — a conic is not a
+    /// polygon operand, so there is no single boolean to run.
+    #[test]
+    fn the_polygon_channel_refuses_what_its_proxy_cannot_model() {
+        use lattice::Poly;
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let poked = vec![
+            (q(-1, 4), q(-7, 4)),
+            (q(1, 4), q(-7, 4)),
+            (q(1, 4), q(-1, 1)), // on µ̂_out — not strictly inside the band
+            (q(-1, 4), q(-5, 4)),
+        ];
+        assert!(
+            gore_solid(&[], &[poked]).is_none(),
+            "a vertex on the boundary is refused, not trimmed"
+        );
+
+        let rect = vec![
+            (q(-1, 4), q(-7, 4)),
+            (q(1, 4), q(-7, 4)),
+            (q(1, 4), q(-5, 4)),
+            (q(-1, 4), q(-5, 4)),
+        ];
+        // µ̂ = σ²/8 − 3/2: a genuine parabola, not a chain of straight rails.
+        let bent = RatFunc::<lattice::Bignum>::from_poly(Poly::from_coeffs(vec![
+            q(-3, 2),
+            q(0, 1),
+            q(1, 8),
+        ]));
+        let curved = HoleRail::uniform(
+            bent,
+            RatFunc::from_poly(Poly::from_coeffs(vec![q(-11, 8)])),
+            q(1, 2),
+            q(3, 2),
+        );
+        assert!(
+            gore_solid(&[curved], &[rect]).is_none(),
+            "a curved branch sharing a slice with a polygon hole is refused"
+        );
     }
 
     /// The bug the user caught, now fixed: a through-hole **centred on σ = 0** — which the

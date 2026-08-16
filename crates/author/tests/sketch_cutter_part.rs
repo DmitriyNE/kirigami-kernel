@@ -43,22 +43,38 @@ fn sketch_plane() -> Frame<Bignum> {
     .expect("the axes are independent")
 }
 
-/// The Stage-1 gore with its interior hole cut by `profile` swept from `apex`.
-fn panel_with(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
+/// The Stage-1 gore, with the sketch cut applied only when `cut` is given — so the same panel builds
+/// with and without it and any difference is attributable to that cut alone.
+fn panel_maybe(cut: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>) -> Part<Bignum> {
     let witness = cone()
         .surface(&qi(2), &qi(0))
         .eval(&qi(0))
         .expect("the device cone is regular at σ = 0");
-    construct::from_chart::<Bignum>(&cone())
+    let base = construct::from_chart::<Bignum>(&cone())
         .region_sigma(q(-7, 2), q(7, 2), SupportFn::inherit())
         .keep_near(witness)
         .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
         .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
-        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
-        .subtract(Cutter::extrude(sketch_plane(), apex, profile))
-        .clearance(qi(1))
-        .thickness(q(1, 8))
-        .segments(72)
+        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)));
+    let base = match cut {
+        Some((apex, profile)) => base.subtract(Cutter::extrude(sketch_plane(), apex, profile)),
+        None => base,
+    };
+    base.clearance(qi(1)).thickness(q(1, 8)).segments(72)
+}
+
+/// The Stage-1 gore with its interior hole cut by `profile` swept from `apex`.
+fn panel_with(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
+    panel_maybe(Some((apex, profile)))
+}
+
+/// The genus of a closed shell: `χ = V − E + (2F − L)` over the doubled faces, `g = (2 − χ)/2`.
+fn genus(b: &export::brep::Brep<Bignum>) -> i64 {
+    let v = b.verts().len() as i64;
+    let e = b.edges().len() as i64;
+    let f = b.faces().len() as i64;
+    let l: i64 = b.faces().iter().map(|fc| 1 + fc.holes.len() as i64).sum();
+    (2 - (v - e + (2 * f - l))) / 2
 }
 
 /// An L-shape with its corner at `(cx, cy)`, arm `a`, thickness `t`, CCW — but laid out on the
@@ -327,32 +343,46 @@ fn an_l_slot_develops_and_keeps_its_reflex_corner() {
     );
 }
 
-/// **The solid path's remaining gap, pinned — and it is the *second* of two.** The flat path takes a
-/// traced non-convex loop (above). The solid path had two independent restrictions:
+/// **AUTH.2 end to end.** A non-convex *footprint* — traced, not authored — becomes a tunnel through
+/// the device. Both of the solid path's restrictions are gone:
 ///
-/// 1. `hole_rail` consumes an interior hole as a near/far **band**, which a loop turning around in σ
-///    is not. Closed: such a loop now goes to the builder's general channel as the `(σ, µ̂)` polygon
-///    it already is, so the refusal moved off `LoopBroken`.
-/// 2. That general channel takes an arbitrary loop only **within one σ-slice** — a loop crossing a
-///    station needs per-slice clipping. This L crosses one, so it lands here as `SolidRefused`.
+/// 1. `hole_rail` consumed an interior hole as a near/far **band**, which a loop the ruling meets
+///    twice is not (2e/1): such a loop now goes to the builder's general channel as the `(σ, µ̂)`
+///    polygon it already is.
+/// 2. That channel took an arbitrary loop only **within one σ-slice** (2e/2): it now clips the loop
+///    per slice with the exact boolean, so a loop crossing stations is ordinary.
 ///
-/// The test tracks which gap is live: it moved from `LoopBroken` to `SolidRefused` when the first
-/// closed, and flips to a certified shell when the second does.
+/// The verdict alone would pass on a cut that missed, so the check is topological: the slot adds
+/// **exactly one** handle to the same panel built without it — it goes all the way through, once.
 #[test]
-fn the_solid_builder_still_refuses_a_traced_non_convex_loop() {
+fn a_traced_non_convex_loop_builds_a_certified_solid() {
     let part = panel_with(
         Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
         ell(q(-1, 10), q(11, 5), q(1, 4), q(1, 8)),
     );
-    match part.solid() {
-        Verdict::Refuted(author::part::PartFault::SolidRefused) => {}
+    let name = |v: &Verdict<_, author::part::PartFault, Q>| match v {
+        Verdict::Verified(_) => "Verified".to_string(),
+        Verdict::Refuted(f) => format!("Refuted({f:?})"),
+        Verdict::Unresolved(e) => format!("Unresolved({})", rat_to_f64(e)),
+    };
+    let cut = match part.solid() {
+        Verdict::Verified(s) => s,
         other => panic!(
-            "a station-crossing loop must refuse by name until AUTH.2e clips per slice, got {}",
-            match other {
-                Verdict::Verified(_) => "Verified".to_string(),
-                Verdict::Refuted(f) => format!("Refuted({f:?})"),
-                Verdict::Unresolved(e) => format!("Unresolved({})", rat_to_f64(&e)),
-            }
+            "a traced non-convex loop builds a solid, got {}",
+            name(&other)
         ),
-    }
+    };
+    let brep = cut.brep();
+    assert_eq!(brep.free_edges(), 0, "the slotted solid is watertight");
+    assert_eq!(brep.nonmanifold_edges(), 0, "…and manifold");
+
+    let plain = match panel_maybe(None).solid() {
+        Verdict::Verified(s) => s,
+        other => panic!("the un-slotted panel builds, got {}", name(&other)),
+    };
+    assert_eq!(
+        genus(brep),
+        genus(plain.brep()) + 1,
+        "the L-slot is one tunnel through the panel — not a dent, and not two"
+    );
 }

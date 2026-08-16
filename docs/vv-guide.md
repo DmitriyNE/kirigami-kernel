@@ -2116,12 +2116,27 @@ two false negatives that read as tracer failures: an L whose arms lie along this
 rulings has a perfectly ordinary **band** footprint, and even once rotated, the reflex corner
 visible in its flat pattern proves nothing (a band can be a non-convex region). The property under
 test is a ruling meeting the cutter twice, and the fixture has to be checked against *that* — here
-by `solid()` refusing the loop its rail adapter cannot represent. A test whose fixture does not
-exhibit the phenomenon passes for the wrong reason and hides the capability it claims to prove.
+by the ruling at the crossed station being cut **four** times in the emitted solid — two intervals,
+which no band makes. A test whose fixture does not exhibit the phenomenon passes for the wrong
+reason and hides the capability it claims to prove.
+
+*Lifting a restriction means auditing what the old special case **supplied**, not only what it
+required.* The trim builder skips the wall on a radial at an interior σ-station, because two slices
+share that cross-ring — true for as long as every hole was a `HoleRail`, whose branches are
+continuous in σ. A polygon hole with a `σ = const` edge on a station breaks it: the two lids keep
+different material there, and skipping the step left four free edges under a `Verified` verdict. The
+criterion has two halves. First, the *shell* property is asserted directly on the emitted B-rep
+(`free_edges == 0`, `nonmanifold_edges == 0`, genus) rather than inferred from a verdict — the
+verdict is about the certificates upstream and says nothing about how the shell was sewn. Second,
+the fixture must put the hole's step **on** a station, because that is where an authored corner
+tends to fall and where the two paths disagree. The mirror-image error is worth stating too: a
+refusal added for a combination one believes unrepresentable encodes a belief about the data, and
+"a rail branch is not a polygon operand" was false for every hole the kernel emits — the band is a
+polyline, so both channels share a slice by conversion rather than by refusal.
 
 *The ring stays refused, and for its own reason.* A footprint with its own hole is not a
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two
-parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.7).
+parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.8).
 
 ---
 

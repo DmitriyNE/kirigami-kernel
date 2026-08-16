@@ -252,31 +252,54 @@ fn a_non_convex_domain_loop_inside_one_slice_already_builds_a_solid() {
     }
 }
 
-/// **AUTH.2 pre-state, pinned — this one is meant to flip.** The same non-convex loop, moved so it
-/// crosses a σ-station, is refused by the solid builder while the flat path still takes it.
+/// **AUTH.2e — the flip.** The same non-convex loop, moved so it crosses a σ-station, used to be
+/// refused by the solid builder while the flat path took it. Now the builder **clips it per slice**
+/// (`brep_trim_solid_regions` → `slice_poly_footprint`) and both paths take it.
 ///
-/// That asymmetry is the whole of AUTH.2's downstream work (slice 2e): `brep_trim_solid_regions`
-/// takes an arbitrary `(σ, µ̂)` loop only as a *within-slice* lid inner wire, and a loop spanning
-/// stations needs per-slice clipping — which is exactly the service `HoleRail`'s band provides for
-/// the convex case, and the reason it survived the p-curve rewrite. When 2e lands, this test's
-/// expectation changes to a certified shell; until then it pins *which* leg is missing, so the gap
-/// cannot be mistaken for the tracer's.
+/// The station is not a neutral place to land: this L's step is a `σ = const` edge sitting *on*
+/// σ = 0, so the two slices keep different material on that ruling. The cross-ring between them is
+/// shared only where both lids reach, and the step itself is a wall — which is what the watertight
+/// assertion here is really checking (skipping it returned a `Verified` shell with four free edges).
 #[test]
-fn a_domain_loop_crossing_a_station_is_refused_by_the_solid_builder() {
-    // Without the drill, so the σ = 0 station is clear and the refusal is unambiguously the
+fn a_domain_loop_crossing_a_station_is_clipped_per_slice() {
+    // Without the drill, so the σ = 0 station is clear and what is exercised is unambiguously the
     // station crossing rather than a collision with a derived hole.
-    let plain = construct::from_chart::<Bignum>(&cone())
-        .region_sigma(qi(-1), qi(1), SupportFn::inherit())
-        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
-        .hole_domain(l_slot(q(-3, 10), q(3, 10), q(23, 10), q(13, 5)));
+    let panel = || {
+        construct::from_chart::<Bignum>(&cone())
+            .region_sigma(qi(-1), qi(1), SupportFn::inherit())
+            .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+    };
+    let slot = l_slot(q(-3, 10), q(3, 10), q(23, 10), q(13, 5));
+    let plain = panel().hole_domain(slot.clone());
     match plain.develop() {
         Verdict::Verified(_) => {}
         Verdict::Refuted(f) => panic!("the flat path is indifferent to stations, got {f:?}"),
         Verdict::Unresolved(e) => panic!("expected Verified, got Unresolved({e:?})"),
     }
-    assert!(
-        matches!(plain.solid(), Verdict::Refuted(PartFault::SolidRefused)),
-        "a station-crossing loop must refuse by name until AUTH.2e clips it per slice"
+    let solid = match plain.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a station-crossing loop now clips per slice, got {}",
+            verdict_name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    assert_eq!(brep.free_edges(), 0, "the clipped solid is watertight");
+    assert_eq!(brep.nonmanifold_edges(), 0, "…and manifold");
+
+    // The hole is in the shell, edge for edge: a wall per authored edge (6), plus one more for the
+    // edge σ = 0 cuts in two (the bottom run at µ̂ = 23/10 crosses the station). The step edge — the
+    // authored `σ = 0` one — is a wall too, contributed once by the slice that keeps material there;
+    // twice would show up as a non-manifold edge above. Lid faces are unchanged: the hole opens onto
+    // the station as a notch in each slice rather than splitting either lid.
+    let plain_faces = match panel().solid() {
+        Verdict::Verified(p) => p.brep().faces().len(),
+        v => panic!("the hole-free panel must build: {}", verdict_name(&v)),
+    };
+    assert_eq!(
+        brep.faces().len(),
+        plain_faces + slot.len() + 1,
+        "one wall per hole edge, plus the one the station splits"
     );
 }
