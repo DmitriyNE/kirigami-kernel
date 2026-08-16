@@ -633,6 +633,119 @@ fn a_radiused_outline_is_a_certified_part() {
     );
 }
 
+/// **A σ-end formed by TWO DIFFERENT ops' walls (#275) — the case the union event set exists for.**
+///
+/// §12.2 derives the material's σ-ends from `{disc_µ̂(f_i)} ∪ {Res_µ̂(f_i, f_j)}` over **every op's**
+/// walls, not just the terminating contour's, because the two walls that close the kept µ̂-interval
+/// need not belong to the same cutter. Every fixture until now closed on the contour's *own* tangent
+/// rulings, so the cross-op half of that union was a **soundness argument with nothing exercising
+/// it** — the gap this closes, and the one holding AUTH.3's `rc-hyp` at 🚧.
+///
+/// The construction is a placement, not a new mechanism. A contour whose own tangent points fall
+/// *inside* the annulus carve has no material at its own tangent rulings, so the extent cannot close
+/// there; it closes where the contour's rail crosses the **carve's** rail instead. Centre `(0, 8/5)`
+/// with `r = 3/5` puts the tangent at radius `1.483` against the carve's `1.865` — comfortably
+/// inside — while `(0, 11/5)` with `r = 1/5` (the control) puts it at `2.191` against `1.911`,
+/// outside.
+///
+/// Three signatures, and the differential against the control is what makes them mean something:
+///
+/// - **roles**: the *subtract* bounds one side and the *intersect* the other, which is the cross-op
+///   structure stated in the resolver's own vocabulary;
+/// - **the folded boundary lands on both authored cylinders**, roughly half each — the control puts
+///   every vertex on the contour and **none** on the carve;
+/// - **some vertices lie on both at once.** Those are the σ-ends themselves: the crossing points.
+///   A same-op end cannot produce one, and the control has zero.
+///
+/// ⚠️ Known limit, measured while placing this: the crossing must be clear of the contour's own
+/// √-branch. Nudge the contour out until its tangent sits only just inside the carve — `(0, 19/10)`
+/// with `r = 1/2`, tangent `1.833` against carve `1.891` — and the end is derived correctly but the
+/// graph rail cannot be certified up to it (`RailSpanShort`). Not pinned as a test, because it is a
+/// limit worth lifting rather than a scope exclusion; recorded in `docs/engineering-log.md`.
+#[test]
+fn a_sigma_end_can_be_the_crossing_of_two_different_ops() {
+    let carve = (0.0f64, 0.5f64, 2.0f64.sqrt()); // the panel's own annulus subtract
+    let probe = |cy: Q, r2: Q| {
+        let part = panel(qi(-1), qi(1)).intersect(Cutter::vertical_cylinder(
+            qi(0),
+            cy.clone(),
+            r2.clone(),
+        ));
+        let flat = match part.develop() {
+            Verdict::Verified(fl) => fl,
+            v => panic!("placement must certify, got {}", name(&v)),
+        };
+        let verts: Vec<[Q; 2]> = flat
+            .outline()
+            .vertices
+            .iter()
+            .map(|b| {
+                let (x, y) = b.center();
+                [x, y]
+            })
+            .collect();
+        let wire = match part.fold(&verts, &qi(0)) {
+            Verdict::Verified(w) => w,
+            v => panic!("the boundary must fold back, got {}", name(&v)),
+        };
+        let (cyf, rf) = (to_f64(&cy), to_f64(&r2).sqrt());
+        let (mut on_carve, mut on_contour, mut on_both) = (0usize, 0usize, 0usize);
+        for p in &wire.points {
+            let (x, y) = (to_f64(&p[0].mid()), to_f64(&p[1].mid()));
+            let dc = ((x * x + (y - carve.1).powi(2)).sqrt() - carve.2).abs();
+            let dk = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+            if dc < 5e-3 {
+                on_carve += 1;
+            }
+            if dk < 5e-3 {
+                on_contour += 1;
+            }
+            if dc < 5e-3 && dk < 5e-3 {
+                on_both += 1;
+            }
+        }
+        let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
+        (roles, on_carve, on_contour, on_both, wire.points.len())
+    };
+
+    // The cross-op placement: the contour's own tangents are buried in the carve.
+    let (roles, on_carve, on_contour, on_both, n) = probe(q(8, 5), q(9, 25));
+    assert!(
+        roles[1] != OpRole::Inactive && roles[2] != OpRole::Inactive,
+        "the SUBTRACT and the INTERSECT must both bound — that is what makes the end cross-op. \
+         roles {roles:?}"
+    );
+    assert_ne!(
+        roles[1], roles[2],
+        "…and they must bound opposite sides, not the same one. roles {roles:?}"
+    );
+    assert!(
+        on_carve > n / 4 && on_contour > n / 4,
+        "both authored surfaces must carry a real share of the boundary — carve {on_carve}, \
+         contour {on_contour}, of {n}"
+    );
+    assert!(
+        on_both >= 2,
+        "the σ-ends ARE the crossings, so at least the two of them must lie on BOTH cylinders — \
+         got {on_both} of {n}"
+    );
+
+    // The control: the same machinery, a placement whose tangents clear the carve. Every vertex is
+    // the contour's and the carve never bounds — so the counts above are attributable to the
+    // placement rather than to the measurement.
+    let (roles, on_carve, _, on_both, _) = probe(q(11, 5), q(1, 25));
+    assert_eq!(
+        roles[1],
+        OpRole::Inactive,
+        "the control's carve must be Inactive — else it is not a control. roles {roles:?}"
+    );
+    assert_eq!(
+        (on_carve, on_both),
+        (0, 0),
+        "and nothing may sit on the carve: a same-op end has no cross-op corner"
+    );
+}
+
 /// **The leg AUTH.3 may not regress.** An intersect whose inside contains the whole panel restricts
 /// nothing, and the part must come out exactly as it does without it — not "also Verified", but the
 /// same outline, vertex for vertex, and the same certified bound.

@@ -768,6 +768,37 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#275: the cross-op σ-end, and why it took a *placement* rather than a mechanism (2026-08-17).**
+  §12.2 derives the σ-ends from the union of **every op's** walls, because the two walls closing the
+  kept µ̂-interval need not belong to the same cutter. Every fixture closed on the contour's own
+  tangents, so that half of the union had nothing exercising it — the gap that held AUTH.3's
+  `rc-hyp` at 🚧 and, with it, the milestone out of `LANDED`.
+
+  The construction is arithmetic, not code: a contour whose own tangent points fall *inside* the
+  annulus carve has no material at its own tangent rulings, so the extent **cannot** close there.
+  Tangent radius is `√(D²−r²)`; the carve's boundary at that azimuth is `[cos δ + √(cos²δ+7)]/2`.
+  Centre `(0, 8/5)`, `r = 3/5` gives `1.483` against `1.865` — inside. It certifies, and the
+  signatures are unambiguous: roles `[Inactive, LowerBound, UpperBound]` (the **subtract** bounds one
+  side, the **intersect** the other) and the folded boundary at `51`/`51` on the two authored
+  cylinders with **4 on both at once** — those four *are* the σ-ends. The control, tangent outside
+  the carve, gives `192`/`0` and **0** corners.
+
+  **The near-miss placements are the finding.** Nudge the contour out until its tangent is only just
+  inside the carve — `(0, 19/10)`, `r = 1/2`, `1.833` against `1.891` — and the end derives correctly
+  but no graph rail certifies up to it: `RailSpanShort`. The crossing has to clear the contour's own
+  √-branch. Logged rather than pinned as a test, because it is a limit worth *lifting* (the turn-arc
+  splice only fires on a `pinch: true` end, and a cross-op end is `pinch: false`) rather than a scope
+  exclusion — pinning it would ossify the refusal. *Three placements refused before one worked, and
+  the difference was a number I could compute in advance; computing it first is what turned a search
+  into a construction.*
+  **And landing the milestone broke the gate's own mutation test**, in the instructive way: its
+  "a dotted tag that has *not* landed is out of scope" case was written as `[AUTH.3]`, so the day
+  AUTH.3 landed the test's premise became false. The case is about *dotted ∧ unlanded*, not about
+  which milestone, so it now uses a tag that is deliberately not real. **A test that names a live
+  instance to demonstrate a property will fail for the wrong reason exactly when the property is
+  most interesting.**
+  *2026-08-17 · resolved · #275, branch `auth-3c`*
+
 - **AUTH.3d: the acceptance closed, and the milestone's own gate said it is not finished
   (2026-08-17).** `acceptance::contour_panel` is the first device in the repo whose boundary is an
   **authored outline** rather than a declared band, and the round-trip closes on it: 3-D contour →
