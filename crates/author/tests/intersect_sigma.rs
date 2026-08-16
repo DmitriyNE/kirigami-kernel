@@ -147,6 +147,19 @@ fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
          at all. roles {roles:?}"
     );
 
+    // **Cost, not only correctness.** `segments` is the tracer's *piece* count, and a traced piece
+    // is one chord — so a boundary made of a rail plus an arc over that loop is O(segments), never
+    // O(segments²). It was the square once (#281): each already-traced piece was re-sampled
+    // `segments` times, giving 6386 points here against 192 for the same contour bounding alone,
+    // and 175s to develop against 3s. Every faithfulness assertion below passed throughout, which
+    // is exactly why the budget is its own check — a correct boundary can still be an unusable one.
+    let n_out = flat.outline().vertices.len();
+    assert!(
+        n_out < 8 * 48,
+        "the outline must stay proportional to the tracer's resolution, not its square: {n_out} \
+         points at segments = 48"
+    );
+
     // Faithfulness: every boundary vertex folded back lies on the authored cylinder OR on the
     // authored plane — the two surfaces that bound it — and the arc really wraps, so the folded
     // boundary spans the contour's full diameter rather than stopping at a tangent.

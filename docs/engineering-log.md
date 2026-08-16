@@ -761,6 +761,33 @@ fine — this is a log, not a schema.
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
 
+- **A 33× cost regression that every faithfulness assertion passed (#281).** The per-stage triage
+  that #280's sampling unblocked found one fixture wildly out of line — the whole-side contour
+  emitting **6386** outline points where the *same contour traced as a sole boundary* emits **192**,
+  at `175s` to develop against `3s`. Cause, in #278's own `push_turn`: each **already-traced**
+  p-curve piece was wrapped as `BoundaryArc::Curve { segments: part.segments }`. But `segments` on a
+  `Curve` means *how finely to re-sample this one piece*, while the tracer's `segments` sets *how
+  many pieces the loop has* — so the two multiply. `133 pieces × 48 = 6384`, against the 6386 seen.
+  `export::trim` has mapped a traced piece to `segments: 1` since PC.4; the fix is to agree with it.
+
+  Measured: the whole-side test **`258.770s → 5.545s` (47×)**, and the four-crate suite
+  **`260.4s → 124.9s`** overall, 300/300 green with every certified ε unchanged — one chord per
+  traced piece is the resolution the tracer already chose, not a coarsening.
+
+  **The reusable part is why the tests missed it.** #278's assertions check the boundary is
+  *correct* — every folded vertex on the authored cylinder or plane to `< 5e-3`, folded x-span
+  `> 1.9r` proving the arc wraps rather than stopping at a tangent — and a 6386-point outline
+  satisfies all of them, more comfortably than a 133-point one does. **Faithfulness assertions are
+  monotone in refinement: they cannot fail from emitting too much, so a cost regression is exactly
+  the defect class they are blind to.** Now pinned as its own budget (`n_out < 8 × segments`), on
+  the shape rather than a golden number: a boundary made of a rail plus an arc over the traced loop
+  is `O(segments)` and never `O(segments²)`. Same spirit as VV.3's golden flat-pattern metric.
+
+  Also worth noting against [[verify-demo-faithfulness]]: this is that lesson's mirror image. There
+  the risk was green certificates over unfaithful geometry; here it was faithful geometry that no
+  assertion could price. Both come of checking only the property the milestone is *about*.
+  *2026-08-17 · resolved · #281, branch `auth-3`*
+
 - **A 30-minute "slow" run was a hang, and ten seconds of `sample` said so (#280).** Probing
   AUTH.3c with `solid_brep`'s guard bypassed, the first fixture had not returned after 30 minutes,
   and there was no way to tell 3 more minutes from 3000. macOS `sample <pid> 10` put **100%** of

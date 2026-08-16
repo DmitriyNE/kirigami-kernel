@@ -818,9 +818,16 @@ pub(crate) fn flat_pattern<B: Backend>(
             });
         }
         for curve in curves {
+            // **One chord per traced piece**, which is what `segments` means on a `Curve`: how
+            // finely to re-sample *this* piece, not how many pieces the loop has. The tracer
+            // already spent `part.segments` on the piece count, so asking for `part.segments`
+            // sub-samples of each piece multiplies the two — the whole-side arc is most of the
+            // loop, and it emitted `6386` outline points against `192` for the same contour
+            // traced as a sole boundary, `175s` to develop against `3s` (#281). `export::trim`
+            // has mapped a traced piece to `segments: 1` since PC.4; this is the same object.
             arcs.push(BoundaryArc::Curve {
                 curve: curve.clone(),
-                segments: part.segments.max(2),
+                segments: 1,
             });
         }
         Some(())
