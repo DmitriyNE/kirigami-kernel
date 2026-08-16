@@ -17,9 +17,11 @@
 //!   the arc is spliced into the graph chain at the junctions the corner refinement locates — one
 //!   arc per end where it takes over near each, and a single arc wrapping **both** tangents where it
 //!   bounds one whole side;
-//! - the **solid** follows the flat pattern where the boundary is still a rail band (AUTH.3c): the
-//!   region bands clip to the derived extent, and the Bézier weights normalize to their positive
-//!   representative — a σ-terminating polygonal contour is a watertight genus-0 solid;
+//! - the **solid** follows the flat pattern in two of those three shapes (AUTH.3c): where the
+//!   boundary is still a rail band the region bands clip to the derived extent and the Bézier
+//!   weights normalize to their positive representative; where it is one traced loop, that loop
+//!   goes to the builder as a general `(σ,µ̂)` **outer wire**, kept *inside* rather than subtracted.
+//!   The mixed whole-side boundary — a rail out and an arc back — still refuses;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -372,6 +374,79 @@ fn the_solid_closes_at_the_derived_extent_too() {
         plain.brep().faces().len() < brep.faces().len(),
         "and the contour's solid must be the richer one — a σ-terminating boundary carries more \
          faces than a band-wide trim, so equal counts would mean one of them is not what it says"
+    );
+}
+
+/// **The solid of a part bounded by nothing but a traced contour (AUTH.3c, the outer wire).**
+///
+/// This is the shape a rail band cannot carry. Not because the topology is exotic — the footprint in
+/// `(σ, µ̂)` is a closed oval, and an oval swept through the thickness is an ordinary prism — but
+/// because at the two σ-ends the wall's branches meet with **unbounded slope**, and a fitted
+/// polynomial rail is clamped away from exactly there. `certify_boundary` says so by name
+/// (`RailSpanShort`), which is why the solid evaluator forks *before* it and hands the loop to the
+/// builder as a general `(σ,µ̂)` outer wire instead — the same currency the polygon-hole channel
+/// already takes, intersected rather than subtracted.
+///
+/// **Faithfulness, not just a verdict**, per the flat path's own standard: the solid is folded back
+/// onto the authored cylinder `x² + (y − 11/5)² = 1/25`. Every vertex is a boundary vertex here (no
+/// holes), so each sits on that cylinder at `w = 0` or a thickness off it along the surface normal —
+/// so the whole shell must lie within a thickness of the contour, and the `w = 0` half must lie
+/// *on* it. A solid built over the wrong loop would pass a face count and fail this.
+#[test]
+fn a_traced_contour_bounds_a_solid_where_no_rail_band_can() {
+    let (cy, r2) = (q(11, 5), q(1, 25));
+    let kept = panel(qi(-1), qi(1)).intersect(Cutter::vertical_cylinder(qi(0), cy.clone(), r2));
+    let solid = match kept.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a contour that bounds the part alone must build a solid, got {}",
+            name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    assert_eq!(brep.free_edges(), 0, "watertight: {f} faces");
+    assert_eq!(
+        (2 - (v - e + (2 * f - l))) / 2,
+        0,
+        "a disc swept through the thickness is a plain slab: {f} faces"
+    );
+
+    // The shell hugs the authored cylinder: within a thickness everywhere, ON it for the `w = 0`
+    // lid. `1/8` is the part's thickness; `5e-3` is the same tolerance the flat leg asserts at.
+    let (cyf, rf, th) = (2.2, 0.2, 0.125);
+    // A brep vertex is a `Surd` `a + b√d`; every vertex of a rational patch's trim is rational.
+    let surd_f64 = |s: &lattice::Surd<Bignum>| {
+        let (a, b, d) = s.parts();
+        to_f64(a) + to_f64(b) * to_f64(d).sqrt()
+    };
+    let (mut worst, mut on_it) = (0.0f64, 0usize);
+    for p in brep.verts() {
+        let (x, y) = (surd_f64(&p[0]), surd_f64(&p[1]));
+        let d = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+        worst = worst.max(d);
+        if d < 5e-3 {
+            on_it += 1;
+        }
+    }
+    assert!(
+        worst < th + 5e-3,
+        "no vertex may sit more than a thickness off the authored contour: worst {worst:.3e}"
+    );
+    assert!(
+        on_it * 4 >= brep.verts().len(),
+        "the w = 0 lid must lie ON the contour, and it is half the vertices: only {on_it} of {} \
+         are within 5e-3",
+        brep.verts().len()
     );
 }
 

@@ -1075,16 +1075,32 @@ splice leaves one chain empty. Both are the same missing capability. Holes met t
 were answered twice: on the flat path by p-curves (PC.3's quadric-window constructor, PC.4's
 `BoundaryArc::Curve`), and on the solid path by the general polygon channel that clips each slice
 against the whole loop (`poly_holes` → `slice_poly_footprint`, PC.5, generalized by AUTH.2e). Both
-answers are for **interior** loops; the **outer wire** got neither. Either that channel extends one
-level out, or a pinch termination is refused in the solid **by name** while the flat pattern — the
-artifact that is actually manufactured — stays general. Naming the fallback here is what keeps it
-from being decided by whatever is easiest at the time.
+answers are for **interior** loops; the **outer wire** got neither.
 
 Worth being precise about what a pinch does to the solid, because "degenerate terminal slices" reads
 worse than it is: the footprint in `(σ, µ̂)` is a closed **oval**, and an oval swept through the
 thickness is an ordinary prism with an ordinary wall. Nothing is degenerate. What fails is only the
-*representation* — two graphs over σ cannot describe a curve that turns around in σ — which is
-exactly what the polygon channel does not care about.
+*representation* — a fitted polynomial rail is clamped away from the tangent ruling where the two
+branches meet with unbounded slope — which is exactly what the polygon channel does not care about.
+So the channel does extend one level out, and it costs one boolean: `outline` is a closed `(σ,µ̂)`
+loop the material is kept **inside** of, so a slice's footprint becomes `strip ∩ ({outline} ∖ holes)`
+where it was `strip ∖ holes`. Even-odd parity already reads a loop strictly inside another as a hole
+in it, so the outline and its holes are *one* operand and the only change is `BoolOp::Diff` →
+`BoolOp::And`.
+
+Two things make it cheap. The band is **not** replaced — it is demoted to what still needs a rail:
+the σ-station partition, and the ruled patch each footprint is trimmed out of. Both only require the
+band to *contain* the wire, so where there is no boundary rail to derive one from (the sole-bound
+contour) the evaluator synthesizes one, padded a sixteenth of the wire's own µ̂-span each side —
+relative rather than fixed, so a small contour's band cannot reach the chart's singular rail, where
+the parametrization breaks down rather than the part. And `railed_corners` already maps a footprint
+vertex sitting on a proxy horizontal back to the true curved rail, which is what will carry the
+**mixed** boundary (a rail out and an arc back) without chording the rail.
+
+The rules run opposite to a hole's in exactly one place, and it is load-bearing: a hole must be
+**strictly interior** in σ, an outer wire must reach **both** σ-ends. A wire falling short would
+leave the terminal slices bounded by the band — a longer part than the caller asked for, with every
+certificate green.
 
 ### 12.5 Scope, and what stays refused
 
@@ -1116,7 +1132,7 @@ exactly what the polygon channel does not care about.
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
 | **AUTH.3b** | the boundary that closes in σ; the flat path — **done**, in all three shapes: polygonal contours (exact affine rails through the corner); quadric contours bounding the part **alone** (the traced loop as an outline — `sole_pinched_contour`); and quadric contours **sharing** the boundary, spliced from `develop::cut::tangent_turn_arc` — one arc per end where the contour takes over near each, or a single two-turn arc where it bounds a whole side |
-| **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named. **Polygonal contours done**: the region bands clip to `structure.domain`, and the Bernstein weights normalize to their positive representative (`bezier::positive_representative`, `positive_weights` now sign-definite) — a σ-terminating square contour is a watertight genus-0 solid, the shipped lateral trim unmoved. The two **pinch** shapes still refuse by name (`RailSpanShort` where the contour bounds alone, `SolidRefused` where it bounds a whole side), pending the outer-wire polygon channel §12.4 names |
+| **AUTH.3c** | the solid path over a derived extent — the risk slice. Two of the flat path's three shapes done. **(i) Polygonal contours**: the region bands clip to `structure.domain`, and the Bernstein weights normalize to their positive representative (`bezier::positive_representative`, `positive_weights` now sign-definite) — a σ-terminating square contour is a watertight genus-0 solid, 14 faces, the shipped lateral trim unmoved at 10. **(ii) A quadric contour bounding alone**: the **outer-wire** channel — `brep_trim_solid_regions` takes an `outline` the material is kept inside of, one `BoolOp::And` where the hole channel uses `Diff`, over a synthesized enclosing band (`realize::outline_solid`). 66 faces, genus 0, every vertex within a thickness of the authored cylinder and the `w = 0` lid on it. **(iii) A quadric contour bounding one whole side** still refuses (`SolidRefused`): its boundary is a rail out and an arc back, so the wire must carry rail-borne vertices — `railed_corners`' proxy-horizontal mapping is the mechanism, not yet wired |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
 
 **Named acceptance criterion (AUTH.3).** The pinned pre-state in

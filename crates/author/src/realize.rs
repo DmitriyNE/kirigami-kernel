@@ -1081,6 +1081,16 @@ pub(crate) fn solid_brep<B: Backend>(
             hi: rmin(&r.band.hi, &structure.domain.hi),
         })
         .collect();
+    // — 3″. The contour IS the boundary, in the solid too. —
+    //
+    // The flat path takes this fork already (`sole_pinched_contour`): when the part is exactly what
+    // one quadric wall keeps, the boundary is that wall's own traced loop and no chain of graph
+    // rails can reach its σ-ends. The solid takes it for the same reason and answers it the same
+    // way — the loop as a general `(σ,µ̂)` outer wire — so it never calls `certify_boundary`, which
+    // would refuse with `RailSpanShort` before a single face was built.
+    if let Some(op) = sole_pinched_contour(part, built, &structure) {
+        return outline_solid(part, built, structure, op);
+    }
     // The STEP re-fit: a curved rail exported to OCCT must stay a handful of Bézier control
     // points (the G7 finding) — internal, not a facade knob (seam #8).
     let fit = RailFit {
@@ -1110,26 +1120,78 @@ pub(crate) fn solid_brep<B: Backend>(
         Err(f) => return Verdict::Refuted(f),
     };
 
-    // Interior holes are p-curve loops now (they pass through their tangent rulings rather than
-    // being two graphs bridged by a chord). The solid builder still consumes them as a near/far
-    // band — which they are: the branches are functions of σ, just not polynomials near the
-    // tangents — so `hole_rail` splits each loop at its two σ-extremes into contiguous rail
-    // chains, and the hole may still span σ-stations.
-    // Fewer hole segments than the flat pattern uses: every piece boundary of a hole's chains
-    // becomes a σ-station, so segment count drives the solid's face count directly (48 segments
-    // cost ~770 faces on the doctest panel, 16 cost ~250). The solid is already emitted at the
-    // low-degree STEP profile, so it takes the coarser loop; the flat pattern — the artifact that
-    // is actually manufactured — keeps the fine one.
+    let (holes, poly_holes, hole_loops, hole_eps) = match solid_holes(part, built, &structure) {
+        Verdict::Verified(h) => h,
+        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Refuted(f) => return Verdict::Refuted(f),
+    };
+    eps_all = rmax(&eps_all, &hole_eps);
+
+    // Only the regions the extent actually reaches carry geometry. A region clipped to nothing is
+    // not a degenerate slab to be built at zero width — it is outside the part.
+    let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> = bands
+        .iter()
+        .cloned()
+        .zip(built.charts.iter())
+        .filter(|(iv, _)| iv.lo.cmp(&iv.hi) == core::cmp::Ordering::Less)
+        .collect();
+    if charts.is_empty() {
+        return Verdict::Refuted(PartFault::EmptyRegion);
+    }
+    let w = Interval {
+        lo: Rat::from_i128(0),
+        hi: part.thickness.clone(),
+    };
+    let solid =
+        match brep_trim_solid_regions(&charts, &w, &inner, &outer, None, &holes, &poly_holes) {
+            Some(s) => s,
+            None => return Verdict::Refuted(PartFault::SolidRefused),
+        };
+    let report = build_report(part, &structure, &hole_loops);
+    Verdict::Verified((solid, eps_all, report))
+}
+
+/// Every interior cut of the solid, in the two currencies the builder takes, plus the certified
+/// bound over all of them. Shared by both solid evaluators: what bounds a panel from **outside**
+/// is what AUTH.3c changed, and holes are the same holes either way.
+///
+/// Interior holes are p-curve loops (they pass through their tangent rulings rather than being two
+/// graphs bridged by a chord). The builder still consumes them as a near/far band — which they are:
+/// the branches are functions of σ, just not polynomials near the tangents — so `hole_rail` splits
+/// each loop at its two σ-extremes into contiguous rail chains, and the hole may still span
+/// σ-stations.
+///
+/// Fewer hole segments than the flat pattern uses: every piece boundary of a hole's chains becomes a
+/// σ-station, so segment count drives the solid's face count directly (48 segments cost ~770 faces
+/// on the doctest panel, 16 cost ~250). The solid is already emitted at the low-degree STEP profile,
+/// so it takes the coarser loop; the flat pattern — the artifact that is actually manufactured —
+/// keeps the fine one.
+#[allow(clippy::type_complexity)]
+fn solid_holes<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    structure: &Structure<B>,
+) -> Verdict<
+    (
+        Vec<HoleRail<B>>,
+        Vec<Vec<(Rat<B>, Rat<B>)>>,
+        Vec<(usize, HoleLoop<B>)>,
+        Rat<B>,
+    ),
+    PartFault,
+    Rat<B>,
+> {
+    let mut eps = Rat::from_i128(0);
     let hole_loops = bail!(certify_holes(
         part,
         built,
-        &structure,
+        structure,
         part.segments.clamp(8, 16)
     ));
     let mut holes: Vec<HoleRail<B>> = Vec::new();
     let mut traced_polys: Vec<Vec<(Rat<B>, Rat<B>)>> = Vec::new();
     for (_, h) in &hole_loops {
-        eps_all = rmax(&eps_all, &h.eps);
+        eps = rmax(&eps, &h.eps);
         match hole_rail(h) {
             Some(r) => holes.push(r),
             // A loop that turns around in σ more than twice has no near/far split — the shape
@@ -1180,7 +1242,7 @@ pub(crate) fn solid_brep<B: Backend>(
                     &part.clearance,
                 ) {
                     Verdict::Verified(f) => {
-                        eps_all = rmax(&eps_all, &f.eps);
+                        eps = rmax(&eps, &f.eps);
                         folded.push((snap30(&f.sigma.mid()), snap30(&f.mu.mid())));
                     }
                     Verdict::Unresolved(e) => return Verdict::Unresolved(e),
@@ -1192,23 +1254,98 @@ pub(crate) fn solid_brep<B: Backend>(
             poly_holes.push(folded);
         }
     }
+    Verdict::Verified((holes, poly_holes, hole_loops, eps))
+}
 
-    // Only the regions the extent actually reaches carry geometry. A region clipped to nothing is
-    // not a degenerate slab to be built at zero width — it is outside the part.
-    let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> = bands
-        .iter()
-        .cloned()
-        .zip(built.charts.iter())
-        .filter(|(iv, _)| iv.lo.cmp(&iv.hi) == core::cmp::Ordering::Less)
-        .collect();
-    if charts.is_empty() {
+/// The solid of a part whose boundary **is** one traced contour loop — [`sole_pinched_contour`]'s
+/// shape, in the solid (AUTH.3c, `docs/cutter-extrude-design.md` §12.4).
+///
+/// Nothing here is a special case of the geometry; it is a change of *currency*. The loop's two
+/// σ-ends are tangent rulings where the wall's branches meet with unbounded slope, so no chain of
+/// fitted graph rails reaches them — `certify_boundary` refuses with `RailSpanShort`, which is
+/// correct and is why this fork happens before it. The same loop given as a general `(σ,µ̂)` polygon
+/// is unremarkable: the builder's outer-wire channel intersects each slice's strip with it, exactly
+/// as the polygon-hole channel subtracts one.
+///
+/// The band the wire needs is **synthesized** rather than derived, because there is no boundary rail
+/// to derive it from. It only has to *contain* the wire: it still fixes the σ-station partition and
+/// the ruled patch each footprint is trimmed out of, and both are insensitive to how wide it is.
+/// The pad is relative (a sixteenth of the wire's own µ̂-span each side) so the band stays as close
+/// to the material as the wire is — a fixed pad on a small contour could reach the chart's singular
+/// rail, where the parametrization, not the part, breaks down.
+///
+/// The certified bound is the traced loop's own `eps`, which is what the flat path reports for the
+/// same construction: the wire is that loop's vertices, and its chords are secants of a curve
+/// already certified to within it.
+fn outline_solid<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    structure: Structure<B>,
+    op: usize,
+) -> Verdict<SolidParts<B>, PartFault, Rat<B>> {
+    let walls = match part.ops[op].1.walls() {
+        Ok(w) => w,
+        Err(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
+    };
+    let loop_ = match surface_hole_loop(
+        &built.charts[0],
+        &walls[0],
+        &part.regions[0].band,
+        &part.clearance,
+        &part.cfg,
+        part.segments.clamp(8, 16),
+    ) {
+        Verdict::Verified(h) => h,
+        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+            return Verdict::Refuted(PartFault::Pole);
+        }
+        Verdict::Refuted(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
+    };
+    let wire = match hole_poly(&loop_) {
+        Some(p) if p.len() >= 3 => p,
+        _ => return Verdict::Refuted(PartFault::LoopBroken),
+    };
+    let mut eps_all = loop_.eps.clone();
+
+    let (mut s_lo, mut s_hi) = (wire[0].0.clone(), wire[0].0.clone());
+    let (mut m_lo, mut m_hi) = (wire[0].1.clone(), wire[0].1.clone());
+    for (s, m) in &wire {
+        s_lo = rmin(&s_lo, s);
+        s_hi = rmax(&s_hi, s);
+        m_lo = rmin(&m_lo, m);
+        m_hi = rmax(&m_hi, m);
+    }
+    let pad = m_hi.sub(&m_lo).mul(&Rat::new(1, 16));
+    if pad.sign() <= 0 || s_lo.cmp(&s_hi) != core::cmp::Ordering::Less {
         return Verdict::Refuted(PartFault::EmptyRegion);
     }
+    let band = Interval { lo: s_lo, hi: s_hi };
+    let cst = |v: &Rat<B>| lattice::RatFunc::from_poly(lattice::Poly::constant(v.clone()));
+    let inner: Chain<B> = vec![(band.clone(), cst(&m_lo.sub(&pad)))];
+    let outer: Chain<B> = vec![(band.clone(), cst(&m_hi.add(&pad)))];
+
+    let (holes, poly_holes, hole_loops, hole_eps) = match solid_holes(part, built, &structure) {
+        Verdict::Verified(h) => h,
+        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Refuted(f) => return Verdict::Refuted(f),
+    };
+    eps_all = rmax(&eps_all, &hole_eps);
+
+    let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> = vec![(band, &built.charts[0])];
     let w = Interval {
         lo: Rat::from_i128(0),
         hi: part.thickness.clone(),
     };
-    let solid = match brep_trim_solid_regions(&charts, &w, &inner, &outer, &holes, &poly_holes) {
+    let solid = match brep_trim_solid_regions(
+        &charts,
+        &w,
+        &inner,
+        &outer,
+        Some(&wire),
+        &holes,
+        &poly_holes,
+    ) {
         Some(s) => s,
         None => return Verdict::Refuted(PartFault::SolidRefused),
     };

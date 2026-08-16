@@ -768,6 +768,34 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The outer wire cost one boolean operator (AUTH.3c).** §12.4 had framed the remaining pinch
+  shapes as needing "the polygon channel extended one level out", with a named fallback if that
+  turned out expensive. It did not. A slice's footprint was `strip ∖ holes`; for a part bounded by a
+  traced loop it is `strip ∩ ({outline} ∖ holes)` — and even-odd parity already reads a loop
+  strictly inside another as a hole in it, so the outline and its holes are *one* operand and the
+  only change is `BoolOp::Diff → BoolOp::And`.
+
+  What made it cheap is that the band did **not** have to be replaced. It is demoted to the two jobs
+  that still need a rail — the σ-station partition and the ruled patch each footprint is trimmed out
+  of — and both only require it to *contain* the wire. So where there is no boundary rail to derive
+  one from, the evaluator synthesizes one. The pad is relative (a sixteenth of the wire's own µ̂-span
+  each side) rather than fixed, so a small contour's band cannot wander onto the chart's singular
+  rail, where the parametrization breaks down rather than the part.
+
+  Measured: the quadric contour that bounds its part alone builds a watertight genus-0 solid, 66
+  faces, with every vertex within a thickness of the authored cylinder and the `w = 0` lid on it.
+  The two worries going in were both wrong. The terminal slices meet the strip's σ-edge
+  **tangentially** — the wire reaches each σ-end at a single point, the case an interior hole is
+  explicitly forbidden from creating — and the arrangement handled it without a pinch. And "the
+  pinch makes the solid degenerate" was a phrase, not a fact: the footprint is a closed oval, and an
+  oval swept through a thickness is an ordinary prism. Only the *representation* ever failed.
+
+  One rule runs opposite to a hole's and is load-bearing: a hole must be strictly interior in σ, an
+  outer wire must reach **both** σ-ends. A wire falling short would leave the terminal slices bounded
+  by the synthesized band — a longer part than asked for, every certificate green. Pinned as its own
+  refusal test, because the two share a code path and the shared path is where that inverts.
+  *2026-08-17 · resolved · AUTH.3c, branch `auth-3c`*
+
 - **A part refused because its denominator had the wrong sign — and the sign meant nothing
   (AUTH.3c).** The σ-stock's solid path was expected to be a one-line fix: `brep_trim_solid_regions`
   sweeps the *authored* region bands, so clip them to the derived `structure.domain` first. That

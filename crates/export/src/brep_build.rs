@@ -1905,6 +1905,7 @@ fn slice_poly_footprint<B: Backend>(
     mu_in: &RatFunc<B>,
     mu_out: &RatFunc<B>,
     polys: &[&[SigMu<B>]],
+    keep_inside: bool,
 ) -> Option<Vec<SliceFace<B>>> {
     use core::cmp::Ordering::{Greater, Less};
     // Counted (VV.1) because nothing else distinguishes the two cases this function serves: with
@@ -1948,7 +1949,17 @@ fn slice_poly_footprint<B: Backend>(
             OperandId::B
         }
     };
-    let region = match ledge_dom_certified(&edges, &operand_of, BoolOp::Diff) {
+    // `Diff` subtracts the `B` curves from the strip: `polys` are holes. `And` keeps what is inside
+    // them instead — the **outer wire** case, where `polys[0]` is the panel's own boundary loop and
+    // the rest are its holes. One boolean serves both because even-odd parity already reads a loop
+    // strictly inside another as a hole in it, so `{outline} ∪ holes` *is* `outline ∖ holes` to the
+    // `B` operand, and intersecting the strip with that is the whole of the outer-wire channel.
+    let op = if keep_inside {
+        BoolOp::And
+    } else {
+        BoolOp::Diff
+    };
+    let region = match ledge_dom_certified(&edges, &operand_of, op) {
         Verdict::Verified(cap) => {
             let (region, _v_boundary, pinches) = cap.into_parts();
             if !pinches.is_empty() {
@@ -2004,14 +2015,27 @@ fn slice_poly_footprint<B: Backend>(
 ///
 /// The two kinds may share a slice — the ordinary authored-slot-beside-derived-drill panel: a band
 /// with affine branches converts to a polygon ([`rail_hole_poly`]) and joins the same boolean.
+///
+/// `outline` narrows the panel to a general **outer wire** — a closed `(σ,µ̂)` loop the material is
+/// kept *inside* of, so the panel is `band ∩ outline ∖ holes`. `None` is every part whose boundary
+/// is the band itself. It exists for the shape a band cannot express: a contour that terminates the
+/// material in σ turns around at both ends, so its boundary is not two graphs `µ̂ = f(σ)`
+/// (`docs/cutter-extrude-design.md` §12.4). The loop must lie strictly inside the band, and its
+/// σ-extent must be the band's — it *is* the boundary there, not something interior to it, so unlike
+/// a hole it reaches both ends. The band then only has to **contain** the wire: it still fixes the
+/// σ-station partition and the lid patch each footprint is trimmed out of, which is why the outer
+/// wire needs no new surface machinery.
+///
 /// Refused, never mis-built: a **curved** branch sharing a slice with a polygon hole (not a polygon
-/// operand), a hole touching a boundary, a σ-overlapping [`HoleRail`] pair, two lids that cannot be
-/// sewn along a station, a degenerate partition, or an arrangement fault.
+/// operand), a hole or an outline touching a boundary, a σ-overlapping [`HoleRail`] pair, two lids
+/// that cannot be sewn along a station, a degenerate partition, or an arrangement fault.
+#[allow(clippy::too_many_arguments)]
 pub fn brep_trim_solid_regions<B: Backend>(
     charts: &[(Interval<B>, &Chart<B>)],
     w: &Interval<B>,
     inner: &[(Interval<B>, RatFunc<B>)],
     outer: &[(Interval<B>, RatFunc<B>)],
+    outline: Option<&[(Rat<B>, Rat<B>)]>,
     holes: &[HoleRail<B>],
     poly_holes: &[Vec<(Rat<B>, Rat<B>)>],
 ) -> Option<Brep<B>> {
@@ -2151,6 +2175,34 @@ pub fn brep_trim_solid_regions<B: Backend>(
             return None;
         }
     }
+    // The outer wire takes the same snap and the same µ̂ test as a hole — it is the *same* operand
+    // to the same boolean — but the opposite σ test: it must reach **both** ends of the panel,
+    // because it is the boundary there rather than something interior to it. A wire falling short
+    // would leave the terminal slices bounded by the band, quietly building a longer part than the
+    // caller asked for; a wire overhanging would be clipped to the band without saying so.
+    let outline: Option<Vec<SigMu<B>>> = match outline {
+        Some(o) => {
+            let snapped = snap_poly_to_stations(o, &stations)?;
+            if !inside_band(&snapped)? {
+                return None;
+            }
+            let (mut lo, mut hi) = (snapped[0].0.clone(), snapped[0].0.clone());
+            for (s, _) in &snapped {
+                if s.cmp(&lo) == Ordering::Less {
+                    lo = s.clone();
+                }
+                if s.cmp(&hi) == Ordering::Greater {
+                    hi = s.clone();
+                }
+            }
+            if !(req(&lo, &sigma.lo) && req(&hi, &sigma.hi)) {
+                return None;
+            }
+            Some(snapped)
+        }
+        None => None,
+    };
+    let outline = outline.as_deref();
     let holes: Vec<HoleRail<B>> = holes
         .iter()
         .map(|h| HoleRail {
@@ -2185,14 +2237,21 @@ pub fn brep_trim_solid_regions<B: Backend>(
         let smid = sk.add(sk1).mul(&Rat::new(1, 2));
         let mu_in = piece_at(inner, &smid)?.clone();
         let mu_out = piece_at(outer, &smid)?.clone();
+        // The outer wire goes in **first**, so the boolean's `B` operand reads as `outline ∖ holes`
+        // under even-odd parity and the strip intersects that. Every slice sees it, since it is the
+        // panel's own boundary rather than something interior to it.
+        let mut slice_polys: Vec<&[SigMu<B>]> = outline.iter().map(|o| &o[..]).collect();
         // The polygon holes reaching this slice. They take the whole footprint with them — every
         // rail hole reaching it converts to a polygon and joins the same boolean.
-        let mut slice_polys: Vec<&[SigMu<B>]> = poly_holes
-            .iter()
-            .zip(&poly_bounds)
-            .filter(|(_, (lo, hi))| lo.cmp(sk1) == Ordering::Less && sk.cmp(hi) == Ordering::Less)
-            .map(|(p, _)| p.as_slice())
-            .collect();
+        slice_polys.extend(
+            poly_holes
+                .iter()
+                .zip(&poly_bounds)
+                .filter(|(_, (lo, hi))| {
+                    lo.cmp(sk1) == Ordering::Less && sk.cmp(hi) == Ordering::Less
+                })
+                .map(|(p, _)| p.as_slice()),
+        );
         let raw = if slice_polys.is_empty() {
             slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?
         } else {
@@ -2206,7 +2265,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
                     slice_polys.push(p);
                 }
             }
-            slice_poly_footprint(sk, sk1, &mu_in, &mu_out, &slice_polys)?
+            slice_poly_footprint(sk, sk1, &mu_in, &mu_out, &slice_polys, outline.is_some())?
         };
         let faces: Vec<SliceFace<B>> = raw
             .into_iter()
@@ -3572,6 +3631,66 @@ mod tests {
         );
     }
 
+    /// **The outer wire: a panel bounded by a general `(σ,µ̂)` loop rather than by its band**
+    /// (AUTH.3c, `docs/cutter-extrude-design.md` §12.4).
+    ///
+    /// The loop here is a lens: it reaches each σ-end of the panel at a **single point**, where its
+    /// two branches meet. That is the shape a rail band cannot carry — not because the topology is
+    /// exotic (a lens is two graphs over σ, and swept through the thickness it is an ordinary
+    /// prism), but because the branches meet with unbounded slope, which is exactly where a fitted
+    /// polynomial rail runs out of certificate. Given as a loop it is just a polygon, and the band
+    /// is demoted to what still needs a rail: the σ-station partition and the lid patch each
+    /// footprint is trimmed out of.
+    ///
+    /// The pinch is what makes this more than a re-run of the hole channel: the terminal slices are
+    /// wedges with one vertex on the panel's own end station, so the boolean meets the strip's
+    /// σ-edge tangentially there — the case an interior hole is explicitly forbidden from creating.
+    #[test]
+    fn an_outer_wire_pinching_at_both_ends_is_a_certified_solid() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        // CCW in (σ, µ̂): right along the bottom branch, left along the top. Strictly inside the
+        // band µ̂ ∈ (−2, −1), and touching σ = ±15/4 at one point each.
+        let lens = [
+            (q(-15, 4), q(-3, 2)),
+            (q(0, 1), q(-19, 10)),
+            (q(15, 4), q(-3, 2)),
+            (q(0, 1), q(-11, 10)),
+        ];
+        let solid = gore_outline_solid(&lens).expect("a lens outer wire must build");
+        assert_certified(&solid, 0, "the outer-wire panel");
+
+        // Not vacuous: the band solid over the same gore is a different, larger part. Equal face
+        // counts would mean the wire was ignored and the band built as usual.
+        let band = gore_solid(&[], &[]).expect("the band panel still builds");
+        assert!(
+            solid.faces().len() != band.faces().len(),
+            "the wire must actually bound the part: {} faces against the band's {}",
+            solid.faces().len(),
+            band.faces().len()
+        );
+    }
+
+    /// **A wire that does not reach the panel's σ-ends is refused, not quietly extended.**
+    ///
+    /// The outer wire *is* the boundary, so falling short would leave the terminal slices bounded by
+    /// the band — building a longer part than the caller asked for, with every certificate green.
+    /// This is the opposite of a hole's rule (strictly interior), and the two share a code path, so
+    /// the direction is worth pinning.
+    #[test]
+    fn an_outer_wire_short_of_the_panel_ends_is_refused() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let short = [
+            (q(-2, 1), q(-3, 2)),
+            (q(0, 1), q(-19, 10)),
+            (q(2, 1), q(-3, 2)),
+            (q(0, 1), q(-11, 10)),
+        ];
+        assert!(
+            gore_outline_solid(&short).is_none(),
+            "a wire inside the panel's σ-extent is a hole, not an outer boundary"
+        );
+    }
+
     /// A hole **spanning multiple stations** (`σ ∈ [−2, 2]` on the wide gore, whose positive-weight
     /// partition has interior stations inside `(−2, 2)`) exercises the μ-band **split**: a fully
     /// covered middle slice's lid becomes a bottom band `[μ⁻, near]` and a top band `[far, μ⁺]` (no
@@ -3878,7 +3997,18 @@ mod tests {
         let inner = [(sigma.clone(), mu_lo)];
         let outer = [(sigma.clone(), mu_hi)];
         let charts = [(sigma, &chart)];
-        brep_trim_solid_regions(&charts, &w, &inner, &outer, holes, polys)
+        brep_trim_solid_regions(&charts, &w, &inner, &outer, None, holes, polys)
+    }
+
+    /// The same gore, narrowed to a general **outer wire** — the AUTH.3c channel.
+    fn gore_outline_solid(
+        outline: &[(Rat<lattice::Bignum>, Rat<lattice::Bignum>)],
+    ) -> Option<Brep<lattice::Bignum>> {
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        let inner = [(sigma.clone(), mu_lo)];
+        let outer = [(sigma.clone(), mu_hi)];
+        let charts = [(sigma, &chart)];
+        brep_trim_solid_regions(&charts, &w, &inner, &outer, Some(outline), &[], &[])
     }
 
     /// A watertight, manifold, certified closed 2-manifold of the stated genus.
