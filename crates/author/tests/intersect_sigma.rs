@@ -11,12 +11,10 @@
 //! - the extent is **derived** (AUTH.3a) and the boundary **closes at it** (AUTH.3b);
 //! - a **polygonal** contour is a certified part — its walls are affine, so `plane_cut_rail` is
 //!   exact and the rails reach the corner with no fit and no clamp;
-//! - a **quadric** contour is a certified part too, when the contour bounds the part **alone**: its
-//!   σ-ends are tangent rulings, which no graph rail can reach, so the boundary is the wall's own
-//!   traced loop — fully parametric, passing *through* both tangents;
-//! - what still refuses, by name, is a quadric contour **sharing** the boundary with other ops: the
-//!   p-curve arc then has to be spliced into a chain of graph rails at the junctions where the
-//!   contour takes over, and that stitch is not built (`RailSpanShort`);
+//! - a **quadric** contour is a certified part too, and its σ-ends are tangent rulings no graph rail
+//!   can reach — so the boundary carries a **p-curve turn arc** there. Where the contour bounds the
+//!   part alone the whole boundary is its traced loop; where it shares the boundary with other ops,
+//!   the arc is spliced into the graph chain at the junctions the corner refinement locates;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -94,20 +92,18 @@ fn name<E, W: core::fmt::Debug, M: core::fmt::Debug>(v: &Verdict<E, W, M>) -> St
 /// trivially" reading. Its footprint on the cone subtends `|σ| ≤ 0.101020514` — its two tangent
 /// rulings, measured by the same `structure_events` the derivation uses.
 ///
-/// Declare a band inside that and the part certifies. Declare one wider and the *same* cut on the
-/// *same* material still refuses — but the refusal has moved, and where it moved to is the
-/// measurement. It was `EmptyRegion`, a region-model gap: σ was an authored quantity and a σ with no
-/// material was a contradiction. AUTH.3a made the extent derived and AUTH.3b closed the boundary at
-/// it, and what is left is one thing — a **quadric** contour ends at a *tangent ruling*, where its
-/// rail is a fitted graph with unbounded slope, so the fit's certified span stops short of the
-/// derived end and the rail is refused rather than extrapolated (`RailSpanShort`).
+/// Declare a band inside that and the part certifies. Declare one wider and it still refuses — and
+/// the refusal has moved twice now, each move being the measurement. It was `EmptyRegion` (σ was an
+/// authored quantity, so a σ the ops left empty was a contradiction); AUTH.3a made the extent derived
+/// and AUTH.3b closed the boundary at it, leaving `RailSpanShort` (a graph rail cannot reach a
+/// tangent ruling); AUTH.3b″ splices a p-curve arc in at each end, and **this** fixture is the shape
+/// that splice does not yet cover.
 ///
-/// Note what this fixture is *not*: the contour here does **not** bound the part alone — the
-/// `z ≤ 3` plane holds the upper side across the middle — so the boundary is a chain of graph rails
-/// with the contour taking over near each end. Where a quadric contour bounds alone, the whole
-/// boundary is its own traced loop and it certifies today (see
-/// `a_quadric_contour_is_a_part_with_a_parametric_boundary`). Expected to flip when the p-curve arc
-/// can be **spliced** into a graph chain at the junctions.
+/// Why this one and not the `r² = 1` contour of the next test: here the contour bounds the **whole**
+/// lower side, so the lower chain is a *single* segment rather than one per end. The two tangents
+/// are then joined by one continuous run of contour boundary, and the arc has to wrap **both** of
+/// them — where the splice currently takes one arc per end, each replacing that end's outermost
+/// segment on each chain. One segment cannot be the outermost one twice.
 #[test]
 fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
     let cutter = || Cutter::vertical_cylinder(qi(0), q(5, 2), q(1, 4));
@@ -131,15 +127,15 @@ fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
         "and it must bound it *instead of* the annulus carve. roles {roles:?}"
     );
 
-    // Past the footprint's end: still refused, but now by the tangent-ruling fit and nothing else.
+    // Past the footprint's end: the contour bounds one whole side, so the arc must wrap both
+    // tangents — the shape the per-end splice does not carry. Refused by name until it does.
     let wide = panel(q(-1, 8), q(1, 8)).intersect(cutter());
     assert!(
         matches!(
             wide.develop(),
             Verdict::Refuted(PartFault::RailSpanShort { op: 2 })
         ),
-        "the σ-extent is derived now, so the refusal must name the pinch rather than the region — \
-         got {}",
+        "a contour bounding one whole side needs one arc around both tangents — got {}",
         name(&wide.develop())
     );
 }
@@ -227,18 +223,23 @@ fn the_same_footprint_is_a_certified_hole_and_a_kept_part() {
     );
 
     // A quadric contour at the same place, sized so it pokes through the panel's annulus carve —
-    // so the carve still bounds part of the boundary and the contour only takes over near its ends.
-    // That mixed shape is what remains: the p-curve arc has to be spliced into the graph chain at
-    // the two junctions. A quadric contour bounding **alone** certifies today, and a polygon needs
-    // none of it (every wall affine, `plane_cut_rail` exact, the pattern above at ε = 0).
+    // so the carve still bounds part of the boundary and the contour takes over only near its ends.
+    // That is the mixed shape: graph rails with a p-curve turn arc spliced in at each tangent
+    // ruling. A polygon needs none of it (every wall affine, `plane_cut_rail` exact, ε = 0 above).
     let metric = base().intersect(Cutter::vertical_cylinder(qi(0), q(11, 5), qi(1)));
-    assert!(
-        matches!(
-            metric.develop(),
-            Verdict::Refuted(PartFault::RailSpanShort { op: 2 })
+    let flat = match metric.develop() {
+        Verdict::Verified(f) => f,
+        v => panic!(
+            "a quadric contour must certify through its tangent ends, got {}",
+            name(&v)
         ),
-        "a quadric contour pinches at a tangent ruling, which needs a p-curve end — got {}",
-        name(&metric.develop())
+    };
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
+    assert!(
+        roles[0] != OpRole::Inactive && roles[2] != OpRole::Inactive,
+        "this is the MIXED boundary: the panel's plane and the contour must BOTH bound, else the \
+         fixture is the sole-contour case and proves nothing about the splice. roles {roles:?}"
     );
 }
 

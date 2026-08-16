@@ -1022,12 +1022,21 @@ tangents, with `unroll_trim_loop` already accepting the arcs. PC.3's constructio
 outline rather than as a hole. Measured on a disc of radius `1/5`: 192 outline points, `ε = 2.26e-3`,
 and every vertex folded back lands on the authored cylinder.
 
-What remains is the **mixed** boundary: a quadric contour that shares the boundary with other ops,
-so the p-curve arc has to be *spliced* into a chain of graph rails at the two junctions where the
-contour takes over. The pieces for that exist (`PCurve::{params_at_sigma, split_at, restrict}`, and
-the junctions are what the run-corner refinement already locates); assembling them is its own slice.
-Until then a mixed quadric boundary refuses `RailSpanShort`, which is the honest name for it — the
-rail is a fit, and the fit's certificate stops before the end.
+The **mixed** boundary — a quadric contour sharing the boundary with other ops — is the splice, and
+it works where the contour takes over near *each* end. `develop::cut::tangent_turn_arc` cuts the run
+of the wall's loop that turns around one tangent, from the junction on the approach branch to the
+one on the retreat branch, and `certify_boundary` removes that end's outermost segment from **both**
+chains and puts the arc in their place. The loop traverses in the same sense an outer boundary does,
+so the run is contiguous; its pieces are chords, so each junction cut is one exact division. The
+arc joins the chain through the same micro-cap every rail-to-rail junction uses — the arc starts at
+the wall's *true* branch value and the rail ends at its *fitted* one, an ε-wide ruling gap.
+
+One shape is still open (task #278): a contour that bounds one **whole side**. Its chain on that side
+is a *single* segment, which cannot be the outermost one at both ends, so the per-end framing has
+nothing to remove twice. The general statement drops that framing — **the arc is the run of the
+contour's loop between the two σ where a non-contour rail takes over**, wrapping zero, one or two
+tangents — and the whole-side case is the two-tangent one. Declined rather than half-built, so it
+refuses `RailSpanShort`.
 
 `brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
 between them **over the region bands**, so a derived extent narrower than them would sweep a solid
@@ -1072,7 +1081,7 @@ from being decided by whatever is easiest at the time.
 |---|---|
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
-| **AUTH.3b** | the boundary that closes in σ; the flat path. **Done**: polygonal contours (exact affine rails through the corner) and quadric contours that bound the part **alone** (the traced loop as an outline — `sole_pinched_contour`). **Open**: a quadric contour *sharing* the boundary, which needs the p-curve arc spliced into a graph chain |
+| **AUTH.3b** | the boundary that closes in σ; the flat path. **Done**: polygonal contours (exact affine rails through the corner); quadric contours bounding the part **alone** (the traced loop as an outline — `sole_pinched_contour`); and quadric contours **sharing** the boundary, via a p-curve turn arc spliced in per end (`develop::cut::tangent_turn_arc`). **Open**: a contour bounding one whole side, where one arc must wrap both tangents (#278) |
 | **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
 

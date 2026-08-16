@@ -78,6 +78,13 @@ struct Boundary<B: Backend> {
     pieces: Vec<RailPiece<B>>,
     upper_segs: Vec<(Rat<B>, Rat<B>, Label)>,
     lower_segs: Vec<(Rat<B>, Rat<B>, Label)>,
+    /// The turn arc closing each σ-end (`[lower end, upper end]`), where that end is a **smooth
+    /// pinch** — a tangent ruling of one quadric wall, which no graph rail reaches. Where it is
+    /// `None` the end closes with a ruling cap, as it always did. When an arc is present the
+    /// outermost segment on *both* chains has been removed: the arc replaces
+    /// `[upper rail tail] + [cap] + [lower rail head]`, joining the graph rails at the two
+    /// junctions the run-corner refinement located.
+    end_arcs: [Option<Vec<develop::pcurve::PCurve<B>>>; 2],
     eps: Rat<B>,
 }
 
@@ -404,8 +411,93 @@ fn certify_boundary<B: Backend>(
         }
         segs
     };
-    let upper_segs = side_segments(&upper_junctions, &|i| runs[i].upper);
-    let lower_segs = side_segments(&lower_junctions, &|i| runs[i].lower);
+    let mut upper_segs = side_segments(&upper_junctions, &|i| runs[i].upper);
+    let mut lower_segs = side_segments(&lower_junctions, &|i| runs[i].lower);
+
+    // — 3′. Smooth-pinch ends become turn arcs. —
+    //
+    // Where a derived σ-end is one quadric wall's tangent ruling, the outermost segment of *each*
+    // chain is that wall's two branches running into it — and a graph fit cannot follow them there
+    // (unbounded slope), which is what `RailSpanShort` refuses. Both segments come out and one
+    // `tangent_turn_arc` goes in: from the upper junction, through the tangent, back to the lower
+    // one. The remaining rails then sit well inside their windows, so the coverage check below
+    // passes for the reason it should rather than by being skipped.
+    let mut end_arcs: [Option<Vec<develop::pcurve::PCurve<B>>>; 2] = [None, None];
+    for side in [1usize, 0] {
+        let upper_end = side == 1;
+        if !matches!(
+            structure.ends[side],
+            crate::resolve::SigmaEnd::Closed { pinch: true, .. }
+        ) {
+            continue;
+        }
+        // One arc per end, each replacing that end's outermost segment on **both** chains — so a
+        // chain that is a single segment has nothing to give twice. That happens when the contour
+        // bounds one whole side of the part: its two tangents are then joined by one continuous run
+        // of contour boundary, and the correct answer is a single arc wrapping *both* of them
+        // rather than two per-end arcs. Declined here, so the coverage check below refuses it by
+        // name (`RailSpanShort`) instead of this producing half a boundary.
+        if upper_segs.len() < 2 || lower_segs.len() < 2 {
+            continue;
+        }
+        let (ui, li) = if upper_end {
+            (upper_segs.len() - 1, lower_segs.len() - 1)
+        } else {
+            (0, 0)
+        };
+        let (ul, ll) = (upper_segs[ui].2, lower_segs[li].2);
+        // One wall's two branches, and a genuine quadratic — an affine wall has no smooth pinch.
+        if ul.0 != ll.0 || crate::resolve::wall_of(ul) != crate::resolve::wall_of(ll) {
+            continue;
+        }
+        let op = ul.0;
+        let walls = part.ops[op]
+            .1
+            .walls()
+            .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+        let wall = &walls[crate::resolve::wall_of(ul)];
+        let zero = Rat::from_i128(0);
+        let form = match develop::cut::cut_mu_form(&built.charts[0], wall, &zero) {
+            Some(f) if !f.a.is_zero() => f,
+            _ => continue,
+        };
+        // The wall's own tangent window, from the same isolation the extent was derived with.
+        let brackets =
+            develop::cut::tangent_events(&form, &bands[0], &crate::resolve::tangent_tol())
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+        if brackets.len() < 2 {
+            continue;
+        }
+        let window = Interval {
+            lo: brackets[0].hi.clone(),
+            hi: brackets[brackets.len() - 1].lo.clone(),
+        };
+        let cut = match develop::cut::quadric_cut_loop(
+            &built.charts[0],
+            wall,
+            &window,
+            &zero,
+            part.segments,
+            &part.clearance,
+            &part.cfg,
+        ) {
+            Verdict::Verified(l) => l,
+            Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
+            Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
+        };
+        eps = rmax(&eps, &cut.eps);
+        // The junctions: where each chain hands the boundary to the contour.
+        let (from, to) = if upper_end {
+            (upper_segs[ui].0.clone(), lower_segs[li].0.clone())
+        } else {
+            (lower_segs[li].1.clone(), upper_segs[ui].1.clone())
+        };
+        let arc = develop::cut::tangent_turn_arc(&cut, upper_end, &from, &to)
+            .ok_or(RErr::Fault(PartFault::CutUnresolved { op }))?;
+        upper_segs.remove(ui);
+        lower_segs.remove(li);
+        end_arcs[side] = Some(arc);
+    }
 
     // A rail may only be **used** where it was **certified**. The window clamp above shortens a fit
     // span to the wall's disc-positive window, inset a hair — and before AUTH.3 that was always
@@ -436,6 +528,7 @@ fn certify_boundary<B: Backend>(
         pieces,
         upper_segs,
         lower_segs,
+        end_arcs,
         eps,
     })
 }
@@ -650,19 +743,52 @@ pub(crate) fn flat_pattern<B: Backend>(
     // — 4. Assemble the one general boundary loop. —
     let eval = |label: Label, sigma: &Rat<B>| rail_at(&boundary.pieces, &bands, label, sigma);
     let mut arcs: Vec<BoundaryArc<B>> = Vec::new();
-    // The starting cap at σ_lo: lower → upper.
-    let (lo0, up0) = match (
-        eval(boundary.lower_segs[0].2, &domain.lo),
-        eval(boundary.upper_segs[0].2, &domain.lo),
-    ) {
-        (Some(a), Some(b)) => (a, b),
-        _ => return Verdict::Refuted(PartFault::Pole),
+    // The lower end: a turn arc where the material pinches at a tangent ruling, otherwise the
+    // ruling cap it always was. Both take the boundary from the lower side to the upper one.
+    // A turn arc joins the chain the same way a rail does — through a micro-cap. The arc starts at
+    // the wall's **true** branch value and the rail it follows ends at that rail's **fitted** one,
+    // so they differ by the fit's own ε at the same σ. That gap is a ruling segment, which is what
+    // a `Cap` is; the chain assembly has always closed rail-to-rail junctions this way, and the
+    // arcs need it for the same reason rather than a new one.
+    let push_turn = |arcs: &mut Vec<BoundaryArc<B>>, side: usize| -> Option<()> {
+        let curves = boundary.end_arcs[side].as_ref()?;
+        let head = curves.first()?;
+        let [sa, ma] = head.eval(&head.domain.lo)?;
+        if let Some(prev) = last_end(arcs)
+            && prev.1.cmp(&ma) != Ordering::Equal
+        {
+            arcs.push(BoundaryArc::Cap {
+                sigma: sa,
+                mu_start: prev.1.clone(),
+                mu_end: ma,
+            });
+        }
+        for curve in curves {
+            arcs.push(BoundaryArc::Curve {
+                curve: curve.clone(),
+                segments: part.segments.max(2),
+            });
+        }
+        Some(())
     };
-    arcs.push(BoundaryArc::Cap {
-        sigma: domain.lo.clone(),
-        mu_start: lo0,
-        mu_end: up0,
-    });
+    if boundary.end_arcs[0].is_some() {
+        if push_turn(&mut arcs, 0).is_none() {
+            return Verdict::Refuted(PartFault::LoopBroken);
+        }
+    } else {
+        let (lo0, up0) = match (
+            eval(boundary.lower_segs[0].2, &domain.lo),
+            eval(boundary.upper_segs[0].2, &domain.lo),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Verdict::Refuted(PartFault::Pole),
+        };
+        arcs.push(BoundaryArc::Cap {
+            sigma: domain.lo.clone(),
+            mu_start: lo0,
+            mu_end: up0,
+        });
+    }
     // Each chain: rails split at region joins, micro-caps at junctions.
     let push_chain = |arcs: &mut Vec<BoundaryArc<B>>,
                       segs: &[(Rat<B>, Rat<B>, Label)],
@@ -710,25 +836,59 @@ pub(crate) fn flat_pattern<B: Backend>(
     if let Err(f) = push_chain(&mut arcs, &boundary.upper_segs, true) {
         return Verdict::Refuted(f);
     }
-    // The far cap at σ_hi: upper → lower.
-    let lo1 = match eval(
-        boundary.lower_segs[boundary.lower_segs.len() - 1].2,
-        &domain.hi,
-    ) {
-        Some(v) => v,
-        None => return Verdict::Refuted(PartFault::Pole),
-    };
-    if let Some(prev_end) = last_end(&arcs)
-        && prev_end.1.cmp(&lo1) != Ordering::Equal
-    {
-        arcs.push(BoundaryArc::Cap {
-            sigma: domain.hi.clone(),
-            mu_start: prev_end.1.clone(),
-            mu_end: lo1,
-        });
+    // The far end, symmetrically: the turn arc, or the cap.
+    if boundary.end_arcs[1].is_some() {
+        if push_turn(&mut arcs, 1).is_none() {
+            return Verdict::Refuted(PartFault::LoopBroken);
+        }
+    } else {
+        let lo1 = match eval(
+            boundary.lower_segs[boundary.lower_segs.len() - 1].2,
+            &domain.hi,
+        ) {
+            Some(v) => v,
+            None => return Verdict::Refuted(PartFault::Pole),
+        };
+        if let Some(prev_end) = last_end(&arcs)
+            && prev_end.1.cmp(&lo1) != Ordering::Equal
+        {
+            arcs.push(BoundaryArc::Cap {
+                sigma: domain.hi.clone(),
+                mu_start: prev_end.1.clone(),
+                mu_end: lo1,
+            });
+        }
     }
     if let Err(f) = push_chain(&mut arcs, &boundary.lower_segs, false) {
         return Verdict::Refuted(f);
+    }
+    // Close the loop back onto the first arc. Without a turn end the last rail and the opening cap
+    // read the *same* rail at the *same* σ, so the loop shuts exactly and nothing is needed; with
+    // one, the opening arc began at the wall's true branch and the closing rail ends at its fitted
+    // value, the same ε-wide ruling gap every other junction has.
+    if let (Some(first), Some(prev)) = (arcs.first(), last_end(&arcs)) {
+        let start = match first {
+            BoundaryArc::Cap {
+                sigma, mu_start, ..
+            } => Some((sigma.clone(), mu_start.clone())),
+            BoundaryArc::Curve { curve, .. } => {
+                curve.eval(&curve.domain.lo).map(|[sigma, mu]| (sigma, mu))
+            }
+            BoundaryArc::Rail {
+                mu, sigma_start, ..
+            } => mu.eval(sigma_start).map(|m| (sigma_start.clone(), m)),
+        };
+        match start {
+            Some((sigma, mu)) if prev.1.cmp(&mu) != Ordering::Equal => {
+                arcs.push(BoundaryArc::Cap {
+                    sigma,
+                    mu_start: prev.1.clone(),
+                    mu_end: mu,
+                });
+            }
+            None => return Verdict::Refuted(PartFault::Pole),
+            _ => {}
+        }
     }
 
     // — 5. Unroll the boundary through the connected piecewise development. —

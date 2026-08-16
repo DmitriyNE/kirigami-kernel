@@ -703,8 +703,34 @@ pub fn tangent_turn_arc<B: Backend>(
         };
         // A junction cut may land exactly on a piece end, leaving nothing of it: that is a clean
         // join, not a failure, so the degenerate remainder is dropped rather than kept whole.
+        //
+        // The parameter is solved **exactly**, not searched. `PCurve::params_at_sigma` bisects, and
+        // a bisected parameter puts the arc's endpoint *near* the junction rather than on it — which
+        // the unroll's chaining check compares over ℚ and rejects (`ArcDiscontinuity`), correctly.
+        // A loop piece is a chord, so `σ(t) = a + (b − a)·t` and the junction is one division; a
+        // piece whose σ is not affine is refused rather than approximated, since an inexact join
+        // here is a boundary that does not close.
         let cut_at = |lo_side: bool, s: &Rat<B>| -> Option<Option<crate::pcurve::PCurve<B>>> {
-            let t = piece.params_at_sigma(s, 8, 60)?.into_iter().next()?;
+            let sigma = &piece.sigma;
+            if sigma.den().degree().unwrap_or(0) != 0 || sigma.num().degree().unwrap_or(0) > 1 {
+                return None;
+            }
+            let nth = |p: &lattice::Poly<B>, i: usize| {
+                p.coeffs()
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Rat::from_i128(0))
+            };
+            let d0 = nth(sigma.den(), 0);
+            if d0.sign() == 0 {
+                return None;
+            }
+            let c0 = nth(sigma.num(), 0).div(&d0);
+            let c1 = nth(sigma.num(), 1).div(&d0);
+            if c1.sign() == 0 {
+                return None;
+            }
+            let t = s.sub(&c0).div(&c1);
             let span = if lo_side {
                 Interval {
                     lo: t,

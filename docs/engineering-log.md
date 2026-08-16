@@ -698,6 +698,24 @@ fine — this is a log, not a schema.
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
 
+- **A searched parameter is not a join: `params_at_sigma` bisects, and an exactly-checked chain says
+  so.** Splicing a p-curve turn arc into a graph chain, the arc has to start exactly where the rail
+  it follows ends. `PCurve::params_at_sigma` looked like the tool for it — "the parameters where the
+  curve crosses σ = s" — and it is, for locating; but it is `scan_roots`, a bisection, so the
+  parameter is *near* the crossing and the trimmed arc starts *near* the junction. `unroll_trim_loop`
+  compares consecutive arcs over ℚ (`sm_eq`) and rejected it, correctly, as `ArcDiscontinuity`. The
+  fix is that the object is a **chord**: `σ(t) = a + (b − a)·t`, so the junction parameter is one
+  division in ℚ and the endpoint is exactly the junction. A piece whose σ is not affine is now
+  refused rather than approximated, because an inexact join is a boundary that does not close.
+
+  Two things worth carrying. **Where a structure is checked exactly, every value entering it must be
+  constructed exactly, not found.** And the diagnosis was slow for an avoidable reason: the chain
+  printed as closing "to 1e-12" in floats and the fault name (`LoopBroken`) had already discarded the
+  index the unroll reported. Ten seconds of surfacing `ArcDiscontinuity { index }` beat twenty
+  minutes of reasoning about which junction *ought* to be wrong — *when a refusal is re-typed on the
+  way out, the diagnostic is what gets dropped.*
+  *2026-08-16 · AUTH.3b″, branch `auth-3`*
+
 - **Separating the two pinch classes turned the "hard" one into no new construction at all.** The
   quadric end was filed as the expensive half of AUTH.3b — a √-branch no graph fit can reach, needing
   §12.4's p-curve. Once the classes were told apart (entry below), the question sharpened from *"how
