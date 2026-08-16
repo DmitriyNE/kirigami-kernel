@@ -8,10 +8,17 @@
 //! (`h ≡ D`). Everything else is **derived**: the concentric outer and eccentric inner cylinders
 //! resolve to the bounding rails of an offset annulus, and the ONE vertical **seam drill** over
 //! the lap resolves to TWO interior holes — the head and the tail flap it laps — one per
-//! disc-positive window. A hexagon authored **in flat ECAD coordinates** rides along:
-//! [`develop`](author::part::Part::develop) cuts it as-is, [`fold`](author::part::Part::fold)
-//! certifies it back onto the cone, and [`solid`](author::part::Part::solid) drills it through
-//! the STEP shell.
+//! disc-positive window.
+//!
+//! Two authored features ride along, one per direction of the round trip. A hexagon drawn **in flat
+//! ECAD coordinates** goes 2-D → 3-D: [`develop`](author::part::Part::develop) cuts it as-is,
+//! [`fold`](author::part::Part::fold) certifies it back onto the cone, and
+//! [`solid`](author::part::Part::solid) drills it through the STEP shell. An **L-shaped sketch
+//! extrusion** (`acceptance::lap_slot`) goes the other way: drawn in the `z = 0` plane and swept, it
+//! is *traced* into the domain as a footprint some ruling meets twice, and because it sits in the
+//! lap wedge it pierces both sheets at once — one hole in the body at `γ ≡ 0`, its twin in the
+//! smoothstep ramp at `γ ≠ 0`. The featureless recipe (`acceptance::self_lapping_cone`) stays the
+//! V&V baseline; `self_lapping_slot.rs` pins this one.
 //!
 //! ```text
 //! cargo run --example self_lapping_cone                                 # flat + folded SVGs
@@ -25,8 +32,10 @@
 use author::part::Part;
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
-use export::approx::rat_to_f64;
+use develop::extrude::Apex;
+use export::approx::{rat_to_f64, surd_to_f64};
 use fixtures::devices::cone_wrap;
+use geom::content::Edge;
 use lattice::{Bignum, Rat};
 
 type Q = Rat<Bignum>;
@@ -39,9 +48,44 @@ fn qi(n: i128) -> Q {
 }
 
 /// The device at the demo's fidelity, from the one shared definition (see the `acceptance`
-/// crate) — the same recipe the V&V suite pins at a leaner budget.
+/// crate) — the same recipe the V&V suite pins at a leaner budget, carrying the lap slot.
 fn device(segments: usize) -> Part<Bignum> {
-    acceptance::self_lapping_cone(segments, 20, true)
+    let apex = Apex::direction([qi(0), qi(0), qi(1)]).expect("a real sweep direction");
+    acceptance::self_lapping_cone_with(segments, 20, true, Some((apex, acceptance::lap_slot())))
+}
+
+/// The authored L's boundary segments in the `z = 0` sketch plane, as floats.
+///
+/// The sweep is parallel to `z`, so a point of the cutter's wall projects to a point of *this*
+/// polygon — which is what lets a folded slot vertex be checked against the shape it was drawn as,
+/// rather than against a restatement of it.
+fn slot_profile() -> Vec<([f64; 2], [f64; 2])> {
+    acceptance::lap_slot()
+        .iter()
+        .filter_map(|e| match e {
+            Edge::Seg(s) => Some((
+                [surd_to_f64(&s.start.x), surd_to_f64(&s.start.y)],
+                [surd_to_f64(&s.end.x), surd_to_f64(&s.end.y)],
+            )),
+            Edge::Arc(_) => None,
+        })
+        .collect()
+}
+
+/// The distance from `p` to the nearest point of `segs`.
+fn profile_residual(p: [f64; 2], segs: &[([f64; 2], [f64; 2])]) -> f64 {
+    segs.iter()
+        .map(|(a, b)| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (a[0] + t * dx - p[0]).hypot(a[1] + t * dy - p[1])
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// The flat-authored hexagon (rational ECAD coordinates) around the flat image of a mid-annulus
@@ -169,10 +213,16 @@ fn main() {
         println!("  op {k}:  {kind}  → {:?}   (derived)", op.role);
     }
     println!(
-        "  develop          : Verified  ε ≈ {:.3e}   1 face · {} holes (drill×2 + hex)",
+        "  develop          : Verified  ε ≈ {:.3e}   1 face · {} holes (drill×2 + slot×2 + hex)",
         rat_to_f64(flat.eps()),
         flat.region().faces[0].holes.len()
     );
+    if let Some(cut) = flat.report().ops[3].cut_eps.as_ref() {
+        println!(
+            "  lap slot         : traced footprint, own cut bound ε ≈ {:.3e}",
+            rat_to_f64(cut)
+        );
+    }
     let svg_path = format!("{out_dir}/self_lapping_cone.svg");
     let t_svg = std::time::Instant::now();
     let svg = flat.svg(900);
@@ -229,17 +279,33 @@ fn main() {
         }
     }
     println!(
-        "  fold             : Verified  ε ≈ {fold_eps:.3e}   (outline + drill holes + hex, direction ②)"
+        "  fold             : Verified  ε ≈ {fold_eps:.3e}   (outline + 4 derived holes + hex, direction ②)"
     );
     // The refold check: both folded drill rings land on the ONE drill cylinder — the two flat
-    // holes, far apart in the pattern, coincide through the sheet when rolled up.
-    let (dcx, dcy, dr2) = (-0.5f64, 2.7, 1.0 / 40.0);
+    // holes, far apart in the pattern, coincide through the sheet when rolled up. `rings` is
+    // [outline, hole₀…hole₃, hex] and `FlatPattern::holes()` comes in op order, so 1..3 are the
+    // drill's two windows and 3..5 the slot's.
+    let (dcx, dcy, dr2) = {
+        let (x, y, r2) = acceptance::seam_drill_axis();
+        (rat_to_f64(&x), rat_to_f64(&y), rat_to_f64(&r2))
+    };
     let refold = folded_rings[1..3]
         .iter()
         .flatten()
         .map(|p| ((p[0] - dcx).powi(2) + (p[1] - dcy).powi(2) - dr2).abs())
         .fold(0.0f64, f64::max);
     println!("  refold defect    : {refold:.3e}   (folded drill holes land on the drill cylinder)");
+    // …and the traced slot's two loops, folded, land on the L that was drawn in the sketch plane —
+    // the round trip closed on a feature that went 3-D → flat, not the hexagon's flat → 3-D.
+    let segs = slot_profile();
+    let slot_residual = folded_rings[3..5]
+        .iter()
+        .flatten()
+        .map(|p| profile_residual([p[0], p[1]], &segs))
+        .fold(0.0f64, f64::max);
+    println!(
+        "  slot residual    : {slot_residual:.3e}   (folded slot loops land on the authored L)"
+    );
     let folded_path = format!("{out_dir}/self_lapping_cone_folded.svg");
     std::fs::write(&folded_path, rings_svg(&folded_rings, 900.0)).expect("write folded svg");
     println!("  wrote {folded_path}   (top-down: the tail laps the head)");

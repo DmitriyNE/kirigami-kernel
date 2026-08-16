@@ -273,6 +273,29 @@ fn the_certified_bounds_stay_within_budget() {
     };
     let solid_eps = solid.eps().clone();
 
+    // The device's topology, pinned where its solid is already built: the ONE seam drill bores
+    // through both sheets of the lap, so the shell has two tunnels. This is the control
+    // `self_lapping_slot.rs` reads its genus against — a traced slot there must take it to four.
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    let genus = (2 - (v - e + (2 * f - l))) / 2;
+    println!("[topology] drilled device: {f} faces, genus {genus}");
+    assert_eq!(brep.free_edges(), 0, "watertight");
+    assert_eq!(
+        genus, 2,
+        "one drill, two sheets, two tunnels — a genus other than 2 means the drill bored one sheet \
+         or neither"
+    );
+
     println!(
         "[budget] develop {:.4e}/{:.4e}  fold {:.4e}/{:.4e}  refold {:.4e}/{:.4e}  solid {:.4e}/{:.4e}",
         rat_to_f64(&develop_eps),

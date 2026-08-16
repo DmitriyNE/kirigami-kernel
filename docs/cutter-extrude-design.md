@@ -804,3 +804,67 @@ edge `1.6·10⁻³` on the L-slot, and the demo now prints that number beside th
 quantity that decides whether a CAD consumer can represent the shell, and the one no verdict reports.
 Its regression test is a fixture, not the device: a hole stepped `2⁻³⁰` off a station must build what
 the same hole stepped *on* it builds, vertex for vertex.
+
+### 11.10 The stress fixture: the same cutter on the hardest chart (#269)
+
+§11.9's three fixtures all sit on the Stage-1 gore, which is the *easy* chart — one region,
+`SupportFn::inherit` so `γ ≡ 0`, no wrap. That was the right place to argue the milestone, because
+everything there is attributable. It also means the tracer, the resolver's window derivation and the
+per-slice clipping had never met the two things the product device actually has: a chart that passes
+over itself, and a support that curves.
+
+**The placement is the experiment.** `acceptance::lap_slot` is the same L, put where the self-lapping
+device is hard. Its azimuth sweeps 410.7°, so the wedge `az ∈ (64.6°, 115.4°)` is covered **twice** —
+once by the body at `h ≡ 0` and once by the ramp and tail flap lapping over it. A vertical extrusion
+placed there pierces **both sheets at once**, and the two footprints land on opposite sides of
+`γ = 0`: the near one on the body (`σ ∈ [−1.168, −1.094]`, constant support), the far one strictly
+inside the smoothstep band (`σ ∈ [0.857, 0.914]`, where the flat directrix is being integrated under
+a moving support). Two more constraints are placement rather than shape: clear of the region joins,
+which are a typed refusal (`HoleCrossesRegions`), and inside the annulus, so it is an interior hole.
+
+**One cutter on two sheets is a differential with no second construction in it.** Development is an
+isometry and a prism cuts congruent patches from two parallel sheets of one cone, so the two derived
+holes must be the same shape — measured areas `0.069953` / `0.070007` and perimeters `1.269143` /
+`1.268027`, 0.08% apart. Nothing else on the device distinguishes them: `ε` is the max over stages,
+the panel boundary dominates it at `4.1481e-1`, and the featureless recipe reports the *same* number.
+A `γ` quietly dropped, or accumulated into the wrong region's running frame, certifies and fails
+this.
+
+**The four-crossing signature does not survive the chart change unexamined.** §11.9 read it with rays
+from the flat apex, which is sound *because* `γ ≡ 0` there: the ruling images are exactly that pencil.
+On a curved support each image is offset by `γ(σ)` and the family stops being concurrent — measured
+`|γ| = 0.159` at `σ = 7/8` against exactly `0` on the body — so a ray from the origin is simply not a
+ruling any more. The signature is therefore read against the family the development produces, through
+`Part::flat_rulings` (the glued development at `(σ, 0)` and `(σ, 1)`, two points fixing the image
+line) and `measure::max_ruling_crossings`. Both traced footprints give **4**, the seam drill's two
+bands give **2**. The non-concurrency is itself pinned, because an instrument introduced for a case
+the fixture does not exhibit is decoration.
+
+**The lap makes the draft measurable in a way one sheet cannot.** The same cutter meets the body at
+`z = −3.059` and the flap at `z = −2.939`. Swept parallel it is a prism and the two holes match;
+swept from a cast point at `z = 12` it is a cone, and the higher sheet — nearer the apex — gets the
+smaller hole by exactly the ratio the two folded heights predict:
+`((12 − z_flap)/(12 − z_body))² = 0.98417` against a measured `0.98373`, where the parallel sweep
+gives `1.00078`. Panel, rails and `ε` all cancel, because the two holes differ only in which sheet
+they were cut on. This is the AUTH.1f taper check with the panel divided out — a cutter that applied
+its taper at one nominal height for the whole part passes both.
+
+**Two things the fixture taught, both from a test failing.** *Classify by asking the cutter, not by
+size.* The drill's holes enclose `0.116` and the slot's `0.070`, so an area threshold separates them
+— under a parallel sweep. Under draft the slot's grow to `0.110`, within 5% of the drill's, and the
+threshold silently reclassified them; the classifier now folds a vertex and asks whether it lands on
+`acceptance::seam_drill_axis`. *Separate a chord from a bridge by refinement, not by a gate.* The
+traced slot scores 28.6% on the VV.3 chord golden at this device's `segments(16)` — inside the 30–48%
+band the metric was built to catch a real defect in, because the tracer's vertices come from the
+σ-event partition rather than from a uniform chording and the L's own straight sides are a large
+fraction of its box. Widening the gate would make the metric decoration; the property that actually
+distinguishes the two is that a bridge across the tangent rulings is structural. Measured 28.6% →
+18.0% → 9.0% at `segments` 16 → 32 → 64, against the metric drill's 9.4% → 4.7% → 2.4% on the same
+runs.
+
+**What it cost, and what it did not find.** Tracing one L-shaped footprint through two sheets takes
+the device's γ cells `2 256 → 4 336` and its cut-certificate evaluations `4 096 → 17 408`; the solid
+goes from genus 2 to genus **4**, stays watertight and manifold, and writes STEP with a shortest
+emitted edge of `2.489e-3`. No engine defect surfaced — which is the honest result to report, and is
+worth more than it sounds given that both of AUTH.2f's own defects came out of exactly this kind of
+composition.

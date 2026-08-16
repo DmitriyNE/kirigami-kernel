@@ -36,7 +36,7 @@
 use crate::realize;
 use crate::resolve;
 use certify_core::Verdict;
-use develop::cone::{ConeDevelopment, DevConfig};
+use develop::cone::{ConeDevelopment, DevConfig, FlatBox};
 use develop::cut::CutSurface;
 use develop::extrude::{Apex, Cast, ExtrudeFault, Frame};
 use develop::fold::{FoldFault, FoldedWire, fold_outline_pw};
@@ -836,6 +836,34 @@ impl<B: Backend> Part<B> {
             Verdict::Unresolved(e) => Verdict::Unresolved(e),
             Verdict::Refuted(f) => Verdict::Refuted(map_fold_fault(f)),
         }
+    }
+
+    /// Where the **rulings** at `sigmas` land in the developed flat pattern: for each, the
+    /// certified flat images of the domain points `(σ, 0)` and `(σ, 1)` — one point on the image
+    /// line and a second fixing its direction.
+    ///
+    /// Direction ① is an isometry and a ruling is straight, so its flat image is a straight line.
+    /// Where the support is constant that line passes through the flat apex, and the whole family
+    /// is a pencil of rays from the origin; where the support **curves**, each line is offset by
+    /// the running flat directrix `γ(σ)` and the family is no longer concurrent. Reading a ruling
+    /// off the pattern therefore takes the development, not trigonometry — which is why this is
+    /// here rather than in a consumer.
+    ///
+    /// Plural because the glued development memoizes its γ-quadrature: asking for one σ at a time
+    /// rebuilds and re-integrates it every call.
+    ///
+    /// Errs [`PartFault::Pole`] if a σ lies outside the declared σ-domain or the directrix has a
+    /// pole there; otherwise the region faults of [`develop`](Part::develop).
+    pub fn flat_rulings(&self, sigmas: &[Rat<B>]) -> Result<Vec<[FlatBox<B>; 2]>, PartFault> {
+        let built = self.build_regions()?;
+        let (zero, one) = (Rat::from_i128(0), Rat::from_i128(1));
+        sigmas
+            .iter()
+            .map(|s| {
+                let at = |m: &Rat<B>| built.pw.point(s, m, &self.cfg).ok_or(PartFault::Pole);
+                Ok([at(&zero)?, at(&one)?])
+            })
+            .collect()
     }
 
     /// Validate and build the per-region charts + developments and the glued piecewise
