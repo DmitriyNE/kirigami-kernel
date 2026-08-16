@@ -19,6 +19,69 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Certification runtime is product-blocking, and it is no longer a constant-factor problem
+  (#279).** Raised by the user while an AUTH.3c probe ran: *"These running times are not acceptable
+  for the real-world use."* The numbers that make it a scope item rather than a grumble: after
+  OPT.0–OPT.3 — which removed the 128-bit software division, **60%** of runtime — a **small**
+  fixture still costs tens of seconds per pipeline run. Small input, that much work, obvious
+  constant factors already gone: the pattern points at coefficient growth rather than a hot loop.
+
+  **What the honest numbers are, and are not.** The figures to hand are *post*-opt (this session's
+  `test`-profile run) but they are **test wall-clock**, not per-call: `the_same_footprint…` is `93s`
+  for **3 develops + 1 fold**, `only_the_declared_band…` is `258s` for **2 develops + 1 fold**, and
+  both ran under nextest across 298 tests on 10 cores, so contention inflates them. Per `develop()`
+  that is tens of seconds, not minutes. The first thing #279's triage owes is a **clean single-run
+  measurement** — one call, no contention, stated profile. Recorded because the user caught me
+  quoting a test timing as a call timing: *a suite number and a call number differ by both the call
+  count and the parallel load, and neither correction is small.*
+
+  ⚠️ **Correction to this entry as first written.** It also cited a `solid()` probe that had not
+  returned after 14 minutes. That number is **not** evidence of coefficient growth and must not be
+  cited as such — `sample`-ing the process at 30 min put **100%** of stacks in `sigma_splits::go`,
+  i.e. it was the unbounded-subdivision hang (#280), a different defect. The runtime concern stands
+  on the 93s/258s figures alone. Recorded because the mistake is the instructive part: *a slow
+  number and a hung number are indistinguishable without observability, and I generalized from one
+  to a cost model before sampling the process.* Sampling took ten seconds and settled it.
+
+  **⚠️ The triage ran early (2026-08-17) and refuted this entry's own hypothesis.** Per-stage,
+  release, single run, no contention (`author/examples/auth3c_probe.rs`):
+
+  | fixture | develop | outline pts | solid | fold |
+  |---|---|---|---|---|
+  | square, polygon corner | `1.20s` | 196 | `0.06s` | `1.22s` (6.2 ms/pt) |
+  | cylinder, sole-bound | `3.21s` | 192 | `0.08s` | `1.15s` (6.0 ms/pt) |
+  | **cylinder, whole-side** | **`175.68s`** | **6386** | `2.30s` | — |
+  | lateral trim (control) | `0.48s` | 98 | `0.04s` | Verified, 6 faces |
+
+  **The driver is emitted vertex count, not arithmetic.** Per-point cost is 6–27 ms and roughly
+  flat; the *count* is 33× on one shape (#281). Two explanations were tested and both died: the
+  **build profile** costs ~8% (same binary with `debug-assertions` + `overflow-checks` on: 1.28s vs
+  1.20s, 3.47s vs 3.21s — so keeping them on in `[profile.test]` is nearly free, and the earlier
+  "20–35× profile gap" reasoning was wrong), and **coefficient growth** would show as *rising*
+  per-point cost, which it does not. The one slow fixture explains test 2's `258s` almost exactly.
+
+  So the coefficient-histogram plan below is **not** where to start; it stays as a later check if a
+  per-point trend ever appears. The lever that measurement actually points at is *how many vertices
+  a boundary shape emits*, which is #281. Kept in full because the reasoning was plausible and
+  wrong, and the correction cost one afternoon of measurement rather than a rewrite of the
+  arithmetic tier: **a cost model asserted before a per-stage measurement is a guess with a table
+  around it.**
+
+  The original suspects, now demoted to "check only if per-point cost rises": `reduce()`'s
+  polynomial gcd over degree-24 denominators, Sturm chain construction, resultant/discriminant
+  formation in `develop::cut`, the tracer's per-segment rail fits.
+
+  Three candidate answers, to be chosen on that measurement and not before: bounded-precision
+  dyadic arithmetic with outward rounding pushed further up the pipeline (the enclosure tier
+  already does this with `RatIv` + `ROUND_BITS`); modular / evaluation-interpolation for the
+  resultant and gcd work; or an explicitly **uncertified float preview tier** with certification run
+  once at the end — which is the split an interactive ECAD user actually needs, since authoring and
+  the final certificate have different budgets. #257 folds in as a subset. The standing constraints
+  do not move: the float quarantine (lattice + certify-core only, exact-stays-exact, approx opt-in
+  under the five-part contract) and `no_repr_leak`. A preview tier has to be a *differently typed
+  path*, never a quiet precision drop inside a certified one.
+  *2026-08-16 · open · #279, sequenced after AUTH.3 at the user's "afterwards"*
+
 - **AUTH.1 deferrals — scope decisions, taken with the user, not oversights.** Recorded so the
   narrower first slice reads as a choice: **(a) per-edge draft slope** — a single cast point forces
   one projective taper and cannot give edge A 5° and edge B 0°, which is real fab practice; wanted
@@ -682,6 +745,223 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **The vv-matrix gate has been vacuous for every `[AUTH.x]` row, and `LANDED`'s `"AUTH.1"` /
+  `"AUTH.2"` entries had never been read.** `milestone_tag` required a tag to start with `M` and hold
+  alphanumerics only — a tightening that reads as harmless and is not: `AUTH.2` fails *both* halves,
+  so the parser returned `None` and the row was skipped before the landed check ever ran. Six ★ rows
+  were gated by nothing. Found while adding the AUTH.3 row, by asking whether the row I was writing
+  would actually be enforced: strip `rc-hyp ✅` from the AUTH.2 ★ row and the gate still reported
+  **OK**. Fixed to accept an uppercase-initial tag with alphanumerics and dots, which is what the
+  repo's own tag vocabulary has been since AUTH.1; the mutation now fails and both cases are unit
+  tests. Worth recording as a pattern rather than a typo: **this is the second time this gate has
+  passed vacuously** (before slice 3d it split on whitespace and matched a mid-cell word instead of
+  the ★ Item), and both times the shape was the same — the gate ran, printed OK, and was checking a
+  set that had silently become empty. A gate whose *scope* is computed needs a test that the scope is
+  non-empty, not only a test that the check fires on a hand-built row.
+  *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
+
+- **A 33× cost regression that every faithfulness assertion passed (#281).** The per-stage triage
+  that #280's sampling unblocked found one fixture wildly out of line — the whole-side contour
+  emitting **6386** outline points where the *same contour traced as a sole boundary* emits **192**,
+  at `175s` to develop against `3s`. Cause, in #278's own `push_turn`: each **already-traced**
+  p-curve piece was wrapped as `BoundaryArc::Curve { segments: part.segments }`. But `segments` on a
+  `Curve` means *how finely to re-sample this one piece*, while the tracer's `segments` sets *how
+  many pieces the loop has* — so the two multiply. `133 pieces × 48 = 6384`, against the 6386 seen.
+  `export::trim` has mapped a traced piece to `segments: 1` since PC.4; the fix is to agree with it.
+
+  Measured: the whole-side test **`258.770s → 5.545s` (47×)**, and the four-crate suite
+  **`260.4s → 124.9s`** overall, 300/300 green with every certified ε unchanged — one chord per
+  traced piece is the resolution the tracer already chose, not a coarsening.
+
+  **The reusable part is why the tests missed it.** #278's assertions check the boundary is
+  *correct* — every folded vertex on the authored cylinder or plane to `< 5e-3`, folded x-span
+  `> 1.9r` proving the arc wraps rather than stopping at a tangent — and a 6386-point outline
+  satisfies all of them, more comfortably than a 133-point one does. **Faithfulness assertions are
+  monotone in refinement: they cannot fail from emitting too much, so a cost regression is exactly
+  the defect class they are blind to.** Now pinned as its own budget (`n_out < 8 × segments`), on
+  the shape rather than a golden number: a boundary made of a rail plus an arc over the traced loop
+  is `O(segments)` and never `O(segments²)`. Same spirit as VV.3's golden flat-pattern metric.
+
+  Also worth noting against [[verify-demo-faithfulness]]: this is that lesson's mirror image. There
+  the risk was green certificates over unfaithful geometry; here it was faithful geometry that no
+  assertion could price. Both come of checking only the property the milestone is *about*.
+  *2026-08-17 · resolved · #281, branch `auth-3`*
+
+- **A 30-minute "slow" run was a hang, and ten seconds of `sample` said so (#280).** Probing
+  AUTH.3c with `solid_brep`'s guard bypassed, the first fixture had not returned after 30 minutes,
+  and there was no way to tell 3 more minutes from 3000. macOS `sample <pid> 10` put **100%** of
+  stacks in `export::brep_build::sigma_splits::go`, recursing dozens of levels — an unbounded
+  subdivision, not arithmetic cost. **Two defects, both in code shipped since G9.2:**
+
+  - **The hang.** `sigma_splits` bisects until every sub-interval's rational Bézier has all-positive
+    weights, and its own doc carries the termination argument: *"a strictly-positive polynomial's
+    Bernstein coefficients converge to its (positive) values under subdivision"*. That argument
+    needs `den > 0` on `[a,b]`. Where `den` is non-positive over a *region*, nothing converges and
+    the whole region expands to `MAX_DEPTH` — and the cap bounds **depth, not node count**, so the
+    work is `2³²` sub-intervals. The precondition was stated correctly and never checked.
+  - **The fail-open underneath it.** On depth exhaustion `go` did `out.push(b); return` — emitting
+    the very piece the function exists to exclude. A caller got an invalid Bézier weight (a control
+    point at or through infinity) with every certificate still green.
+
+  Fix: the end weights of a piece **are** `den` at its ends, so one evaluation per split point
+  decides it — `den(x) ≤ 0` refuses immediately instead of bisecting toward it — plus a `MAX_NODES`
+  backstop, and `Option` returns so exhaustion refuses rather than emits. The pathological case went
+  from **30+ min to 16 ms**, and all 73 export/acceptance tests stayed green, so it is not
+  over-refusing.
+
+  Three things worth keeping. **A documented precondition with no check is a hang waiting for a
+  caller** — this one survived because `solid_brep`'s AUTH.3c guard happened to keep every shipped
+  fixture inside the valid range, so the bug was reachable only by the slice that had to remove the
+  guard. **A depth cap is not a work cap**; `2³²` leaves is indistinguishable from a hang, and the
+  cap read as a safety net while providing none. And **a slow number and a hung number are identical
+  without observability** — I had already generalized this 30 minutes into a cost model for #279
+  before sampling, which was wrong; the runtime concern stands on other numbers.
+  *2026-08-17 · resolved · #280, branch `auth-3`*
+
+- **Two guesses that read as facts, and both failed as `None` rather than as bad geometry.** The
+  last boundary shape AUTH.3b owed (#278) is a contour bounding one **whole side**: its chain there
+  is a single segment, so the per-end splice — "remove that end's outermost segment from both chains"
+  — has nothing to remove twice, and the framing had to go. The general statement is that **an arc is
+  the run of the contour's loop between the two σ where a non-contour rail takes over**, wrapping
+  zero, one or two tangents. Making `tangent_turn_arc` general surfaced two assumptions that had been
+  correct only for the one-turn case:
+
+  - *σ does not say which branch a junction is on.* The first version picked the starting piece by σ,
+    but a loop that turns visits each σ twice; the arc came back as a graph. Fixed by taking
+    `from_upper`/`to_upper` from the caller — the chains already know which side they are — rather
+    than inferring them.
+  - *the walk covered the cycle once.* A two-turn arc leaves the upper branch, turns, crosses the
+    lower branch, turns again and rejoins the upper — so its end lies **after** a full lap and was
+    unreachable. Fixed by walking `2·n` pieces and stopping on turn count, not index count.
+
+  Neither produced a wrong boundary; both produced `None`, which routes to `CutUnresolved` — safe,
+  and uninformative. **A total function over a partial traversal fails silently by construction: the
+  case it cannot reach is indistinguishable from the case that does not exist.** Worth pairing with
+  the `params_at_sigma` entry below, which is the same milestone's opposite failure — an *inexact*
+  value that looked right (closing "to 1e-12") where this is a *correct* value that never arrived.
+  *2026-08-16 · AUTH.3b‴, branch `auth-3`*
+
+- **A searched parameter is not a join: `params_at_sigma` bisects, and an exactly-checked chain says
+  so.** Splicing a p-curve turn arc into a graph chain, the arc has to start exactly where the rail
+  it follows ends. `PCurve::params_at_sigma` looked like the tool for it — "the parameters where the
+  curve crosses σ = s" — and it is, for locating; but it is `scan_roots`, a bisection, so the
+  parameter is *near* the crossing and the trimmed arc starts *near* the junction. `unroll_trim_loop`
+  compares consecutive arcs over ℚ (`sm_eq`) and rejected it, correctly, as `ArcDiscontinuity`. The
+  fix is that the object is a **chord**: `σ(t) = a + (b − a)·t`, so the junction parameter is one
+  division in ℚ and the endpoint is exactly the junction. A piece whose σ is not affine is now
+  refused rather than approximated, because an inexact join is a boundary that does not close.
+
+  Two things worth carrying. **Where a structure is checked exactly, every value entering it must be
+  constructed exactly, not found.** And the diagnosis was slow for an avoidable reason: the chain
+  printed as closing "to 1e-12" in floats and the fault name (`LoopBroken`) had already discarded the
+  index the unroll reported. Ten seconds of surfacing `ArcDiscontinuity { index }` beat twenty
+  minutes of reasoning about which junction *ought* to be wrong — *when a refusal is re-typed on the
+  way out, the diagnostic is what gets dropped.*
+  *2026-08-16 · AUTH.3b″, branch `auth-3`*
+
+- **Separating the two pinch classes turned the "hard" one into no new construction at all.** The
+  quadric end was filed as the expensive half of AUTH.3b — a √-branch no graph fit can reach, needing
+  §12.4's p-curve. Once the classes were told apart (entry below), the question sharpened from *"how
+  do we fit a rail through a tangent ruling"* to *"what is the boundary there"*, and the answer was
+  already built: when the contour bounds the part **alone**, the outer boundary **is** that wall's
+  traced footprint loop, which `surface_hole_loop` has produced since PC.3 and `unroll_trim_loop` has
+  accepted since PC.4. Thirty lines of detection and dispatch, no new geometry. Measured on a radius-
+  `1/5` disc: 192 outline points, `ε = 2.26e-3`, every vertex folded back on the authored cylinder.
+  **The pattern: a construction built for one role (an interior hole) is often the whole answer in
+  another (an outer boundary), and what hides that is describing the problem by its difficulty
+  ("fit a rail through a tangent") instead of by its object ("the boundary is this loop").** The
+  residual case is genuinely different work and is now scoped as such: a quadric contour *sharing*
+  the boundary with other ops needs the p-curve arc **spliced** into a graph chain at the junctions.
+  *2026-08-16 · AUTH.3b′, branch `auth-3`*
+
+- **The two "pinch" ends are not the same shape, and the affine one is the exact one.** §12.4 filed
+  a single termination class — "the two bounding rails meet, so a graph fit runs into `∂s/∂µ̂ → 0`;
+  a p-curve, then" — covering both a quadric's tangent ruling and a polygon's corner. Measured at
+  AUTH.3b they behave oppositely. A **quadric** contour ends at a √-branch and its rail is a *fit*
+  whose certified span stops short of the end, so it refuses. A **polygon** contour ends at a corner
+  where two walls cross transversally, every wall is affine, `plane_cut_rail` is **exact** — no fit,
+  no window, no clamp — and the whole boundary certifies at **ε = 0** right through the corner. So
+  "keep what is inside this contour" shipped for polygonal contours a slice before quadric ones,
+  which is the reverse of the usual order: the metric cutters are normally the easy case, and on
+  this axis the affine wall is the exact one. The general lesson is about how a design note groups
+  cases: *"the rails meet"* is a statement about the picture, and the thing that decides the work is
+  whether the rail is a **fit** or a **formula**. Two ends that look alike in the domain can sit on
+  opposite sides of the only distinction that matters.
+  *2026-08-16 · AUTH.3b, branch `auth-3`*
+
+- **A rail was being evaluated outside the span it was certified over, and only a derived σ-end could
+  reach it.** `certified_rail_surface` clamps its fit span to the wall's disc-positive window, inset
+  a hair, precisely because the near-tangent region blows the bound. Nothing checked that the *chain
+  segments* stayed inside the clamped span — and nothing needed to, while the outer boundary always
+  ran between authored band edges and only interior holes ever approached a tangent (which is why
+  p-curves were built for holes at PC.3 and for nothing else). Give the boundary a derived end that
+  lands on a tangent and the fitted graph is read past its certificate, into a √-branch of unbounded
+  slope, with the reported ε describing a stretch of rail the geometry does not use. `RailPiece` now
+  carries its certified span and `PartFault::RailSpanShort` refuses the mismatch. **The shape worth
+  recognising: a bound that was safe because of a property of the *inputs* rather than of the
+  code, in a codebase where the inputs just got more general.**
+  *2026-08-16 · AUTH.3b, branch `auth-3`*
+
+- **A `Pole` that was not a pole: two functions computing the same quantity from different
+  sources.** With the derived extent wired into `certify_boundary`, the polygonal contour refused
+  `Pole` — and the boundary certified perfectly (ε = 0, four wall rails, segments covering the
+  domain, corners located). `flat_pattern` recomputes `domain` from the region **bands** rather than
+  taking the one the structure derived, so it evaluated the closing caps at σ = ±1 while every rail
+  piece was fitted over the contour's own ±0.064 footprint — asking a rail for its value a
+  quarter-turn from where it exists. Two derivations of "the domain", one updated. Exactly the
+  #267 shape (two independently derived structures reconciled nowhere), and worth logging separately
+  because the *symptom* pointed at the arithmetic — a fault named `Pole`, on a fixture that really
+  does have two rails with genuine poles at σ = 0, neither of which is used where it poles. The
+  plausible cause was there to be found and was not the cause.
+  *2026-08-16 · AUTH.3b, branch `auth-3`*
+
+- **Which of two sub-cell events ends the material — the GO-gate got it backwards, and the mechanism
+  it specified is what caught that.** AUTH.3.0 claimed the quadric fixture's material closes at
+  `Meet(1, 2)` (σ = ±0.238427501), *inside* the contour's own `Tangent(2)` (σ = ±0.240408206), and
+  billed that as proof the naive "a contour's σ-extent is its own tangent rulings" was unsafe. **The
+  two are the other way round.** Measured across the stretch once AUTH.3a's gap evaluation existed:
+
+  | σ | kept µ̂-interval | bounded by |
+  |---|---|---|
+  | −0.238400 | `[1.95723, 2.21527]` | carve below, contour above |
+  | −0.238500 | `[1.95953, 2.21192]` | **both the contour's own walls** |
+  | −0.240000 | `[2.02568, 2.14259]` | contour, narrowing |
+  | −0.240400 | `[2.07542, 2.09200]` | contour, nearly shut |
+  | −0.240500 | — | gone |
+
+  `Meet(1, 2)` is a **handover** — where the lower bound stops being the annulus carve and becomes
+  the contour's own lower root — and the material lives another `2·10⁻³` past it before pinching at
+  the contour's tangent. The gate's reasoning had inferred the mechanism from a sampled scan: it read
+  the labels at the last live sample (`[carve, contour]`) and assumed they persisted to the end. They
+  do not. **The lesson is about evidence rather than geometry: a design note that reasons from a
+  sampled scan about which of two sub-cell events matters is a hypothesis, and the only evidence is
+  the evaluation the design itself specifies.** The derivation disagreed with its author the first
+  time it ran, which is the cheapest place this could have surfaced.
+
+  Two things survive. The union over every op's walls is still required — the two rails that close
+  the interval genuinely need not belong to one cutter, since a contour's band can slide entirely
+  inside a subtract's carve — but that case now has **no fixture**, and it is filed rather than
+  claimed. And the replacement assertion is stronger than the one it replaces: the handover stretch
+  is asserted directly (`both bounds are the contour's own walls, and the interval narrows`), because
+  that is precisely what a nearest-event derivation denies. The near-miss recorded at the gate —
+  a locator that returned the *first* event in the cell and so reported an asymmetry a
+  mirror-symmetric fixture cannot have — has the same root, and was the warning shot.
+  *2026-08-16 · corrected at AUTH.3a, branch `auth-3`*
+
+- **The third σ-end class exists, is implemented, and is unreachable — and the reason lives in
+  another tier.** §12.2 names three ways material can end: two rails converging (`Meet`/`Tangent`)
+  and a wall degenerate in µ̂ flipping its coverage at a root of `c`
+  (`develop::cut::coverage_events`, added here). The third needs `n ⊥ ruling(σ)` for every σ, so
+  every ruling must point one way — a cylinder chart. The shipped cylinder has `h ≡ 0`, which puts
+  its whole `w = 0` surface in one plane and leaves `c` constant (measured `c ≡ −1`: no root, no
+  flip). Give it a moving support and `c` does vary (measured `2.2, 0, −1, −2, −4.2`, root at
+  `σ = −1`) — but that chart comes back `NotDevelopable`, refused a step earlier. So the family is
+  folded in, correct, cheap, and presently dead code. Worth recording because the instinct is to call
+  that over-engineering: it is unreachable *from the resolver's side*, and what would make it
+  reachable is a development-tier capability, so the branch starts firing the day a supported
+  cylinder develops rather than the day someone edits `resolve.rs`.
+  *2026-08-16 · AUTH.3a, branch `auth-3`*
 
 - **A measurement can stop being valid when the fixture moves, and stay green: `max_ray_crossings` on
   a chart whose support curves.** AUTH.2's headline property — a ruling meets the cutter twice — is

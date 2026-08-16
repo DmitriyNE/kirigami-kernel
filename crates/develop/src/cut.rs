@@ -493,6 +493,58 @@ pub fn tangent_events<B: Backend>(
     Ok(out)
 }
 
+/// One wall's **coverage flips**: the σ where a wall that is *degenerate in µ̂* (`a ≡ b ≡ 0` — a
+/// plane containing the whole ruling family, which happens on a cylinder chart) switches between
+/// covering the entire ruling and covering none of it, as disjoint isolating brackets in σ order.
+///
+/// This is the third way a ruling's stretch structure can change, and it is the one the other two
+/// families cannot see. [`structure_events`]' `Tangent` reads `disc = b² − 4ac`, which for such a
+/// wall is identically zero; `Escape` reads `a`, also identically zero. Nothing *meets* and nothing
+/// *escapes* — the shadow simply flips between `Patch::All` and empty at a root of `c`. Where the
+/// other families bound material by a **pinch** (the two bounding rails converge), this one bounds
+/// it by a **jump**: the material ends at full width.
+///
+/// Returns the empty vector for any wall that is not degenerate, so a caller can fold it over every
+/// wall unconditionally. Kept separate from [`structure_events`] on purpose: adding a family there
+/// would refine the tracer's σ-partition on charts where it is not needed.
+///
+/// ```
+/// use develop::cut::{MuCut, coverage_events};
+/// use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
+///
+/// type Q = Rat<Bignum>;
+/// let poly = |cs: &[i128]| {
+///     RatFunc::<Bignum>::from_poly(Poly::from_coeffs(
+///         cs.iter().map(|&c| Q::from_i128(c)).collect(),
+///     ))
+/// };
+/// let window = Interval { lo: Q::from_i128(-2), hi: Q::from_i128(2) };
+/// let tol = Q::new(1, 1024);
+///
+/// // Degenerate in µ̂ (`a ≡ b ≡ 0`) with `c(σ) = σ − 1/2`: the ruling is wholly inside the cutter
+/// // while `c < 0`, wholly outside after, and the flip is at σ = 1/2.
+/// let flip = MuCut { a: poly(&[]), b: poly(&[]), c: poly(&[-1, 2]) };
+/// let got = coverage_events(&flip, &window, &tol).unwrap();
+/// assert_eq!(got.len(), 1);
+/// assert!(got[0].lo <= Q::new(1, 2) && Q::new(1, 2) <= got[0].hi);
+///
+/// // A wall that bounds µ̂ at all is not this class, however its `c` behaves.
+/// let ordinary = MuCut { a: poly(&[]), b: poly(&[1]), c: poly(&[-1, 2]) };
+/// assert!(coverage_events(&ordinary, &window, &tol).unwrap().is_empty());
+/// ```
+pub fn coverage_events<B: Backend>(
+    form: &MuCut<B>,
+    window: &Interval<B>,
+    tol: &Rat<B>,
+) -> Result<Vec<Interval<B>>, CutFitFault> {
+    if !form.a.is_zero() || !form.b.is_zero() {
+        return Ok(Vec::new());
+    }
+    let mut out = isolate_roots(&form.c, window, tol)?;
+    out.sort_by(|a, b| a.lo.cmp(&b.lo));
+    Ok(out)
+}
+
 /// A constant vector as a degree-0 [`Vec3Rat`] (denominator `1`), so it dots with the
 /// chart's σ-rational fields. (Local copy of `closure::trim`'s helper — `develop`
 /// does not depend on `closure`.)
@@ -542,6 +594,17 @@ pub struct MuCut<B: Backend = Bignum> {
     pub c: RatFunc<B>,
 }
 
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for MuCut<B> {
+    fn clone(&self) -> Self {
+        MuCut {
+            a: self.a.clone(),
+            b: self.b.clone(),
+            c: self.c.clone(),
+        }
+    }
+}
+
 impl<B: Backend> MuCut<B> {
     /// The residual `s(σ, µ̂)` at a rational point, or `None` on a coefficient pole.
     pub fn eval(&self, sigma: &Rat<B>, mu_hat: &Rat<B>) -> Option<Rat<B>> {
@@ -562,6 +625,161 @@ impl<B: Backend> MuCut<B> {
                 .mul(&RatFunc::from_poly(Poly::constant(Rat::from_i128(4)))),
         )
     }
+}
+
+/// The arc of a [`CutLoop`] running from one junction to another — the piece of a contour's
+/// footprint that no graph `µ̂ = f(σ)` can carry, because it **turns around** a tangent ruling.
+///
+/// A loop from [`quadric_cut_loop`] traverses `left tangent → upper branch (σ ascending) → right
+/// tangent → lower branch (σ descending) → close`, which is the same sense an outer boundary runs
+/// (up the near cap, right along the top, down the far cap, left along the bottom). So the arc is a
+/// **contiguous run** of the loop's pieces, and the only work is finding its two ends and trimming
+/// them exactly.
+///
+/// The junctions are where the chains hand the boundary to the contour, which the run-corner
+/// refinement already located; `from_upper`/`to_upper` say which branch each sits on, and that
+/// alone determines how many tangents the arc wraps:
+///
+/// | `from_upper` | `to_upper` | tangents wrapped | when |
+/// |---|---|---|---|
+/// | upper | lower | **one** (the σ-max) | the contour takes over near the `σ_hi` end |
+/// | lower | upper | **one** (the σ-min) | …near the `σ_lo` end |
+/// | upper | upper | **two** | the contour bounds the whole *lower* side, so its two tangents are joined by one continuous run of contour boundary |
+/// | lower | lower | **two** | the same, on the upper side |
+///
+/// Both boundary pieces are cut at the exact parameter where σ meets the junction — a piece is a
+/// chord, so σ is linear in its parameter and the cut is one division in ℚ, leaving no sliver for a
+/// micro-cap to paper over and nothing for the unroll's exact chaining check to reject.
+///
+/// `None` if the loop does not turn (fewer than two σ-extremes), or if a junction is not found on
+/// the branch it was said to be on — both of which mean the caller's structure and this loop
+/// disagree, which is a refusal rather than something to approximate.
+pub fn tangent_turn_arc<B: Backend>(
+    cut: &CutLoop<B>,
+    from: &Rat<B>,
+    from_upper: bool,
+    to: &Rat<B>,
+    to_upper: bool,
+) -> Option<Vec<crate::pcurve::PCurve<B>>> {
+    use core::cmp::Ordering;
+    let n = cut.pieces.len();
+    if n < 4 {
+        return None;
+    }
+    // Each piece's start vertex, in traversal order.
+    let start_of = |k: usize| cut.pieces[k].eval(&cut.pieces[k].domain.lo);
+    let sig: Vec<Rat<B>> = (0..n)
+        .map(|k| {
+            let [s, _] = start_of(k)?;
+            Some(s)
+        })
+        .collect::<Option<_>>()?;
+    // The two turning indices: where σ stops rising and where it stops falling.
+    let (mut at_max, mut at_min) = (0usize, 0usize);
+    for k in 0..n {
+        if sig[k].cmp(&sig[at_max]) == Ordering::Greater {
+            at_max = k;
+        }
+        if sig[k].cmp(&sig[at_min]) == Ordering::Less {
+            at_min = k;
+        }
+    }
+    if at_max == at_min {
+        return None;
+    }
+    // Walk the cycle in traversal order from the turn the `from` run **begins** at — the upper
+    // (ascending) run starts at the σ-min turn, the lower (descending) one at the σ-max — so the
+    // run we want is contiguous and forward from the first piece.
+    let begin = if from_upper { at_min } else { at_max };
+    // Twice round: a two-turn arc leaves its start run, crosses both extremes, and finishes on that
+    // same run — which is only reachable on a second pass. One pass caps the walk at a single turn,
+    // so the two-turn case can never complete and (correctly, but uselessly) returns `None`.
+    let order: Vec<usize> = (0..2 * n).map(|i| (begin + i) % n).collect();
+    // σ alone does not say which branch a junction is on — both branches cover the same σ. What
+    // distinguishes them is **how many turns the walk has taken**, so `to` is matched only once the
+    // arc has wrapped as many tangents as the two branch flags imply: one to cross to the other
+    // branch, two to come back to the same one. (The first version guarded with an index count and
+    // matched `to` on the approach, producing an "arc" that ran up to the tangent and stopped — a
+    // graph, which is the one thing this function exists not to return.)
+    let turns_needed = if from_upper == to_upper { 2 } else { 1 };
+
+    let mut out: Vec<crate::pcurve::PCurve<B>> = Vec::new();
+    let mut started = false;
+    let mut turns = 0usize;
+    for (i, &k) in order.iter().enumerate() {
+        if i > 0 && (k == at_max || k == at_min) {
+            turns += 1;
+        }
+        let piece = &cut.pieces[k];
+        let [a, _] = piece.eval(&piece.domain.lo)?;
+        let [b, _] = piece.eval(&piece.domain.hi)?;
+        let spans = |s: &Rat<B>| {
+            (a.cmp(s) != Ordering::Greater && s.cmp(&b) != Ordering::Greater)
+                || (b.cmp(s) != Ordering::Greater && s.cmp(&a) != Ordering::Greater)
+        };
+        // A junction cut may land exactly on a piece end, leaving nothing of it: that is a clean
+        // join, not a failure, so the degenerate remainder is dropped rather than kept whole.
+        //
+        // The parameter is solved **exactly**, not searched. `PCurve::params_at_sigma` bisects, and
+        // a bisected parameter puts the arc's endpoint *near* the junction rather than on it — which
+        // the unroll's chaining check compares over ℚ and rejects (`ArcDiscontinuity`), correctly.
+        // A loop piece is a chord, so `σ(t) = a + (b − a)·t` and the junction is one division; a
+        // piece whose σ is not affine is refused rather than approximated, since an inexact join
+        // here is a boundary that does not close.
+        let cut_at = |lo_side: bool, s: &Rat<B>| -> Option<Option<crate::pcurve::PCurve<B>>> {
+            let sigma = &piece.sigma;
+            if sigma.den().degree().unwrap_or(0) != 0 || sigma.num().degree().unwrap_or(0) > 1 {
+                return None;
+            }
+            let nth = |p: &lattice::Poly<B>, i: usize| {
+                p.coeffs()
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Rat::from_i128(0))
+            };
+            let d0 = nth(sigma.den(), 0);
+            if d0.sign() == 0 {
+                return None;
+            }
+            let c0 = nth(sigma.num(), 0).div(&d0);
+            let c1 = nth(sigma.num(), 1).div(&d0);
+            if c1.sign() == 0 {
+                return None;
+            }
+            let t = s.sub(&c0).div(&c1);
+            let span = if lo_side {
+                Interval {
+                    lo: t,
+                    hi: piece.domain.hi.clone(),
+                }
+            } else {
+                Interval {
+                    lo: piece.domain.lo.clone(),
+                    hi: t,
+                }
+            };
+            Some(piece.restrict(&span))
+        };
+        if !started {
+            // `from` lies on the run the walk opens with, so it is matched before any turn.
+            if turns > 0 || !spans(from) {
+                continue;
+            }
+            if let Some(tail) = cut_at(true, from)? {
+                out.push(tail);
+            }
+            started = true;
+            continue;
+        }
+        if turns >= turns_needed && spans(to) {
+            if let Some(head) = cut_at(false, to)? {
+                out.push(head);
+            }
+            return if out.is_empty() { None } else { Some(out) };
+        }
+        out.push(piece.clone());
+    }
+    None
 }
 
 /// A closed **cut loop** in the domain: the pieces of a solid cutter's intersection with the
@@ -2090,6 +2308,139 @@ mod tests {
             lo: Q::from_i128(lo),
             hi: Q::from_i128(hi),
         }
+    }
+
+    /// **The arc turns around the tangent, which is precisely what a graph cannot do.**
+    ///
+    /// A vertical cylinder's footprint on the device cone, as the closed loop
+    /// [`quadric_cut_loop`] traces; the arc cut out of it between two junction σ must
+    ///
+    /// 1. **reverse in σ** — its σ rises to the tangent and falls back, so no `µ̂ = f(σ)` covers it;
+    /// 2. **start and end exactly at the junctions**, not at whatever sample node happened to be
+    ///    nearest, since a chain joins onto it there and a sliver would need a micro-cap;
+    /// 3. **reach past both junctions** in σ, i.e. contain the tangent rather than stopping short.
+    ///
+    /// (1) is the load-bearing one: a run of pieces that merely *approached* the tangent would
+    /// satisfy the endpoint checks and still be a graph.
+    #[test]
+    fn a_turn_arc_reverses_in_sigma_and_starts_where_it_is_told() {
+        use crate::cone::DevConfig;
+        let chart = cone();
+        let zero = Q::from_i128(0);
+        let surface = CutSurface::Cylinder {
+            axis_point: [zero.clone(), Q::new(11, 5), zero.clone()],
+            axis_dir: [zero.clone(), zero.clone(), Q::from_i128(1)],
+            r2: Q::new(1, 25),
+        };
+        let form = cut_mu_form(&chart, &surface, &zero).expect("a pullback");
+        let br = tangent_events(&form, &ivl(-1, 1), &Q::new(1, 1 << 40)).expect("isolable");
+        assert_eq!(br.len(), 2, "a disc off the apex has two tangent rulings");
+        let window = Interval {
+            lo: br[0].hi.clone(),
+            hi: br[1].lo.clone(),
+        };
+        let cut = match quadric_cut_loop(
+            &chart,
+            &surface,
+            &window,
+            &zero,
+            24,
+            &Q::from_i128(1),
+            &DevConfig::tight(),
+        ) {
+            Verdict::Verified(l) => l,
+            _ => panic!("the footprint loop must certify"),
+        };
+
+        // Junctions well inside the window, one on each branch.
+        let mid = window.lo.add(&window.hi).mul(&Q::new(1, 2));
+        let from = mid.add(&window.hi.sub(&mid).mul(&Q::new(1, 4)));
+        let to = mid.add(&window.hi.sub(&mid).mul(&Q::new(1, 2)));
+        let arc = tangent_turn_arc(&cut, &from, true, &to, false).expect("the loop turns");
+        assert!(
+            arc.len() >= 3,
+            "a turn needs several pieces, got {}",
+            arc.len()
+        );
+
+        let ends: Vec<(f64, f64)> = arc
+            .iter()
+            .map(|p| {
+                let [a, _] = p.eval(&p.domain.lo).expect("evaluable");
+                let [b, _] = p.eval(&p.domain.hi).expect("evaluable");
+                (to_f64(&a), to_f64(&b))
+            })
+            .collect();
+
+        // (2) exactly at the junctions.
+        assert!(
+            (ends[0].0 - to_f64(&from)).abs() < 1e-12,
+            "the arc must start at the junction σ = {:.9}, got {:.9}",
+            to_f64(&from),
+            ends[0].0
+        );
+        assert!(
+            (ends[ends.len() - 1].1 - to_f64(&to)).abs() < 1e-12,
+            "and end at σ = {:.9}, got {:.9}",
+            to_f64(&to),
+            ends[ends.len() - 1].1
+        );
+
+        // (1) it reverses: σ rises, then falls.
+        let rose = ends.iter().any(|(a, b)| b > a);
+        let fell = ends.iter().any(|(a, b)| b < a);
+        assert!(
+            rose && fell,
+            "the arc must turn around in σ — that is the whole reason it is not a rail: {ends:?}"
+        );
+
+        // (3) it contains the tangent, past both junctions.
+        let peak = ends.iter().map(|(_, b)| *b).fold(f64::MIN, f64::max);
+        assert!(
+            peak > to_f64(&to) && peak > to_f64(&from),
+            "the arc must reach the tangent (σ ≈ {:.6}), peaked at {peak:.6}",
+            to_f64(&window.hi)
+        );
+
+        // **Both junctions on the same branch ⇒ the arc wraps BOTH tangents.** This is what a
+        // contour bounding one whole side of a part needs: its two tangents are joined by one
+        // continuous run of contour boundary, so there is no second junction to end at after the
+        // first turn. Same call, one flag different — and it must reach *both* extremes, which the
+        // one-turn arc above does not.
+        //
+        // The junctions run the *long* way round here — leaving the upper branch at the larger σ and
+        // rejoining it at the smaller — which is the order a boundary traverses them in: the upper
+        // chain hands over at its `σ_hi` end and gets the boundary back at its `σ_lo` one.
+        let both = tangent_turn_arc(&cut, &to, true, &from, true).expect("the loop turns twice");
+        let ends2: Vec<(f64, f64)> = both
+            .iter()
+            .map(|p| {
+                let [a, _] = p.eval(&p.domain.lo).expect("evaluable");
+                let [b, _] = p.eval(&p.domain.hi).expect("evaluable");
+                (to_f64(&a), to_f64(&b))
+            })
+            .collect();
+        let hi = ends2.iter().map(|(_, b)| *b).fold(f64::MIN, f64::max);
+        let lo = ends2.iter().map(|(_, b)| *b).fold(f64::MAX, f64::min);
+        assert!(
+            hi > to_f64(&window.hi) - 1e-6 && lo < to_f64(&window.lo) + 1e-6,
+            "a two-turn arc must reach both tangents (σ ≈ {:.6} and {:.6}), spanned [{lo:.6}, \
+             {hi:.6}]",
+            to_f64(&window.lo),
+            to_f64(&window.hi)
+        );
+        assert!(
+            both.len() > arc.len(),
+            "and it must be the longer way round: {} pieces against the one-turn arc's {}",
+            both.len(),
+            arc.len()
+        );
+        // It still starts and ends exactly where it was told.
+        assert!(
+            (ends2[0].0 - to_f64(&to)).abs() < 1e-12
+                && (ends2[ends2.len() - 1].1 - to_f64(&from)).abs() < 1e-12,
+            "the two-turn arc must also land on its junctions exactly"
+        );
     }
 
     /// A **graph** p-curve certifies the same exact rail the graph checker does — with the

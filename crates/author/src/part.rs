@@ -502,12 +502,44 @@ pub enum PartFault {
     RegionOverlap(usize),
     /// The regions do not share one development frame (angle coefficient + ρ²).
     FrameMismatch,
-    /// The material vanished somewhere in the declared σ-domain (the declared regions exceed
-    /// the material the ops leave).
+    /// The material's derived σ-extent does not fill the declared σ-domain — either the ops leave
+    /// nothing anywhere, or they leave material over a strict sub-interval of the declared regions
+    /// (a cutter that *terminates* the blank rather than trimming it laterally). The second case is
+    /// what AUTH.3b lifts; until then it is refused rather than realized over a domain the material
+    /// does not fill (`docs/cutter-extrude-design.md` §12).
     EmptyRegion,
-    /// The ops leave no **bounded** material anywhere — the stock discipline: µ̂ is unbounded
-    /// until an op bounds it.
+    /// The ops leave no **bounded** material at some σ — the stock discipline: µ̂ is unbounded
+    /// until an op bounds it, and an unbounded component is not part material.
+    ///
+    /// Distinct from [`EmptyRegion`](PartFault::EmptyRegion), and the distinction is load-bearing:
+    /// material that is *absent* at a σ puts that σ outside the derived extent, while material that
+    /// is *unbounded* there is a stock error. Trimming the extent to where the blank happens to be
+    /// bounded would ship a part whose end is the unboundedness frontier rather than a cut.
     UnboundedRegion,
+    /// The ops leave material in **more than one** σ-run — two or more pieces with a gap between
+    /// them. A part is one connected piece; the resolver refuses rather than picking a run or
+    /// emitting several.
+    DisconnectedRegion,
+    /// A boundary rail is needed over σ its certificate does not cover.
+    ///
+    /// The fit clamps to the wall's disc-positive window, which was always wider than the outer
+    /// boundary needed until a **derived** σ-end could land on a tangent ruling. Evaluating the
+    /// fitted graph past its certified span there is extrapolation into a √-branch, so the rail is
+    /// refused rather than used — the pinch end needs a p-curve, not a longer graph
+    /// (`docs/cutter-extrude-design.md` §12.4).
+    RailSpanShort {
+        /// The op whose rail runs out of certificate.
+        op: usize,
+    },
+    /// The material's σ-extent ends inside the declared domain, but no structural event brackets
+    /// that end, so the resolver cannot locate it exactly.
+    ///
+    /// Where material stops, the two walls bounding the kept µ̂-interval cross at a common µ̂ (a
+    /// `Meet` or `Tangent` event) or a µ̂-degenerate wall flips its coverage (a
+    /// [`coverage_events`](develop::cut::coverage_events) root). An end matching none of those is
+    /// beyond what the resolver can attribute, and it refuses rather than bisecting on a float
+    /// width — a σ-end found by search is a boundary nothing certifies.
+    SigmaEndUnattributed,
     /// The resolver could not soundly attribute the material structure at some σ to this op —
     /// genuinely ambiguous (disconnected material) or beyond the resolver's discrimination.
     /// Add a [`keep_near`](Part::keep_near) pick, or simplify the op.

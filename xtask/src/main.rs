@@ -197,12 +197,23 @@ fn vv_matrix(matrix: &str) -> Vec<Finding> {
     out
 }
 
-/// The `[Mx]` milestone tag inside an item cell, e.g. `[M3d]` -> `M3d`.
+/// The milestone tag inside an item cell — `[` + an uppercase letter + alphanumerics and dots, so
+/// `[M3d]` -> `M3d` and `[AUTH.2]` -> `AUTH.2`.
+///
+/// It used to require the tag to *start with `M`* and hold alphanumerics only, which reads as a
+/// harmless tightening and was not one: `AUTH.2` fails both halves, so every `[AUTH.x]` row was
+/// skipped before the `LANDED` check ever ran and the `"AUTH.1"`/`"AUTH.2"` entries in that list had
+/// never been consulted. Six ★ rows were gated by nothing. Found by mutation — stripping the only
+/// proof cell from the AUTH.2 ★ row left the gate green — which is the only way a vacuous gate
+/// announces itself, and the second time this one has been vacuous (before slice 3d it split on
+/// whitespace and matched a mid-cell word instead of the Item).
 fn milestone_tag(item: &str) -> Option<String> {
     let start = item.find('[')?;
     let end = item[start..].find(']')? + start;
     let inner = &item[start + 1..end];
-    if inner.starts_with('M') && inner[1..].chars().all(|c| c.is_ascii_alphanumeric()) {
+    let mut chars = inner.chars();
+    let head = chars.next()?;
+    if head.is_ascii_uppercase() && chars.all(|c| c.is_ascii_alphanumeric() || c == '.') {
         Some(inner.to_string())
     } else {
         None
@@ -696,6 +707,22 @@ mod tests {
         // non-★ landed row is out of scope
         let nonstar = format!("{header}| foo [M0] | c | ✅ | — | — | — | — | — |\n");
         assert!(vv_matrix(&nonstar).is_empty());
+        // A dotted milestone tag is a tag. Every `[AUTH.x]` row was skipped before the LANDED
+        // check ever ran, so six ★ rows were gated by nothing and the `"AUTH.1"`/`"AUTH.2"`
+        // entries in LANDED had never been read — a vacuous pass that only mutation revealed.
+        let dotted = format!("{header}| foo ★ [AUTH.2] | c | ✅ | ⬜ | — | ⬜ | ⬜ | — |\n");
+        assert_eq!(
+            vv_matrix(&dotted).len(),
+            1,
+            "a landed dotted-tag ★ row must be gated like any other"
+        );
+        let dotted_ok =
+            format!("{header}| foo ★ [AUTH.2] | c | ✅ | ⬜ | — | ⬜ | N/A · rc-hyp ✅ | — |\n");
+        assert!(vv_matrix(&dotted_ok).is_empty());
+        // …and one whose milestone has not landed still is not.
+        let dotted_deferred =
+            format!("{header}| foo ★ [AUTH.3] | c | ⬜ | ⬜ | — | ⬜ | ⬜ | — |\n");
+        assert!(vv_matrix(&dotted_deferred).is_empty());
     }
 
     #[test]
@@ -723,7 +750,10 @@ mod tests {
     #[test]
     fn milestone_tag_parses() {
         assert_eq!(milestone_tag("foo ★ [M3d]").as_deref(), Some("M3d"));
+        assert_eq!(milestone_tag("foo ★ [AUTH.2]").as_deref(), Some("AUTH.2"));
         assert_eq!(milestone_tag("no tag"), None);
+        // A markdown link is not a milestone tag.
+        assert_eq!(milestone_tag("see [the guide](vv-guide.md)"), None);
     }
     // --- `cargo xtask gate` --------------------------------------------------------------
 
