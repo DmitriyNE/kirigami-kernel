@@ -80,7 +80,15 @@ fine — this is a log, not a schema.
   do not move: the float quarantine (lattice + certify-core only, exact-stays-exact, approx opt-in
   under the five-part contract) and `no_repr_leak`. A preview tier has to be a *differently typed
   path*, never a quiet precision drop inside a certified one.
-  *2026-08-16 · open · #279, sequenced after AUTH.3 at the user's "afterwards"*
+
+  **Deprioritized 2026-08-17, by the user, on those numbers:** *"4-9 ms per point is kinda fine for
+  a beginning, at least we can parallelize it in future. I don't expect interactivity right now.
+  Plus we have MAP planned, which will hopefully solve parts of the problem."* Per-vertex work is
+  embarrassingly parallel, and MAP.2 (#235) would cut the fold leg **structurally** rather than by a
+  constant factor — so #279 stays open but is not the next milestone. Recorded so it is not
+  re-escalated off a single slow fixture; the correct response to one of those turned out to be
+  #281, a bug fix.
+  *2026-08-16 · open, deprioritized 2026-08-17 · #279*
 
 - **AUTH.1 deferrals — scope decisions, taken with the user, not oversights.** Recorded so the
   narrower first slice reads as a choice: **(a) per-edge draft slope** — a single cast point forces
