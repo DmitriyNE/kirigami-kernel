@@ -768,6 +768,36 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A radiused outline is not "the quadric case with more walls" — it is the case that showed the
+  contour path was asking the wrong question (AUTH.3d.1).** The `sole_pinched_contour` fork asked
+  for **one wall**; a rounded rectangle has eight. Generalizing it looked like relaxing a bound, and
+  the measurement said otherwise: a corner arc is a *short* quadric wall whose **entire**
+  disc-positive window lies within `~10⁻⁴` of a tangent ruling, so `certified_rail_surface` clamps
+  the fit into the √-branch and the oracle declines from the first sample — `Unresolved`, not the
+  `RailSpanShort` the earlier shapes gave. There is no span the clamp can choose, because the whole
+  window *is* the branch.
+
+  The fix was to ask which **cutter** bounds the part rather than which **wall**, and then read the
+  boundary from the cutter's own fill rule — `shadow_hole_loops`, the multi-wall tracer AUTH.2 built
+  for non-convex *holes*, called on an outline. The one-wall case joins it instead of being
+  special-cased around. Deliberately **not** taken by an all-affine contour: its rails are exact and
+  its corners certify at `ε = 0`, so tracing would swap exact rails for chords. *A traced loop is
+  earned by a quadric wall, not by having many walls.*
+
+  Two costs, both measured, both worth stating because neither is obvious:
+  - **The tracer spends `segments` over the whole loop, so a small radius starves its own arcs.** At
+    `r = w/5` nothing certifies below 384 segments; at `r = 2w/5` it certifies at 48 and converges
+    `5.4e-2 → 4.0e-2 → 1.7e-2` over `48 → 96 → 192`, with `206 / 350 / 734`-face watertight solids.
+    Too *large* fails the other way — at `r = 3w/5` the corners eat the sides and the footprint stops
+    being one µ̂-interval per ruling (`AmbiguousRegion`).
+  - **The outer wire may not inherit the hole budget, and it silently had been.** `outline_solid`
+    took `certify_holes`' `clamp(8, 16)` — right for a hole, where a coarse loop is a fidelity trade,
+    and wrong for the boundary, where it is a *refusal*: the radiused outline certifies flat at 48
+    segments and was `Unresolved` in the solid at 16. A defect introduced by me in AUTH.3c part 2,
+    found only because a harder fixture asked. **Reusing a budget is reusing a judgement about what
+    the thing is for.**
+  *2026-08-17 · resolved · AUTH.3d.1, branch `auth-3c`*
+
 - **The outer wire cost one boolean operator, and the mixed boundary one currency (AUTH.3c).** §12.4 had framed the remaining pinch
   shapes as needing "the polygon channel extended one level out", with a named fallback if that
   turned out expensive. It did not. A slice's footprint was `strip ∖ holes`; for a part bounded by a

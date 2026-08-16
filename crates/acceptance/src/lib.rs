@@ -320,6 +320,61 @@ pub fn ring_slot() -> Vec<Edge<Bignum>> {
         .into_edges()
 }
 
+/// The **radiused panel outline** — a rounded rectangle about `(cx, cy)`, half-extents `(w, h)`,
+/// corner radius `r`. The outline a flex fabricator actually accepts: sharp corners are a tear
+/// risk, so a real panel boundary is straights joined by radii.
+///
+/// It is the mixed-wall contour, and that is the point. Four sides are **planes** — affine
+/// µ̂-pullbacks that `plane_cut_rail` gives exactly — and four corners are **cylinders**, genuine
+/// quadratics whose two branches meet at tangent rulings. One cutter, both wall kinds, so a part
+/// kept inside it exercises the exact-rail path and the traced-loop path together.
+///
+/// Every vertex is exactly on its circle with no Pythagorean split, because the arc endpoints are
+/// the axis-aligned tangent points: `(cx ± (w−r), cy ± h)` and `(cx ± w, cy ± (h−r))`. So the
+/// profile is exact over ℚ for any rational `r`, which a chamfer-by-chord would not be.
+///
+/// **Radius is not a free parameter.** The tracer spends its `segments` budget over the *whole*
+/// loop, so a small radius starves its own arcs and forces the entire outline finer: measured on the
+/// doctest cone, `r = w/5` needs 384 segments to certify at all, while `r = 2w/5` certifies at 48
+/// and converges `5.4e-2 → 4.0e-2 → 1.7e-2` over `48 → 96 → 192`. Too *large* fails the other way —
+/// at `r = 3w/5` the corners consume the sides and the footprint stops being one µ̂-interval per
+/// ruling (`AmbiguousRegion`, §12.5).
+pub fn rounded_outline(cx: Q, cy: Q, w: Q, h: Q, r: Q) -> Vec<Edge<Bignum>> {
+    let (wi, hi) = (w.sub(&r), h.sub(&r));
+    let r2 = r.mul(&r);
+    let p = |dx: Q, dy: Q| [cx.add(&dx), cy.add(&dy)];
+    let centre = |sx: i128, sy: i128| (cx.add(&wi.mul(&qi(sx))), cy.add(&hi.mul(&qi(sy))));
+    let mut pr = Profile::new();
+    // CCW from the bottom-left tangent point: side, corner, side, corner, …
+    let corners = [
+        (
+            (1i128, -1i128),
+            (wi.clone(), h.neg()),
+            (w.clone(), hi.neg()),
+        ),
+        ((1, 1), (w.clone(), hi.clone()), (wi.clone(), h.clone())),
+        ((-1, 1), (wi.neg(), h.clone()), (w.neg(), hi.clone())),
+        ((-1, -1), (w.neg(), hi.neg()), (wi.neg(), h.neg())),
+    ];
+    let mut from = (wi.neg(), h.neg());
+    for ((sx, sy), arc_start, arc_end) in corners {
+        pr = pr.polyline(&[
+            p(from.0.clone(), from.1.clone()),
+            p(arc_start.0.clone(), arc_start.1.clone()),
+        ]);
+        let (bx, by) = centre(sx, sy);
+        pr = pr.arc(
+            bx,
+            by,
+            r2.clone(),
+            p(arc_start.0, arc_start.1),
+            p(arc_end.0.clone(), arc_end.1.clone()),
+        );
+        from = arc_end;
+    }
+    pr.into_edges()
+}
+
 /// The three **metric probes** that bracket [`ell_slot`], each `(cx, cy, r²)` for [`sketch_drill`]:
 /// a disc inscribed in one arm, a disc circumscribing the whole L, and a disc inside the notch the
 /// L does *not* cover.

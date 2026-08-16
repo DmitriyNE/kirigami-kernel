@@ -1015,12 +1015,37 @@ whole slice before quadric ones, which is the opposite of the usual order (the m
 normally the easy case). It is worth stating why: on this axis the *affine* wall is the exact one.
 
 **The quadric end, once the classes are separated, needs no new construction.** When the contour
-bounds the part **alone** — every run bounded above and below by the same wall, both ends its own
-tangent rulings — the outer boundary simply *is* that wall's traced footprint loop, and
-`surface_hole_loop` already builds it: parametric in its own parameter, passing through both
-tangents, with `unroll_trim_loop` already accepting the arcs. PC.3's construction, used as an
-outline rather than as a hole. Measured on a disc of radius `1/5`: 192 outline points, `ε = 2.26e-3`,
-and every vertex folded back lands on the authored cylinder.
+bounds the part **alone** — every run bounded above and below by the same intersect, both ends closed
+inside the band — the outer boundary simply *is* that cutter's traced footprint loop, and the tracer
+already builds it: parametric in its own parameter, passing through the tangents, with
+`unroll_trim_loop` already accepting the arcs. PC.3's construction, used as an outline rather than as
+a hole. Measured on a disc of radius `1/5`: 192 outline points, `ε = 2.26e-3`, and every vertex
+folded back lands on the authored cylinder.
+
+**Which cutter, not which wall (AUTH.3d.1).** That path was first written for **one** wall, and the
+shape that broke the assumption is the one a fab house asks for: a **radiused outline**, four plane
+sides and four corner arcs. Its corners are *short* quadric walls — the entire disc-positive window
+lies within `~10⁻⁴` of a tangent ruling — so `certified_rail_surface` clamps the fit into the
+√-branch and the oracle declines outright. No span the clamp can pick is well-conditioned, because
+the whole window **is** the branch; this is not the "runs out of certificate at the end" that
+`RailSpanShort` names, it is `Unresolved` from the first sample.
+
+So `sole_contour` asks for one *op* bounding both sides, not one wall, and `contour_outline` reads
+the boundary from the cutter's own fill rule — which is `shadow_hole_loops`, the multi-wall tracer
+AUTH.2 built for non-convex **holes**, called on an outline instead. The single-wall case joins it
+rather than being special-cased around, exactly as `certify_holes` already does. An all-affine
+contour deliberately does **not** take this path: its walls are exact and its corners certify at
+`ε = 0`, so tracing it would replace exact rails with chords. The traced loop is earned by a quadric
+wall, which is what a graph cannot reach.
+
+Measured (doctest cone, radiused outline `w = 1/4`, `h = 1/5`, `r = 1/10`): flat `318 / 462 / 844`
+points at `ε = 5.4e-2 / 4.0e-2 / 1.7e-2` for `segments = 48 / 96 / 192`, each with a watertight
+`206 / 350 / 734`-face solid. Two costs are worth naming. The tracer spends `segments` over the
+*whole* loop, so a **small radius starves its own arcs**: at `r = w/5` nothing certifies below 384
+segments, while `r = 2w/5` certifies at 48. And the solid's outer wire may **not** take the hole
+budget — `certify_holes` clamps to `8..=16` because a hole is a feature and a coarse loop is a
+fidelity trade, but the wire is the *boundary*, so under-resolving it is a refusal rather than a
+trade. It takes the part's own `segments`, and the face count follows.
 
 The **mixed** boundary — a quadric contour sharing the boundary with other ops — is the splice, and
 it works where the contour takes over near *each* end. `develop::cut::tangent_turn_arc` cuts the run
@@ -1129,6 +1154,23 @@ certificate green.
   and traces it; keeping what is inside one leaves material in several µ̂-components at one σ, which
   the boundary model (one lower rail, one upper) cannot express. Refused by name, as AUTH.1e.4's
   ring is — its own feature, not this one.
+
+  **This has an applicability condition, and it is sharper than it looks — measured, AUTH.3d.**
+  A ruling is a *line through the apex*, so it runs both ways; a profile swept along an axis is a
+  prism, infinite in both directions. Keeping what is inside such a cutter therefore keeps material
+  wherever the **line** meets it — which, on a chart whose kept sheet is at negative µ̂, includes
+  rulings pointing *away* from the contour. So an intersect contour is well-posed only where no
+  azimuth **and its antipode** are both swept. Narrow bands (the doctest cone, σ ∈ [−1, 1]) satisfy
+  that and certify; the Stage-1 gore at 296° and the self-lapping device at 410.7° do not, and every
+  biting placement on them refuses — `DisconnectedRegion` where the extent comes back in pieces,
+  `AmbiguousRegion { op }` where one op ends up both holing and bounding. Both are this exclusion
+  reaching the resolver by two different routes, and both are the right answer.
+
+  Stated positively, because it is what an author needs to know: **"keep what is inside this
+  contour" is a statement about a solid, and a prism is not bounded along the ruling.** The fix is
+  not in the resolver — it is to bound the cutter, or to author on a chart whose sweep is narrow
+  enough that the far nappe is out of range. Recorded here rather than in a task because it is a
+  property of the operation, not a gap in the implementation.
 - **A derived extent in more than one piece.** The live samples must form **one** run. Two runs is a
   disconnected part; the resolver refuses rather than picking one or emitting both.
 - **Station targeting is `Subtract`-only today, and must stop being.** An intersect's footprint gets
@@ -1154,7 +1196,7 @@ certificate green.
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
 | **AUTH.3b** | the boundary that closes in σ; the flat path — **done**, in all three shapes: polygonal contours (exact affine rails through the corner); quadric contours bounding the part **alone** (the traced loop as an outline — `sole_pinched_contour`); and quadric contours **sharing** the boundary, spliced from `develop::cut::tangent_turn_arc` — one arc per end where the contour takes over near each, or a single two-turn arc where it bounds a whole side |
 | **AUTH.3c** | the solid path over a derived extent — the risk slice. **Done, in all three of the flat path's shapes.** **(i) Polygonal contours**: the region bands clip to `structure.domain`, and the Bernstein weights normalize to their positive representative (`bezier::positive_representative`, `positive_weights` now sign-definite) — a σ-terminating square contour is a watertight genus-0 solid, 14 faces, the shipped lateral trim unmoved at 10. **(ii) A quadric contour bounding alone**: the **outer-wire** channel — `brep_trim_solid_regions` takes an `outline` the material is kept inside of, one `BoolOp::And` where the hole channel uses `Diff`, over a synthesized enclosing band (`realize::wire_solid`). 66 faces, genus 0, every vertex within a thickness of the authored cylinder and the `w = 0` lid on it. **(iii) A quadric contour bounding one whole side**: the same wire, carrying **rail-borne** vertices (`WirePoint::OnOuter`) over the stretch where the boundary is the plane's own rail — so that stretch stays a Bézier rather than being chorded. 143 faces, genus 0, and both authored surfaces carry boundary (6 vertices on the plane against 149 on the cylinder, which is the asymmetry naming the rail buys: corners only at its σ-stations, against one per chord) |
-| **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
+| **AUTH.3d** | acceptance: a contour kept on a device, developed, folded, exported; §12.5 refused by name. **3d.1 done** — the contour path asks which *cutter* bounds the part, not which *wall*, so a **radiused outline** (4 planes + 4 corner arcs) is a certified part: flat `318` pts at `ε 5.4e-2` and a watertight `206`-face solid at 48 segments, both wall kinds carrying boundary. 3d.2 = the demo (develop → SVG, fold back, solid → STEP); 3d.3 = §12.5's two exclusions on the self-lapping device, where they arise naturally |
 
 **Named acceptance criterion (AUTH.3).** The pinned pre-state in
 `author/tests/intersect_sigma.rs` flips in exactly one direction: the two `EmptyRegion` refusals

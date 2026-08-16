@@ -22,6 +22,10 @@
 //!   to their positive representative; where it is a traced loop — alone, or spliced with a rail —
 //!   that loop goes to the builder as a general `(σ,µ̂)` **outer wire**, kept *inside* rather than
 //!   subtracted, with the rail stretch **named as a rail** so it stays a Bézier;
+//! - a **radiused outline** — 4 plane sides and 4 corner arcs, the boundary a fab house accepts —
+//!   is a certified part too (AUTH.3d.1). It is what made the contour path ask which *cutter*
+//!   bounds the material rather than which *wall*: a corner arc's whole disc-positive window sits
+//!   within `~10⁻⁴` of a tangent ruling, so no graph rail can be fitted anywhere on it;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -531,6 +535,101 @@ fn a_rail_out_and_an_arc_back_is_a_solid_too() {
         on_plane >= 4 && on_cyl * 3 > n,
         "the boundary must be the plane rail AND the contour arc — {on_cyl} vertices on the \
          cylinder, {on_plane} on the plane, of {n}"
+    );
+}
+
+/// **A radiused panel outline — one cutter, both wall kinds (AUTH.3d.1).**
+///
+/// The outline a flex fabricator accepts: four straight sides and four corner radii. Four walls are
+/// **planes**, four are **cylinders**, and keeping what is inside it is the shape that forced the
+/// contour path to stop being single-wall.
+///
+/// It could not be assembled from graph rails, and the reason is worth pinning because it is not the
+/// one the earlier shapes had. A corner arc is a *short* quadric wall: its entire disc-positive
+/// window sits within `~10⁻⁴` of a tangent ruling, so `certified_rail_surface` clamps its fit into
+/// the √-branch and the oracle declines outright (`Unresolved`) — no span the clamp can choose is
+/// well-conditioned, because the whole window is the branch. The traced loop has no such trouble:
+/// it reads the boundary from the cutter's own fill rule, changing wall at every profile corner,
+/// which is exactly what `shadow_hole_loops` has done for multi-wall *holes* since AUTH.2. Using it
+/// as an outline rather than as a hole is the whole change.
+///
+/// Faithfulness is the rounded-box distance, which is zero only on the authored outline — and both
+/// wall kinds must carry boundary, or the shape emitted is not the shape asked for.
+#[test]
+fn a_radiused_outline_is_a_certified_part() {
+    let (cx, cy, w, h, r) = (qi(0), q(11, 5), q(1, 4), q(1, 5), q(1, 10));
+    let kept = panel(qi(-1), qi(1))
+        .segments(48)
+        .intersect(drilled(acceptance::rounded_outline(
+            cx.clone(),
+            cy.clone(),
+            w.clone(),
+            h.clone(),
+            r.clone(),
+        )));
+    let flat = match kept.develop() {
+        Verdict::Verified(f) => f,
+        v => panic!(
+            "a radiused outline must certify — mixed affine and quadric walls, got {}",
+            name(&v)
+        ),
+    };
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    assert_eq!(flat.region().faces[0].holes.len(), 0, "and no holes");
+
+    // Direction ②: every boundary vertex, folded back, on the authored rounded rectangle. The
+    // rounded-box distance — `‖max(|p−c| − (half − r), 0)‖ − r` outside the inner rectangle — is
+    // zero exactly on that outline and on no other shape.
+    let verts: Vec<[Q; 2]> = flat
+        .outline()
+        .vertices
+        .iter()
+        .map(|b| {
+            let (x, y) = b.center();
+            [x, y]
+        })
+        .collect();
+    let wire = match kept.fold(&verts, &qi(0)) {
+        Verdict::Verified(wi) => wi,
+        v => panic!("the emitted boundary must fold back, got {}", name(&v)),
+    };
+    let (cxf, cyf, wf, hf, rf) = (to_f64(&cx), to_f64(&cy), to_f64(&w), to_f64(&h), to_f64(&r));
+    let (mut worst, mut on_arc, mut on_side) = (0.0f64, 0usize, 0usize);
+    for p in &wire.points {
+        let (x, y) = (to_f64(&p[0].mid()), to_f64(&p[1].mid()));
+        let (ax, ay) = ((x - cxf).abs(), (y - cyf).abs());
+        let (dx, dy) = ((ax - (wf - rf)).max(0.0), (ay - (hf - rf)).max(0.0));
+        worst = worst.max((dx.hypot(dy) - rf).abs());
+        // A corner-arc vertex is past BOTH inner half-extents; a side vertex past exactly one.
+        if dx > 1e-9 && dy > 1e-9 {
+            on_arc += 1;
+        } else {
+            on_side += 1;
+        }
+    }
+    assert!(
+        worst < 5e-2,
+        "the developed boundary must BE the authored rounded rectangle: worst vertex sits \
+         {worst:.3e} off it"
+    );
+    assert!(
+        on_arc > 0 && on_side > 0,
+        "both wall kinds must carry boundary — {on_arc} vertices on a corner radius, {on_side} on \
+         a straight side, of {}. A contour that lost its radii, or one convexified to a disc, \
+         fails exactly here",
+        wire.points.len()
+    );
+
+    // …and the solid follows, through the same outer-wire channel.
+    let solid = match kept.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!("the radiused outline's solid must build, got {}", name(&v)),
+    };
+    assert_eq!(
+        solid.brep().free_edges(),
+        0,
+        "watertight: {} faces",
+        solid.brep().faces().len()
     );
 }
 

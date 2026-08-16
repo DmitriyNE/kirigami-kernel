@@ -679,32 +679,35 @@ fn contour_loop<B: Backend>(
 }
 
 /// The op whose **own footprint loop is the whole outer boundary** — every run bounded above and
-/// below by the same wall of the same intersect, and both derived σ-ends its own tangent rulings.
+/// below by the same intersect, and both derived σ-ends closed inside the band.
 ///
-/// This is the shape a graph chain cannot express and a p-curve can (`docs/cutter-extrude-design.md`
-/// §12.4). At a tangent ruling the wall's two branches meet with **unbounded slope**, so
-/// `certified_rail_surface` clamps its fit away from it and the chain runs out of certificate
-/// (`PartFault::RailSpanShort`). The traced loop has no such trouble: it is parametric, passes
-/// *through* the tangent, and is exactly what PC.3 built for interior holes — the same construction,
-/// used as an outline rather than as a hole.
+/// This is the shape a graph chain cannot express and a traced loop can
+/// (`docs/cutter-extrude-design.md` §12.4). At a tangent ruling a quadric wall's two branches meet
+/// with **unbounded slope**, so `certified_rail_surface` clamps its fit away from it and the chain
+/// runs out of certificate (`PartFault::RailSpanShort`). The traced loop has no such trouble: it is
+/// parametric, passes *through* the tangent, and is exactly what PC.3 built for interior holes —
+/// the same construction, used as an outline rather than as a hole.
 ///
-/// Deliberately narrow, and each condition is load-bearing rather than defensive:
+/// Each condition is load-bearing rather than defensive:
 ///
 /// - **one region**, because a loop spanning a region join would need the anchor frames threaded
 ///   through the tracer, which is not this slice;
-/// - **one wall**, so the loop is [`surface_hole_loop`]'s single-quadric construction. A polygonal
-///   contour has several, and needs none of this: its walls are affine, `plane_cut_rail` is exact,
-///   and its corners are transverse crossings of two straight rails that the chain assembly already
-///   carries at `ε = 0`;
-/// - **a genuine quadratic** (`a ≢ 0`), which is what makes the end a *smooth* pinch. An affine
-///   wall's `disc = b²` vanishes where the crossing escapes to infinity, not where two branches meet.
-fn sole_pinched_contour<B: Backend>(
+/// - **one op bounds both sides everywhere**, so the boundary really is that cutter's own
+///   footprint. Which *wall* bounds it may change along the loop — that is what a profile corner
+///   is — so this deliberately does **not** ask for one wall, and [`contour_outline`] reads the
+///   boundary from the cutter's fill rule exactly as a multi-wall hole does;
+/// - **at least one genuine quadratic wall** (`a ≢ 0`). This is a capability test, not a shape one:
+///   an all-affine contour is carried *exactly* by the graph chains — `plane_cut_rail` needs no fit,
+///   its corners are transverse crossings of two straight rails, and the boundary certifies at
+///   `ε = 0`. Tracing it instead would replace exact rails with chords, which is strictly worse. A
+///   quadric wall is what a graph cannot reach, so it is what earns the traced loop.
+fn sole_contour<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
     structure: &Structure<B>,
 ) -> Option<usize> {
     use crate::part::OpKind;
-    use crate::resolve::{SigmaEnd, wall_of};
+    use crate::resolve::SigmaEnd;
     if part.regions.len() != 1 {
         return None;
     }
@@ -716,27 +719,101 @@ fn sole_pinched_contour<B: Backend>(
     if !structure
         .runs
         .iter()
-        .all(|r| r.lower.0 == op && r.upper.0 == op && wall_of(r.lower) == wall_of(r.upper))
+        .all(|r| r.lower.0 == op && r.upper.0 == op)
     {
         return None;
     }
-    // Both ends closed inside the band, by a pinch rather than a jump.
+    // Both ends closed inside the band rather than reaching it.
     if !structure
         .ends
         .iter()
-        .all(|e| matches!(e, SigmaEnd::Closed { pinch: true, .. }))
+        .all(|e| matches!(e, SigmaEnd::Closed { .. }))
     {
         return None;
     }
     let walls = part.ops[op].1.walls().ok()?;
-    if walls.len() != 1 {
-        return None;
+    let zero = Rat::from_i128(0);
+    walls
+        .iter()
+        .any(|w| {
+            develop::cut::cut_mu_form(&built.charts[0], w, &zero).is_some_and(|f| !f.a.is_zero())
+        })
+        .then_some(op)
+}
+
+/// The traced footprint loop of the contour that bounds the part — [`sole_contour`]'s op, as one
+/// closed `(σ, µ̂)` boundary.
+///
+/// The dispatch is [`certify_holes`]' verbatim, because it is the same question asked of the same
+/// cutter: **one** wall is its own boundary and its two branches come off one µ̂-quadratic, while
+/// **several** have no such quadratic — which wall bounds the material changes at every profile
+/// corner, so the boundary is read from the cutter's own fill rule instead. A rounded outline is
+/// the case that forces it: its corner arcs are short quadric walls whose entire disc-positive
+/// window sits within `10⁻⁴` of a tangent ruling, where a degree-3 monomial fit is singular — the
+/// oracle declines, correctly, and no amount of clamping helps because the whole window is the
+/// √-branch.
+///
+/// Exactly **one** loop, or the contour's footprint is in pieces and the part is disconnected —
+/// which the resolver would already have refused, so this is the realizer agreeing rather than a
+/// second opinion.
+fn contour_outline<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    op: usize,
+    segments: usize,
+) -> Result<HoleLoop<B>, RErr<B>> {
+    let walls = part.ops[op]
+        .1
+        .walls()
+        .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+    let span = part.regions[0].band.clone();
+    let chart = &built.charts[0];
+    let verdict = match (walls.len(), &part.ops[op].1) {
+        (1, _) => match surface_hole_loop(
+            chart,
+            &walls[0],
+            &span,
+            &part.clearance,
+            &part.cfg,
+            segments,
+        ) {
+            Verdict::Verified(h) => Verdict::Verified(vec![h]),
+            Verdict::Unresolved(e) => Verdict::Unresolved(e),
+            Verdict::Refuted(f) => Verdict::Refuted(f),
+        },
+        (_, Cutter::Extrude(e)) => {
+            let cast = e
+                .cast()
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+            let zero = Rat::from_i128(0);
+            shadow_hole_loops(
+                chart,
+                &walls,
+                |sigma: &Rat<B>, mu: &Rat<B>| {
+                    let p = chart.surface(mu, &zero).eval(sigma)?;
+                    cast.contains(&p, &e.profile)
+                },
+                &span,
+                &part.clearance,
+                &part.cfg,
+                segments,
+            )
+        }
+        // Unreachable today: only an extrusion has several walls.
+        _ => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
+    };
+    match verdict {
+        Verdict::Verified(mut hs) if hs.len() == 1 => Ok(hs.pop().expect("length checked")),
+        Verdict::Verified(_) => Err(RErr::Fault(PartFault::DisconnectedRegion)),
+        Verdict::Unresolved(e) => Err(RErr::Loose(e)),
+        Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+            Err(RErr::Fault(PartFault::Pole))
+        }
+        Verdict::Refuted(develop::cut::CutFitFault::ShadowNested) => {
+            Err(RErr::Fault(PartFault::ProfileNotSimple { op }))
+        }
+        Verdict::Refuted(_) => Err(RErr::Fault(PartFault::CutUnresolved { op })),
     }
-    let form = develop::cut::cut_mu_form(&built.charts[0], &walls[0], &Rat::from_i128(0))?;
-    if form.a.is_zero() {
-        return None;
-    }
-    Some(op)
 }
 
 /// Certify the resolved structure into the [`FlatPattern`] (see the module docs).
@@ -761,26 +838,8 @@ pub(crate) fn flat_pattern<B: Backend>(
     // `RailSpanShort` refuses); the traced loop passes *through* them because it is parametric in
     // its own parameter rather than a graph over σ. `unroll_trim_loop` already takes such arcs —
     // this is PC.3's construction used as an outline instead of as a hole.
-    if let Some(op) = sole_pinched_contour(part, built, &structure) {
-        let walls = match part.ops[op].1.walls() {
-            Ok(w) => w,
-            Err(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
-        };
-        let hole = match surface_hole_loop(
-            &built.charts[0],
-            &walls[0],
-            &bands[0],
-            &part.clearance,
-            &part.cfg,
-            part.segments,
-        ) {
-            Verdict::Verified(h) => h,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-            Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
-                return Verdict::Refuted(PartFault::Pole);
-            }
-            Verdict::Refuted(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
-        };
+    if let Some(op) = sole_contour(part, built, &structure) {
+        let hole = bail!(contour_outline(part, built, op, part.segments));
         let outline = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
             Verdict::Unresolved(e) => return Verdict::Unresolved(e),
@@ -1088,7 +1147,7 @@ pub(crate) fn solid_brep<B: Backend>(
     // rails can reach its σ-ends. The solid takes it for the same reason and answers it the same
     // way — the loop as a general `(σ,µ̂)` outer wire — so it never calls `certify_boundary`, which
     // would refuse with `RailSpanShort` before a single face was built.
-    if let Some(op) = sole_pinched_contour(part, built, &structure) {
+    if let Some(op) = sole_contour(part, built, &structure) {
         return outline_solid(part, built, structure, op);
     }
     // The STEP re-fit: a curved rail exported to OCCT must stay a handful of Bézier control
@@ -1292,7 +1351,7 @@ fn solid_holes<B: Backend>(
     Verdict::Verified((holes, poly_holes, hole_loops, eps))
 }
 
-/// The solid of a part whose boundary **is** one traced contour loop — [`sole_pinched_contour`]'s
+/// The solid of a part whose boundary **is** its contour's traced loop — [`sole_contour`]'s
 /// shape, in the solid (AUTH.3c, `docs/cutter-extrude-design.md` §12.4).
 ///
 /// Nothing here is a special case of the geometry; it is a change of *currency*. The loop's two
@@ -1318,24 +1377,16 @@ fn outline_solid<B: Backend>(
     structure: Structure<B>,
     op: usize,
 ) -> Verdict<SolidParts<B>, PartFault, Rat<B>> {
-    let walls = match part.ops[op].1.walls() {
-        Ok(w) => w,
-        Err(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
-    };
-    let loop_ = match surface_hole_loop(
-        &built.charts[0],
-        &walls[0],
-        &part.regions[0].band,
-        &part.clearance,
-        &part.cfg,
-        part.segments.clamp(8, 16),
-    ) {
-        Verdict::Verified(h) => h,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-        Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
-            return Verdict::Refuted(PartFault::Pole);
-        }
-        Verdict::Refuted(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
+    // **The outer wire does not take the hole budget.** `certify_holes` clamps to `8..=16` because a
+    // hole's segment count drives the solid's face count and a hole is a *feature* — a coarser loop
+    // is a fidelity trade. The wire is the **boundary**, so under-resolving it is not a trade: the
+    // loop simply fails to certify against the clearance and the part is refused (measured — a
+    // radiused outline that certifies flat at 48 segments is `Unresolved` at 16). It takes the
+    // part's own resolution, and the face count follows from it.
+    let loop_ = match contour_outline(part, built, op, part.segments) {
+        Ok(l) => l,
+        Err(RErr::Fault(f)) => return Verdict::Refuted(f),
+        Err(RErr::Loose(e)) => return Verdict::Unresolved(e),
     };
     let pts = match hole_poly(&loop_) {
         Some(p) if p.len() >= 3 => p,
