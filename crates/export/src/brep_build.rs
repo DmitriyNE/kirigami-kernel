@@ -352,17 +352,23 @@ fn stitched_poly_chain<B: Backend>(
     v
 }
 
-/// Whether the rational Bézier over `[a, b]` with denominator `den` has **all-positive weights** —
+/// Whether the rational Bézier over `[a, b]` with denominator `den` has **sign-definite weights** —
 /// the exact validity condition for a rational Bézier patch/edge (a CAD kernel rejects a
 /// non-positive weight: a control point at/through infinity). The weights are the Bernstein
 /// coefficients of `den` over `[a, b]`; checked at `deg(den)` (degree elevation preserves Bernstein
-/// positivity, so this never *under*-reports — it may only subdivide slightly more than strictly
-/// needed). A strictly-positive polynomial always passes on a small enough interval.
+/// sign-definiteness, so this never *under*-reports — it may only subdivide slightly more than
+/// strictly needed). A sign-definite polynomial always passes on a small enough interval.
+///
+/// All-**negative** counts, because `(N, D)` and `(−N, −D)` are the same curve and
+/// [`positive_representative`](crate::bezier) picks the positive one when the Bernstein form is
+/// made. Which one arrives is a convention — a cutter's wall facing the other way flips its
+/// µ̂-pullback's denominator — so demanding the positive sign *here* refused parts that build
+/// perfectly (AUTH.3c). What is genuinely unbuildable is a **mixed** sign: a weight passing through
+/// zero is a pole in the span, and that is what subdividing is for.
 fn positive_weights<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> bool {
     let deg = den.degree().unwrap_or(0);
-    poly_to_bernstein(den, a, b, deg)
-        .iter()
-        .all(|w| w.sign() > 0)
+    let w = poly_to_bernstein(den, a, b, deg);
+    w.iter().all(|x| x.sign() > 0) || w.iter().all(|x| x.sign() < 0)
 }
 
 /// Drop stations closer together than the export profile can carry, keeping the domain's two ends.
@@ -419,25 +425,63 @@ fn thin_stations<B: Backend>(sorted: Vec<Rat<B>>, sigma_hi: &Rat<B>) -> Vec<Rat<
 ///
 /// `None` if the merge leaves fewer than three vertices (a loop that small is entirely below the
 /// export profile, and refusing beats emitting a sliver).
-fn snap_poly_to_stations<B: Backend>(
-    poly: &[SigMu<B>],
-    stations: &[Rat<B>],
-) -> Option<Vec<SigMu<B>>> {
+fn snap_sigma_to_station<B: Backend>(s: &Rat<B>, stations: &[Rat<B>]) -> Rat<B> {
     let min_step = crate::trim::min_export_step::<B>();
-    let gap = |st: &Rat<B>, s: &Rat<B>| {
+    let gap = |st: &Rat<B>| {
         let d = st.sub(s);
         if d.sign() < 0 { d.neg() } else { d }
     };
     // The **nearest** station within a step, so a vertex between two of them moves the shorter way.
-    let near = |s: &Rat<B>| {
-        stations
-            .iter()
-            .filter(|st| gap(st, s).cmp(&min_step) != core::cmp::Ordering::Greater)
-            .min_by(|a, b| gap(a, s).cmp(&gap(b, s)))
+    stations
+        .iter()
+        .filter(|st| gap(st).cmp(&min_step) != core::cmp::Ordering::Greater)
+        .min_by(|a, b| gap(a).cmp(&gap(b)))
+        .cloned()
+        .unwrap_or_else(|| s.clone())
+}
+
+/// [`snap_sigma_to_station`] over an **outer wire**, dropping vertices the export profile cannot
+/// tell apart. A rail-borne vertex has no µ̂ to compare, so two consecutive ones collapse when their
+/// σ coincide — which is the only way they can be the same point, both lying on the same rail.
+fn snap_wire_to_stations<B: Backend>(
+    wire: &[WirePoint<B>],
+    stations: &[Rat<B>],
+) -> Option<Vec<WirePoint<B>>> {
+    let moved = |p: &WirePoint<B>| {
+        let s = snap_sigma_to_station(p.sigma(), stations);
+        match p {
+            WirePoint::At(_, m) => WirePoint::At(s, m.clone()),
+            WirePoint::OnInner(_) => WirePoint::OnInner(s),
+            WirePoint::OnOuter(_) => WirePoint::OnOuter(s),
+        }
     };
+    let apart = |a: &WirePoint<B>, b: &WirePoint<B>| match (a, b) {
+        (WirePoint::At(s0, m0), WirePoint::At(s1, m1)) => {
+            crate::trim::export_apart(&(s0.clone(), m0.clone()), &(s1.clone(), m1.clone()))
+        }
+        (WirePoint::OnInner(s0), WirePoint::OnInner(s1))
+        | (WirePoint::OnOuter(s0), WirePoint::OnOuter(s1)) => !req(s0, s1),
+        _ => true,
+    };
+    let mut out: Vec<WirePoint<B>> = Vec::with_capacity(wire.len());
+    for p in wire.iter().map(moved) {
+        if out.last().is_none_or(|q| apart(q, &p)) {
+            out.push(p);
+        }
+    }
+    while out.len() > 3 && !apart(&out[out.len() - 1], &out[0]) {
+        out.pop();
+    }
+    (out.len() >= 3).then_some(out)
+}
+
+fn snap_poly_to_stations<B: Backend>(
+    poly: &[SigMu<B>],
+    stations: &[Rat<B>],
+) -> Option<Vec<SigMu<B>>> {
     let mut out: Vec<SigMu<B>> = Vec::with_capacity(poly.len());
     for (s, m) in poly {
-        let p = (near(s).cloned().unwrap_or_else(|| s.clone()), m.clone());
+        let p = (snap_sigma_to_station(s, stations), m.clone());
         if out.last().is_none_or(|q| crate::trim::export_apart(q, &p)) {
             out.push(p);
         }
@@ -455,11 +499,14 @@ fn snap_poly_to_stations<B: Backend>(
 /// midpoint and each half recursed.
 ///
 /// `None` when no such partition exists, which is a **precondition failure, not a tolerance
-/// miss**: the subdivision converges only where `den` is *strictly positive* on `[a, b]`, because
-/// a Bézier piece's end weights are `den` at its own ends. So a single point with `den ≤ 0` cannot
-/// be covered by any piece, at any depth. That case is caught here in one evaluation per split
-/// rather than pursued — `den(x) ≤ 0` at a candidate point refuses immediately, and `MAX_NODES`
-/// backstops anything the point samples miss.
+/// miss**: the subdivision converges only where `den` holds one strict sign on `[a, b]`, because a
+/// Bézier piece's end weights are `den` at its own ends. So a single point where `den` vanishes or
+/// crosses cannot be covered by any piece, at any depth. That case is caught here in one evaluation
+/// per split rather than pursued — a candidate point off the run's sign refuses immediately, and
+/// `MAX_NODES` backstops anything the point samples miss.
+///
+/// One *sign*, not the positive one: `(N, D)` and `(−N, −D)` are the same curve, and the Bernstein
+/// constructors pick the positive representative (see [`positive_weights`]).
 ///
 /// Both guards are load-bearing and both were once absent (#280). Without the sample test, an
 /// interval where `den` is non-positive over a *region* expands that whole region to `MAX_DEPTH`:
@@ -477,6 +524,7 @@ fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Option<Vec
         den: &Poly<B>,
         a: &Rat<B>,
         b: &Rat<B>,
+        sign: i8,
         depth: usize,
         budget: &mut usize,
         out: &mut Vec<Rat<B>>,
@@ -490,21 +538,23 @@ fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Option<Vec
             return None;
         }
         let mid = a.add(b).mul(&Rat::new(1, 2));
-        // The split point is an end weight of both halves, so `den(mid) ≤ 0` is unsatisfiable at
-        // every depth below here. Refuse now instead of bisecting toward it.
-        if den.eval(&mid).sign() <= 0 {
+        // The split point is an end weight of both halves, so a `den(mid)` off the run's sign is
+        // unsatisfiable at every depth below here. Refuse now instead of bisecting toward it.
+        if den.eval(&mid).sign() != sign {
             return None;
         }
-        go(den, a, &mid, depth - 1, budget, out)?;
-        go(den, &mid, b, depth - 1, budget, out)
+        go(den, a, &mid, sign, depth - 1, budget, out)?;
+        go(den, &mid, b, sign, depth - 1, budget, out)
     }
-    // The outer ends are end weights of the first and last pieces, so they get the same test.
-    if den.eval(a).sign() <= 0 || den.eval(b).sign() <= 0 {
+    // The outer ends are end weights of the first and last pieces, so they get the same test: both
+    // nonzero and agreeing, which is the sign every interior split point must then hold too.
+    let sign = den.eval(a).sign();
+    if sign == 0 || den.eval(b).sign() != sign {
         return None;
     }
     let mut stations = vec![a.clone()];
     let mut budget = MAX_NODES;
-    go(den, a, b, MAX_DEPTH, &mut budget, &mut stations)?;
+    go(den, a, b, sign, MAX_DEPTH, &mut budget, &mut stations)?;
     Some(stations)
 }
 
@@ -538,23 +588,34 @@ mod sigma_splits_guards {
         Rat::new(n, d)
     }
 
-    /// A denominator that is **negative over a whole sub-region** is the shape that used to hang:
-    /// no subdivision of that region ever satisfies `positive_weights`, and the depth cap bounds
-    /// depth rather than node count, so the work was `2³²` sub-intervals. It must refuse, and it
-    /// must refuse *fast* — this test would not finish otherwise, which is the point.
+    /// A denominator that **changes sign inside the range** is the shape that used to hang: no
+    /// subdivision of the crossing ever satisfies `positive_weights`, and the depth cap bounds depth
+    /// rather than node count, so the work was `2³²` sub-intervals. It must refuse, and it must
+    /// refuse *fast* — this test would not finish otherwise, which is the point.
+    ///
+    /// Note what is being refused: a **crossing**, not a negative sign. `−den` is the same curve, so
+    /// a uniformly negative denominator is a convention and builds fine (AUTH.3c) — the two ranges
+    /// below are chosen either side of that distinction.
     #[test]
     fn a_denominator_that_no_subdivision_can_fix_is_refused_not_pursued() {
-        // 1 − 4σ² < 0 on |σ| > ½: strictly positive at 0, negative over two whole sub-regions.
+        // 1 − 4σ² < 0 on |σ| > ½: strictly positive at 0, negative outside — so it crosses twice.
         let den = Poly::<Bignum>::from_coeffs(vec![q(1, 1), q(0, 1), q(-4, 1)]);
         assert!(
             sigma_splits(&den, &q(-1, 1), &q(1, 1)).is_none(),
-            "a σ-range the denominator is non-positive on has no positive-weight partition"
+            "a σ-range the denominator changes sign on has no sign-definite partition"
         );
-        // …and the same denominator still partitions the range where it IS positive, so the
+        // …and the same denominator still partitions the range where it holds one sign, so the
         // refusal is about the precondition and not a blanket loss of capability.
         assert!(
             sigma_splits(&den, &q(-1, 4), &q(1, 4)).is_some(),
             "inside |σ| < ½ the denominator is strictly positive and must still partition"
+        );
+        // The mirror case, and the one AUTH.3c turned on: outside |σ| > ½ the denominator is
+        // strictly *negative*, which is the same geometry with the other sign convention. It must
+        // partition too — refusing it is what made a square contour's solid unbuildable.
+        assert!(
+            sigma_splits(&den, &q(3, 4), &q(1, 1)).is_some(),
+            "a uniformly negative denominator is a sign convention, not an obstruction"
         );
     }
 
@@ -1771,8 +1832,12 @@ pub fn brep_trim_solid<B: Backend>(
 /// so both the vertex *and* its outgoing edge land back on the true boundary: an edge along a
 /// horizontal is the curved rail itself, and one leaving it radially still starts on the rail.
 ///
-/// `None` if a non-radial edge runs between a rail vertex and an interior one — a hole touching the
-/// boundary, which the proxy does not model (and the caller refuses at the vertices).
+/// A chord between a rail vertex and an interior one is fitted through the rail's **true** value at
+/// that σ, not through the proxy horizontal — which is a height with no metric meaning. That edge
+/// only arises from an outer wire leaving its rail for an arc (AUTH.3c); a hole cannot produce one,
+/// since the proxies are set a whole unit clear of every hole vertex and `inside_band` refuses a
+/// hole touching the boundary before this is reached. It used to refuse here instead, which read as
+/// a guard but was doing that job only incidentally — the vertex test is the guard.
 fn railed_corners<B: Backend>(
     pts: &[SigMu<B>],
     mu_in: &RatFunc<B>,
@@ -1810,16 +1875,82 @@ fn railed_corners<B: Backend>(
             (Side::In, Side::In) => mu_in.clone(),
             (Side::Out, Side::Out) => mu_out.clone(),
             _ if req(s0, s1) => at(&a, m0), // radial — the vertex's own rail
-            (Side::Free, Side::Free) => {
-                let slope = m1.sub(m0).div(&s1.sub(s0));
-                let intercept = m0.sub(&slope.mul(s0));
+            // A chord, between two free corners or between a free one and a rail-borne one. The
+            // proxy has to be undone before the line is fitted: a rail-borne corner's *proxy* µ̂ is
+            // a horizontal that means nothing metric, while its true µ̂ is the rail's value there.
+            _ => {
+                let end = |sd: &Side, s: &Rat<B>, m: &Rat<B>| match sd {
+                    Side::In => mu_in.eval(s),
+                    Side::Out => mu_out.eval(s),
+                    Side::Free => Some(m.clone()),
+                };
+                let (v0, v1) = (end(&a, s0, m0)?, end(&b, s1, m1)?);
+                let slope = v1.sub(&v0).div(&s1.sub(s0));
+                let intercept = v0.sub(&slope.mul(s0));
                 RatFunc::from_poly(Poly::from_coeffs(vec![intercept, slope]))
             }
-            _ => return None,
         };
         out.push((s0.clone(), rail));
     }
     Some(out)
+}
+
+/// One vertex of an **outer wire** — [`brep_trim_solid_regions`]'s `outline`, the closed `(σ,µ̂)`
+/// loop the material is kept inside of.
+///
+/// Two kinds, because a wire is not always all one thing. Where the boundary is a traced contour it
+/// is a chord vertex at an explicit domain point ([`At`](WirePoint::At)). Where it runs along one of
+/// the band's own rails — the mixed shape, a rail out and an arc back — naming the *rail* rather
+/// than a sampled µ̂ is what keeps that stretch **exact**: it is emitted as the rail's own Bézier,
+/// not chorded, and its certified bound stays the rail fit's rather than a chord sagitta nobody
+/// bounded. The rail-borne vertex carries only its σ; which rail it means is the variant.
+///
+/// The mechanism is the one [`railed_corners`] already uses: a vertex placed on a proxy horizontal
+/// reads back as the true curved rail. This type is how a caller *asks* for that, since the proxies
+/// are per-slice and internal.
+pub enum WirePoint<B: Backend> {
+    /// An explicit domain point `(σ, µ̂)`.
+    At(Rat<B>, Rat<B>),
+    /// On the band's **lower** rail at this σ.
+    OnInner(Rat<B>),
+    /// On the band's **upper** rail at this σ.
+    OnOuter(Rat<B>),
+}
+
+impl<B: Backend> WirePoint<B> {
+    /// This vertex's σ, whichever kind it is.
+    pub fn sigma(&self) -> &Rat<B> {
+        match self {
+            WirePoint::At(s, _) | WirePoint::OnInner(s) | WirePoint::OnOuter(s) => s,
+        }
+    }
+    /// The µ̂ of an [`At`](WirePoint::At) vertex; `None` for a rail-borne one, whose µ̂ is not a
+    /// number the caller supplied and must not widen the proxy horizontals.
+    fn free_mu(&self) -> Option<Rat<B>> {
+        match self {
+            WirePoint::At(_, m) => Some(m.clone()),
+            _ => None,
+        }
+    }
+    /// The vertex in one slice's proxy coordinates.
+    fn resolve(&self, m_lo: &Rat<B>, m_hi: &Rat<B>) -> SigMu<B> {
+        match self {
+            WirePoint::At(s, m) => (s.clone(), m.clone()),
+            WirePoint::OnInner(s) => (s.clone(), m_lo.clone()),
+            WirePoint::OnOuter(s) => (s.clone(), m_hi.clone()),
+        }
+    }
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for WirePoint<B> {
+    fn clone(&self) -> Self {
+        match self {
+            WirePoint::At(s, m) => WirePoint::At(s.clone(), m.clone()),
+            WirePoint::OnInner(s) => WirePoint::OnInner(s.clone()),
+            WirePoint::OnOuter(s) => WirePoint::OnOuter(s.clone()),
+        }
+    }
 }
 
 /// A [`HoleRail`] as a `(σ,µ̂)` polygon — the near branch forward, the far branch back, with a vertex
@@ -1881,6 +2012,7 @@ fn slice_poly_footprint<B: Backend>(
     sk1: &Rat<B>,
     mu_in: &RatFunc<B>,
     mu_out: &RatFunc<B>,
+    wire: Option<&[WirePoint<B>]>,
     polys: &[&[SigMu<B>]],
 ) -> Option<Vec<SliceFace<B>>> {
     use core::cmp::Ordering::{Greater, Less};
@@ -1890,24 +2022,54 @@ fn slice_poly_footprint<B: Backend>(
     // and builds exactly like the other.
     develop::counters::bump_poly_slice_clip();
     // The proxy horizontals, clear of every hole vertex — hence of every hole edge, a segment
-    // staying within its endpoints' µ̂-range.
-    let seed = polys.first()?.first()?.1.clone();
+    // staying within its endpoints' µ̂-range. A wire's **free** vertices count here for the same
+    // reason; its rail-borne ones do not, because they are about to be *placed* on these lines.
+    let seed = match wire.and_then(|w| w.iter().find_map(WirePoint::free_mu)) {
+        Some(m) => m,
+        None => polys.first()?.first()?.1.clone(),
+    };
     let (mut m_lo, mut m_hi) = (seed.clone(), seed);
+    let mut widen = |m: &Rat<B>| {
+        if m.cmp(&m_lo) == Less {
+            m_lo = m.clone();
+        }
+        if m.cmp(&m_hi) == Greater {
+            m_hi = m.clone();
+        }
+    };
     for p in polys {
         for (_, m) in p.iter() {
-            if m.cmp(&m_lo) == Less {
-                m_lo = m.clone();
-            }
-            if m.cmp(&m_hi) == Greater {
-                m_hi = m.clone();
-            }
+            widen(m);
         }
+    }
+    for m in wire.into_iter().flatten().filter_map(WirePoint::free_mu) {
+        widen(&m);
     }
     let one = Rat::from_i128(1);
     let (m_lo, m_hi) = (m_lo.sub(&one), m_hi.add(&one));
 
-    let mut edges = rect_edges(sk, sk1, &m_lo, &m_hi, 0);
-    for (j, p) in polys.iter().enumerate() {
+    // Without a wire the strip's own horizontals **are** the rail proxies — the footprint's outer
+    // loop runs along them and `railed_corners` reads them back as the curved rails. With one, the
+    // wire may itself run along a rail, and then its edge would land exactly on the strip's: two
+    // coincident operand edges, which is a degeneracy to avoid rather than to handle. So the strip
+    // opens up a further unit each way and the proxies become interior lines — the wire is strictly
+    // inside the strip either way, and `railed_corners` still reads `m_lo`/`m_hi` back as rails.
+    let (r_lo, r_hi) = match wire {
+        Some(_) => (m_lo.sub(&one), m_hi.add(&one)),
+        None => (m_lo.clone(), m_hi.clone()),
+    };
+    let mut edges = rect_edges(sk, sk1, &r_lo, &r_hi, 0);
+    let resolved: Option<Vec<SigMu<B>>> = wire.map(|w| {
+        w.iter()
+            .map(|p| p.resolve(&m_lo, &m_hi))
+            .collect::<Vec<_>>()
+    });
+    for (j, p) in resolved
+        .as_deref()
+        .into_iter()
+        .chain(polys.iter().copied())
+        .enumerate()
+    {
         let n = p.len();
         if n < 3 {
             return None;
@@ -1925,7 +2087,17 @@ fn slice_poly_footprint<B: Backend>(
             OperandId::B
         }
     };
-    let region = match ledge_dom_certified(&edges, &operand_of, BoolOp::Diff) {
+    // `Diff` subtracts the `B` curves from the strip: `polys` are holes. `And` keeps what is inside
+    // them instead — the **outer wire** case, where the wire leads the `B` operand and the holes
+    // follow. One boolean serves both because even-odd parity already reads a loop strictly inside
+    // another as a hole in it, so `{wire} ∪ holes` *is* `wire ∖ holes` to the `B` operand, and
+    // intersecting the strip with that is the whole of the outer-wire channel.
+    let op = if wire.is_some() {
+        BoolOp::And
+    } else {
+        BoolOp::Diff
+    };
+    let region = match ledge_dom_certified(&edges, &operand_of, op) {
         Verdict::Verified(cap) => {
             let (region, _v_boundary, pinches) = cap.into_parts();
             if !pinches.is_empty() {
@@ -1981,14 +2153,27 @@ fn slice_poly_footprint<B: Backend>(
 ///
 /// The two kinds may share a slice — the ordinary authored-slot-beside-derived-drill panel: a band
 /// with affine branches converts to a polygon ([`rail_hole_poly`]) and joins the same boolean.
+///
+/// `outline` narrows the panel to a general **outer wire** — a closed `(σ,µ̂)` loop the material is
+/// kept *inside* of, so the panel is `band ∩ outline ∖ holes`. `None` is every part whose boundary
+/// is the band itself. It exists for the shape a band cannot express: a contour that terminates the
+/// material in σ turns around at both ends, so its boundary is not two graphs `µ̂ = f(σ)`
+/// (`docs/cutter-extrude-design.md` §12.4). The loop must lie strictly inside the band, and its
+/// σ-extent must be the band's — it *is* the boundary there, not something interior to it, so unlike
+/// a hole it reaches both ends. The band then only has to **contain** the wire: it still fixes the
+/// σ-station partition and the lid patch each footprint is trimmed out of, which is why the outer
+/// wire needs no new surface machinery.
+///
 /// Refused, never mis-built: a **curved** branch sharing a slice with a polygon hole (not a polygon
-/// operand), a hole touching a boundary, a σ-overlapping [`HoleRail`] pair, two lids that cannot be
-/// sewn along a station, a degenerate partition, or an arrangement fault.
+/// operand), a hole or an outline touching a boundary, a σ-overlapping [`HoleRail`] pair, two lids
+/// that cannot be sewn along a station, a degenerate partition, or an arrangement fault.
+#[allow(clippy::too_many_arguments)]
 pub fn brep_trim_solid_regions<B: Backend>(
     charts: &[(Interval<B>, &Chart<B>)],
     w: &Interval<B>,
     inner: &[(Interval<B>, RatFunc<B>)],
     outer: &[(Interval<B>, RatFunc<B>)],
+    outline: Option<&[WirePoint<B>]>,
     holes: &[HoleRail<B>],
     poly_holes: &[Vec<(Rat<B>, Rat<B>)>],
 ) -> Option<Brep<B>> {
@@ -2001,6 +2186,17 @@ pub fn brep_trim_solid_regions<B: Backend>(
         hi: inner.last()?.0.hi.clone(),
     };
     let ws = [w.lo.clone(), w.hi.clone()];
+    // Normalize the rails **before** the σ-partition is derived from them, not after. The partition
+    // exists to make the emitted patches' Bézier weights positive, and the emitted patches carry the
+    // *stitched polynomial* rails — so deriving it from the raw ones asks the question about a
+    // denominator no patch will ever have. It is not academic: a wall whose µ̂-pullback carries a
+    // **negative constant** denominator (an inward-facing profile edge — a sign convention, not a
+    // geometry) makes the raw anchor's denominator negative throughout, so `sigma_splits` refuses a
+    // range every emitted patch is perfectly well-conditioned over. `poly_rail` divides that
+    // constant out, which is what the patches see.
+    let inner = stitched_poly_chain(inner);
+    let outer = stitched_poly_chain(outer);
+    let (inner, outer) = (&inner[..], &outer[..]);
 
     // The piece of a piecewise boundary covering a σ.
     // The region chart covering σ (by containment).
@@ -2099,16 +2295,13 @@ pub fn brep_trim_solid_regions<B: Backend>(
         }
     }
 
-    let inner = stitched_poly_chain(inner);
-    let outer = stitched_poly_chain(outer);
-
     // …and strictly interior in µ̂ at every vertex. The per-slice boolean models a hole clear of
     // both rails (`slice_poly_footprint`'s proxy), so a vertex outside the band would make the
     // footprint's *combinatorics* wrong — a silently mis-built solid rather than a loose fit.
     let inside_band = |p: &[SigMu<B>]| -> Option<bool> {
         for (s, m) in p {
-            let lo = piece_at(&inner, s)?.eval(s)?;
-            let hi = piece_at(&outer, s)?.eval(s)?;
+            let lo = piece_at(inner, s)?.eval(s)?;
+            let hi = piece_at(outer, s)?.eval(s)?;
             if !(lo.cmp(m) == Ordering::Less && m.cmp(&hi) == Ordering::Less) {
                 return Some(false);
             }
@@ -2120,6 +2313,41 @@ pub fn brep_trim_solid_regions<B: Backend>(
             return None;
         }
     }
+    // The outer wire takes the same snap and the same µ̂ test as a hole — it is the *same* operand
+    // to the same boolean — but the opposite σ test: it must reach **both** ends of the panel,
+    // because it is the boundary there rather than something interior to it. A wire falling short
+    // would leave the terminal slices bounded by the band, quietly building a longer part than the
+    // caller asked for; a wire overhanging would be clipped to the band without saying so.
+    let outline: Option<Vec<WirePoint<B>>> = match outline {
+        Some(o) => {
+            let snapped = snap_wire_to_stations(o, &stations)?;
+            // Only its **free** vertices are tested against the band: a rail-borne one lies on a
+            // rail by construction, and `inside_band` is a *strict* test that it would fail.
+            let free: Vec<SigMu<B>> = snapped
+                .iter()
+                .filter_map(|p| p.free_mu().map(|m| (p.sigma().clone(), m)))
+                .collect();
+            if !inside_band(&free)? {
+                return None;
+            }
+            let (mut lo, mut hi) = (snapped[0].sigma().clone(), snapped[0].sigma().clone());
+            for p in &snapped {
+                let s = p.sigma();
+                if s.cmp(&lo) == Ordering::Less {
+                    lo = s.clone();
+                }
+                if s.cmp(&hi) == Ordering::Greater {
+                    hi = s.clone();
+                }
+            }
+            if !(req(&lo, &sigma.lo) && req(&hi, &sigma.hi)) {
+                return None;
+            }
+            Some(snapped)
+        }
+        None => None,
+    };
+    let outline = outline.as_deref();
     let holes: Vec<HoleRail<B>> = holes
         .iter()
         .map(|h| HoleRail {
@@ -2152,17 +2380,19 @@ pub fn brep_trim_solid_regions<B: Backend>(
     for k in 0..nst - 1 {
         let (sk, sk1) = (&stations[k], &stations[k + 1]);
         let smid = sk.add(sk1).mul(&Rat::new(1, 2));
-        let mu_in = piece_at(&inner, &smid)?.clone();
-        let mu_out = piece_at(&outer, &smid)?.clone();
+        let mu_in = piece_at(inner, &smid)?.clone();
+        let mu_out = piece_at(outer, &smid)?.clone();
         // The polygon holes reaching this slice. They take the whole footprint with them — every
-        // rail hole reaching it converts to a polygon and joins the same boolean.
+        // rail hole reaching it converts to a polygon and joins the same boolean. The outer wire, if
+        // there is one, is seen by *every* slice: it is the panel's own boundary rather than
+        // something interior to it.
         let mut slice_polys: Vec<&[SigMu<B>]> = poly_holes
             .iter()
             .zip(&poly_bounds)
             .filter(|(_, (lo, hi))| lo.cmp(sk1) == Ordering::Less && sk.cmp(hi) == Ordering::Less)
             .map(|(p, _)| p.as_slice())
             .collect();
-        let raw = if slice_polys.is_empty() {
+        let raw = if slice_polys.is_empty() && outline.is_none() {
             slice_footprint(sk, sk1, &mu_in, &mu_out, &holes)?
         } else {
             for (h, rp) in holes.iter().zip(&rail_polys) {
@@ -2175,7 +2405,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
                     slice_polys.push(p);
                 }
             }
-            slice_poly_footprint(sk, sk1, &mu_in, &mu_out, &slice_polys)?
+            slice_poly_footprint(sk, sk1, &mu_in, &mu_out, outline, &slice_polys)?
         };
         let faces: Vec<SliceFace<B>> = raw
             .into_iter()
@@ -3541,6 +3771,66 @@ mod tests {
         );
     }
 
+    /// **The outer wire: a panel bounded by a general `(σ,µ̂)` loop rather than by its band**
+    /// (AUTH.3c, `docs/cutter-extrude-design.md` §12.4).
+    ///
+    /// The loop here is a lens: it reaches each σ-end of the panel at a **single point**, where its
+    /// two branches meet. That is the shape a rail band cannot carry — not because the topology is
+    /// exotic (a lens is two graphs over σ, and swept through the thickness it is an ordinary
+    /// prism), but because the branches meet with unbounded slope, which is exactly where a fitted
+    /// polynomial rail runs out of certificate. Given as a loop it is just a polygon, and the band
+    /// is demoted to what still needs a rail: the σ-station partition and the lid patch each
+    /// footprint is trimmed out of.
+    ///
+    /// The pinch is what makes this more than a re-run of the hole channel: the terminal slices are
+    /// wedges with one vertex on the panel's own end station, so the boolean meets the strip's
+    /// σ-edge tangentially there — the case an interior hole is explicitly forbidden from creating.
+    #[test]
+    fn an_outer_wire_pinching_at_both_ends_is_a_certified_solid() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        // CCW in (σ, µ̂): right along the bottom branch, left along the top. Strictly inside the
+        // band µ̂ ∈ (−2, −1), and touching σ = ±15/4 at one point each.
+        let lens = [
+            WirePoint::At(q(-15, 4), q(-3, 2)),
+            WirePoint::At(q(0, 1), q(-19, 10)),
+            WirePoint::At(q(15, 4), q(-3, 2)),
+            WirePoint::At(q(0, 1), q(-11, 10)),
+        ];
+        let solid = gore_outline_solid(&lens).expect("a lens outer wire must build");
+        assert_certified(&solid, 0, "the outer-wire panel");
+
+        // Not vacuous: the band solid over the same gore is a different, larger part. Equal face
+        // counts would mean the wire was ignored and the band built as usual.
+        let band = gore_solid(&[], &[]).expect("the band panel still builds");
+        assert!(
+            solid.faces().len() != band.faces().len(),
+            "the wire must actually bound the part: {} faces against the band's {}",
+            solid.faces().len(),
+            band.faces().len()
+        );
+    }
+
+    /// **A wire that does not reach the panel's σ-ends is refused, not quietly extended.**
+    ///
+    /// The outer wire *is* the boundary, so falling short would leave the terminal slices bounded by
+    /// the band — building a longer part than the caller asked for, with every certificate green.
+    /// This is the opposite of a hole's rule (strictly interior), and the two share a code path, so
+    /// the direction is worth pinning.
+    #[test]
+    fn an_outer_wire_short_of_the_panel_ends_is_refused() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let short = [
+            WirePoint::At(q(-2, 1), q(-3, 2)),
+            WirePoint::At(q(0, 1), q(-19, 10)),
+            WirePoint::At(q(2, 1), q(-3, 2)),
+            WirePoint::At(q(0, 1), q(-11, 10)),
+        ];
+        assert!(
+            gore_outline_solid(&short).is_none(),
+            "a wire inside the panel's σ-extent is a hole, not an outer boundary"
+        );
+    }
+
     /// A hole **spanning multiple stations** (`σ ∈ [−2, 2]` on the wide gore, whose positive-weight
     /// partition has interior stations inside `(−2, 2)`) exercises the μ-band **split**: a fully
     /// covered middle slice's lid becomes a bottom band `[μ⁻, near]` and a top band `[far, μ⁺]` (no
@@ -3847,7 +4137,16 @@ mod tests {
         let inner = [(sigma.clone(), mu_lo)];
         let outer = [(sigma.clone(), mu_hi)];
         let charts = [(sigma, &chart)];
-        brep_trim_solid_regions(&charts, &w, &inner, &outer, holes, polys)
+        brep_trim_solid_regions(&charts, &w, &inner, &outer, None, holes, polys)
+    }
+
+    /// The same gore, narrowed to a general **outer wire** — the AUTH.3c channel.
+    fn gore_outline_solid(outline: &[WirePoint<lattice::Bignum>]) -> Option<Brep<lattice::Bignum>> {
+        let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
+        let inner = [(sigma.clone(), mu_lo)];
+        let outer = [(sigma.clone(), mu_hi)];
+        let charts = [(sigma, &chart)];
+        brep_trim_solid_regions(&charts, &w, &inner, &outer, Some(outline), &[], &[])
     }
 
     /// A watertight, manifold, certified closed 2-manifold of the stated genus.

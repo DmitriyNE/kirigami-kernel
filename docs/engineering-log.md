@@ -701,6 +701,20 @@ fine — this is a log, not a schema.
 
 ## Tech debt / sketchy
 
+- **The σ-station partition is derived from one representative rail and never re-checked against the
+  patches it is supposed to serve.** `sigma_stations` builds its anchor from the slice's **lower**
+  rail only — documented as sound because "all four σ-rails share one denominator (the `µ⁻` base
+  fixes it)" — but `trim_surf` calls `reduce()`, whose gcd division depends on the numerator, so two
+  rails over the same chart can reduce to *different* denominators. It is already loose for the
+  general polygon channel (AUTH.2e), where a slice's lid rails are per-edge affine functions the
+  partition never saw. Nothing has produced a bad weight, and `sigma_splits` is deliberately
+  conservative, so this is a latent fail-open rather than a bug: **the emitted patch's weights are
+  not verified, only a proxy's.** The cheap close is a check in the builder's second pass —
+  `positive_weights(anchor.den(), sk, sk1)` per emitted rail, refusing rather than emitting — which
+  would also turn the outer-wire polygon channel (§12.4) from "consistent with the existing
+  looseness" into something actually gated. Noticed while sign-normalizing the weights for AUTH.3c;
+  deliberately not folded into that slice. *2026-08-17 · open · `export::brep_build`*
+
 - **A local `xtask gate --full` failed three OCCT/CGAL legs once and passed them on a clean re-run —
   cause unidentified, so it is recorded rather than dismissed.** The run reported `FAIL` for *OCCT
   STEP export*, *OCCT STEP doctests* and *CGAL differential*, while its own compile legs
@@ -753,6 +767,170 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **#275: the cross-op σ-end, and why it took a *placement* rather than a mechanism (2026-08-17).**
+  §12.2 derives the σ-ends from the union of **every op's** walls, because the two walls closing the
+  kept µ̂-interval need not belong to the same cutter. Every fixture closed on the contour's own
+  tangents, so that half of the union had nothing exercising it — the gap that held AUTH.3's
+  `rc-hyp` at 🚧 and, with it, the milestone out of `LANDED`.
+
+  The construction is arithmetic, not code: a contour whose own tangent points fall *inside* the
+  annulus carve has no material at its own tangent rulings, so the extent **cannot** close there.
+  Tangent radius is `√(D²−r²)`; the carve's boundary at that azimuth is `[cos δ + √(cos²δ+7)]/2`.
+  Centre `(0, 8/5)`, `r = 3/5` gives `1.483` against `1.865` — inside. It certifies, and the
+  signatures are unambiguous: roles `[Inactive, LowerBound, UpperBound]` (the **subtract** bounds one
+  side, the **intersect** the other) and the folded boundary at `51`/`51` on the two authored
+  cylinders with **4 on both at once** — those four *are* the σ-ends. The control, tangent outside
+  the carve, gives `192`/`0` and **0** corners.
+
+  **The near-miss placements are the finding.** Nudge the contour out until its tangent is only just
+  inside the carve — `(0, 19/10)`, `r = 1/2`, `1.833` against `1.891` — and the end derives correctly
+  but no graph rail certifies up to it: `RailSpanShort`. The crossing has to clear the contour's own
+  √-branch. Logged rather than pinned as a test, because it is a limit worth *lifting* (the turn-arc
+  splice only fires on a `pinch: true` end, and a cross-op end is `pinch: false`) rather than a scope
+  exclusion — pinning it would ossify the refusal. *Three placements refused before one worked, and
+  the difference was a number I could compute in advance; computing it first is what turned a search
+  into a construction.*
+  **And landing the milestone broke the gate's own mutation test**, in the instructive way: its
+  "a dotted tag that has *not* landed is out of scope" case was written as `[AUTH.3]`, so the day
+  AUTH.3 landed the test's premise became false. The case is about *dotted ∧ unlanded*, not about
+  which milestone, so it now uses a tag that is deliberately not real. **A test that names a live
+  instance to demonstrate a property will fail for the wrong reason exactly when the property is
+  most interesting.**
+  *2026-08-17 · resolved · #275, branch `auth-3c`*
+
+- **AUTH.3d: the acceptance closed, and the milestone's own gate said it is not finished
+  (2026-08-17).** `acceptance::contour_panel` is the first device in the repo whose boundary is an
+  **authored outline** rather than a declared band, and the round-trip closes on it: 3-D contour →
+  certified flat pattern, a feature authored in the **developed** panel's ECAD coordinates → folded
+  back → drilled, watertight genus-1 solid → STEP (`cert=Verified occt=ok`, 210 faces, 0 free,
+  19134 entities under OCCT). Two things about *how* it is stated are the reusable part:
+
+  - **"The outline bounds it alone" is a derived fact, not a pruned recipe.** The panel's own `z ≤ 3`
+    bound and annulus carve stay in the ops list and both come back `Inactive`. Deleting them would
+    have made the same test pass while proving nothing about the resolver.
+  - **The artifact was checked, not just the verdict.** The drilled SVG carries **2** subpaths where
+    the plain one carries 1 — the authored feature is actually in the emitted geometry. Cheap, and
+    it is the check [[verify-demo-faithfulness]] exists for.
+
+  **And the gate refused the victory lap.** Marking AUTH.3 `LANDED` in xtask was the obvious next
+  move; running it first showed the vv-matrix gate **FAIL** — the ★ row carries `rc-hyp 🚧`, and it
+  is 🚧 because the cross-op σ-end has no fixture (#275). So the milestone is *feature*-complete and
+  not *evidence*-complete, and the gate is what distinguishes those. **Try the declaration before
+  writing it down**; a gate you have not run is a gate you are asserting.
+  *2026-08-17 · resolved · AUTH.3d, branch `auth-3c`*
+
+- **A radiused outline is not "the quadric case with more walls" — it is the case that showed the
+  contour path was asking the wrong question (AUTH.3d.1).** The `sole_pinched_contour` fork asked
+  for **one wall**; a rounded rectangle has eight. Generalizing it looked like relaxing a bound, and
+  the measurement said otherwise: a corner arc is a *short* quadric wall whose **entire**
+  disc-positive window lies within `~10⁻⁴` of a tangent ruling, so `certified_rail_surface` clamps
+  the fit into the √-branch and the oracle declines from the first sample — `Unresolved`, not the
+  `RailSpanShort` the earlier shapes gave. There is no span the clamp can choose, because the whole
+  window *is* the branch.
+
+  The fix was to ask which **cutter** bounds the part rather than which **wall**, and then read the
+  boundary from the cutter's own fill rule — `shadow_hole_loops`, the multi-wall tracer AUTH.2 built
+  for non-convex *holes*, called on an outline. The one-wall case joins it instead of being
+  special-cased around. Deliberately **not** taken by an all-affine contour: its rails are exact and
+  its corners certify at `ε = 0`, so tracing would swap exact rails for chords. *A traced loop is
+  earned by a quadric wall, not by having many walls.*
+
+  Two costs, both measured, both worth stating because neither is obvious:
+  - **The tracer spends `segments` over the whole loop, so a small radius starves its own arcs.** At
+    `r = w/5` nothing certifies below 384 segments; at `r = 2w/5` it certifies at 48 and converges
+    `5.4e-2 → 4.0e-2 → 1.7e-2` over `48 → 96 → 192`, with `206 / 350 / 734`-face watertight solids.
+    Too *large* fails the other way — at `r = 3w/5` the corners eat the sides and the footprint stops
+    being one µ̂-interval per ruling (`AmbiguousRegion`).
+  - **The outer wire may not inherit the hole budget, and it silently had been.** `outline_solid`
+    took `certify_holes`' `clamp(8, 16)` — right for a hole, where a coarse loop is a fidelity trade,
+    and wrong for the boundary, where it is a *refusal*: the radiused outline certifies flat at 48
+    segments and was `Unresolved` in the solid at 16. A defect introduced by me in AUTH.3c part 2,
+    found only because a harder fixture asked. **Reusing a budget is reusing a judgement about what
+    the thing is for.**
+  *2026-08-17 · resolved · AUTH.3d.1, branch `auth-3c`*
+
+- **The outer wire cost one boolean operator, and the mixed boundary one currency (AUTH.3c).** §12.4 had framed the remaining pinch
+  shapes as needing "the polygon channel extended one level out", with a named fallback if that
+  turned out expensive. It did not. A slice's footprint was `strip ∖ holes`; for a part bounded by a
+  traced loop it is `strip ∩ ({outline} ∖ holes)` — and even-odd parity already reads a loop
+  strictly inside another as a hole in it, so the outline and its holes are *one* operand and the
+  only change is `BoolOp::Diff → BoolOp::And`.
+
+  What made it cheap is that the band did **not** have to be replaced. It is demoted to the two jobs
+  that still need a rail — the σ-station partition and the ruled patch each footprint is trimmed out
+  of — and both only require it to *contain* the wire. So where there is no boundary rail to derive
+  one from, the evaluator synthesizes one. The pad is relative (a sixteenth of the wire's own µ̂-span
+  each side) rather than fixed, so a small contour's band cannot wander onto the chart's singular
+  rail, where the parametrization breaks down rather than the part.
+
+  Measured: the quadric contour that bounds its part alone builds a watertight genus-0 solid, 66
+  faces, with every vertex within a thickness of the authored cylinder and the `w = 0` lid on it.
+  The two worries going in were both wrong. The terminal slices meet the strip's σ-edge
+  **tangentially** — the wire reaches each σ-end at a single point, the case an interior hole is
+  explicitly forbidden from creating — and the arrangement handled it without a pinch. And "the
+  pinch makes the solid degenerate" was a phrase, not a fact: the footprint is a closed oval, and an
+  oval swept through a thickness is an ordinary prism. Only the *representation* ever failed.
+
+  One rule runs opposite to a hole's and is load-bearing: a hole must be strictly interior in σ, an
+  outer wire must reach **both** σ-ends. A wire falling short would leave the terminal slices bounded
+  by the synthesized band — a longer part than asked for, every certificate green. Pinned as its own
+  refusal test, because the two share a code path and the shared path is where that inverts.
+
+  **The mixed shape then cost a currency, not a construction.** Where the boundary is a rail out and
+  an arc back, chording the rail would have traded a certified fit for a chord sagitta nobody
+  bounded. So a wire vertex became either an explicit `(σ,µ̂)` or *a σ at which the wire runs along a
+  named rail* (`WirePoint`) — the mechanism being the one `railed_corners` already had, a footprint
+  vertex on a proxy horizontal reading back as the true curved rail. Two adjustments fell out. The
+  strip's rect now opens a unit beyond the proxies when a wire is present, so a wire running along a
+  rail is an interior edge rather than one coincident with the strip's own. And `railed_corners`'
+  refusal of a non-radial rail-to-free edge became a chord fitted through the rail's **true** value:
+  a proxy horizontal is a height with no metric meaning. That arm read as a guard against a hole
+  touching the boundary, but the vertex-level `inside_band` test is the actual guard — the arm was
+  doing it only incidentally, which is worth noticing before deleting anything that looks defensive.
+
+  143 faces, genus 0, watertight. **And the faithfulness assertion earned its keep twice.** It first
+  failed at `0 vertices on the plane` — which turned out not to be a missing rail but a tolerance
+  borrowed from the flat tests (`5e-3`) sitting *below* the part's own certified `ε = 8.9e-3`, since
+  the solid is emitted at the deliberately coarser STEP fit. Restated against `solid.eps()` it
+  passes, and it is now the honest test rather than the lucky one: **ask the part what it promised,
+  do not borrow a constant from a different profile.** The measured split — 6 vertices on the plane
+  against 149 on the cylinder — is itself the claim that the rail was named rather than chorded: a
+  Bézier costs corners only at its σ-stations, a chord costs one each.
+  *2026-08-17 · resolved · AUTH.3c, branch `auth-3c`*
+
+- **A part refused because its denominator had the wrong sign — and the sign meant nothing
+  (AUTH.3c).** The σ-stock's solid path was expected to be a one-line fix: `brep_trim_solid_regions`
+  sweeps the *authored* region bands, so clip them to the derived `structure.domain` first. That
+  clip is correct and necessary, and it did **not** make the polygonal contour build. It moved the
+  refusal from `piece_at` to `sigma_splits`, which reported that the anchor `c + µ̂·r + w·n` had a
+  denominator **negative at every one of nine samples across the extent** — uniformly negative, not
+  crossing.
+
+  `(N, D)` and `(−N, −D)` are the same rational curve. Which one arrives is a convention: an
+  extruded profile's wall facing the other way flips the sign of its µ̂-pullback's denominator, and
+  `reduce()` — a polynomial gcd division — may flip it again on the way to the anchor. So
+  `positive_weights`, which demanded strictly positive Bernstein coefficients, was refusing parts
+  every emitted patch is perfectly well-conditioned over. What is genuinely unbuildable is a
+  **crossing**: a weight through zero is a pole inside the span, and that is what subdividing is
+  for. The gate is now sign-*definiteness*, `sigma_splits` carries the run's sign down its
+  recursion, and `RatBezier::from_vec3rat` / `RatBezierSurface::ruled_from_rails` pick the positive
+  representative (`bezier::positive_representative`) where the Bernstein form is actually made —
+  which is the only place that can, since `reduce()` sits between the rail and the patch.
+
+  Result: the σ-terminating square contour builds a **watertight genus-0 solid, 14 faces**, against
+  the lateral-trim control's unmoved **10**. The normalization is exact, so no emitted point and no
+  certified bound moves — verified the strong way, `693/693` workspace tests green including every
+  golden and acceptance fixture, because a change touching every rational patch in the crate is not
+  something a targeted test can clear.
+
+  **Two things worth carrying forward.** First, the diagnosis only existed because the probe was a
+  *comparison* — four fixtures with a working control — so "the control builds and this does not"
+  was a fact from the first run rather than a hypothesis. Second, the false lead cost two attempts:
+  I twice sign-normalized the **rail** (`poly_rail`) and twice the probe was unmoved, because
+  `reduce()` re-introduces the sign downstream of it. *Normalize where the representation is
+  consumed, not where it is produced* — anything in between may re-derive it.
+  *2026-08-17 · resolved · AUTH.3c, branch `auth-3c`*
 
 - **The vv-matrix gate has been vacuous for every `[AUTH.x]` row, and `LANDED`'s `"AUTH.1"` /
   `"AUTH.2"` entries had never been read.** `milestone_tag` required a tag to start with `M` and hold

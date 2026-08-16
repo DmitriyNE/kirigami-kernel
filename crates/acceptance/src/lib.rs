@@ -320,6 +320,61 @@ pub fn ring_slot() -> Vec<Edge<Bignum>> {
         .into_edges()
 }
 
+/// The **radiused panel outline** — a rounded rectangle about `(cx, cy)`, half-extents `(w, h)`,
+/// corner radius `r`. The outline a flex fabricator actually accepts: sharp corners are a tear
+/// risk, so a real panel boundary is straights joined by radii.
+///
+/// It is the mixed-wall contour, and that is the point. Four sides are **planes** — affine
+/// µ̂-pullbacks that `plane_cut_rail` gives exactly — and four corners are **cylinders**, genuine
+/// quadratics whose two branches meet at tangent rulings. One cutter, both wall kinds, so a part
+/// kept inside it exercises the exact-rail path and the traced-loop path together.
+///
+/// Every vertex is exactly on its circle with no Pythagorean split, because the arc endpoints are
+/// the axis-aligned tangent points: `(cx ± (w−r), cy ± h)` and `(cx ± w, cy ± (h−r))`. So the
+/// profile is exact over ℚ for any rational `r`, which a chamfer-by-chord would not be.
+///
+/// **Radius is not a free parameter.** The tracer spends its `segments` budget over the *whole*
+/// loop, so a small radius starves its own arcs and forces the entire outline finer: measured on the
+/// doctest cone, `r = w/5` needs 384 segments to certify at all, while `r = 2w/5` certifies at 48
+/// and converges `5.4e-2 → 4.0e-2 → 1.7e-2` over `48 → 96 → 192`. Too *large* fails the other way —
+/// at `r = 3w/5` the corners consume the sides and the footprint stops being one µ̂-interval per
+/// ruling (`AmbiguousRegion`, §12.5).
+pub fn rounded_outline(cx: Q, cy: Q, w: Q, h: Q, r: Q) -> Vec<Edge<Bignum>> {
+    let (wi, hi) = (w.sub(&r), h.sub(&r));
+    let r2 = r.mul(&r);
+    let p = |dx: Q, dy: Q| [cx.add(&dx), cy.add(&dy)];
+    let centre = |sx: i128, sy: i128| (cx.add(&wi.mul(&qi(sx))), cy.add(&hi.mul(&qi(sy))));
+    let mut pr = Profile::new();
+    // CCW from the bottom-left tangent point: side, corner, side, corner, …
+    let corners = [
+        (
+            (1i128, -1i128),
+            (wi.clone(), h.neg()),
+            (w.clone(), hi.neg()),
+        ),
+        ((1, 1), (w.clone(), hi.clone()), (wi.clone(), h.clone())),
+        ((-1, 1), (wi.neg(), h.clone()), (w.neg(), hi.clone())),
+        ((-1, -1), (w.neg(), hi.neg()), (wi.neg(), h.neg())),
+    ];
+    let mut from = (wi.neg(), h.neg());
+    for ((sx, sy), arc_start, arc_end) in corners {
+        pr = pr.polyline(&[
+            p(from.0.clone(), from.1.clone()),
+            p(arc_start.0.clone(), arc_start.1.clone()),
+        ]);
+        let (bx, by) = centre(sx, sy);
+        pr = pr.arc(
+            bx,
+            by,
+            r2.clone(),
+            p(arc_start.0, arc_start.1),
+            p(arc_end.0.clone(), arc_end.1.clone()),
+        );
+        from = arc_end;
+    }
+    pr.into_edges()
+}
+
 /// The three **metric probes** that bracket [`ell_slot`], each `(cx, cy, r²)` for [`sketch_drill`]:
 /// a disc inscribed in one arm, a disc circumscribing the whole L, and a disc inside the notch the
 /// L does *not* cover.
@@ -339,6 +394,62 @@ pub fn ell_probes() -> [(Q, Q, Q); 3] {
         (q(3, 40), q(89, 40), q(3, 80)),
         (q(13, 80), q(179, 80), q(1, 400)),
     ]
+}
+
+/// The **contour panel**'s authored outline, `(cx, cy, w, h, r)` — the numbers
+/// [`contour_panel`] is cut with. Exposed so a faithfulness check tests the *same* rounded
+/// rectangle the part was built from instead of restating it (the [`seam_drill_axis`] doctrine).
+pub fn contour_outline_geometry() -> (Q, Q, Q, Q, Q) {
+    (qi(0), q(11, 5), q(1, 4), q(1, 5), q(1, 10))
+}
+
+/// The **contour panel**: the Stage-1 cone gore whose boundary is an **authored outline** rather
+/// than a declared σ-band — the σ-stock (AUTH.3) as a product part.
+///
+/// Every other device here is a *band*: `region_sigma` says where the material starts and stops,
+/// and cutters only trim µ̂. This one keeps what is inside a radiused rectangle
+/// ([`rounded_outline`]), so its σ-extent is **derived** from the contour's own corners. That is
+/// what a flex circuit's boundary actually is — a closed outline drawn in ECAD — and it is the one
+/// thing `intersect` could not express before AUTH.3.
+///
+/// The panel's own `z ≤ 3` bound and annulus carve stay in the recipe and both resolve
+/// **`Inactive`**: the outline is small and sits clear of them, so it bounds the part *alone*. That
+/// is deliberate — it makes "the contour is the whole boundary" a derived fact the report states,
+/// not a property of a recipe pruned to force it.
+///
+/// `feature` is an interior cut authored in **flat** (ECAD) coordinates and folded back onto the
+/// surface, which is the round-trip leg: the outline goes 3-D → flat, the feature goes flat → 3-D,
+/// and the two meet in one part. Its coordinates depend on where the development lands, so a caller
+/// develops once with `None` and places it from the flat pattern it gets.
+///
+/// **The op is well-posed here and would not be on the wrapping device** (`§12.5`): a ruling is a
+/// line through the apex and a swept profile is a prism, so keeping what is inside a contour is
+/// meaningful only where no azimuth *and its antipode* are both swept. This gore spans 180° at
+/// `σ ∈ [−1, 1]`; the self-lapping cone's 410.7° does not qualify, and refuses by name.
+pub fn contour_panel(segments: usize, feature: Option<Vec<[Q; 2]>>) -> Part<Bignum> {
+    let (cx, cy, w, h, r) = contour_outline_geometry();
+    let part = construct::from_chart::<Bignum>(&cone())
+        .region_sigma(qi(-1), qi(1), SupportFn::inherit())
+        .keep_near(
+            cone()
+                .surface(&qi(2), &qi(0))
+                .eval(&qi(0))
+                .expect("the cone is regular at σ = 0"),
+        )
+        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+        .intersect(Cutter::extrude(
+            sketch_plane(),
+            Apex::direction([qi(0), qi(0), qi(1)]).expect("a real sweep direction"),
+            rounded_outline(cx, cy, w, h, r),
+        ))
+        .clearance(qi(1))
+        .thickness(q(1, 8))
+        .segments(segments);
+    match feature {
+        Some(poly) => part.hole_flat(poly),
+        None => part,
+    }
 }
 
 /// The **Stage-1 flex panel**: the apex cone gore on `σ ∈ [−1, 1]`, four solid cutters with roles

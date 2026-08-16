@@ -16,7 +16,7 @@ use std::process::ExitCode;
 /// Milestones that have shipped — the `vv_matrix` gate only enforces ★ rows whose milestone
 /// has landed. Extend as each ships (mirrors the former `vv_matrix_gate.sh` `landed=` var).
 const LANDED: &[&str] = &[
-    "M0", "M1", "M2", "M3a", "M3c", "M3d", "M3e", "AUTH.1", "AUTH.2",
+    "M0", "M1", "M2", "M3a", "M3c", "M3d", "M3e", "AUTH.1", "AUTH.2", "AUTH.3",
 ];
 
 /// The repo root, embedded at compile time (this crate lives at `<root>/xtask`).
@@ -719,9 +719,12 @@ mod tests {
         let dotted_ok =
             format!("{header}| foo ★ [AUTH.2] | c | ✅ | ⬜ | — | ⬜ | N/A · rc-hyp ✅ | — |\n");
         assert!(vv_matrix(&dotted_ok).is_empty());
-        // …and one whose milestone has not landed still is not.
+        // …and one whose milestone has not landed still is not. The tag is deliberately **not** a
+        // real milestone: this case is about *dotted ∧ unlanded*, and naming a live one made the
+        // test encode a fact rather than the property — it broke the day AUTH.3 landed, which is
+        // the wrong reason for a gate test to fail.
         let dotted_deferred =
-            format!("{header}| foo ★ [AUTH.3] | c | ⬜ | ⬜ | — | ⬜ | ⬜ | — |\n");
+            format!("{header}| foo ★ [NOPE.1] | c | ⬜ | ⬜ | — | ⬜ | ⬜ | — |\n");
         assert!(vv_matrix(&dotted_deferred).is_empty());
     }
 

@@ -17,6 +17,15 @@
 //!   the arc is spliced into the graph chain at the junctions the corner refinement locates — one
 //!   arc per end where it takes over near each, and a single arc wrapping **both** tangents where it
 //!   bounds one whole side;
+//! - the **solid** follows the flat pattern in all three shapes (AUTH.3c): where the boundary is
+//!   still a rail band the region bands clip to the derived extent and the Bézier weights normalize
+//!   to their positive representative; where it is a traced loop — alone, or spliced with a rail —
+//!   that loop goes to the builder as a general `(σ,µ̂)` **outer wire**, kept *inside* rather than
+//!   subtracted, with the rail stretch **named as a rail** so it stays a Bézier;
+//! - a **radiused outline** — 4 plane sides and 4 corner arcs, the boundary a fab house accepts —
+//!   is a certified part too (AUTH.3d.1). It is what made the contour path ask which *cutter*
+//!   bounds the material rather than which *wall*: a corner arc's whole disc-positive window sits
+//!   within `~10⁻⁴` of a tangent ruling, so no graph rail can be fitted anywhere on it;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -303,6 +312,437 @@ fn the_same_footprint_is_a_certified_hole_and_a_kept_part() {
         roles[0] != OpRole::Inactive && roles[2] != OpRole::Inactive,
         "this is the MIXED boundary: the panel's plane and the contour must BOTH bound, else the \
          fixture is the sole-contour case and proves nothing about the splice. roles {roles:?}"
+    );
+}
+
+/// **The solid over a derived σ-extent (AUTH.3c).**
+///
+/// AUTH.3b taught the *flat pattern* to close in σ; the solid builder still swept the authored
+/// region **band**, so a part whose extent is narrower than its band asked the builder to place
+/// geometry over σ the boundary chains do not cover — and it refused, correctly, by failing to find
+/// a rail piece there. Clipping each band to `structure.domain` is the whole of the mechanical part.
+///
+/// It was not the whole of the fix, and the second half is the interesting one: with the extent
+/// right, `sigma_splits` still refused this part, because the anchor's denominator came out
+/// **uniformly negative** over it. `(N, D)` and `(−N, −D)` are the same curve — which one arrives is
+/// a convention of the cutter's wall orientation, flipped again by `reduce()` — so demanding the
+/// positive sign refused a part every emitted patch is perfectly well-conditioned over. The gate is
+/// now sign-*definiteness* (a weight passing through zero is a genuine pole, and that is what
+/// subdividing is for) and the Bernstein constructors pick the positive representative.
+///
+/// A watertight genus-0 shell is the claim, not merely `Verified`: a solid built over the wrong
+/// σ-range would still report a bound.
+#[test]
+fn the_solid_closes_at_the_derived_extent_too() {
+    let kept = panel(qi(-1), qi(1)).intersect(drilled(square(qi(0), q(11, 5), q(1, 4))));
+    let solid = match kept.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a contour that terminates the material in σ must build a solid, got {}",
+            name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    let genus = (2 - (v - e + (2 * f - l))) / 2;
+    assert_eq!(brep.free_edges(), 0, "watertight: {f} faces");
+    assert_eq!(
+        genus, 0,
+        "a solid square contour is a plain slab: {f} faces"
+    );
+
+    // The control that keeps the above from being vacuous *and* pins the no-regression half: the
+    // shipped lateral trim, whose extent IS its band, must build exactly as before — the sign
+    // normalization above touches every rational patch in the crate, so "the σ-stock case now
+    // works" is only half the claim.
+    let lateral =
+        panel(qi(-1), qi(1)).intersect(Cutter::half_space([qi(0), qi(0), qi(1)], q(5, 2)));
+    let plain = match lateral.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "the shipped lateral trim must still build, got {}",
+            name(&v)
+        ),
+    };
+    assert_eq!(plain.brep().free_edges(), 0, "watertight");
+    assert!(
+        plain.brep().faces().len() < brep.faces().len(),
+        "and the contour's solid must be the richer one — a σ-terminating boundary carries more \
+         faces than a band-wide trim, so equal counts would mean one of them is not what it says"
+    );
+}
+
+/// **The solid of a part bounded by nothing but a traced contour (AUTH.3c, the outer wire).**
+///
+/// This is the shape a rail band cannot carry. Not because the topology is exotic — the footprint in
+/// `(σ, µ̂)` is a closed oval, and an oval swept through the thickness is an ordinary prism — but
+/// because at the two σ-ends the wall's branches meet with **unbounded slope**, and a fitted
+/// polynomial rail is clamped away from exactly there. `certify_boundary` says so by name
+/// (`RailSpanShort`), which is why the solid evaluator forks *before* it and hands the loop to the
+/// builder as a general `(σ,µ̂)` outer wire instead — the same currency the polygon-hole channel
+/// already takes, intersected rather than subtracted.
+///
+/// **Faithfulness, not just a verdict**, per the flat path's own standard: the solid is folded back
+/// onto the authored cylinder `x² + (y − 11/5)² = 1/25`. Every vertex is a boundary vertex here (no
+/// holes), so each sits on that cylinder at `w = 0` or a thickness off it along the surface normal —
+/// so the whole shell must lie within a thickness of the contour, and the `w = 0` half must lie
+/// *on* it. A solid built over the wrong loop would pass a face count and fail this.
+#[test]
+fn a_traced_contour_bounds_a_solid_where_no_rail_band_can() {
+    let (cy, r2) = (q(11, 5), q(1, 25));
+    let kept = panel(qi(-1), qi(1)).intersect(Cutter::vertical_cylinder(qi(0), cy.clone(), r2));
+    let solid = match kept.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a contour that bounds the part alone must build a solid, got {}",
+            name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    assert_eq!(brep.free_edges(), 0, "watertight: {f} faces");
+    assert_eq!(
+        (2 - (v - e + (2 * f - l))) / 2,
+        0,
+        "a disc swept through the thickness is a plain slab: {f} faces"
+    );
+
+    // The shell hugs the authored cylinder: within a thickness everywhere, ON it for the `w = 0`
+    // lid. `1/8` is the part's thickness; `5e-3` is the same tolerance the flat leg asserts at.
+    let (cyf, rf, th) = (2.2, 0.2, 0.125);
+    // A brep vertex is a `Surd` `a + b√d`; every vertex of a rational patch's trim is rational.
+    let surd_f64 = |s: &lattice::Surd<Bignum>| {
+        let (a, b, d) = s.parts();
+        to_f64(a) + to_f64(b) * to_f64(d).sqrt()
+    };
+    let (mut worst, mut on_it) = (0.0f64, 0usize);
+    for p in brep.verts() {
+        let (x, y) = (surd_f64(&p[0]), surd_f64(&p[1]));
+        let d = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+        worst = worst.max(d);
+        if d < 5e-3 {
+            on_it += 1;
+        }
+    }
+    assert!(
+        worst < th + 5e-3,
+        "no vertex may sit more than a thickness off the authored contour: worst {worst:.3e}"
+    );
+    assert!(
+        on_it * 4 >= brep.verts().len(),
+        "the w = 0 lid must lie ON the contour, and it is half the vertices: only {on_it} of {} \
+         are within 5e-3",
+        brep.verts().len()
+    );
+}
+
+/// **The mixed boundary in the solid: a rail out and an arc back (AUTH.3c).**
+///
+/// The hardest of the three shapes, and the one that says what an outer wire is *for*. The contour
+/// bounds one whole side, so the splice leaves the lower chain empty and a two-turn arc in its
+/// place — there is no band to sweep. But there is still a real, certified rail on the other side,
+/// and chording it would trade a rail-fit bound for a chord sagitta nobody bounded. The wire says
+/// both things at once: the arc's chords as explicit `(σ,µ̂)` points, the rail **named as a rail**,
+/// so that stretch is emitted as its own Bézier exactly as it always was.
+///
+/// **Faithfulness against both surfaces, which is what makes this fixture different.** Every vertex
+/// must lie within a thickness of the authored cylinder or the authored plane `z = 3`, and **both**
+/// must actually carry some of the boundary. A wire that dropped the rail and chorded the arc across
+/// the whole span would still be watertight and still be genus 0.
+///
+/// The tolerance is the part's **own** certified bound rather than a constant. The solid is emitted
+/// at the low-degree STEP profile (`RailFit::occt_low`), deliberately coarser than the flat pattern
+/// — the artifact that is manufactured — so its ε is larger, and a constant borrowed from the flat
+/// tests fails here for a reason that says nothing about the geometry. Asking the part what it
+/// promised is both the honest test and the one that cannot drift.
+///
+/// The vertex *counts* are the other half of the claim, and they are lopsided on purpose: the arc
+/// contributes a vertex per chord while the rail contributes only its σ-stations' corners, because
+/// it is emitted as its own Bézier. That asymmetry **is** naming the rail rather than chording it.
+#[test]
+fn a_rail_out_and_an_arc_back_is_a_solid_too() {
+    let part =
+        panel(q(-1, 8), q(1, 8)).intersect(Cutter::vertical_cylinder(qi(0), q(5, 2), q(1, 4)));
+    let solid = match part.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a contour bounding one whole side must build a solid, got {}",
+            name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    assert_eq!(brep.free_edges(), 0, "watertight: {f} faces");
+    assert_eq!((2 - (v - e + (2 * f - l))) / 2, 0, "genus 0: {f} faces");
+
+    let surd_f64 = |s: &lattice::Surd<Bignum>| {
+        let (a, b, d) = s.parts();
+        to_f64(a) + to_f64(b) * to_f64(d).sqrt()
+    };
+    let eps = to_f64(solid.eps());
+    let (cyf, rf, th) = (2.5, 0.5, 0.125);
+    let (mut worst, mut on_cyl, mut on_plane) = (0.0f64, 0usize, 0usize);
+    for p in brep.verts() {
+        let (x, y, z) = (surd_f64(&p[0]), surd_f64(&p[1]), surd_f64(&p[2]));
+        let dc = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+        let dp = (z - 3.0).abs();
+        worst = worst.max(dc.min(dp));
+        if dc < eps {
+            on_cyl += 1;
+        }
+        if dp < eps {
+            on_plane += 1;
+        }
+    }
+    assert!(
+        worst < th + eps,
+        "every vertex must sit within a thickness of the cylinder or the plane: worst {worst:.3e} \
+         against a thickness {th} and a certified {eps:.3e}"
+    );
+    // **Both** surfaces must be represented, and that is the assertion the wire earns: a solid whose
+    // boundary was all arc would put nothing on the plane, and one that lost the arc would put
+    // nothing on the cylinder. Few on the plane and many on the cylinder is the *expected* shape —
+    // the rail is a Bézier with corners only at its σ-stations, the arc is a vertex per chord.
+    let n = brep.verts().len();
+    assert!(
+        on_plane >= 4 && on_cyl * 3 > n,
+        "the boundary must be the plane rail AND the contour arc — {on_cyl} vertices on the \
+         cylinder, {on_plane} on the plane, of {n}"
+    );
+}
+
+/// **A radiused panel outline — one cutter, both wall kinds (AUTH.3d.1).**
+///
+/// The outline a flex fabricator accepts: four straight sides and four corner radii. Four walls are
+/// **planes**, four are **cylinders**, and keeping what is inside it is the shape that forced the
+/// contour path to stop being single-wall.
+///
+/// It could not be assembled from graph rails, and the reason is worth pinning because it is not the
+/// one the earlier shapes had. A corner arc is a *short* quadric wall: its entire disc-positive
+/// window sits within `~10⁻⁴` of a tangent ruling, so `certified_rail_surface` clamps its fit into
+/// the √-branch and the oracle declines outright (`Unresolved`) — no span the clamp can choose is
+/// well-conditioned, because the whole window is the branch. The traced loop has no such trouble:
+/// it reads the boundary from the cutter's own fill rule, changing wall at every profile corner,
+/// which is exactly what `shadow_hole_loops` has done for multi-wall *holes* since AUTH.2. Using it
+/// as an outline rather than as a hole is the whole change.
+///
+/// Faithfulness is the rounded-box distance, which is zero only on the authored outline — and both
+/// wall kinds must carry boundary, or the shape emitted is not the shape asked for.
+#[test]
+fn a_radiused_outline_is_a_certified_part() {
+    let (cx, cy, w, h, r) = (qi(0), q(11, 5), q(1, 4), q(1, 5), q(1, 10));
+    let kept = panel(qi(-1), qi(1))
+        .segments(48)
+        .intersect(drilled(acceptance::rounded_outline(
+            cx.clone(),
+            cy.clone(),
+            w.clone(),
+            h.clone(),
+            r.clone(),
+        )));
+    let flat = match kept.develop() {
+        Verdict::Verified(f) => f,
+        v => panic!(
+            "a radiused outline must certify — mixed affine and quadric walls, got {}",
+            name(&v)
+        ),
+    };
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    assert_eq!(flat.region().faces[0].holes.len(), 0, "and no holes");
+
+    // Direction ②: every boundary vertex, folded back, on the authored rounded rectangle. The
+    // rounded-box distance — `‖max(|p−c| − (half − r), 0)‖ − r` outside the inner rectangle — is
+    // zero exactly on that outline and on no other shape.
+    let verts: Vec<[Q; 2]> = flat
+        .outline()
+        .vertices
+        .iter()
+        .map(|b| {
+            let (x, y) = b.center();
+            [x, y]
+        })
+        .collect();
+    let wire = match kept.fold(&verts, &qi(0)) {
+        Verdict::Verified(wi) => wi,
+        v => panic!("the emitted boundary must fold back, got {}", name(&v)),
+    };
+    let (cxf, cyf, wf, hf, rf) = (to_f64(&cx), to_f64(&cy), to_f64(&w), to_f64(&h), to_f64(&r));
+    let (mut worst, mut on_arc, mut on_side) = (0.0f64, 0usize, 0usize);
+    for p in &wire.points {
+        let (x, y) = (to_f64(&p[0].mid()), to_f64(&p[1].mid()));
+        let (ax, ay) = ((x - cxf).abs(), (y - cyf).abs());
+        let (dx, dy) = ((ax - (wf - rf)).max(0.0), (ay - (hf - rf)).max(0.0));
+        worst = worst.max((dx.hypot(dy) - rf).abs());
+        // A corner-arc vertex is past BOTH inner half-extents; a side vertex past exactly one.
+        if dx > 1e-9 && dy > 1e-9 {
+            on_arc += 1;
+        } else {
+            on_side += 1;
+        }
+    }
+    assert!(
+        worst < 5e-2,
+        "the developed boundary must BE the authored rounded rectangle: worst vertex sits \
+         {worst:.3e} off it"
+    );
+    assert!(
+        on_arc > 0 && on_side > 0,
+        "both wall kinds must carry boundary — {on_arc} vertices on a corner radius, {on_side} on \
+         a straight side, of {}. A contour that lost its radii, or one convexified to a disc, \
+         fails exactly here",
+        wire.points.len()
+    );
+
+    // …and the solid follows, through the same outer-wire channel.
+    let solid = match kept.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!("the radiused outline's solid must build, got {}", name(&v)),
+    };
+    assert_eq!(
+        solid.brep().free_edges(),
+        0,
+        "watertight: {} faces",
+        solid.brep().faces().len()
+    );
+}
+
+/// **A σ-end formed by TWO DIFFERENT ops' walls (#275) — the case the union event set exists for.**
+///
+/// §12.2 derives the material's σ-ends from `{disc_µ̂(f_i)} ∪ {Res_µ̂(f_i, f_j)}` over **every op's**
+/// walls, not just the terminating contour's, because the two walls that close the kept µ̂-interval
+/// need not belong to the same cutter. Every fixture until now closed on the contour's *own* tangent
+/// rulings, so the cross-op half of that union was a **soundness argument with nothing exercising
+/// it** — the gap this closes, and the one holding AUTH.3's `rc-hyp` at 🚧.
+///
+/// The construction is a placement, not a new mechanism. A contour whose own tangent points fall
+/// *inside* the annulus carve has no material at its own tangent rulings, so the extent cannot close
+/// there; it closes where the contour's rail crosses the **carve's** rail instead. Centre `(0, 8/5)`
+/// with `r = 3/5` puts the tangent at radius `1.483` against the carve's `1.865` — comfortably
+/// inside — while `(0, 11/5)` with `r = 1/5` (the control) puts it at `2.191` against `1.911`,
+/// outside.
+///
+/// Three signatures, and the differential against the control is what makes them mean something:
+///
+/// - **roles**: the *subtract* bounds one side and the *intersect* the other, which is the cross-op
+///   structure stated in the resolver's own vocabulary;
+/// - **the folded boundary lands on both authored cylinders**, roughly half each — the control puts
+///   every vertex on the contour and **none** on the carve;
+/// - **some vertices lie on both at once.** Those are the σ-ends themselves: the crossing points.
+///   A same-op end cannot produce one, and the control has zero.
+///
+/// ⚠️ Known limit, measured while placing this: the crossing must be clear of the contour's own
+/// √-branch. Nudge the contour out until its tangent sits only just inside the carve — `(0, 19/10)`
+/// with `r = 1/2`, tangent `1.833` against carve `1.891` — and the end is derived correctly but the
+/// graph rail cannot be certified up to it (`RailSpanShort`). Not pinned as a test, because it is a
+/// limit worth lifting rather than a scope exclusion; recorded in `docs/engineering-log.md`.
+#[test]
+fn a_sigma_end_can_be_the_crossing_of_two_different_ops() {
+    let carve = (0.0f64, 0.5f64, 2.0f64.sqrt()); // the panel's own annulus subtract
+    let probe = |cy: Q, r2: Q| {
+        let part = panel(qi(-1), qi(1)).intersect(Cutter::vertical_cylinder(
+            qi(0),
+            cy.clone(),
+            r2.clone(),
+        ));
+        let flat = match part.develop() {
+            Verdict::Verified(fl) => fl,
+            v => panic!("placement must certify, got {}", name(&v)),
+        };
+        let verts: Vec<[Q; 2]> = flat
+            .outline()
+            .vertices
+            .iter()
+            .map(|b| {
+                let (x, y) = b.center();
+                [x, y]
+            })
+            .collect();
+        let wire = match part.fold(&verts, &qi(0)) {
+            Verdict::Verified(w) => w,
+            v => panic!("the boundary must fold back, got {}", name(&v)),
+        };
+        let (cyf, rf) = (to_f64(&cy), to_f64(&r2).sqrt());
+        let (mut on_carve, mut on_contour, mut on_both) = (0usize, 0usize, 0usize);
+        for p in &wire.points {
+            let (x, y) = (to_f64(&p[0].mid()), to_f64(&p[1].mid()));
+            let dc = ((x * x + (y - carve.1).powi(2)).sqrt() - carve.2).abs();
+            let dk = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+            if dc < 5e-3 {
+                on_carve += 1;
+            }
+            if dk < 5e-3 {
+                on_contour += 1;
+            }
+            if dc < 5e-3 && dk < 5e-3 {
+                on_both += 1;
+            }
+        }
+        let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
+        (roles, on_carve, on_contour, on_both, wire.points.len())
+    };
+
+    // The cross-op placement: the contour's own tangents are buried in the carve.
+    let (roles, on_carve, on_contour, on_both, n) = probe(q(8, 5), q(9, 25));
+    assert!(
+        roles[1] != OpRole::Inactive && roles[2] != OpRole::Inactive,
+        "the SUBTRACT and the INTERSECT must both bound — that is what makes the end cross-op. \
+         roles {roles:?}"
+    );
+    assert_ne!(
+        roles[1], roles[2],
+        "…and they must bound opposite sides, not the same one. roles {roles:?}"
+    );
+    assert!(
+        on_carve > n / 4 && on_contour > n / 4,
+        "both authored surfaces must carry a real share of the boundary — carve {on_carve}, \
+         contour {on_contour}, of {n}"
+    );
+    assert!(
+        on_both >= 2,
+        "the σ-ends ARE the crossings, so at least the two of them must lie on BOTH cylinders — \
+         got {on_both} of {n}"
+    );
+
+    // The control: the same machinery, a placement whose tangents clear the carve. Every vertex is
+    // the contour's and the carve never bounds — so the counts above are attributable to the
+    // placement rather than to the measurement.
+    let (roles, on_carve, _, on_both, _) = probe(q(11, 5), q(1, 25));
+    assert_eq!(
+        roles[1],
+        OpRole::Inactive,
+        "the control's carve must be Inactive — else it is not a control. roles {roles:?}"
+    );
+    assert_eq!(
+        (on_carve, on_both),
+        (0, 0),
+        "and nothing may sit on the carve: a same-op end has no cross-op corner"
     );
 }
 
