@@ -698,6 +698,21 @@ fine — this is a log, not a schema.
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
 
+- **Separating the two pinch classes turned the "hard" one into no new construction at all.** The
+  quadric end was filed as the expensive half of AUTH.3b — a √-branch no graph fit can reach, needing
+  §12.4's p-curve. Once the classes were told apart (entry below), the question sharpened from *"how
+  do we fit a rail through a tangent ruling"* to *"what is the boundary there"*, and the answer was
+  already built: when the contour bounds the part **alone**, the outer boundary **is** that wall's
+  traced footprint loop, which `surface_hole_loop` has produced since PC.3 and `unroll_trim_loop` has
+  accepted since PC.4. Thirty lines of detection and dispatch, no new geometry. Measured on a radius-
+  `1/5` disc: 192 outline points, `ε = 2.26e-3`, every vertex folded back on the authored cylinder.
+  **The pattern: a construction built for one role (an interior hole) is often the whole answer in
+  another (an outer boundary), and what hides that is describing the problem by its difficulty
+  ("fit a rail through a tangent") instead of by its object ("the boundary is this loop").** The
+  residual case is genuinely different work and is now scoped as such: a quadric contour *sharing*
+  the boundary with other ops needs the p-curve arc **spliced** into a graph chain at the junctions.
+  *2026-08-16 · AUTH.3b′, branch `auth-3`*
+
 - **The two "pinch" ends are not the same shape, and the affine one is the exact one.** §12.4 filed
   a single termination class — "the two bounding rails meet, so a graph fit runs into `∂s/∂µ̂ → 0`;
   a p-curve, then" — covering both a quadric's tangent ruling and a polygon's corner. Measured at

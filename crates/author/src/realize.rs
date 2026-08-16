@@ -531,6 +531,67 @@ fn certify_holes<B: Backend>(
     Ok(out)
 }
 
+/// The op whose **own footprint loop is the whole outer boundary** — every run bounded above and
+/// below by the same wall of the same intersect, and both derived σ-ends its own tangent rulings.
+///
+/// This is the shape a graph chain cannot express and a p-curve can (`docs/cutter-extrude-design.md`
+/// §12.4). At a tangent ruling the wall's two branches meet with **unbounded slope**, so
+/// `certified_rail_surface` clamps its fit away from it and the chain runs out of certificate
+/// (`PartFault::RailSpanShort`). The traced loop has no such trouble: it is parametric, passes
+/// *through* the tangent, and is exactly what PC.3 built for interior holes — the same construction,
+/// used as an outline rather than as a hole.
+///
+/// Deliberately narrow, and each condition is load-bearing rather than defensive:
+///
+/// - **one region**, because a loop spanning a region join would need the anchor frames threaded
+///   through the tracer, which is not this slice;
+/// - **one wall**, so the loop is [`surface_hole_loop`]'s single-quadric construction. A polygonal
+///   contour has several, and needs none of this: its walls are affine, `plane_cut_rail` is exact,
+///   and its corners are transverse crossings of two straight rails that the chain assembly already
+///   carries at `ε = 0`;
+/// - **a genuine quadratic** (`a ≢ 0`), which is what makes the end a *smooth* pinch. An affine
+///   wall's `disc = b²` vanishes where the crossing escapes to infinity, not where two branches meet.
+fn sole_pinched_contour<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    structure: &Structure<B>,
+) -> Option<usize> {
+    use crate::part::OpKind;
+    use crate::resolve::{SigmaEnd, wall_of};
+    if part.regions.len() != 1 {
+        return None;
+    }
+    let first = structure.runs.first()?;
+    let op = first.lower.0;
+    if !matches!(part.ops[op].0, OpKind::Intersect) {
+        return None;
+    }
+    if !structure
+        .runs
+        .iter()
+        .all(|r| r.lower.0 == op && r.upper.0 == op && wall_of(r.lower) == wall_of(r.upper))
+    {
+        return None;
+    }
+    // Both ends closed inside the band, by a pinch rather than a jump.
+    if !structure
+        .ends
+        .iter()
+        .all(|e| matches!(e, SigmaEnd::Closed { pinch: true, .. }))
+    {
+        return None;
+    }
+    let walls = part.ops[op].1.walls().ok()?;
+    if walls.len() != 1 {
+        return None;
+    }
+    let form = develop::cut::cut_mu_form(&built.charts[0], &walls[0], &Rat::from_i128(0))?;
+    if form.a.is_zero() {
+        return None;
+    }
+    Some(op)
+}
+
 /// Certify the resolved structure into the [`FlatPattern`] (see the module docs).
 pub(crate) fn flat_pattern<B: Backend>(
     part: &Part<B>,
@@ -544,6 +605,45 @@ pub(crate) fn flat_pattern<B: Backend>(
     // band ends while every rail piece was fitted over the contour's own footprint, so a rail was
     // asked for its value a quarter-turn away from where it exists.
     let domain = structure.domain.clone();
+
+    // — 4′. The contour IS the boundary: one traced loop, no chain. —
+    //
+    // When the part is exactly what one quadric wall keeps, its outer boundary is that wall's own
+    // footprint loop, and the two derived σ-ends are its tangent rulings. A chain of graph rails
+    // cannot reach those (the branches meet with unbounded slope, so the fit is clamped away and
+    // `RailSpanShort` refuses); the traced loop passes *through* them because it is parametric in
+    // its own parameter rather than a graph over σ. `unroll_trim_loop` already takes such arcs —
+    // this is PC.3's construction used as an outline instead of as a hole.
+    if let Some(op) = sole_pinched_contour(part, built, &structure) {
+        let walls = match part.ops[op].1.walls() {
+            Ok(w) => w,
+            Err(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
+        };
+        let hole = match surface_hole_loop(
+            &built.charts[0],
+            &walls[0],
+            &bands[0],
+            &part.clearance,
+            &part.cfg,
+            part.segments,
+        ) {
+            Verdict::Verified(h) => h,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+                return Verdict::Refuted(PartFault::Pole);
+            }
+            Verdict::Refuted(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
+        };
+        let outline = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
+            Verdict::Verified(o) => o,
+            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Refuted(UnrollFault::PoleInEval) => return Verdict::Refuted(PartFault::Pole),
+            Verdict::Refuted(_) => return Verdict::Refuted(PartFault::LoopBroken),
+        };
+        let eps_all = rmax(&hole.eps, &outline.eps);
+        return pattern_from_outline(part, built, structure, outline, eps_all);
+    }
+
     let boundary = bail!(certify_boundary(part, built, &structure, part.fit, false));
     let mut eps_all = boundary.eps.clone();
 
@@ -639,7 +739,18 @@ pub(crate) fn flat_pattern<B: Backend>(
         Verdict::Refuted(_) => return Verdict::Refuted(PartFault::LoopBroken),
     };
     eps_all = rmax(&eps_all, &outline.eps);
+    pattern_from_outline(part, built, structure, outline, eps_all)
+}
 
+/// Steps 6–9, shared by both boundary assemblies: the interior cuts, the authored polygons, the
+/// exact flat boolean with its topology-coherence gate, and the report echo.
+fn pattern_from_outline<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    structure: Structure<B>,
+    outline: FlatOutline<B>,
+    mut eps_all: Rat<B>,
+) -> Verdict<FlatPattern<B>, PartFault, Rat<B>> {
     // — 6. Interior holes: certified loops + unroll. —
     let holes = bail!(certify_holes(
         part,

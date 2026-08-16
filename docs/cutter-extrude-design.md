@@ -1010,9 +1010,24 @@ kill the tangent caps on *holes* are exactly what a pinch end of an *outer* boun
 - **Jump** — §12.2's degenerate wall. The cap is real and spans whatever µ̂-extent the other ops
   leave there. Unreachable today (§12.2).
 
-The practical consequence is that "keep what is inside this contour" ships for polygonal contours a
+The practical consequence is that "keep what is inside this contour" shipped for polygonal contours a
 whole slice before quadric ones, which is the opposite of the usual order (the metric cutters are
 normally the easy case). It is worth stating why: on this axis the *affine* wall is the exact one.
+
+**The quadric end, once the classes are separated, needs no new construction.** When the contour
+bounds the part **alone** — every run bounded above and below by the same wall, both ends its own
+tangent rulings — the outer boundary simply *is* that wall's traced footprint loop, and
+`surface_hole_loop` already builds it: parametric in its own parameter, passing through both
+tangents, with `unroll_trim_loop` already accepting the arcs. PC.3's construction, used as an
+outline rather than as a hole. Measured on a disc of radius `1/5`: 192 outline points, `ε = 2.26e-3`,
+and every vertex folded back lands on the authored cylinder.
+
+What remains is the **mixed** boundary: a quadric contour that shares the boundary with other ops,
+so the p-curve arc has to be *spliced* into a chain of graph rails at the two junctions where the
+contour takes over. The pieces for that exist (`PCurve::{params_at_sigma, split_at, restrict}`, and
+the junctions are what the run-corner refinement already locates); assembling them is its own slice.
+Until then a mixed quadric boundary refuses `RailSpanShort`, which is the honest name for it — the
+rail is a fit, and the fit's certificate stops before the end.
 
 `brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
 between them **over the region bands**, so a derived extent narrower than them would sweep a solid
@@ -1057,7 +1072,7 @@ from being decided by whatever is easiest at the time.
 |---|---|
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
-| **AUTH.3b** | the boundary that closes in σ; the flat path — **polygonal contours done** (`certify_boundary`/`flat_pattern` over the derived domain, the end-locator's own evaluations folded back as samples, `PartFault::RailSpanShort`), **quadric pinch ends open** (§12.4's p-curve) |
+| **AUTH.3b** | the boundary that closes in σ; the flat path. **Done**: polygonal contours (exact affine rails through the corner) and quadric contours that bound the part **alone** (the traced loop as an outline — `sole_pinched_contour`). **Open**: a quadric contour *sharing* the boundary, which needs the p-curve arc spliced into a graph chain |
 | **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
 

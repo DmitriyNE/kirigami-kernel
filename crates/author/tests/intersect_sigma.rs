@@ -11,9 +11,12 @@
 //! - the extent is **derived** (AUTH.3a) and the boundary **closes at it** (AUTH.3b);
 //! - a **polygonal** contour is a certified part — its walls are affine, so `plane_cut_rail` is
 //!   exact and the rails reach the corner with no fit and no clamp;
-//! - a **quadric** contour still refuses, by name: it ends at a *tangent ruling*, where the rail is
-//!   a fitted graph of unbounded slope, and the fit's certified span cannot reach the end. That is
-//!   §12.4's p-curve, the remaining half of AUTH.3b;
+//! - a **quadric** contour is a certified part too, when the contour bounds the part **alone**: its
+//!   σ-ends are tangent rulings, which no graph rail can reach, so the boundary is the wall's own
+//!   traced loop — fully parametric, passing *through* both tangents;
+//! - what still refuses, by name, is a quadric contour **sharing** the boundary with other ops: the
+//!   p-curve arc then has to be spliced into a chain of graph rails at the junctions where the
+//!   contour takes over, and that stitch is not built (`RailSpanShort`);
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -97,11 +100,14 @@ fn name<E, W: core::fmt::Debug, M: core::fmt::Debug>(v: &Verdict<E, W, M>) -> St
 /// material was a contradiction. AUTH.3a made the extent derived and AUTH.3b closed the boundary at
 /// it, and what is left is one thing — a **quadric** contour ends at a *tangent ruling*, where its
 /// rail is a fitted graph with unbounded slope, so the fit's certified span stops short of the
-/// derived end and the rail is refused rather than extrapolated (`RailSpanShort`). A polygonal
-/// contour has no such end and now certifies (see the next test): every wall is affine, so
-/// `plane_cut_rail` is exact and reaches the corner.
+/// derived end and the rail is refused rather than extrapolated (`RailSpanShort`).
 ///
-/// Expected to flip when the pinch end becomes a p-curve — §12.4's remaining half of AUTH.3b.
+/// Note what this fixture is *not*: the contour here does **not** bound the part alone — the
+/// `z ≤ 3` plane holds the upper side across the middle — so the boundary is a chain of graph rails
+/// with the contour taking over near each end. Where a quadric contour bounds alone, the whole
+/// boundary is its own traced loop and it certifies today (see
+/// `a_quadric_contour_is_a_part_with_a_parametric_boundary`). Expected to flip when the p-curve arc
+/// can be **spliced** into a graph chain at the junctions.
 #[test]
 fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
     let cutter = || Cutter::vertical_cylinder(qi(0), q(5, 2), q(1, 4));
@@ -220,11 +226,11 @@ fn the_same_footprint_is_a_certified_hole_and_a_kept_part() {
         "the developed boundary must BE the authored square: worst vertex sits {worst:.3e} off it"
     );
 
-    // The quadric contour is the half AUTH.3b has not finished: its rails are a *fit*, and at a
-    // tangent ruling the fit's certified span stops short of the derived end, so it refuses by name
-    // rather than extrapolating into a √-branch. A polygon has no such end — every wall is affine,
-    // so `plane_cut_rail` is exact and reaches the corner (the flat pattern above certifies at
-    // ε = 0 on the contour's own rails). Expected to flip when the pinch end becomes a p-curve.
+    // A quadric contour at the same place, sized so it pokes through the panel's annulus carve —
+    // so the carve still bounds part of the boundary and the contour only takes over near its ends.
+    // That mixed shape is what remains: the p-curve arc has to be spliced into the graph chain at
+    // the two junctions. A quadric contour bounding **alone** certifies today, and a polygon needs
+    // none of it (every wall affine, `plane_cut_rail` exact, the pattern above at ε = 0).
     let metric = base().intersect(Cutter::vertical_cylinder(qi(0), q(11, 5), qi(1)));
     assert!(
         matches!(
@@ -296,5 +302,79 @@ fn an_intersect_that_does_not_bite_leaves_the_part_untouched() {
     assert!(
         moved,
         "a biting intersect must change the outline — otherwise the equality above proves nothing"
+    );
+}
+
+/// **A quadric contour is a part, and its boundary is a fully parametric curve.**
+///
+/// "Keep only what is inside this circle." The material is the disc's footprint on the cone, and
+/// both derived σ-ends are the cylinder's **tangent rulings** — where its two µ̂-branches meet with
+/// unbounded slope. No chain of graph rails `µ̂ = f(σ)` can reach such an end: `certified_rail_surface`
+/// clamps its fit away from the tangent for exactly that reason, which is what `RailSpanShort`
+/// refuses. The boundary here is the wall's own traced loop, parametric in its own parameter and
+/// passing *through* both tangents — PC.3's construction used as an outline rather than as a hole.
+///
+/// **Faithfulness**: the emitted boundary is folded back and every vertex must land on the authored
+/// cylinder, `x² + (y − 11/5)² = 1/25`. The develop leg never sees the cutter's metric form and the
+/// fold leg never sees the resolver, so agreeing on it is not two halves of one mistake.
+#[test]
+fn a_quadric_contour_is_a_part_with_a_parametric_boundary() {
+    let (cy, r2) = (q(11, 5), q(1, 25));
+    let kept =
+        panel(qi(-1), qi(1)).intersect(Cutter::vertical_cylinder(qi(0), cy.clone(), r2.clone()));
+    let flat = match kept.develop() {
+        Verdict::Verified(f) => f,
+        v => panic!(
+            "keeping what is inside the circle must certify, got {}",
+            name(&v)
+        ),
+    };
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    assert_eq!(flat.region().faces[0].holes.len(), 0, "and no holes");
+    let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
+    assert!(
+        roles[0] == OpRole::Inactive && roles[1] == OpRole::Inactive,
+        "the contour must bound the part ALONE — roles {roles:?}"
+    );
+
+    // Direction ②: every boundary vertex, folded back, on the authored cylinder.
+    let verts: Vec<[Q; 2]> = flat
+        .outline()
+        .vertices
+        .iter()
+        .map(|b| {
+            let (x, y) = b.center();
+            [x, y]
+        })
+        .collect();
+    assert!(
+        verts.len() > 32,
+        "a curved boundary should carry many vertices, got {}",
+        verts.len()
+    );
+    let wire = match kept.fold(&verts, &qi(0)) {
+        Verdict::Verified(w) => w,
+        v => panic!("the emitted boundary must fold back, got {}", name(&v)),
+    };
+    let (cyf, rf) = (to_f64(&cy), to_f64(&r2).sqrt());
+    let mut worst = 0.0f64;
+    let (mut lo_s, mut hi_s) = (f64::MAX, f64::MIN);
+    for p in &wire.points {
+        let (x, y) = (to_f64(&p[0].mid()), to_f64(&p[1].mid()));
+        worst = worst.max((((x * x + (y - cyf).powi(2)).sqrt()) - rf).abs());
+        lo_s = lo_s.min(x);
+        hi_s = hi_s.max(x);
+    }
+    assert!(
+        worst < 5e-3,
+        "the developed boundary must BE the authored circle: worst vertex sits {worst:.3e} off it"
+    );
+    // And it wraps the whole contour rather than stopping at one side of it: the folded boundary
+    // spans the cylinder's full diameter in x, which a boundary truncated at a tangent could not.
+    assert!(
+        (hi_s - lo_s) > 1.9 * rf,
+        "the boundary must wrap the contour — folded x-span {:.4} against a diameter {:.4}",
+        hi_s - lo_s,
+        2.0 * rf
     );
 }
