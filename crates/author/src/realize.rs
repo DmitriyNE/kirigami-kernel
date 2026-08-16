@@ -28,8 +28,8 @@ use export::brep::Brep;
 use export::brep_build::{HoleRail, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
-    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_rail,
-    shadow_hole_loops, surface_hole_loop,
+    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_poly,
+    hole_rail, shadow_hole_loops, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
 
@@ -738,11 +738,20 @@ pub(crate) fn solid_brep<B: Backend>(
         part.segments.clamp(8, 16)
     ));
     let mut holes: Vec<HoleRail<B>> = Vec::new();
+    let mut traced_polys: Vec<Vec<(Rat<B>, Rat<B>)>> = Vec::new();
     for h in &hole_loops {
         eps_all = rmax(&eps_all, &h.eps);
         match hole_rail(h) {
             Some(r) => holes.push(r),
-            None => return Verdict::Refuted(PartFault::LoopBroken),
+            // A loop that turns around in σ more than twice has no near/far split — the shape
+            // AUTH.2c's tracer emits for a non-convex footprint. It goes to the builder's general
+            // channel instead, as the `(σ, µ̂)` polygon it already is: a lid inner wire plus a wall
+            // per edge. The band channel keeps the loops it can carry, because only it spans
+            // σ-stations (AUTH.2e lifts that).
+            None => match hole_poly(h) {
+                Some(p) => traced_polys.push(p),
+                None => return Verdict::Refuted(PartFault::LoopBroken),
+            },
         }
     }
 
@@ -751,6 +760,7 @@ pub(crate) fn solid_brep<B: Backend>(
     // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
     // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
     let mut poly_holes = part.domain_holes.clone();
+    poly_holes.extend(traced_polys);
     // A polygon cut needs at least a triangle — the builder indexes vertices unchecked, and
     // this evaluator must stay fail-closed even without the flat gate (defense in depth for
     // both authored hole classes).

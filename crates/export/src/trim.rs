@@ -869,6 +869,35 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
     })
 }
 
+/// A developed [`HoleLoop`]'s vertices as a `(σ, µ̂)` polygon, dyadic-snapped — the currency the
+/// solid builder's **general** hole channel takes (a lid inner wire plus a wall per edge), as
+/// opposed to [`hole_rail`]'s near/far band.
+///
+/// Every loop is expressible this way, including the ones that turn around in σ and therefore have
+/// no near/far split at all: the pieces are straight in `(σ, µ̂)` and this is simply their vertex
+/// sequence. `None` if a piece is not a straight segment.
+pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
+    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
+    for arc in &hole.arcs {
+        match arc {
+            BoundaryArc::Curve { curve, .. } => {
+                let [sg, m] = curve.eval(&curve.domain.lo)?;
+                let p = (snap(&sg), snap(&m));
+                // Snapping can collide two adjacent vertices; a zero-length edge is not an edge.
+                if pts.last().is_none_or(|q: &(Rat<B>, Rat<B>)| {
+                    q.0.cmp(&p.0) != core::cmp::Ordering::Equal
+                        || q.1.cmp(&p.1) != core::cmp::Ordering::Equal
+                }) {
+                    pts.push(p);
+                }
+            }
+            _ => return None,
+        }
+    }
+    (pts.len() >= 3).then_some(pts)
+}
+
 /// Snap each interior piece boundary of a contiguous chain to a 2⁻³⁰ dyadic (via `f64`), keeping
 /// adjacent pieces adjacent; the outer σ-ends are authored and left untouched.
 fn snap_boundaries<B: Backend>(chain: &mut [(Interval<B>, RatFunc<B>)]) {

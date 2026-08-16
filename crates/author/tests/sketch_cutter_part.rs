@@ -327,13 +327,17 @@ fn an_l_slot_develops_and_keeps_its_reflex_corner() {
     );
 }
 
-/// **AUTH.2d's boundary, pinned: the same L is refused by the *solid* builder, by name.** The flat
-/// path takes a traced non-convex loop (above); the solid path still consumes an interior hole as a
-/// near/far band, which is what `hole_rail` produces and what a loop turning around in σ is not.
+/// **The solid path's remaining gap, pinned — and it is the *second* of two.** The flat path takes a
+/// traced non-convex loop (above). The solid path had two independent restrictions:
 ///
-/// This is the last piece of the milestone, AUTH.2e, and the test exists so its landing is visible:
-/// when the solid builder clips a general loop per σ-slice, this expectation flips to a certified
-/// shell. Until then the refusal is typed rather than a mis-built solid.
+/// 1. `hole_rail` consumes an interior hole as a near/far **band**, which a loop turning around in σ
+///    is not. Closed: such a loop now goes to the builder's general channel as the `(σ, µ̂)` polygon
+///    it already is, so the refusal moved off `LoopBroken`.
+/// 2. That general channel takes an arbitrary loop only **within one σ-slice** — a loop crossing a
+///    station needs per-slice clipping. This L crosses one, so it lands here as `SolidRefused`.
+///
+/// The test tracks which gap is live: it moved from `LoopBroken` to `SolidRefused` when the first
+/// closed, and flips to a certified shell when the second does.
 #[test]
 fn the_solid_builder_still_refuses_a_traced_non_convex_loop() {
     let part = panel_with(
@@ -341,9 +345,9 @@ fn the_solid_builder_still_refuses_a_traced_non_convex_loop() {
         ell(q(-1, 10), q(11, 5), q(1, 4), q(1, 8)),
     );
     match part.solid() {
-        Verdict::Refuted(author::part::PartFault::LoopBroken) => {}
+        Verdict::Refuted(author::part::PartFault::SolidRefused) => {}
         other => panic!(
-            "the solid path must refuse a non-band loop by name until AUTH.2e, got {}",
+            "a station-crossing loop must refuse by name until AUTH.2e clips per slice, got {}",
             match other {
                 Verdict::Verified(_) => "Verified".to_string(),
                 Verdict::Refuted(f) => format!("Refuted({f:?})"),
