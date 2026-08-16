@@ -35,6 +35,7 @@ thread_local! {
     static CUT_EVALS: Cell<u64> = const { Cell::new(0) };
     static BRACKET_SEEDED: Cell<u64> = const { Cell::new(0) };
     static BRACKET_BISECTED: Cell<u64> = const { Cell::new(0) };
+    static POLY_SLICE_CLIPS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Zero every counter on the calling thread. Call at the start of a measurement.
@@ -44,6 +45,7 @@ pub fn reset() {
     CUT_EVALS.with(|c| c.set(0));
     BRACKET_SEEDED.with(|c| c.set(0));
     BRACKET_BISECTED.with(|c| c.set(0));
+    POLY_SLICE_CLIPS.with(|c| c.set(0));
 }
 
 /// Cells of the flat directrix `γ` integrated on this thread — grid cells plus partial cells.
@@ -98,6 +100,29 @@ pub fn bracket_seeded() -> u64 {
 /// σ-inversions that fell back to the bisection on this thread — see [`bracket_seeded`].
 pub fn bracket_bisected() -> u64 {
     BRACKET_BISECTED.with(|c| c.get())
+}
+
+/// σ-slices whose lid the solid builder trimmed through its **general polygon channel** on this
+/// thread — one per slice a `(σ, µ̂)` polygon hole reaches (AUTH.2e).
+///
+/// This one is not a budget, it is a **witness**: with a single polygon hole in the part, a count
+/// of 1 says the hole sat inside one slice and a count above 1 says it crossed a σ-station, which
+/// is the case AUTH.2e/2 exists for. Nothing else distinguishes them — a hole that crossed a
+/// station and one that did not certify alike, build alike, and differ only in which branch of the
+/// builder ran. An acceptance demo claiming to exercise the station-crossing path needs to be able
+/// to say so, and before this it could only assert consequences that a within-slice hole shares.
+pub fn poly_slice_clips() -> u64 {
+    POLY_SLICE_CLIPS.with(|c| c.get())
+}
+
+/// Bump [`poly_slice_clips`].
+///
+/// Public, unlike its siblings, because the only caller is one crate up — `export`'s per-slice
+/// clipper. The counter still belongs here: this is where the pipeline's measured work is counted
+/// and where the single [`reset`] lives, and a second counter module elsewhere would silently make
+/// `reset` mean "some of the counters".
+pub fn bump_poly_slice_clip() {
+    POLY_SLICE_CLIPS.with(|c| c.set(c.get().saturating_add(1)));
 }
 
 pub(crate) fn bump_bracket_seeded() {

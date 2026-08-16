@@ -978,8 +978,8 @@ pub struct ResolveReport<B: Backend = Bignum> {
     /// Per region: the requested azimuth degrees (if authored that way) and the exact snapped
     /// σ-band actually recorded.
     pub regions: Vec<RegionEcho<B>>,
-    /// Per op: the derived role.
-    pub ops: Vec<OpReport>,
+    /// Per op: the derived role, and what its own cut certified to.
+    pub ops: Vec<OpReport<B>>,
 }
 
 /// One region's echo.
@@ -991,11 +991,26 @@ pub struct RegionEcho<B: Backend = Bignum> {
 }
 
 /// One op's derived resolution.
-pub struct OpReport {
+pub struct OpReport<B: Backend = Bignum> {
     /// Whether the op subtracts (else intersects).
     pub subtract: bool,
     /// The derived role.
     pub role: OpRole,
+    /// For a [`Hole`](OpRole::Hole): the certified `sup dist(emitted loop, {F = 0})` of **this
+    /// op's own cut** — the largest over its loops, `None` for every other role.
+    ///
+    /// This is the number the milestone's soundness argument turns on and the one `eps()` hides.
+    /// `eps()` is the max over every stage and the panel boundary usually dominates it, so a cut
+    /// that certified loosely and one that certified perfectly report the same part-level ε. The
+    /// per-piece bound folds in the σ-midpoint comparison against the fill rule's own boundary
+    /// (`docs/cutter-extrude-design.md` §11.5), which is what makes a stepped-over event a loose
+    /// bound rather than a wrong hole — so reading it is how one sees that the search is buying
+    /// tightness and not soundness.
+    pub cut_eps: Option<Rat<B>>,
+    /// For a [`Hole`](OpRole::Hole): the widest µ̂ gap closed at a pinch or saddle of this op's
+    /// loops. Included in [`cut_eps`](Self::cut_eps) — a component of the bound, not a residual
+    /// beside it.
+    pub tangent_gap: Option<Rat<B>>,
 }
 
 /// The derived role of one material op (echoed in the report) — the classification the old

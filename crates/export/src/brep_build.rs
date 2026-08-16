@@ -365,6 +365,38 @@ fn positive_weights<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> bool {
         .all(|w| w.sign() > 0)
 }
 
+/// Drop stations closer together than the export profile can carry, keeping the domain's two ends.
+///
+/// The reason is [`hole_poly`](crate::trim::hole_poly)'s: a slice `10⁻⁹` wide has lid rails whose
+/// 3-D span falls below OCCT's `10⁻⁷` vertex tolerance, so the edge's own curve reads as **closed**
+/// while its two vertices are distinct and `BRepBuilderAPI_MakeEdge` refuses the shell — with every
+/// certificate `Verified`, since the certificates are about the rails and say nothing about what a
+/// floating-point consumer can represent. Such a station arrives when a traced hole's piece
+/// boundary lands within a grid step of an intrinsic one, which is exactly what an authored corner
+/// on a station does.
+///
+/// Sound because the interior stations are a **partition**, not geometry: the lids either side of a
+/// station are evaluated from the same rails, so removing one merges two slices of one rail piece
+/// and moves no boundary. The two σ-ends are authored and are kept — if thinning swallowed the
+/// upper one, it replaces the station that displaced it.
+fn thin_stations<B: Backend>(sorted: Vec<Rat<B>>, sigma_hi: &Rat<B>) -> Vec<Rat<B>> {
+    use core::cmp::Ordering;
+    let min_gap = Rat::<B>::new(1, 1i128 << crate::trim::MIN_STEP_BITS);
+    let mut out: Vec<Rat<B>> = Vec::with_capacity(sorted.len());
+    for s in sorted {
+        match out.last() {
+            Some(p) if s.sub(p).cmp(&min_gap) != Ordering::Greater => {}
+            _ => out.push(s),
+        }
+    }
+    if let Some(last) = out.last_mut()
+        && (*last).cmp(sigma_hi) == Ordering::Less
+    {
+        *last = sigma_hi.clone();
+    }
+    out
+}
+
 /// The ordered σ-stations `[a = s₀, …, s_N = b]` subdividing `[a, b]` so **every** sub-interval's
 /// rational Bézier (shared denominator `den`) has positive weights — the intrinsic,
 /// parametrization-independent criterion for a valid exact Bézier piece (never keyed to a specific
@@ -1496,7 +1528,7 @@ pub fn brep_trim_solid<B: Backend>(
         stations.push(iv.hi.clone());
     }
     stations.sort();
-    stations.dedup();
+    let stations = thin_stations(stations, &sigma.hi);
     let nst = stations.len();
     if nst < 2 {
         return None;
@@ -1723,6 +1755,11 @@ fn slice_poly_footprint<B: Backend>(
     polys: &[&[SigMu<B>]],
 ) -> Option<Vec<SliceFace<B>>> {
     use core::cmp::Ordering::{Greater, Less};
+    // Counted (VV.1) because nothing else distinguishes the two cases this function serves: with
+    // one polygon hole in the part, a count of 1 means the hole sat inside a slice and a count
+    // above 1 means it crossed a σ-station — the case AUTH.2e/2 exists for, and one that certifies
+    // and builds exactly like the other.
+    develop::counters::bump_poly_slice_clip();
     // The proxy horizontals, clear of every hole vertex — hence of every hole edge, a segment
     // staying within its endpoints' µ̂-range.
     let seed = polys.first()?.first()?.1.clone();
@@ -1873,7 +1910,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
         stations.push(iv.hi.clone());
     }
     stations.sort();
-    stations.dedup();
+    let stations = thin_stations(stations, &sigma.hi);
     let nst = stations.len();
     if nst < 2 {
         return None;

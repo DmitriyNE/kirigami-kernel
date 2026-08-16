@@ -418,7 +418,7 @@ fn certify_holes<B: Backend>(
     built: &BuiltRegions<B>,
     structure: &Structure<B>,
     segments: usize,
-) -> Result<Vec<HoleLoop<B>>, RErr<B>> {
+) -> Result<Vec<(usize, HoleLoop<B>)>, RErr<B>> {
     let mut out = Vec::with_capacity(structure.holes.len());
     for (op, ri, window) in &structure.holes {
         let (op, ri) = (*op, *ri);
@@ -478,7 +478,7 @@ fn certify_holes<B: Backend>(
             _ => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
         };
         match verdict {
-            Verdict::Verified(hs) => out.extend(hs),
+            Verdict::Verified(hs) => out.extend(hs.into_iter().map(|h| (op, h))),
             Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
             Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
                 return Err(RErr::Fault(PartFault::Pole));
@@ -612,7 +612,7 @@ pub(crate) fn flat_pattern<B: Backend>(
         (part.segments / 2).max(4),
     ));
     let mut hole_outlines: Vec<FlatOutline<B>> = Vec::new();
-    for hole in &holes {
+    for (_, hole) in &holes {
         eps_all = rmax(&eps_all, &hole.eps);
         let flat = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
@@ -670,7 +670,7 @@ pub(crate) fn flat_pattern<B: Backend>(
     }
 
     // — 9. The report echo. —
-    let report = build_report(part, &structure);
+    let report = build_report(part, &structure, &holes);
     Verdict::Verified(FlatPattern {
         outline,
         holes: hole_outlines,
@@ -739,7 +739,7 @@ pub(crate) fn solid_brep<B: Backend>(
     ));
     let mut holes: Vec<HoleRail<B>> = Vec::new();
     let mut traced_polys: Vec<Vec<(Rat<B>, Rat<B>)>> = Vec::new();
-    for h in &hole_loops {
+    for (_, h) in &hole_loops {
         eps_all = rmax(&eps_all, &h.eps);
         match hole_rail(h) {
             Some(r) => holes.push(r),
@@ -814,12 +814,31 @@ pub(crate) fn solid_brep<B: Backend>(
         Some(s) => s,
         None => return Verdict::Refuted(PartFault::SolidRefused),
     };
-    let report = build_report(part, &structure);
+    let report = build_report(part, &structure, &hole_loops);
     Verdict::Verified((solid, eps_all, report))
 }
 
-/// The report echo: snapped region bands + derived op roles.
-fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> ResolveReport<B> {
+/// The report echo: snapped region bands, derived op roles, and each hole op's own certified cut
+/// bound (the largest over its loops — see [`OpReport::cut_eps`]).
+fn build_report<B: Backend>(
+    part: &Part<B>,
+    structure: &Structure<B>,
+    holes: &[(usize, HoleLoop<B>)],
+) -> ResolveReport<B> {
+    let per_op = |op: usize| -> (Option<Rat<B>>, Option<Rat<B>>) {
+        holes
+            .iter()
+            .filter(|(o, _)| *o == op)
+            .fold((None, None), |(e, g), (_, h)| {
+                let up = |acc: Option<Rat<B>>, v: &Rat<B>| {
+                    Some(match acc {
+                        Some(a) => rmax(&a, v),
+                        None => v.clone(),
+                    })
+                };
+                (up(e, &h.eps), up(g, &h.tangent_gap))
+            })
+    };
     ResolveReport {
         regions: part
             .regions
@@ -833,9 +852,15 @@ fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> Resolve
             .roles
             .iter()
             .zip(part.ops.iter())
-            .map(|(role, (kind, _))| OpReport {
-                subtract: matches!(kind, crate::part::OpKind::Subtract),
-                role: *role,
+            .enumerate()
+            .map(|(op, (role, (kind, _)))| {
+                let (cut_eps, tangent_gap) = per_op(op);
+                OpReport {
+                    subtract: matches!(kind, crate::part::OpKind::Subtract),
+                    role: *role,
+                    cut_eps,
+                    tangent_gap,
+                }
             })
             .collect(),
     }

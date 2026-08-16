@@ -770,15 +770,20 @@ pub(crate) fn sweep<B: Backend>(
             let walls = cutter
                 .walls()
                 .map_err(|_| PartFault::CutUnresolved { op })?;
-            // A cutter whose walls are ALL affine has no tangent window to target — which is
-            // exactly a polygonal profile, whose σ-support would then never be sampled and whose
-            // feature would be dropped between cells (the §6 failure). Its bounding circle's wall
-            // supplies one window covering the whole profile; a superset costs only stations where
-            // the cut is absent, while a missing one loses the cut silently.
+            // The targeted windows have to cover the **whole** profile, and the quadric walls'
+            // tangent windows only cover the quadric part of it. An all-affine profile has no
+            // window at all, so a polygonal slot would be dropped between sample cells (the §6
+            // failure); a *mixed* profile is the same defect one step in — the keyhole's circle
+            // stops where its head does and the stem runs past, so the footprint reached the scan's
+            // own edge and the tracer refused the cut as `ShadowUnbounded`. Either way the profile's
+            // bounding circle supplies one window covering everything, and a superset is the right
+            // error: extra stations sample where the cut is absent and cost nothing, while a
+            // missing one loses the cut silently. A profile whose walls are *all* quadric needs no
+            // proxy — each wall's window covers its own arc, and together they cover the profile.
             let quadric: Vec<usize> = (0..walls.len())
                 .filter(|wi| !regions[ri].forms[op][*wi].a.is_zero())
                 .collect();
-            let bound = if quadric.is_empty() {
+            let bound = if quadric.len() < walls.len() {
                 match cutter {
                     Cutter::Extrude(e) => e.bounding_wall(),
                     _ => None,
@@ -786,28 +791,23 @@ pub(crate) fn sweep<B: Backend>(
             } else {
                 None
             };
-            let probes: Vec<(usize, &CutSurface<B>)> = match &bound {
-                Some(b) => vec![(0, b)],
-                None => quadric.iter().map(|wi| (*wi, &walls[*wi])).collect(),
+            let probes: Vec<&CutSurface<B>> = match &bound {
+                Some(b) => vec![b],
+                None => quadric.iter().map(|wi| &walls[*wi]).collect(),
             };
-            for (wi, wall) in probes {
-                let form = &regions[ri].forms[op][wi];
+            for wall in probes {
+                // The probe's **own** pullback decides which of its root brackets are real windows.
+                // Reading a wall-indexed form instead was right only while the proxy appeared for
+                // all-affine profiles alone: with a mixed one it filtered the proxy's brackets by
+                // the circle's reality, which is a different surface.
+                let form = cut_mu_form(&built.charts[ri], wall, &zero)
+                    .ok_or(PartFault::CutUnresolved { op })?;
                 let roots = surface_disc_roots(&built.charts[ri], wall, &rf.band, 256, 60)
                     .unwrap_or_default();
                 for w in roots.windows(2) {
                     let (t1, t2) = (&w[0], &w[1]);
                     let mid = t1.add(t2).mul(&Rat::new(1, 2));
-                    // Only windows where the probe surface is real (disc > 0 at the midpoint).
-                    // For a genuine wall that is its own pullback; for the bounding proxy of an
-                    // all-affine profile it is the proxy's, which is what defines the window.
-                    let probe_form = if form.a.is_zero() {
-                        cut_mu_form(&built.charts[ri], wall, &zero)
-                    } else {
-                        None
-                    };
-                    let real = probe_form
-                        .as_ref()
-                        .unwrap_or(form)
+                    let real = form
                         .disc()
                         .eval(&mid)
                         .map(|v| v.sign() > 0)

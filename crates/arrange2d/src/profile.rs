@@ -94,16 +94,66 @@ impl<B: Backend> Profile<B> {
         self.circle_r2(cx, cy, r2)
     }
 
+    /// The counter-clockwise arc of the circle of **squared** radius `r2` about `(cx, cy)`, from
+    /// `start` to `end` — both of which must lie on that circle.
+    ///
+    /// The companion to [`polyline`](Self::polyline): together they draw an outline that mixes
+    /// straight runs with round ones — a keyhole, a slot with rounded ends — without reaching for
+    /// [`edges_raw`](Self::edges_raw). Sugar, like the rest: the arc is handed to the same
+    /// [`decompose`], which splits it at whichever x-extremum its span crosses.
+    ///
+    /// Endpoints are rational, so the two must satisfy `(x − cx)² + (y − cy)² = r²` exactly. That
+    /// is not the restriction it sounds like — a Pythagorean split does it, as `r² = 1/100` with
+    /// the chord at `y = cy ± 8/100` meeting the circle at `x = cx ± 6/100`.
+    ///
+    /// Total, like every constructor here: `start == end` decomposes to nothing (a whole circle is
+    /// [`circle_r2`](Self::circle_r2)), and endpoints off the circle are emitted as drawn.
+    pub fn arc(
+        self,
+        cx: Rat<B>,
+        cy: Rat<B>,
+        r2: Rat<B>,
+        start: [Rat<B>; 2],
+        end: [Rat<B>; 2],
+    ) -> Self {
+        let source = CurveId(self.next);
+        let [sx, sy] = start;
+        let [ex, ey] = end;
+        self.push(Curve::Arc {
+            circle: Circle { cx, cy, r2 },
+            start: Point2::from_rat(sx, sy),
+            end: Point2::from_rat(ex, ey),
+            orient: Orient::Ccw,
+            source,
+        })
+    }
+
     /// Add a closed polygon through `pts`, in order, closing the last point back to the first.
     ///
     /// Total, like every constructor here: a degenerate outline (fewer than three points, or a
     /// repeated vertex) is emitted as drawn and faults downstream — a builder that silently
     /// dropped the shape would be the worse failure, since nothing downstream could then tell
     /// that anything was asked for.
-    pub fn polygon(mut self, pts: &[[Rat<B>; 2]]) -> Self {
+    pub fn polygon(self, pts: &[[Rat<B>; 2]]) -> Self {
+        self.chain(pts, true)
+    }
+
+    /// Add the **open** chain through `pts` — every consecutive pair, and no closing edge.
+    ///
+    /// What [`polygon`](Self::polygon) is for a shape drawn entirely in straight lines, this is for
+    /// the straight part of one that is not: the outline is closed by the [`arc`](Self::arc) whose
+    /// two ends the chain runs between.
+    pub fn polyline(self, pts: &[[Rat<B>; 2]]) -> Self {
+        self.chain(pts, false)
+    }
+
+    /// The shared body of [`polygon`] and [`polyline`]: consecutive pairs of `pts`, plus the
+    /// wrap-around pair when `closed`.
+    fn chain(mut self, pts: &[[Rat<B>; 2]], closed: bool) -> Self {
         let n = pts.len();
+        let last = if closed { n } else { n.saturating_sub(1) };
         let source = CurveId(self.next);
-        for i in 0..n {
+        for i in 0..last {
             let (s, e) = (&pts[i], &pts[(i + 1) % n]);
             let ((sx, sy), (ex, ey)) = ((&s[0], &s[1]), (&e[0], &e[1]));
             // The line through the two endpoints: `a·x + b·y + c = 0` with the standard
@@ -202,6 +252,48 @@ mod tests {
         assert!(inside(&ring, Q::new(3, 2), Q::new(1, 7)), "in the ring");
         assert!(!inside(&ring, Q::new(1, 7), Q::new(1, 13)), "in the hole");
         assert!(!inside(&ring, Q::from_i128(3), Q::new(1, 7)), "outside");
+    }
+
+    /// **A keyhole** — the shape that needs [`arc`](Profile::arc) and
+    /// [`polyline`](Profile::polyline) together, since neither a polygon nor a whole circle can
+    /// draw it: a round head of radius `1/10` with a straight stem hanging off the chord at
+    /// `y = −2/25`, where the sides `x = ±3/50` meet the circle exactly (`6² + 8² = 10²`).
+    ///
+    /// The fill is checked at the point that distinguishes a keyhole from the *union* of a disc
+    /// and a rectangle drawn as two shapes: the **notch** beside the stem, which even-odd would
+    /// have filled and the single traversed outline leaves empty.
+    #[test]
+    fn an_arc_and_a_polyline_close_one_keyhole_outline() {
+        let (r2, hw, chord, foot) = (Q::new(1, 100), Q::new(3, 50), Q::new(2, 25), Q::new(1, 5));
+        let p = Profile::<Bignum>::new()
+            .arc(
+                Q::from_i128(0),
+                Q::from_i128(0),
+                r2,
+                [hw.clone(), chord.clone().neg()],
+                [hw.clone().neg(), chord.clone().neg()],
+            )
+            .polyline(&[
+                [hw.clone().neg(), chord.clone().neg()],
+                [hw.clone().neg(), foot.clone().neg()],
+                [hw.clone(), foot.neg()],
+                [hw, chord.neg()],
+            ]);
+        // The major arc crosses both x-extrema, so it decomposes into three monotone pieces; the
+        // open chain contributes its three sides and no closing edge.
+        assert_eq!(p.edges().len(), 3 + 3);
+        // Sampled off `y = 0` and off `y = −r`: the ray cast is exact but needs a generic row, and
+        // the circle's centre and its bottom tangent are the two rows that are not.
+        assert!(inside(&p, Q::from_i128(0), Q::new(1, 20)), "the head");
+        assert!(inside(&p, Q::from_i128(0), Q::new(-3, 20)), "the stem");
+        assert!(
+            !inside(&p, Q::new(3, 40), Q::new(-9, 100)),
+            "the notch beside the stem — outside the circle, outside the stem"
+        );
+        assert!(
+            !inside(&p, Q::from_i128(0), Q::new(-3, 10)),
+            "past the foot"
+        );
     }
 
     /// Total, not validating: a degenerate outline is emitted as drawn, so the downstream typed

@@ -876,27 +876,57 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
 /// Every loop is expressible this way, including the ones that turn around in σ and therefore have
 /// no near/far split at all: the pieces are straight in `(σ, µ̂)` and this is simply their vertex
 /// sequence. `None` if a piece is not a straight segment.
+///
+/// **Vertices closer together than the export profile can carry are merged**, and the reason is not
+/// tidiness. The tracer samples one grid step (`2⁻³⁰`) inside each cell end — that is what keeps a
+/// pinch tight, since the two ends identified there are then a grid step from the true event
+/// (`docs/cutter-extrude-design.md` §11.4) — so a traced loop carries a pair of vertices `≈10⁻⁹`
+/// apart at every cell boundary. Those are correct in the domain and *unbuildable* downstream: each
+/// becomes a wall whose curved rails span `≈10⁻⁸` in 3-D, an order below OCCT's `10⁻⁷` vertex
+/// tolerance, so the edge's own curve reads as **closed** while its two vertices are distinct and
+/// `BRepBuilderAPI_MakeEdge` refuses it. Measured on the AUTH.2f L-slot: 220 shell vertices at only
+/// 145 distinct positions, 76 sub-tolerance Bézier edges, and a STEP write that failed while every
+/// certificate was `Verified` — the exact-versus-`f64` seam, at the one place the kernel hands
+/// geometry to a floating-point consumer.
+///
+/// [`MIN_STEP`] is three orders above the snap grid and three below the cut certificate's own ε on
+/// that device, so the merge is invisible to the certified bound and decisive for the exporter.
 pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
     let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    let min_step = Rat::<B>::new(1, 1i128 << MIN_STEP_BITS);
+    let apart = |a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)| {
+        let far = |x: &Rat<B>, y: &Rat<B>| {
+            let d = x.sub(y);
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            d.cmp(&min_step) == core::cmp::Ordering::Greater
+        };
+        far(&a.0, &b.0) || far(&a.1, &b.1)
+    };
     let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
     for arc in &hole.arcs {
         match arc {
             BoundaryArc::Curve { curve, .. } => {
                 let [sg, m] = curve.eval(&curve.domain.lo)?;
                 let p = (snap(&sg), snap(&m));
-                // Snapping can collide two adjacent vertices; a zero-length edge is not an edge.
-                if pts.last().is_none_or(|q: &(Rat<B>, Rat<B>)| {
-                    q.0.cmp(&p.0) != core::cmp::Ordering::Equal
-                        || q.1.cmp(&p.1) != core::cmp::Ordering::Equal
-                }) {
+                if pts.last().is_none_or(|q| apart(q, &p)) {
                     pts.push(p);
                 }
             }
             _ => return None,
         }
     }
+    // The wrap-around pair too — the loop closes on its first vertex, and a last vertex within a
+    // step of it is the same unbuildable edge.
+    while pts.len() > 3 && !apart(&pts[pts.len() - 1], &pts[0]) {
+        pts.pop();
+    }
     (pts.len() >= 3).then_some(pts)
 }
+
+/// The dyadic exponent of [`hole_poly`]'s minimum emitted step, `2⁻²⁰ ≈ 9.5·10⁻⁷`: coarse enough
+/// that every emitted edge clears OCCT's `10⁻⁷` vertex tolerance by an order, fine enough to sit
+/// far below any certified cut bound.
+pub(crate) const MIN_STEP_BITS: u32 = 20;
 
 /// Snap each interior piece boundary of a contiguous chain to a 2⁻³⁰ dyadic (via `f64`), keeping
 /// adjacent pieces adjacent; the outer σ-ends are authored and left untouched.

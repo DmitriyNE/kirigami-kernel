@@ -3108,9 +3108,51 @@ mod tests {
             .into_edges()
     }
 
-    /// The pieces an L-profile cutter needs: its walls, their µ̂-forms, the fill rule, and a window.
+    /// A **keyhole** at `(cx, cy)`: a round head of radius `1/10` with a straight stem hanging off
+    /// the chord at `−12/125`, whose sides `±7/250` meet the circle exactly (`7² + 24² = 25²`), the
+    /// whole thing laid out on the rotated axes `u = (15/17, 8/17)`, `v = (−8/17, 15/17)`.
+    ///
+    /// The L is all straight lines; this one mixes a **quadric** wall with affine ones, which is
+    /// what makes its stretch structure different in kind. Where the L's two stretches are born and
+    /// die separately, a ruling crossing the keyhole obliquely enters the head, leaves it through
+    /// the notch beside the stem, and re-enters the stem — two stretches that **merge** as the
+    /// ruling turns, over a saddle where one bounding wall is the circle and the other a stem side.
+    ///
+    /// Both rational choices are load-bearing rather than decorative. The **stem is narrow** (`7/25`
+    /// of the head radius, not `3/5`) because the notch beside it is what a ruling has to pass
+    /// through to see two stretches, and a wide stem nearly closes it: measured over the same
+    /// 800-ruling sweep, the wide stem gave 9 two-stretch rulings and this one 14. The **rotation**
+    /// is chosen for the same reason — the ruling has to cross the notch *obliquely*, and the
+    /// unrotated keyhole gave 8. Neither is a free choice, which is §11.6 again: a fixture that
+    /// merely looks like the phenomenon does not produce it.
+    fn keyhole_profile(cx: &Q, cy: &Q) -> Vec<geom::content::Edge<Bignum>> {
+        let (ux, uy) = (Q::new(15, 17), Q::new(8, 17));
+        let (vx, vy) = (Q::new(-8, 17), Q::new(15, 17));
+        let pt = |su: &Q, sv: &Q| {
+            [
+                cx.add(&ux.mul(su)).add(&vx.mul(sv)),
+                cy.add(&uy.mul(su)).add(&vy.mul(sv)),
+            ]
+        };
+        let (hw, chord, foot) = (Q::new(7, 250), Q::new(12, 125), Q::new(1, 5));
+        let a = pt(&hw, &chord.clone().neg());
+        let b = pt(&hw.clone().neg(), &chord.neg());
+        let c = pt(&hw.clone().neg(), &foot.clone().neg());
+        let d = pt(&hw, &foot.neg());
+        arrange2d::profile::Profile::new()
+            .arc(cx.clone(), cy.clone(), Q::new(1, 100), a.clone(), b.clone())
+            .polyline(&[b, c, d, a])
+            .into_edges()
+    }
+
+    /// The pieces a multi-walled cutter needs: its walls' µ̂-forms, the fill rule, and a window —
+    /// for a profile drawn at `(cx, cy)` and swept along `z` over the wrapping cone.
     #[allow(clippy::type_complexity)]
-    fn l_cutter() -> (
+    fn profile_cutter(
+        cx: Q,
+        cy: Q,
+        profile: Vec<geom::content::Edge<Bignum>>,
+    ) -> (
         geom::chart::Chart<Bignum>,
         Vec<MuCut<Bignum>>,
         crate::extrude::Cast<Bignum>,
@@ -3118,15 +3160,13 @@ mod tests {
         Interval<Bignum>,
     ) {
         let chart = fixtures::devices::cone_wrap();
-        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
-        let profile = l_profile(&cx, &cy);
         let cast = crate::extrude::Cast::new(
             xy_frame(),
             crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
                 .expect("a real direction"),
         )
         .expect("the apex is off the frame plane");
-        let walls = cast.carrier_walls(&profile).expect("six distinct lines");
+        let walls = cast.carrier_walls(&profile).expect("distinct carriers");
         let zero = Q::from_i128(0);
         let forms: Vec<MuCut<Bignum>> = walls
             .iter()
@@ -3141,6 +3181,20 @@ mod tests {
             },
         );
         (chart, forms, cast, profile, window)
+    }
+
+    /// The pieces an L-profile cutter needs: its walls, their µ̂-forms, the fill rule, and a window.
+    #[allow(clippy::type_complexity)]
+    fn l_cutter() -> (
+        geom::chart::Chart<Bignum>,
+        Vec<MuCut<Bignum>>,
+        crate::extrude::Cast<Bignum>,
+        Vec<geom::content::Edge<Bignum>>,
+        Interval<Bignum>,
+    ) {
+        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
+        let profile = l_profile(&cx, &cy);
+        profile_cutter(cx, cy, profile)
     }
 
     /// **A ruling that meets a non-convex cutter twice reports both stretches — and the band still
@@ -3205,6 +3259,213 @@ mod tests {
                 assert!(wi < forms.len(), "each end names a real wall");
             }
         }
+    }
+
+    /// **The exact event set buys tightness, not soundness — starve the sampling and ε degrades
+    /// while the geometry stays honest.**
+    ///
+    /// §11.5's claim is that nothing rests on the event set being complete: the sweep applies the
+    /// same matching between *every* consecutive pair of columns, so an event it stepped over is a
+    /// sampling loss and shows up as a loose bound, never as a quietly wrong hole. That is a claim
+    /// about code, and until something checks it, it is only a claim.
+    ///
+    /// The perturbation is applied to the **columns** rather than to the event list, and that is
+    /// the faithful form of it: the events do not enter the matching at all — they only decide
+    /// where columns are placed — so a starved column set *is* a stepped-over event, and it is the
+    /// perturbation the engine can actually be subjected to from outside.
+    ///
+    /// Two things are then measured. **ε degrades**: the starved loop's certified bound is strictly
+    /// worse, which is what "the search buys tightness" means quantitatively. **The geometry stays
+    /// honest**: every emitted piece is re-checked, here and independently of the builder, at its
+    /// own σ-midpoint against the boundary the exact fill rule reports there — and the deviation is
+    /// inside the starved loop's *own* ε. A loop that had drifted off the true cut would fail that
+    /// while certifying perfectly, which is the failure this exists to exclude.
+    #[test]
+    fn starving_the_sweep_loosens_eps_and_leaves_the_geometry_honest() {
+        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
+        let profile = l_profile(&cx, &cy);
+        let (chart, forms, cast, profile, window) = profile_cutter(cx, cy, profile);
+        let walls = cast.carrier_walls(&profile).expect("six distinct lines");
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let clearance = Q::from_i128(4);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        let trace = |segments: usize| match shadow_cut_loops(
+            &chart, &walls, inside, &window, &zero, segments, &clearance, &cfg,
+        ) {
+            Verdict::Verified(ls) => ls,
+            other => panic!(
+                "the L must trace at {segments} segments: {}",
+                match other {
+                    Verdict::Refuted(f) => format!("Refuted({f:?})"),
+                    _ => "Unresolved".into(),
+                }
+            ),
+        };
+        let fine = trace(24);
+        let coarse = trace(2);
+        let worst = |ls: &[CutLoop<Bignum>]| {
+            ls.iter()
+                .map(|l| l.eps.clone())
+                .max_by(|a, b| a.cmp(b))
+                .expect("a loop")
+        };
+        let (e_fine, e_coarse) = (worst(&fine), worst(&coarse));
+        assert!(
+            e_fine.cmp(&e_coarse) == core::cmp::Ordering::Less,
+            "starving the sweep must LOOSEN the bound: fine {:?} vs coarse {:?}",
+            crate::pcurve::snap(&e_fine, 20),
+            crate::pcurve::snap(&e_coarse, 20),
+        );
+
+        // …and the starved geometry is still where the fill rule says the boundary is. Checked at
+        // each piece's own σ-midpoint against `ruling_patches`, which is the exact reader — not
+        // against the fine loop, which would only say the two searches agree.
+        let mut checked = 0;
+        for l in &coarse {
+            for pc in &l.pieces {
+                let (a, b) = (
+                    pc.sigma
+                        .eval(&pc.domain.lo)
+                        .expect("a straight piece evaluates"),
+                    pc.sigma
+                        .eval(&pc.domain.hi)
+                        .expect("a straight piece evaluates"),
+                );
+                let sm = a.add(&b).mul(&Q::new(1, 2));
+                let Ok(truth) = ruling_patches(&forms, &sm, &inside, &cfg.sqrt_eps) else {
+                    continue;
+                };
+                let mut bounds: Vec<Q> = Vec::new();
+                for p in &truth {
+                    bounds.push(p.lo.clone());
+                    bounds.push(p.hi.clone());
+                }
+                if bounds.is_empty() {
+                    continue;
+                }
+                for mu in loop_mu_at(core::slice::from_ref(pc), &sm) {
+                    let d = bounds
+                        .iter()
+                        .map(|t| {
+                            let d = mu.sub(t);
+                            if d.sign() < 0 { d.neg() } else { d }
+                        })
+                        .min_by(|x, y| x.cmp(y))
+                        .expect("a boundary");
+                    assert!(
+                        d.cmp(&e_coarse) != core::cmp::Ordering::Greater,
+                        "a starved piece sits {:?} from the fill rule's own boundary at σ = {:?}, \
+                         outside its own certified {:?} — the bound got loose AND the geometry \
+                         moved, which is the failure §11.5 claims cannot happen",
+                        crate::pcurve::snap(&d, 20),
+                        crate::pcurve::snap(&sm, 20),
+                        crate::pcurve::snap(&e_coarse, 20),
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked >= 8,
+            "only {checked} starved pieces were re-checked"
+        );
+    }
+
+    /// **A keyhole's two stretches rejoin over a saddle where a circle meets a straight edge.**
+    ///
+    /// A merge is the event whose two ends belong to *different* stretches: what closes is the
+    /// **gap** between them, not either one's width. That much the L already exercises — its two
+    /// arms rejoin at the reflex corner, and a first version of this test asserted only the closing
+    /// gap and passed unchanged when pointed at the L, which is why the claim is narrower now.
+    ///
+    /// What is the keyhole's own is **which walls bound the closing gap**: one is the head's circle
+    /// and the other a stem side, so the saddle is the mixed quadric-against-affine case of
+    /// [`MuCut::resultant`] — the one an all-straight profile can never reach, and the one §11.2's
+    /// criterion asks for by name ("the test set must contain the case the feature is for", and the
+    /// published quadratic-by-quadratic closed form is *identically zero* on two affine walls).
+    /// Asserted by reading the wall each end names and checking their pullbacks' degrees differ.
+    #[test]
+    fn a_keyhole_sweep_closes_a_gap_between_a_circle_and_a_straight_edge() {
+        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
+        let profile = keyhole_profile(&cx, &cy);
+        let (chart, forms, cast, profile, window) = profile_cutter(cx, cy, profile);
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        const SCAN: i128 = 800;
+        let at = |k: i128| {
+            window
+                .lo
+                .add(&window.hi.sub(&window.lo).mul(&Q::new(k, SCAN)))
+        };
+        // Sweep, and keep the two-stretch column immediately before each drop to one: there the gap
+        // between the stretches is about to close, and the two walls facing across it are the ones
+        // the saddle joins.
+        let mut merges: Vec<(Q, Q, usize, usize)> = Vec::new(); // (gap, narrowest stretch, walls)
+        let mut prev: Option<Vec<RulingPatch<Bignum>>> = None;
+        let mut two = 0;
+        for k in 0..=SCAN {
+            let s = at(k);
+            let Ok(ps) = ruling_patches(&forms, &s, &inside, &cfg.sqrt_eps) else {
+                prev = None;
+                continue;
+            };
+            if ps.len() == 2 {
+                two += 1;
+            }
+            if ps.len() == 1
+                && let Some(p2) = prev.as_ref()
+                && p2.len() == 2
+            {
+                let gap = p2[1].lo.sub(&p2[0].hi);
+                let w0 = p2[0].hi.sub(&p2[0].lo);
+                let w1 = p2[1].hi.sub(&p2[1].lo);
+                let narrow = if w0.cmp(&w1) == core::cmp::Ordering::Less {
+                    w0
+                } else {
+                    w1
+                };
+                merges.push((gap, narrow, p2[0].hi_at.0, p2[1].lo_at.0));
+            }
+            prev = Some(ps);
+        }
+        assert!(
+            two > 0,
+            "some ruling must cross the head and the stem separately — the fixture does not \
+             produce the phenomenon"
+        );
+        let (gap, narrow, wa, wb) = merges
+            .iter()
+            .min_by(|a, b| a.0.cmp(&b.0))
+            .expect("the two stretches must rejoin somewhere in the window");
+        // What closed is the gap, not a stretch — the signature of a merge rather than a death.
+        assert!(
+            gap.sign() > 0 && gap.cmp(&narrow.mul(&Q::new(1, 5))) == core::cmp::Ordering::Less,
+            "the stretches must rejoin by their gap closing (gap {:?}, narrowest stretch {:?})",
+            crate::pcurve::snap(gap, 20),
+            crate::pcurve::snap(narrow, 20),
+        );
+        // …and the two walls facing across it are of **different degree**: the head's circle pulls
+        // back to a genuine µ̂-quadratic, a stem side to an affine form. This is the assertion the
+        // L cannot satisfy — every wall of a polygon is affine — and it is the mixed case of the
+        // pairwise resultant, where the published quadratic-by-quadratic form is not identically
+        // zero.
+        let deg = |wi: usize| if forms[wi].a.is_zero() { 1 } else { 2 };
+        assert_ne!(
+            deg(*wa),
+            deg(*wb),
+            "the saddle must join the circle to a stem side (walls {wa} and {wb}, degrees {} and \
+             {}) — two walls of equal degree means the fixture is exercising the L's case again",
+            deg(*wa),
+            deg(*wb),
+        );
     }
 
     /// **A carrier crossing the cutter's own interior is not a boundary, and must not split a
