@@ -161,6 +161,46 @@ pub fn max_ray_crossings(ring: &[[f64; 2]]) -> usize {
     best
 }
 
+/// The most times any of `rulings` crosses `ring`, each ruling given as the **flat images of two
+/// domain points on it** (`µ̂ = 0` then `µ̂ = 1`, as [`Part::flat_rulings`] emits them).
+///
+/// [`max_ray_crossings`] is this for a chart whose support is constant: there `γ ≡ 0`, every ruling
+/// image passes through the flat apex, and sampling rays from the origin *is* sampling the family.
+/// The moment a region's support curves, the images stop being concurrent — each is offset by the
+/// running directrix `γ(σ)` — and a ray from the origin is no longer a ruling, so the four-crossing
+/// signature has to be read against the family the development actually produces.
+///
+/// Counted along the **whole line**, not a half-line: the two supplied points fix it, and the sheet
+/// may lie on either side of `µ̂ = 0`. That is sound for the signature it measures — a ruling is a
+/// full line in the domain, and the cutter's footprint sits on one side of the apex anyway.
+///
+/// [`Part::flat_rulings`]: author::part::Part::flat_rulings
+pub fn max_ruling_crossings(ring: &[[f64; 2]], rulings: &[[[f64; 2]; 2]]) -> usize {
+    let n = ring.len();
+    if n < 3 {
+        return 0;
+    }
+    let mut best = 0;
+    for [o, p] in rulings {
+        let (dx, dy) = (p[0] - o[0], p[1] - o[1]);
+        if !(dx.is_finite() && dy.is_finite()) || (dx == 0.0 && dy == 0.0) {
+            continue;
+        }
+        let mut hits = 0;
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            // Signed areas against the ruling line; opposite signs means the edge crosses it.
+            let side = |q: [f64; 2]| (q[0] - o[0]) * dy - (q[1] - o[1]) * dx;
+            let (ca, cb) = (side(a), side(b));
+            if (ca > 0.0) != (cb > 0.0) {
+                hits += 1;
+            }
+        }
+        best = best.max(hits);
+    }
+    best
+}
+
 /// Is the simple ring `inner` contained in the simple ring `outer`?
 ///
 /// Containment, not vertex sampling: a vertex test alone passes on a ring that pokes out between

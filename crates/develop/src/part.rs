@@ -230,6 +230,40 @@ impl<B: Backend> PiecewiseDevelopment<B> {
         Some(out)
     }
 
+    /// The certified flat image of the domain point `(σ, µ̂)` — the glued development evaluated in
+    /// whichever region's running frame contains σ. `None` outside the domain or on a pole.
+    ///
+    /// [`gamma_at`](Self::gamma_at) is this at `µ̂ = 0`; the two together give the flat image of a
+    /// **ruling**, which is a straight line through `γ(σ)` in the direction `e(ψ(σ))` — concurrent
+    /// at the flat apex only where `γ ≡ 0`.
+    ///
+    /// ```
+    /// use develop::cone::{ConeDevelopment, DevConfig};
+    /// use develop::part::PiecewiseDevelopment;
+    /// use fixtures::devices::cone_wrap;
+    /// use lattice::{Bignum, Interval, Rat};
+    ///
+    /// let dev = ConeDevelopment::new(&cone_wrap()).unwrap();
+    /// let band = Interval { lo: Rat::from_i128(-1), hi: Rat::from_i128(1) };
+    /// let pw = PiecewiseDevelopment::new(vec![(band, dev.clone())]).unwrap();
+    /// let cfg = DevConfig::<Bignum>::tight();
+    /// let (s, m) = (Rat::new(1, 3), Rat::from_i128(-1));
+    /// // One region at h ≡ 0: γ vanishes, so the glued point is the plain signed development.
+    /// let a = pw.point(&s, &m, &cfg).unwrap().center();
+    /// assert_eq!(a, dev.point_signed(&s, &m, &cfg).center());
+    /// ```
+    pub fn point(
+        &self,
+        sigma: &Rat<B>,
+        mu_hat: &Rat<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<crate::cone::FlatBox<B>> {
+        let k = self.region_of(sigma)?;
+        let base = self.cum_before(k, cfg)?;
+        let (band, dev) = &self.regions[k];
+        dev.point_from(&base, &band.lo, sigma, mu_hat, cfg)
+    }
+
     /// The **cumulative running directrix** `γ(σ)`: the full-window γ of every region before the
     /// one containing σ, plus that region's own γ from its window start — each region integrates
     /// only where its support is tame. `None` outside the domain or on a pole.

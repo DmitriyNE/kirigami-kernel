@@ -2212,6 +2212,63 @@ and what no verdict states (`acceptance::measure::shortest_edge`, against `CAD_V
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two
 parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.8).
 
+### The stress fixture: a traced footprint on the hardest chart (#269)
+
+Every fixture above lives on the Stage-1 gore — one region, constant support, no wrap. That is a
+choice about what is *easy to attribute*, and it becomes a gap the moment the same code has to run on
+a chart that wraps and a support that curves. These criteria are for carrying a traced cut onto the
+self-lapping device (`acceptance::self_lapping_cone_with` + `lap_slot`).
+
+*Add a variant; never mutate the pinned device.* The featureless recipe carries this milestone's work
+budgets, ε bounds and chord goldens. A recipe that grows a fixture whenever one is needed stops being
+a baseline, and every number pinned against it silently changes meaning. The general form takes the
+feature as an `Option` and the old signature delegates with `None`, op for op — so "the pinned device
+is unchanged" is a property of the code rather than a claim in a commit message.
+
+*Put the feature where the device is hard, and say why in the fixture.* The placement is the
+experiment: in the **lap wedge**, so one vertical sweep pierces both sheets and derives two holes; on
+the **ramp**, so the far one is traced over a nonzero flat directrix while its twin is traced at
+`γ ≡ 0`; clear of the **region joins**, which are a typed refusal rather than a realization; inside
+the **annulus**, so it is an interior hole and not a rim bite. Each of those is a number the fixture's
+own doc comment states, because a placement nobody can check drifts into a different experiment.
+
+*One cutter on two sheets is a differential that needs no second construction.* Development is an
+isometry and a prism cuts congruent patches from two parallel sheets of one cone, so the two derived
+holes must have the same area and perimeter — measured 0.08% apart. A `γ` dropped, or accumulated
+into the wrong region's running frame, still certifies (ε is the max over stages and this device's
+boundary dominates) and fails that.
+
+*Attribute by folding, not by position.* Which sheet a hole was cut in is read off the artifact: fold
+a vertex back and measure its offset from the base cone. Two things follow that no ordering can give.
+The ramp hole's offset **varies** across its own footprint, which is what separates "the support is
+nonzero here" from "the support is still curving here" — the plateau is nonzero and constant. And
+which *cutter* made a hole is answered by asking the cutter (`acceptance::seam_drill_axis`), not by
+size: an area threshold classified the holes correctly under a parallel sweep and silently
+reclassified them under a drafted one, where the slot's holes grow to within 5% of the drill's. The
+test that failed is the reason this is a criterion.
+
+*A measurement valid on one chart is not valid on the next.* `max_ray_crossings` reads the
+four-crossing signature by sampling rays from the flat apex — sound exactly where `γ ≡ 0`, because
+there the ruling images are that pencil. On a curved support they are offset by `γ(σ)` and the family
+is no longer concurrent (measured `|γ| = 0.159` on the ramp against exactly `0` on the body), so the
+signature must be read against the family the development actually produces
+(`Part::flat_rulings` → `max_ruling_crossings`). Pin the non-concurrency itself: an instrument
+introduced for a case the fixture does not actually exhibit is decoration.
+
+*The lap makes the draft measurable in a way one sheet cannot.* The same cutter meets the two sheets
+at two heights, so a **cast-point** sweep leaves two holes of different sizes and the ratio is
+predicted by the two folded heights alone — panel, rails and ε all cancel. Measured 0.98373 against a
+predicted 0.98417, where the parallel sweep gives 1.00078. A cutter that applied its taper at one
+nominal height for the whole part passes every certificate and fails this.
+
+*Separate a chord from a bridge by refinement, not by a threshold.* The traced slot scores 28.6% on
+the VV.3 chord golden at this device's resolution — inside the band the metric exists to catch a real
+defect in. Widening the gate to accommodate it makes the metric decoration. The discriminating
+property is that a bridge across the tangent rulings is **structural** and a chord is not: measured
+28.6% → 18.0% → 9.0% at `segments` 16 → 32 → 64, with the metric drill hole on the same runs as the
+control. Where a fixture legitimately scores badly, assert the property that distinguishes it from
+the failure rather than the number.
+
 ---
 
 ## 9. Sequencing

@@ -683,6 +683,46 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A measurement can stop being valid when the fixture moves, and stay green: `max_ray_crossings` on
+  a chart whose support curves.** AUTH.2's headline property — a ruling meets the cutter twice — is
+  read off the flat pattern as *four crossings by a ray from the flat apex*, and that reading is
+  exact only because every AUTH.2 fixture lives on a chart with `γ ≡ 0`, where the ruling images
+  really are a pencil through the origin. Carrying the same L onto the self-lapping device (#269)
+  breaks the premise silently: the smoothstep ramp's images are each offset by the running directrix
+  `γ(σ)`, measured `|γ| = 0.159` at `σ = 7/8` against exactly `0` on the body. The origin-ray count
+  happens to still return 4 there — the offset is ~2.3° of angle at flat radius 4.1 — so a test
+  asserting it would have passed for a reason that no longer holds, which is the worst failure mode a
+  V&V instrument has. Fixed by measuring against the family the development actually produces:
+  `PiecewiseDevelopment::point` → `Part::flat_rulings` (the glued development at `µ̂ = 0` and `µ̂ = 1`,
+  two points fixing the image line) → `acceptance::measure::max_ruling_crossings`, with the
+  non-concurrency itself pinned so the instrument is known to be needed. **The general shape: a
+  measurement's validity rests on a property of the fixture, and moving the fixture is exactly when
+  nobody re-derives it.** *2026-08-16 · resolved · #269, branch `stress-fixture`*
+
+- **A classifier that reads "which cutter made this hole" off the hole's *size* is a differential
+  waiting to reclassify itself.** The self-lapping stress fixture has two cutters over the lap and
+  four derived holes, and the tests need to know which is which. Area separates them cleanly — the
+  seam drill's enclose `0.116` and the traced slot's `0.070` — until the drafted variant, where the
+  slot's holes grow to `0.110` and the threshold quietly swaps them. That is not a tuning problem:
+  the taper test's whole subject is that a drafted cut is *bigger*, so the classifier was keyed on
+  the exact quantity under test. The fix is to ask the cutter — fold one vertex back and check
+  whether it lands on `acceptance::seam_drill_axis`'s cylinder, which is the same object the recipe
+  cut with. Caught by the test failing rather than by review, which is the argument for having built
+  the drafted variant at all. *2026-08-16 · resolved · #269*
+
+- **A quality golden can score a *legitimate* fixture inside its own defect band, and widening the
+  gate is the wrong answer.** VV.3's chord metric (longest emitted edge as a fraction of the ring's
+  size) was built to catch a graph-model bridge across the tangent rulings, historically 30–48%. The
+  traced lap slot scores **28.6%** at the device's `segments(16)` — the L's own straight sides are
+  legitimately a large fraction of its box, and the tracer's vertices come from the σ-event partition
+  rather than from a uniform chording, so they cluster (near-duplicate pairs `~5·10⁻⁹` apart) and
+  leave long edges between. Raising the gate to 35% would have made the metric decoration on this
+  device. The discriminating property is that **a bridge is structural and a chord is not**: measured
+  28.6% → 18.0% → 9.0% at `segments` 16 → 32 → 64, with the metric drill hole (9.4% → 4.7% → 2.4%,
+  exactly `1/n`) as the control that the comparison is measuring the loop and not the knob. Where a
+  fixture legitimately scores badly, assert the property that separates it from the failure.
+  *2026-08-16 · resolved · #269*
+
 - **Every certificate `Verified` and the STEP write refused the shell: the exact tier's minimum
   feature is smaller than the exporter's.** The AUTH.2f acceptance demo's traced-slot solid audited
   clean — watertight, manifold, genus as expected — and OCCT's `BRepBuilderAPI_MakeEdge` then

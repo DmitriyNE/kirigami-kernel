@@ -52,6 +52,27 @@ fn qi(n: i128) -> Q {
 /// `γ ≡ 0`, while the ramp and tail carry a nonzero flat directrix — which is why this one device
 /// exercises both development tiers.
 pub fn self_lapping_cone(segments: usize, support_panels: usize, with_drill: bool) -> Part<Bignum> {
+    self_lapping_cone_with(segments, support_panels, with_drill, None)
+}
+
+/// The same device carrying **one authored feature** swept from `apex` through `profile` — the
+/// stress variant.
+///
+/// `None` reproduces [`self_lapping_cone`] exactly, op for op, which is what keeps the pinned
+/// device pinned: the VV.1 work budgets, VV.2 ε bounds and VV.3 chord goldens are all measured on
+/// the featureless recipe, and a baseline that moves whenever a new fixture is added stops being a
+/// baseline.
+///
+/// Everything AUTH.1/AUTH.2 has been exercised on so far lives on [`sketch_panel`] — one region,
+/// `SupportFn::inherit` (so `γ ≡ 0`), no wrap. This is the hard chart: the extruded footprint is
+/// traced over a **nonzero flat directrix**, across a **multi-region** development, on a surface
+/// that passes over itself. See [`lap_slot`] for where the feature is placed and why.
+pub fn self_lapping_cone_with(
+    segments: usize,
+    support_panels: usize,
+    with_drill: bool,
+    feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
+) -> Part<Bignum> {
     let d = q(1, 10);
     // A witness on the kept sheet: the σ = 0 ruling's point at z = −3 (mid-annulus). The wrap
     // chart keeps material on both sheets of the double cover — the antipodal ray crosses the
@@ -89,6 +110,9 @@ pub fn self_lapping_cone(segments: usize, support_panels: usize, with_drill: boo
     if with_drill {
         part = part.subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)));
     }
+    if let Some((apex, profile)) = feature {
+        part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
+    }
     part
 }
 
@@ -97,6 +121,57 @@ pub fn self_lapping_cone(segments: usize, support_panels: usize, with_drill: boo
 /// part was cut with instead of restating its numbers.
 pub fn seam_drill_axis() -> (Q, Q, Q) {
     (q(-1, 2), q(27, 10), q(1, 40))
+}
+
+/// The **lap slot**: the L-shaped feature [`self_lapping_cone_with`] is stressed with — arm `1/4`,
+/// thickness `1/8`, corner at `(1/2, 109/40)`, on the rotated axes `u = (3/5, −4/5)`,
+/// `v = (4/5, 3/5)`.
+///
+/// Drawn in the `z = 0` [`sketch_plane`] and swept along `z`, so where it lands is decided entirely
+/// by its `(x, y)` extent — and every number above is a placement, not a shape:
+///
+/// * **In the lap wedge.** The device's azimuth sweeps 410.7°, so the wedge `az ∈ (64.6°, 115.4°)`
+///   is covered **twice** — once by the body at `h ≡ 0` (`σ ∈ [−5/4, −0.79]`) and once by the ramp
+///   and tail flap passing over it (`σ ∈ [0.79, 5/4]`). This slot spans `az ∈ [72.4°, 79.6°]`, so
+///   one cutter pierces **both sheets**: a ruling meets its footprint on the near sheet and again on
+///   the far one. That is the wrap chart's own version of the multi-stretch problem, and no gore can
+///   pose it.
+/// * **On the ramp.** The far sheet lands at `σ ∈ [0.857, 0.914]` — strictly inside the smoothstep
+///   band `[1/2, 1]` — so that hole is traced over a **nonzero flat directrix**, while its twin on
+///   the body is traced at `γ ≡ 0`. One cutter, both development tiers, and the difference between
+///   the two holes is attributable to `γ` and to nothing else.
+/// * **Clear of the joins.** The near sheet lands at `σ ∈ [−1.168, −1.094]`, ~0.08 from the body's
+///   far end; neither footprint crosses a region boundary, which is refused
+///   ([`PartFault::HoleCrossesRegions`](author::part::PartFault::HoleCrossesRegions)) rather than
+///   realized.
+/// * **Inside the annulus.** Its radii `[2.61, 2.96]` sit between the eccentric inner cut (`≈2.47`
+///   there) and the outer cylinder (`≈3.07`), so it is an interior hole and not a rim bite.
+///
+/// The axes are turned for the same reason [`ell_slot`]'s are: the rulings project to radial rays,
+/// so an L whose arms lie along the radius is met once and its footprint is an ordinary band. Here
+/// the local radial direction resolves to `(−0.63, +0.78)` in `(u, v)` — opposite signs, so a ray
+/// leaves one arm, crosses the notch and re-enters the other. `(3, 4, 5)` keeps every vertex exact.
+pub fn lap_slot() -> Vec<Edge<Bignum>> {
+    let (cx, cy, a, t) = (q(1, 2), q(109, 40), q(1, 4), q(1, 8));
+    let (ux, uy) = (q(3, 5), q(-4, 5));
+    let (vx, vy) = (q(4, 5), q(3, 5));
+    let p = |su: &Q, sv: &Q| {
+        [
+            cx.add(&ux.mul(su)).add(&vx.mul(sv)),
+            cy.add(&uy.mul(su)).add(&vy.mul(sv)),
+        ]
+    };
+    let z = qi(0);
+    Profile::new()
+        .polygon(&[
+            p(&z, &z),
+            p(&a, &z),
+            p(&a, &t),
+            p(&t, &t),
+            p(&t, &a),
+            p(&z, &a),
+        ])
+        .into_edges()
 }
 
 /// The **sketch-cutter panel**: the AUTH.1/AUTH.2 device — the Stage-1 gore over the full
