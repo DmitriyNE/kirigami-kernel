@@ -768,7 +768,7 @@ fine — this is a log, not a schema.
 
 ## Findings
 
-- **The outer wire cost one boolean operator (AUTH.3c).** §12.4 had framed the remaining pinch
+- **The outer wire cost one boolean operator, and the mixed boundary one currency (AUTH.3c).** §12.4 had framed the remaining pinch
   shapes as needing "the polygon channel extended one level out", with a named fallback if that
   turned out expensive. It did not. A slice's footprint was `strip ∖ holes`; for a part bounded by a
   traced loop it is `strip ∩ ({outline} ∖ holes)` — and even-odd parity already reads a loop
@@ -794,6 +794,27 @@ fine — this is a log, not a schema.
   outer wire must reach **both** σ-ends. A wire falling short would leave the terminal slices bounded
   by the synthesized band — a longer part than asked for, every certificate green. Pinned as its own
   refusal test, because the two share a code path and the shared path is where that inverts.
+
+  **The mixed shape then cost a currency, not a construction.** Where the boundary is a rail out and
+  an arc back, chording the rail would have traded a certified fit for a chord sagitta nobody
+  bounded. So a wire vertex became either an explicit `(σ,µ̂)` or *a σ at which the wire runs along a
+  named rail* (`WirePoint`) — the mechanism being the one `railed_corners` already had, a footprint
+  vertex on a proxy horizontal reading back as the true curved rail. Two adjustments fell out. The
+  strip's rect now opens a unit beyond the proxies when a wire is present, so a wire running along a
+  rail is an interior edge rather than one coincident with the strip's own. And `railed_corners`'
+  refusal of a non-radial rail-to-free edge became a chord fitted through the rail's **true** value:
+  a proxy horizontal is a height with no metric meaning. That arm read as a guard against a hole
+  touching the boundary, but the vertex-level `inside_band` test is the actual guard — the arm was
+  doing it only incidentally, which is worth noticing before deleting anything that looks defensive.
+
+  143 faces, genus 0, watertight. **And the faithfulness assertion earned its keep twice.** It first
+  failed at `0 vertices on the plane` — which turned out not to be a missing rail but a tolerance
+  borrowed from the flat tests (`5e-3`) sitting *below* the part's own certified `ε = 8.9e-3`, since
+  the solid is emitted at the deliberately coarser STEP fit. Restated against `solid.eps()` it
+  passes, and it is now the honest test rather than the lucky one: **ask the part what it promised,
+  do not borrow a constant from a different profile.** The measured split — 6 vertices on the plane
+  against 149 on the cylinder — is itself the claim that the rail was named rather than chorded: a
+  Bézier costs corners only at its σ-stations, a chord costs one each.
   *2026-08-17 · resolved · AUTH.3c, branch `auth-3c`*
 
 - **A part refused because its denominator had the wrong sign — and the sign meant nothing

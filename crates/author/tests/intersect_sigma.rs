@@ -17,11 +17,11 @@
 //!   the arc is spliced into the graph chain at the junctions the corner refinement locates — one
 //!   arc per end where it takes over near each, and a single arc wrapping **both** tangents where it
 //!   bounds one whole side;
-//! - the **solid** follows the flat pattern in two of those three shapes (AUTH.3c): where the
-//!   boundary is still a rail band the region bands clip to the derived extent and the Bézier
-//!   weights normalize to their positive representative; where it is one traced loop, that loop
-//!   goes to the builder as a general `(σ,µ̂)` **outer wire**, kept *inside* rather than subtracted.
-//!   The mixed whole-side boundary — a rail out and an arc back — still refuses;
+//! - the **solid** follows the flat pattern in all three shapes (AUTH.3c): where the boundary is
+//!   still a rail band the region bands clip to the derived extent and the Bézier weights normalize
+//!   to their positive representative; where it is a traced loop — alone, or spliced with a rail —
+//!   that loop goes to the builder as a general `(σ,µ̂)` **outer wire**, kept *inside* rather than
+//!   subtracted, with the rail stretch **named as a rail** so it stays a Bézier;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -447,6 +447,90 @@ fn a_traced_contour_bounds_a_solid_where_no_rail_band_can() {
         "the w = 0 lid must lie ON the contour, and it is half the vertices: only {on_it} of {} \
          are within 5e-3",
         brep.verts().len()
+    );
+}
+
+/// **The mixed boundary in the solid: a rail out and an arc back (AUTH.3c).**
+///
+/// The hardest of the three shapes, and the one that says what an outer wire is *for*. The contour
+/// bounds one whole side, so the splice leaves the lower chain empty and a two-turn arc in its
+/// place — there is no band to sweep. But there is still a real, certified rail on the other side,
+/// and chording it would trade a rail-fit bound for a chord sagitta nobody bounded. The wire says
+/// both things at once: the arc's chords as explicit `(σ,µ̂)` points, the rail **named as a rail**,
+/// so that stretch is emitted as its own Bézier exactly as it always was.
+///
+/// **Faithfulness against both surfaces, which is what makes this fixture different.** Every vertex
+/// must lie within a thickness of the authored cylinder or the authored plane `z = 3`, and **both**
+/// must actually carry some of the boundary. A wire that dropped the rail and chorded the arc across
+/// the whole span would still be watertight and still be genus 0.
+///
+/// The tolerance is the part's **own** certified bound rather than a constant. The solid is emitted
+/// at the low-degree STEP profile (`RailFit::occt_low`), deliberately coarser than the flat pattern
+/// — the artifact that is manufactured — so its ε is larger, and a constant borrowed from the flat
+/// tests fails here for a reason that says nothing about the geometry. Asking the part what it
+/// promised is both the honest test and the one that cannot drift.
+///
+/// The vertex *counts* are the other half of the claim, and they are lopsided on purpose: the arc
+/// contributes a vertex per chord while the rail contributes only its σ-stations' corners, because
+/// it is emitted as its own Bézier. That asymmetry **is** naming the rail rather than chording it.
+#[test]
+fn a_rail_out_and_an_arc_back_is_a_solid_too() {
+    let part =
+        panel(q(-1, 8), q(1, 8)).intersect(Cutter::vertical_cylinder(qi(0), q(5, 2), q(1, 4)));
+    let solid = match part.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a contour bounding one whole side must build a solid, got {}",
+            name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    assert_eq!(brep.free_edges(), 0, "watertight: {f} faces");
+    assert_eq!((2 - (v - e + (2 * f - l))) / 2, 0, "genus 0: {f} faces");
+
+    let surd_f64 = |s: &lattice::Surd<Bignum>| {
+        let (a, b, d) = s.parts();
+        to_f64(a) + to_f64(b) * to_f64(d).sqrt()
+    };
+    let eps = to_f64(solid.eps());
+    let (cyf, rf, th) = (2.5, 0.5, 0.125);
+    let (mut worst, mut on_cyl, mut on_plane) = (0.0f64, 0usize, 0usize);
+    for p in brep.verts() {
+        let (x, y, z) = (surd_f64(&p[0]), surd_f64(&p[1]), surd_f64(&p[2]));
+        let dc = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
+        let dp = (z - 3.0).abs();
+        worst = worst.max(dc.min(dp));
+        if dc < eps {
+            on_cyl += 1;
+        }
+        if dp < eps {
+            on_plane += 1;
+        }
+    }
+    assert!(
+        worst < th + eps,
+        "every vertex must sit within a thickness of the cylinder or the plane: worst {worst:.3e} \
+         against a thickness {th} and a certified {eps:.3e}"
+    );
+    // **Both** surfaces must be represented, and that is the assertion the wire earns: a solid whose
+    // boundary was all arc would put nothing on the plane, and one that lost the arc would put
+    // nothing on the cylinder. Few on the plane and many on the cylinder is the *expected* shape —
+    // the rail is a Bézier with corners only at its σ-stations, the arc is a vertex per chord.
+    let n = brep.verts().len();
+    assert!(
+        on_plane >= 4 && on_cyl * 3 > n,
+        "the boundary must be the plane rail AND the contour arc — {on_cyl} vertices on the \
+         cylinder, {on_plane} on the plane, of {n}"
     );
 }
 

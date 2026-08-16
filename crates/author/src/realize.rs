@@ -26,7 +26,7 @@ use certify_core::Verdict;
 use develop::part::Development;
 use develop::unroll::{BoundaryArc, FlatOutline, UnrollFault, unroll_trim_loop};
 use export::brep::Brep;
-use export::brep_build::{HoleRail, brep_trim_solid_regions};
+use export::brep_build::{HoleRail, WirePoint, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
     HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_poly,
@@ -1120,6 +1120,41 @@ pub(crate) fn solid_brep<B: Backend>(
         Err(f) => return Verdict::Refuted(f),
     };
 
+    // — 3‴. The **mixed** boundary: a rail out and an arc back. —
+    //
+    // The whole-side splice leaves one chain empty and a two-turn arc in its place (§12.4), so there
+    // is no band to sweep — but there *is* still a real rail on the other side, and chording it
+    // would trade a certified fit for an unbounded sagitta. The outer wire says both things at once:
+    // the arc's chords as explicit points, the rail named as a rail. Only the lower chain can be the
+    // empty one, because only case (i) of the splice clears a chain and it clears the lower.
+    if inner.is_empty()
+        && let Some(arc) = boundary.end_arcs[1]
+            .as_ref()
+            .or(boundary.end_arcs[0].as_ref())
+        && !outer.is_empty()
+    {
+        // The rail run, named rather than sampled — the whole point of the rail-borne vertex. Its
+        // two σ *are* the junctions: the splice leaves exactly the segments between them.
+        let mut wire: Vec<WirePoint<B>> = vec![
+            WirePoint::OnOuter(outer[0].0.lo.clone()),
+            WirePoint::OnOuter(outer[outer.len() - 1].0.hi.clone()),
+        ];
+        // …then the arc back, **skipping its first sample**: that one sits on the junction the rail
+        // vertex above already carries, and to within the ε-wide ruling gap it is the same point.
+        // Keeping both would put a sub-ε radial edge in the wall (the shape #267 refused in STEP),
+        // and asking `inside_band` whether a junction point is strictly inside the rail it lies on
+        // is a question with no right answer.
+        for piece in arc.iter().skip(1) {
+            let p = match piece.eval(&piece.domain.lo) {
+                Some(v) => v,
+                None => return Verdict::Refuted(PartFault::Pole),
+            };
+            wire.push(WirePoint::At(snap30(&p[0]), snap30(&p[1])));
+        }
+        let eps = eps_all.clone();
+        return wire_solid(part, built, structure, wire, Some(outer), eps);
+    }
+
     let (holes, poly_holes, hole_loops, hole_eps) = match solid_holes(part, built, &structure) {
         Verdict::Verified(h) => h,
         Verdict::Unresolved(e) => return Verdict::Unresolved(e),
@@ -1302,17 +1337,53 @@ fn outline_solid<B: Backend>(
         }
         Verdict::Refuted(_) => return Verdict::Refuted(PartFault::CutUnresolved { op }),
     };
-    let wire = match hole_poly(&loop_) {
+    let pts = match hole_poly(&loop_) {
         Some(p) if p.len() >= 3 => p,
         _ => return Verdict::Refuted(PartFault::LoopBroken),
     };
-    let mut eps_all = loop_.eps.clone();
+    let wire: Vec<WirePoint<B>> = pts.into_iter().map(|(s, m)| WirePoint::At(s, m)).collect();
+    let eps = loop_.eps.clone();
+    wire_solid(part, built, structure, wire, None, eps)
+}
 
-    let (mut s_lo, mut s_hi) = (wire[0].0.clone(), wire[0].0.clone());
-    let (mut m_lo, mut m_hi) = (wire[0].1.clone(), wire[0].1.clone());
-    for (s, m) in &wire {
-        s_lo = rmin(&s_lo, s);
-        s_hi = rmax(&s_hi, s);
+/// Build the solid whose outer boundary is `wire`, over a **synthesized** enclosing band.
+///
+/// Shared by both outer-wire shapes, because the band is the same idea in each: it does not bound
+/// the part, it only has to *contain* it. What it still does is fix the σ-station partition and the
+/// ruled patch each footprint is trimmed out of, and neither is sensitive to how wide it is. The
+/// pad is relative (a sixteenth of the wire's own µ̂-span each side) so the band stays as close to
+/// the material as the wire is — a fixed pad on a small contour could reach the chart's singular
+/// rail, where the parametrization breaks down rather than the part.
+///
+/// `rail`, when given, is the **real** upper rail over its own σ-span, spliced into the synthesized
+/// one: the mixed shape's wire runs *along* that rail, and naming it rather than chording it is what
+/// keeps that stretch exact and its certified bound the rail fit's rather than a chord sagitta
+/// nobody bounded.
+fn wire_solid<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    structure: Structure<B>,
+    wire: Vec<WirePoint<B>>,
+    rail: Option<Chain<B>>,
+    wire_eps: Rat<B>,
+) -> Verdict<SolidParts<B>, PartFault, Rat<B>> {
+    let free: Vec<(Rat<B>, Rat<B>)> = wire
+        .iter()
+        .filter_map(|p| match p {
+            WirePoint::At(s, m) => Some((s.clone(), m.clone())),
+            _ => None,
+        })
+        .collect();
+    if free.is_empty() {
+        return Verdict::Refuted(PartFault::LoopBroken);
+    }
+    let (mut s_lo, mut s_hi) = (wire[0].sigma().clone(), wire[0].sigma().clone());
+    let (mut m_lo, mut m_hi) = (free[0].1.clone(), free[0].1.clone());
+    for p in &wire {
+        s_lo = rmin(&s_lo, p.sigma());
+        s_hi = rmax(&s_hi, p.sigma());
+    }
+    for (_, m) in &free {
         m_lo = rmin(&m_lo, m);
         m_hi = rmax(&m_hi, m);
     }
@@ -1323,14 +1394,45 @@ fn outline_solid<B: Backend>(
     let band = Interval { lo: s_lo, hi: s_hi };
     let cst = |v: &Rat<B>| lattice::RatFunc::from_poly(lattice::Poly::constant(v.clone()));
     let inner: Chain<B> = vec![(band.clone(), cst(&m_lo.sub(&pad)))];
-    let outer: Chain<B> = vec![(band.clone(), cst(&m_hi.add(&pad)))];
+    // The upper rail is synthesized *around* whatever real rail the wire runs along: the real one
+    // where the wire names it, a constant clear of the material either side. The gaps have to be
+    // filled rather than left short because the builder picks one rail piece per slice — and the
+    // real rail's own two ends become σ-stations (every chain-piece boundary does), so no slice ever
+    // straddles the handover and reads the wrong one.
+    let above = cst(&m_hi.add(&pad));
+    let mut outer: Chain<B> = Vec::new();
+    match rail {
+        Some(r) if !r.is_empty() => {
+            let (a, b) = (r[0].0.lo.clone(), r[r.len() - 1].0.hi.clone());
+            if band.lo.cmp(&a) == core::cmp::Ordering::Less {
+                outer.push((
+                    Interval {
+                        lo: band.lo.clone(),
+                        hi: a,
+                    },
+                    above.clone(),
+                ));
+            }
+            outer.extend(r);
+            if b.cmp(&band.hi) == core::cmp::Ordering::Less {
+                outer.push((
+                    Interval {
+                        lo: b,
+                        hi: band.hi.clone(),
+                    },
+                    above,
+                ));
+            }
+        }
+        _ => outer.push((band.clone(), above)),
+    }
 
     let (holes, poly_holes, hole_loops, hole_eps) = match solid_holes(part, built, &structure) {
         Verdict::Verified(h) => h,
         Verdict::Unresolved(e) => return Verdict::Unresolved(e),
         Verdict::Refuted(f) => return Verdict::Refuted(f),
     };
-    eps_all = rmax(&eps_all, &hole_eps);
+    let eps_all = rmax(&wire_eps, &hole_eps);
 
     let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> = vec![(band, &built.charts[0])];
     let w = Interval {
