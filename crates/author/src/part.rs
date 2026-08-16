@@ -520,6 +520,17 @@ pub enum PartFault {
     /// them. A part is one connected piece; the resolver refuses rather than picking a run or
     /// emitting several.
     DisconnectedRegion,
+    /// A boundary rail is needed over σ its certificate does not cover.
+    ///
+    /// The fit clamps to the wall's disc-positive window, which was always wider than the outer
+    /// boundary needed until a **derived** σ-end could land on a tangent ruling. Evaluating the
+    /// fitted graph past its certified span there is extrapolation into a √-branch, so the rail is
+    /// refused rather than used — the pinch end needs a p-curve, not a longer graph
+    /// (`docs/cutter-extrude-design.md` §12.4).
+    RailSpanShort {
+        /// The op whose rail runs out of certificate.
+        op: usize,
+    },
     /// The material's σ-extent ends inside the declared domain, but no structural event brackets
     /// that end, so the resolver cannot locate it exactly.
     ///

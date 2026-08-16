@@ -698,6 +698,47 @@ fine — this is a log, not a schema.
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
 
+- **The two "pinch" ends are not the same shape, and the affine one is the exact one.** §12.4 filed
+  a single termination class — "the two bounding rails meet, so a graph fit runs into `∂s/∂µ̂ → 0`;
+  a p-curve, then" — covering both a quadric's tangent ruling and a polygon's corner. Measured at
+  AUTH.3b they behave oppositely. A **quadric** contour ends at a √-branch and its rail is a *fit*
+  whose certified span stops short of the end, so it refuses. A **polygon** contour ends at a corner
+  where two walls cross transversally, every wall is affine, `plane_cut_rail` is **exact** — no fit,
+  no window, no clamp — and the whole boundary certifies at **ε = 0** right through the corner. So
+  "keep what is inside this contour" shipped for polygonal contours a slice before quadric ones,
+  which is the reverse of the usual order: the metric cutters are normally the easy case, and on
+  this axis the affine wall is the exact one. The general lesson is about how a design note groups
+  cases: *"the rails meet"* is a statement about the picture, and the thing that decides the work is
+  whether the rail is a **fit** or a **formula**. Two ends that look alike in the domain can sit on
+  opposite sides of the only distinction that matters.
+  *2026-08-16 · AUTH.3b, branch `auth-3`*
+
+- **A rail was being evaluated outside the span it was certified over, and only a derived σ-end could
+  reach it.** `certified_rail_surface` clamps its fit span to the wall's disc-positive window, inset
+  a hair, precisely because the near-tangent region blows the bound. Nothing checked that the *chain
+  segments* stayed inside the clamped span — and nothing needed to, while the outer boundary always
+  ran between authored band edges and only interior holes ever approached a tangent (which is why
+  p-curves were built for holes at PC.3 and for nothing else). Give the boundary a derived end that
+  lands on a tangent and the fitted graph is read past its certificate, into a √-branch of unbounded
+  slope, with the reported ε describing a stretch of rail the geometry does not use. `RailPiece` now
+  carries its certified span and `PartFault::RailSpanShort` refuses the mismatch. **The shape worth
+  recognising: a bound that was safe because of a property of the *inputs* rather than of the
+  code, in a codebase where the inputs just got more general.**
+  *2026-08-16 · AUTH.3b, branch `auth-3`*
+
+- **A `Pole` that was not a pole: two functions computing the same quantity from different
+  sources.** With the derived extent wired into `certify_boundary`, the polygonal contour refused
+  `Pole` — and the boundary certified perfectly (ε = 0, four wall rails, segments covering the
+  domain, corners located). `flat_pattern` recomputes `domain` from the region **bands** rather than
+  taking the one the structure derived, so it evaluated the closing caps at σ = ±1 while every rail
+  piece was fitted over the contour's own ±0.064 footprint — asking a rail for its value a
+  quarter-turn from where it exists. Two derivations of "the domain", one updated. Exactly the
+  #267 shape (two independently derived structures reconciled nowhere), and worth logging separately
+  because the *symptom* pointed at the arithmetic — a fault named `Pole`, on a fixture that really
+  does have two rails with genuine poles at σ = 0, neither of which is used where it poles. The
+  plausible cause was there to be found and was not the cause.
+  *2026-08-16 · AUTH.3b, branch `auth-3`*
+
 - **Which of two sub-cell events ends the material — the GO-gate got it backwards, and the mechanism
   it specified is what caught that.** AUTH.3.0 claimed the quadric fixture's material closes at
   `Meet(1, 2)` (σ = ±0.238427501), *inside* the contour's own `Tangent(2)` (σ = ±0.240408206), and

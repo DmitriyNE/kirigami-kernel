@@ -60,11 +60,16 @@ macro_rules! bail {
     };
 }
 
-/// One fitted + certified rail piece: a label realized on one region.
+/// One fitted + certified rail piece: a label realized on one region, over the σ-span the
+/// certificate actually covers.
 struct RailPiece<B: Backend> {
     label: Label,
     region: usize,
     mu: RatFunc<B>,
+    /// The span `certified_rail_surface` was given — **not** the span the caller asked for, since
+    /// the fit clamps to the wall's disc-positive window. Checked against the chain segments before
+    /// any of this is used ([`certify_boundary`], step 3).
+    span: Interval<B>,
 }
 
 /// The certified boundary: the per-region rail pieces, the per-side chain segments
@@ -159,21 +164,10 @@ fn certify_boundary<B: Backend>(
 ) -> Result<Boundary<B>, RErr<B>> {
     use core::cmp::Ordering;
     let bands: Vec<Interval<B>> = part.regions.iter().map(|r| r.band.clone()).collect();
-    let domain = Interval {
-        lo: bands[0].lo.clone(),
-        hi: bands[bands.len() - 1].hi.clone(),
-    };
-    // AUTH.3a derives the material's σ-extent; **AUTH.3b** is what teaches this function to use it
-    // (`docs/cutter-extrude-design.md` §12.4 — the ends become p-curve pinches or real caps, and
-    // the chains are cut to them). Until then an extent narrower than the authored band is refused
-    // rather than realized over a domain the material does not fill: everything below assumes the
-    // boundary reaches `domain.lo` and `domain.hi`, and a loop closed over a σ the ops left empty
-    // is a wrong part, not a loose one.
-    if structure.domain.lo.cmp(&domain.lo) != Ordering::Equal
-        || structure.domain.hi.cmp(&domain.hi) != Ordering::Equal
-    {
-        return Err(RErr::Fault(PartFault::EmptyRegion));
-    }
+    // The **derived** σ-extent, not the authored band (AUTH.3b). They coincide unless a cutter
+    // terminates the blank; where they differ, the boundary closes at the derived ends and
+    // realizing over the band would draw a loop through σ the ops left empty.
+    let domain = structure.domain.clone();
     let domain_width = domain.hi.sub(&domain.lo);
     let runs = &structure.runs;
     if runs.is_empty() {
@@ -343,6 +337,7 @@ fn certify_boundary<B: Backend>(
                 label,
                 region: ri,
                 mu,
+                span,
             });
         }
     }
@@ -411,6 +406,31 @@ fn certify_boundary<B: Backend>(
     };
     let upper_segs = side_segments(&upper_junctions, &|i| runs[i].upper);
     let lower_segs = side_segments(&lower_junctions, &|i| runs[i].lower);
+
+    // A rail may only be **used** where it was **certified**. The window clamp above shortens a fit
+    // span to the wall's disc-positive window, inset a hair — and before AUTH.3 that was always
+    // wider than the boundary needed, because the outer boundary never approached a tangent ruling;
+    // only interior holes did, and p-curves were built for them (PC.3). A *derived* σ-end can sit
+    // exactly on one. Evaluating a fitted graph past its certified span there is extrapolation into
+    // a √-branch with unbounded slope, and the ε this function reports would be a bound on a
+    // stretch of rail the geometry does not use — a certificate pointing away from the artifact.
+    // Refused by name instead; §12.4's p-curve end is what lifts it.
+    let covered = |segs: &[(Rat<B>, Rat<B>, Label)]| -> Result<(), RErr<B>> {
+        for (a, b, label) in segs {
+            for (plo, phi, ri) in span_pieces(&bands, a, b) {
+                let piece = find_piece(&pieces, *label, ri)
+                    .ok_or(RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
+                if plo.cmp(&piece.span.lo) == Ordering::Less
+                    || piece.span.hi.cmp(&phi) == Ordering::Less
+                {
+                    return Err(RErr::Fault(PartFault::RailSpanShort { op: label.0 }));
+                }
+            }
+        }
+        Ok(())
+    };
+    covered(&upper_segs)?;
+    covered(&lower_segs)?;
 
     Ok(Boundary {
         pieces,
@@ -519,10 +539,11 @@ pub(crate) fn flat_pattern<B: Backend>(
 ) -> Verdict<FlatPattern<B>, PartFault, Rat<B>> {
     use core::cmp::Ordering;
     let bands: Vec<Interval<B>> = part.regions.iter().map(|r| r.band.clone()).collect();
-    let domain = Interval {
-        lo: bands[0].lo.clone(),
-        hi: bands[bands.len() - 1].hi.clone(),
-    };
+    // The **derived** extent, the same one `certify_boundary` builds its segments over. Reading it
+    // off `bands` here instead was the whole of a `Pole`: the caps were evaluated at the authored
+    // band ends while every rail piece was fitted over the contour's own footprint, so a rail was
+    // asked for its value a quarter-turn away from where it exists.
+    let domain = structure.domain.clone();
     let boundary = bail!(certify_boundary(part, built, &structure, part.fit, false));
     let mut eps_all = boundary.eps.clone();
 
@@ -713,6 +734,19 @@ pub(crate) fn solid_brep<B: Backend>(
         subdiv: part.fit.subdiv.max(RailFit::occt_low().subdiv),
         ..RailFit::occt_low()
     };
+    // **AUTH.3c** is what teaches the solid builder a derived extent. `brep_trim_solid_regions`
+    // sweeps the region *bands*, so an extent narrower than them would build a solid over σ the ops
+    // left empty — while the flat pattern, which AUTH.3b did teach, is correct. Refused by name
+    // rather than mis-built; §12.4 names the choice the slice has to make (extend the general
+    // polygon channel to the outer wire, or refuse a pinch end here and keep the flat path general).
+    for (band, end) in [
+        (&bands[0].lo, &structure.domain.lo),
+        (&bands[bands.len() - 1].hi, &structure.domain.hi),
+    ] {
+        if band.cmp(end) != core::cmp::Ordering::Equal {
+            return Verdict::Refuted(PartFault::SolidRefused);
+        }
+    }
     let boundary = bail!(certify_boundary(part, built, &structure, fit, true));
     let mut eps_all = boundary.eps.clone();
 

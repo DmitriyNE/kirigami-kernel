@@ -1,11 +1,20 @@
-//! **AUTH.3 pre-state, pinned** — an intersect op may bound µ̂, but may not terminate the material
-//! in σ (`docs/cutter-extrude-design.md` §12).
+//! **AUTH.3 — an intersect that terminates the material in σ, not only µ̂**
+//! (`docs/cutter-extrude-design.md` §12).
 //!
-//! `OpKind::Intersect` ships and every fixture uses it, so the gap reads like a wiring question. It
-//! is a region-model one: the material's σ-extent is *required to equal* the authored
-//! `region_sigma` band, so a cutter whose footprint ends inside that band leaves the region empty at
-//! the samples past its end and the whole sweep refuses. These tests pin each half of that — what
-//! must flip when AUTH.3 lands, and what may not move while it does.
+//! `OpKind::Intersect` always shipped, but in one shape only: a lateral trim, bounding µ̂ on every
+//! ruling and never ending the material along σ. "Keep what is inside this contour" refused, and the
+//! gap was in the region model — the σ-extent was *defined* to be the authored `region_sigma` band,
+//! so a σ the ops left empty was a contradiction rather than a point outside the part.
+//!
+//! Where the milestone stands, as these tests pin it:
+//!
+//! - the extent is **derived** (AUTH.3a) and the boundary **closes at it** (AUTH.3b);
+//! - a **polygonal** contour is a certified part — its walls are affine, so `plane_cut_rail` is
+//!   exact and the rails reach the corner with no fit and no clamp;
+//! - a **quadric** contour still refuses, by name: it ends at a *tangent ruling*, where the rail is
+//!   a fitted graph of unbounded slope, and the fit's certified span cannot reach the end. That is
+//!   §12.4's p-curve, the remaining half of AUTH.3b;
+//! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
 use author::part::{Cutter, OpRole, Part, PartFault, SupportFn};
@@ -22,6 +31,10 @@ fn q(n: i128, d: i128) -> Q {
 }
 fn qi(n: i128) -> Q {
     Q::from_i128(n)
+}
+fn to_f64(r: &Q) -> f64 {
+    let (n, d) = r.numer_denom_decimal();
+    n.parse::<f64>().unwrap() / d.parse::<f64>().unwrap()
 }
 
 /// The doctest cone panel over a chosen σ-band: a `z ≤ 3` bound above, an annulus carve below, and
@@ -76,13 +89,19 @@ fn name<E, W: core::fmt::Debug, M: core::fmt::Debug>(v: &Verdict<E, W, M>) -> St
 /// bites for real — it takes over as the part's **lower** bound and pushes the annulus carve out of
 /// the structure entirely — so this is not the "a cutter containing the whole panel verifies
 /// trivially" reading. Its footprint on the cone subtends `|σ| ≤ 0.101020514` — its two tangent
-/// rulings, measured by the same `structure_events` the derivation will use.
-/// Declare a band inside that and the part certifies; declare one wider and the *same* cut on the
-/// *same* material comes back `EmptyRegion`, because the samples past the footprint's end have no
-/// material and the resolver has nowhere to put that fact.
+/// rulings, measured by the same `structure_events` the derivation uses.
 ///
-/// The wide half is expected to **flip** at AUTH.3b. The narrow half must stay green: it is the
-/// lateral-trim intersect that ships today.
+/// Declare a band inside that and the part certifies. Declare one wider and the *same* cut on the
+/// *same* material still refuses — but the refusal has moved, and where it moved to is the
+/// measurement. It was `EmptyRegion`, a region-model gap: σ was an authored quantity and a σ with no
+/// material was a contradiction. AUTH.3a made the extent derived and AUTH.3b closed the boundary at
+/// it, and what is left is one thing — a **quadric** contour ends at a *tangent ruling*, where its
+/// rail is a fitted graph with unbounded slope, so the fit's certified span stops short of the
+/// derived end and the rail is refused rather than extrapolated (`RailSpanShort`). A polygonal
+/// contour has no such end and now certifies (see the next test): every wall is affine, so
+/// `plane_cut_rail` is exact and reaches the corner.
+///
+/// Expected to flip when the pinch end becomes a p-curve — §12.4's remaining half of AUTH.3b.
 #[test]
 fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
     let cutter = || Cutter::vertical_cylinder(qi(0), q(5, 2), q(1, 4));
@@ -106,29 +125,35 @@ fn only_the_declared_band_separates_a_working_intersect_from_a_refused_one() {
         "and it must bound it *instead of* the annulus carve. roles {roles:?}"
     );
 
-    // Past the footprint's end: refused, for the σ-extent and for no other reason.
+    // Past the footprint's end: still refused, but now by the tangent-ruling fit and nothing else.
     let wide = panel(q(-1, 8), q(1, 8)).intersect(cutter());
     assert!(
-        matches!(wide.develop(), Verdict::Refuted(PartFault::EmptyRegion)),
-        "AUTH.3 flips this: a band wider than the cutter's own σ-footprint must stop being a \
-         refusal — got {}",
+        matches!(
+            wide.develop(),
+            Verdict::Refuted(PartFault::RailSpanShort { op: 2 })
+        ),
+        "the σ-extent is derived now, so the refusal must name the pinch rather than the region — \
+         got {}",
         name(&wide.develop())
     );
 }
 
-/// **The same footprint, both senses: a hole today, nothing at all today.**
+/// **The same footprint, both senses — and the kept one is now a part.**
 ///
-/// A square prism through the panel. Subtracted, it is a certified interior hole — traced,
-/// developed, cut into the exact flat boolean — so the *geometry* of a footprint that ends inside
-/// the band is shipped machinery (`shadow_cut_loops`, AUTH.2c). Intersected, the identical cutter
-/// refuses: keeping what is inside a contour needs the material's σ-extent to be **derived** from
-/// the ops, and today it is required to equal the authored band.
+/// A square prism through the panel. *Subtracted*, it is a certified interior hole. *Intersected*,
+/// the identical cutter is the whole part: the material's σ-extent is derived from the contour's own
+/// corners and the boundary closes there. Both senses of one cutter, and every other op has gone
+/// `Inactive` — the panel's `z ≤ 3` bound and its annulus carve are both outside the footprint, so
+/// what is left is the contour and nothing else.
 ///
-/// Pinning both senses together is what makes this a measurement rather than a bug report: it
-/// isolates the missing piece to the region model, and it rules out the extruded-profile path (a
-/// plain metric `vertical_cylinder` at the same place refuses identically — the third assertion).
+/// **Faithfulness, not just a verdict.** A `Verified` flat pattern of the wrong shape would pass a
+/// count of faces and holes, so the outline is folded **back** and checked against the authored
+/// profile: every vertex of the developed boundary must land on the square's own boundary in the
+/// sketch plane, `max(|x|, |y − 11/5|) = 1/4`. That is a quantity neither leg computes — the develop
+/// leg never sees the sketch frame and the fold leg never sees the resolver — so agreeing on it is
+/// not two halves of one mistake.
 #[test]
-fn the_same_footprint_is_a_certified_hole_and_a_refused_intersect() {
+fn the_same_footprint_is_a_certified_hole_and_a_kept_part() {
     let cutter = || drilled(square(qi(0), q(11, 5), q(1, 4)));
     let base = || panel(qi(-1), qi(1));
 
@@ -144,19 +169,69 @@ fn the_same_footprint_is_a_certified_hole_and_a_refused_intersect() {
     let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
     assert_eq!(roles[2], OpRole::Hole, "roles {roles:?}");
 
+    // The same cutter, kept rather than removed.
     let kept = base().intersect(cutter());
+    let flat = match kept.develop() {
+        Verdict::Verified(f) => f,
+        v => panic!(
+            "keeping what is inside the contour must certify, got {}",
+            name(&v)
+        ),
+    };
+    assert_eq!(flat.region().faces.len(), 1, "one face");
+    assert_eq!(flat.region().faces[0].holes.len(), 0, "and no holes");
+    let roles: Vec<OpRole> = flat.report().ops.iter().map(|o| o.role).collect();
     assert!(
-        matches!(kept.develop(), Verdict::Refuted(PartFault::EmptyRegion)),
-        "AUTH.3 flips this: the same contour, kept rather than removed — got {}",
-        name(&kept.develop())
+        matches!(
+            roles[2],
+            OpRole::LowerBound | OpRole::UpperBound | OpRole::Notch
+        ),
+        "the contour must bound the part — roles {roles:?}"
+    );
+    assert!(
+        roles[0] == OpRole::Inactive && roles[1] == OpRole::Inactive,
+        "and it must bound it ALONE: the panel's own ops lie outside the footprint, so a part \
+         still carrying them would not be the contour's. roles {roles:?}"
     );
 
-    // And it is not the extruded path: the metric cutter with the same kind of footprint refuses
-    // the same way, which is why AUTH.3 is filed against the resolver and not against AUTH.2.
+    // Direction ②: fold the emitted boundary back and land it on the authored square.
+    let verts: Vec<[Q; 2]> = flat
+        .outline()
+        .vertices
+        .iter()
+        .map(|b| {
+            let (x, y) = b.center();
+            [x, y]
+        })
+        .collect();
+    let wire = match kept.fold(&verts, &qi(0)) {
+        Verdict::Verified(w) => w,
+        v => panic!("the emitted boundary must fold back, got {}", name(&v)),
+    };
+    let mut worst = 0.0f64;
+    for p in &wire.points {
+        let (x, y) = (to_f64(&p[0].mid()), to_f64(&p[1].mid()));
+        // Distance to the square's boundary: the Chebyshev radius about its centre, minus ¼.
+        let r = x.abs().max((y - 2.2).abs());
+        worst = worst.max((r - 0.25).abs());
+    }
+    assert!(
+        worst < 5e-3,
+        "the developed boundary must BE the authored square: worst vertex sits {worst:.3e} off it"
+    );
+
+    // The quadric contour is the half AUTH.3b has not finished: its rails are a *fit*, and at a
+    // tangent ruling the fit's certified span stops short of the derived end, so it refuses by name
+    // rather than extrapolating into a √-branch. A polygon has no such end — every wall is affine,
+    // so `plane_cut_rail` is exact and reaches the corner (the flat pattern above certifies at
+    // ε = 0 on the contour's own rails). Expected to flip when the pinch end becomes a p-curve.
     let metric = base().intersect(Cutter::vertical_cylinder(qi(0), q(11, 5), qi(1)));
     assert!(
-        matches!(metric.develop(), Verdict::Refuted(PartFault::EmptyRegion)),
-        "a quadric cutter must refuse identically — got {}",
+        matches!(
+            metric.develop(),
+            Verdict::Refuted(PartFault::RailSpanShort { op: 2 })
+        ),
+        "a quadric contour pinches at a tangent ruling, which needs a p-curve end — got {}",
         name(&metric.develop())
     );
 }

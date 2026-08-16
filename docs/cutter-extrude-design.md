@@ -996,17 +996,29 @@ milestone: the flat leg is assembly over parts that certify today, and the p-cur
 kill the tangent caps on *holes* are exactly what a pinch end of an *outer* boundary needs — a
 `BoundaryArc::Curve`, which `unroll_trim_loop` already takes.
 
-### 12.4 Two termination shapes, and why the solid path is the risk
+### 12.4 Termination shapes — and the two pinches are not alike
 
-- **Pinch** — the two bounding rails meet. The generic contour bite, either at a wall's tangent
-  ruling or at a profile corner. The cap degenerates to a point and the rails run into
-  `∂s/∂µ̂ → 0`, which is the condition that blows a graph fit's certified bound. A p-curve, then,
-  not two graphs bridged by a micro-cap.
+- **Pinch at a wall's tangent ruling** (a quadric contour). The two bounding rails are the same
+  wall's two branches, meeting with **unbounded slope**: a √-branch. A fitted graph cannot reach it
+  — `certified_rail_surface` clamps its span to the wall's disc-positive window, inset a hair, for
+  exactly that reason — so this end needs a p-curve, not two graphs bridged by a micro-cap.
+- **Pinch at a profile corner** (a polygonal contour). Measured, and it is **not** the same thing:
+  every wall of a polygon is affine, so `plane_cut_rail` gives the rail **exactly** — no fit, no
+  window, no clamp — and a corner is a genuine vertex where two straight rails cross. AUTH.3b
+  certifies these at **ε = 0** and they reach the corner. Nothing about a corner is a √-branch; the
+  two cases only look alike from a distance, and assuming they were one was the plan's error.
 - **Jump** — §12.2's degenerate wall. The cap is real and spans whatever µ̂-extent the other ops
-  leave there.
+  leave there. Unreachable today (§12.2).
+
+The practical consequence is that "keep what is inside this contour" ships for polygonal contours a
+whole slice before quadric ones, which is the opposite of the usual order (the metric cutters are
+normally the easy case). It is worth stating why: on this axis the *affine* wall is the exact one.
 
 `brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
-between them, so a pinch end makes the terminal slices degenerate. Holes met this wall already and
+between them **over the region bands**, so a derived extent narrower than them would sweep a solid
+across σ the ops left empty. It refuses (`SolidRefused`) until this slice lands, while the flat
+pattern — the artifact that is actually manufactured — is already general for polygonal contours.
+A pinch end also makes the terminal slices degenerate. Holes met this wall already and
 were answered twice: on the flat path by p-curves (PC.3's quadric-window constructor, PC.4's
 `BoundaryArc::Curve`), and on the solid path by the general polygon channel that clips each slice
 against the whole loop (`poly_holes` → `slice_poly_footprint`, PC.5, generalized by AUTH.2e). Both
@@ -1045,7 +1057,7 @@ from being decided by whatever is easiest at the time.
 |---|---|
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
-| **AUTH.3b** | the boundary that closes in σ: `certify_boundary` over the derived domain, pinch ends as p-curve arcs (§12.4); the flat path |
+| **AUTH.3b** | the boundary that closes in σ; the flat path — **polygonal contours done** (`certify_boundary`/`flat_pattern` over the derived domain, the end-locator's own evaluations folded back as samples, `PartFault::RailSpanShort`), **quadric pinch ends open** (§12.4's p-curve) |
 | **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
 

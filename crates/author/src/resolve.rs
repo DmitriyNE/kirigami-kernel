@@ -620,6 +620,14 @@ fn sample_comps<B: Backend>(
 /// The returned bracket's **inner** edge becomes the domain end, so the realized part stops at
 /// most one bracket width (`2⁻⁴⁰ ≈ 9·10⁻¹³`) short of the true end — three orders below the `2⁻³⁰`
 /// grid every emitted vertex is snapped to, and on the side that keeps the rails real.
+///
+/// Also returns **the live σ it evaluated**, which the sweep folds back into its sample set. Those
+/// are not a by-product: the stretch between the outermost grid sample and the end holds no station
+/// at all, and it is where the structure changes most — on the quadric fixture the lower bound
+/// hands over from the panel's carve to the contour's own lower root inside it. Resolved without
+/// them, the boundary would carry the *carve* as its lower rail right up to a pinch the carve has
+/// nothing to do with. One evaluation per gap is exactly the right density, because a gap between
+/// isolating brackets is where the structure does not change.
 #[allow(clippy::too_many_arguments)]
 fn locate_end<B: Backend>(
     part: &Part<B>,
@@ -629,7 +637,7 @@ fn locate_end<B: Backend>(
     ri: usize,
     live: &Rat<B>,
     dead: &Rat<B>,
-) -> Result<SigmaEnd<B>, PartFault> {
+) -> Result<(SigmaEnd<B>, Vec<Rat<B>>), PartFault> {
     use core::cmp::Ordering;
     let ascending = live.cmp(dead) == Ordering::Less;
     let window = if ascending {
@@ -726,6 +734,7 @@ fn locate_end<B: Backend>(
     };
     let mut prev = live.clone();
     let mut closed: Option<usize> = None;
+    let mut probes: Vec<Rat<B>> = Vec::new();
     for i in 0..=n {
         let stop = if i < n { near_of(i) } else { dead.clone() };
         if prev.cmp(&stop) != Ordering::Equal {
@@ -739,6 +748,7 @@ fn locate_end<B: Backend>(
                 closed = Some(i - 1);
                 break;
             }
+            probes.push(mid);
         }
         if i < n {
             prev = far_of(i);
@@ -747,7 +757,7 @@ fn locate_end<B: Backend>(
     // Every gap live or degenerate: `dead` is dead by the caller's contract, so the transition
     // happened across the last bracket.
     let (at, kinds, pinch) = merged.swap_remove(closed.unwrap_or(n - 1));
-    Ok(SigmaEnd::Closed { at, kinds, pinch })
+    Ok((SigmaEnd::Closed { at, kinds, pinch }, probes))
 }
 
 /// Choose the kept component at every sample: **seed** where the designation is most decisive,
@@ -1088,51 +1098,25 @@ pub(crate) fn sweep<B: Backend>(
     let band_lo = regions[0].band.lo.clone();
     let band_hi = regions[regions.len() - 1].band.hi.clone();
     let (ri_lo, ri_hi) = (all[first].0, all[last].0);
+    let mut probes: Vec<(usize, Rat<B>)> = Vec::new();
+    let mut end_at = |ri: usize, live: &Rat<B>, dead: &Rat<B>| -> Result<SigmaEnd<B>, PartFault> {
+        let (end, found) = locate_end(part, &regions, &built.charts[ri], &reach, ri, live, dead)?;
+        probes.extend(found.into_iter().map(|s| (ri, s)));
+        Ok(end)
+    };
     let lower = if first > 0 {
-        locate_end(
-            part,
-            &regions,
-            &built.charts[ri_lo],
-            &reach,
-            ri_lo,
-            &all[first].1,
-            &all[first - 1].1,
-        )?
+        end_at(ri_lo, &all[first].1, &all[first - 1].1)?
     } else if outer_live(&band_lo, ri_lo)? {
         SigmaEnd::Band
     } else {
-        locate_end(
-            part,
-            &regions,
-            &built.charts[ri_lo],
-            &reach,
-            ri_lo,
-            &all[first].1,
-            &band_lo,
-        )?
+        end_at(ri_lo, &all[first].1, &band_lo)?
     };
     let upper = if last + 1 < all.len() {
-        locate_end(
-            part,
-            &regions,
-            &built.charts[ri_hi],
-            &reach,
-            ri_hi,
-            &all[last].1,
-            &all[last + 1].1,
-        )?
+        end_at(ri_hi, &all[last].1, &all[last + 1].1)?
     } else if outer_live(&band_hi, ri_hi)? {
         SigmaEnd::Band
     } else {
-        locate_end(
-            part,
-            &regions,
-            &built.charts[ri_hi],
-            &reach,
-            ri_hi,
-            &all[last].1,
-            &band_hi,
-        )?
+        end_at(ri_hi, &all[last].1, &band_hi)?
     };
     // The bracket's **inner** edge is the domain end — inside the material, where the rails are
     // still real, and short of the true end by at most one bracket width (`2⁻⁴⁰`).
@@ -1146,6 +1130,28 @@ pub(crate) fn sweep<B: Backend>(
             SigmaEnd::Closed { at, .. } => at.lo.clone(),
         },
     };
+
+    // Fold the end-locator's own live evaluations back in as samples. The stretch between the
+    // outermost grid station and a derived end carries **no** station — the grid is uniform and the
+    // end is wherever the ops put it — and it is exactly where the structure turns over: on the
+    // quadric fixture the lower bound hands off from the panel's carve to the contour's own lower
+    // root inside it. Without these the boundary would run the carve's rail into a pinch the carve
+    // has nothing to do with, and the loop would not close. They cost nothing: they are evaluations
+    // the derivation already made.
+    if !probes.is_empty() {
+        for (ri, sigma) in probes {
+            let comps = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
+            all.push((ri, sigma, comps));
+        }
+        all.sort_by(|a, b| a.1.cmp(&b.1));
+        all.dedup_by(|a, b| a.1.cmp(&b.1) == core::cmp::Ordering::Equal);
+    }
+    let live = |i: &usize| !all[*i].2.is_empty();
+    let first = (0..all.len()).find(live).ok_or(PartFault::EmptyRegion)?;
+    let last = (0..all.len())
+        .rev()
+        .find(live)
+        .ok_or(PartFault::EmptyRegion)?;
 
     let at = &all[first..=last];
     let chosen = choose_comps(part, built, at)?;
