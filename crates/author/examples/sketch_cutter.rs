@@ -252,6 +252,10 @@ fn main() {
         );
         write_svg(&out_dir, "drafted", a);
     }
+    // The taper is a *3-D* property — the flat pattern shows only the hole it leaves at the
+    // sheet's own height — so the drafted panel is also written as a solid, where the wall's
+    // slope is the thing to look at.
+    write_step(&out_dir, "drafted", &drafted_part);
 
     // ── AUTH.2f: the non-convex footprints ──────────────────────────────────────────────────────
     let mut slot: Option<Vec<[f64; 2]>> = None;
