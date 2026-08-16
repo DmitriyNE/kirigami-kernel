@@ -768,6 +768,27 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **AUTH.3d: the acceptance closed, and the milestone's own gate said it is not finished
+  (2026-08-17).** `acceptance::contour_panel` is the first device in the repo whose boundary is an
+  **authored outline** rather than a declared band, and the round-trip closes on it: 3-D contour →
+  certified flat pattern, a feature authored in the **developed** panel's ECAD coordinates → folded
+  back → drilled, watertight genus-1 solid → STEP (`cert=Verified occt=ok`, 210 faces, 0 free,
+  19134 entities under OCCT). Two things about *how* it is stated are the reusable part:
+
+  - **"The outline bounds it alone" is a derived fact, not a pruned recipe.** The panel's own `z ≤ 3`
+    bound and annulus carve stay in the ops list and both come back `Inactive`. Deleting them would
+    have made the same test pass while proving nothing about the resolver.
+  - **The artifact was checked, not just the verdict.** The drilled SVG carries **2** subpaths where
+    the plain one carries 1 — the authored feature is actually in the emitted geometry. Cheap, and
+    it is the check [[verify-demo-faithfulness]] exists for.
+
+  **And the gate refused the victory lap.** Marking AUTH.3 `LANDED` in xtask was the obvious next
+  move; running it first showed the vv-matrix gate **FAIL** — the ★ row carries `rc-hyp 🚧`, and it
+  is 🚧 because the cross-op σ-end has no fixture (#275). So the milestone is *feature*-complete and
+  not *evidence*-complete, and the gate is what distinguishes those. **Try the declaration before
+  writing it down**; a gate you have not run is a gate you are asserting.
+  *2026-08-17 · resolved · AUTH.3d, branch `auth-3c`*
+
 - **A radiused outline is not "the quadric case with more walls" — it is the case that showed the
   contour path was asking the wrong question (AUTH.3d.1).** The `sole_pinched_contour` fork asked
   for **one wall**; a rounded rectangle has eight. Generalizing it looked like relaxing a bound, and

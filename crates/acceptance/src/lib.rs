@@ -396,6 +396,62 @@ pub fn ell_probes() -> [(Q, Q, Q); 3] {
     ]
 }
 
+/// The **contour panel**'s authored outline, `(cx, cy, w, h, r)` — the numbers
+/// [`contour_panel`] is cut with. Exposed so a faithfulness check tests the *same* rounded
+/// rectangle the part was built from instead of restating it (the [`seam_drill_axis`] doctrine).
+pub fn contour_outline_geometry() -> (Q, Q, Q, Q, Q) {
+    (qi(0), q(11, 5), q(1, 4), q(1, 5), q(1, 10))
+}
+
+/// The **contour panel**: the Stage-1 cone gore whose boundary is an **authored outline** rather
+/// than a declared σ-band — the σ-stock (AUTH.3) as a product part.
+///
+/// Every other device here is a *band*: `region_sigma` says where the material starts and stops,
+/// and cutters only trim µ̂. This one keeps what is inside a radiused rectangle
+/// ([`rounded_outline`]), so its σ-extent is **derived** from the contour's own corners. That is
+/// what a flex circuit's boundary actually is — a closed outline drawn in ECAD — and it is the one
+/// thing `intersect` could not express before AUTH.3.
+///
+/// The panel's own `z ≤ 3` bound and annulus carve stay in the recipe and both resolve
+/// **`Inactive`**: the outline is small and sits clear of them, so it bounds the part *alone*. That
+/// is deliberate — it makes "the contour is the whole boundary" a derived fact the report states,
+/// not a property of a recipe pruned to force it.
+///
+/// `feature` is an interior cut authored in **flat** (ECAD) coordinates and folded back onto the
+/// surface, which is the round-trip leg: the outline goes 3-D → flat, the feature goes flat → 3-D,
+/// and the two meet in one part. Its coordinates depend on where the development lands, so a caller
+/// develops once with `None` and places it from the flat pattern it gets.
+///
+/// **The op is well-posed here and would not be on the wrapping device** (`§12.5`): a ruling is a
+/// line through the apex and a swept profile is a prism, so keeping what is inside a contour is
+/// meaningful only where no azimuth *and its antipode* are both swept. This gore spans 180° at
+/// `σ ∈ [−1, 1]`; the self-lapping cone's 410.7° does not qualify, and refuses by name.
+pub fn contour_panel(segments: usize, feature: Option<Vec<[Q; 2]>>) -> Part<Bignum> {
+    let (cx, cy, w, h, r) = contour_outline_geometry();
+    let part = construct::from_chart::<Bignum>(&cone())
+        .region_sigma(qi(-1), qi(1), SupportFn::inherit())
+        .keep_near(
+            cone()
+                .surface(&qi(2), &qi(0))
+                .eval(&qi(0))
+                .expect("the cone is regular at σ = 0"),
+        )
+        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+        .intersect(Cutter::extrude(
+            sketch_plane(),
+            Apex::direction([qi(0), qi(0), qi(1)]).expect("a real sweep direction"),
+            rounded_outline(cx, cy, w, h, r),
+        ))
+        .clearance(qi(1))
+        .thickness(q(1, 8))
+        .segments(segments);
+    match feature {
+        Some(poly) => part.hole_flat(poly),
+        None => part,
+    }
+}
+
 /// The **Stage-1 flex panel**: the apex cone gore on `σ ∈ [−1, 1]`, four solid cutters with roles
 /// derived — D1 the `z ≤ 3` half-space bound, D2 the eccentric apex cylinder, D3 the rim notch,
 /// D4 the interior drill.
