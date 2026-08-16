@@ -683,6 +683,21 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A differential whose tolerance is built from the quantity under test cannot fail — and it looks
+  more rigorous than the sound version.** AUTH.2c's headline check is that the new general tracer
+  reproduces AUTH.1e.4's band builder on the band's own square-prism fixture. Written the obvious
+  way, it compared the two emitted boundaries to within `band.eps + traced.eps` — "each is a
+  certified distance to the same walls, so they may differ by at most the sum", which is *true* and
+  useless: the tolerance grows exactly when the tracer degrades. Mutation-testing the sampling (drop
+  the grid-adjacent nodes at each cell end) made the tracer's ε **8× worse**, `1.79e-2` against the
+  band's `2.24e-3`, and the check passed without a murmur. Rewritten to a fixed multiple of the
+  **band's** bound alone — an external reference, unaffected by the code under test — the same
+  mutation fails it immediately. Generalizes past this one test: a two-sided bound is only a test if
+  at least one side is independent of what it is testing. *Related process note:* restoring a
+  mutated file from a copy can leave it with an **older mtime than the build artifact**, so cargo
+  silently reuses the mutated binary — a "the fix did not take" result that is really a stale build.
+  `touch` after restoring. *2026-08-16 · resolved · `develop::cut` tests, vv-guide AUTH.2 criteria*
+
 - **"Edges are not carriers" has a converse, and it only bites on non-convex profiles: a carrier
   crossing the cutter's own interior is not a boundary.** AUTH.1e.2 found that `arrange2d` splits a
   circle into two arcs sharing one carrier, so a per-*edge* wall list duplicates a surface

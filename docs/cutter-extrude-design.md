@@ -596,12 +596,36 @@ fair warning about the rest of §11: the convex path's silence is not evidence.
 Partition the window at the event set. Inside a cell the stretch count is constant and each
 stretch's two ends are continuous in σ, so the footprint restricted to a cell **is** a stack of
 bands — which means §10's √-graded nodes, per-piece certification and pinch closing all apply
-unchanged *inside* a cell. What is new is only the bookkeeping across cell walls: stretches are
-ordered by µ̂ and matched across the event, at a merge the upper end of stretch `k` joins the lower
-end of stretch `k+1`, at a birth/death the stretch closes on its pinch vertex, and the closed loops
-are read off the resulting graph. A footprint that is one connected region yields one loop whose
-vertex sequence turns around in σ — which p-curves have carried since PC.1 and a rail chain never
-could.
+unchanged *inside* a cell. What is new is only the bookkeeping across cell walls: at a merge the
+upper end of stretch `k` joins the lower end of stretch `k+1`, at a birth or death the stretch
+closes on its own pinch vertex, and the closed loops are read off the resulting graph, in which
+every boundary vertex carries exactly two rails. A footprint that is one connected region yields one
+loop whose vertex sequence turns around in σ — which p-curves have carried since PC.1 and a rail
+chain never could.
+
+Four things about the sweep are worth writing down, because each was found by building it:
+
+**Stretches are matched by µ̂ order where the count is equal, and by overlap only where it changes.**
+Overlap alone is the obvious rule and it is wrong: a thin lobe that travels further than its own
+width between two samples overlaps its neighbour, which reads as a merge and a split at once. Order
+matching has no such failure — stretches are disjoint and cannot cross — and it is available exactly
+where nothing was born or died. The overlap walk is then used only across an event, where the two
+columns sit a bracket apart and the geometry has barely moved.
+
+**The sweep does not depend on the partition being right.** The same matching runs between every
+consecutive pair of columns, whether or not a bracket lies between them, so an event the set missed
+is a sampling loss rather than a wrong answer. The partition's job is to say *where to look closely*.
+
+**A grid step inside each cell end is what makes the pinches tight.** §10.2 bracketed each corner
+with two nodes a `2⁻³⁰` step apart; the same trick at every cell boundary is what keeps the
+half-width closed at a birth, death or saddle down at the branch's own width at `2⁻³⁰`. Without it
+the nearest column can land a tenth of a cell inside the footprint, and that half-width — not the
+certificate — dominates `ε`. Measured on the square prism: `1.6e-2` without, `1e-6` with.
+
+**`segments` is a budget for the footprint, not for each cell.** An L has a cell per corner; spending
+the full count on each buys resolution nobody asked for and pays for it in emitted pieces, which
+become faces downstream. The footprint is localized first (as §10's band builder does), then cells
+share the budget by width.
 
 ### 11.5 The search buys tightness; soundness rests where it already did
 

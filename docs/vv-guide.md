@@ -2100,7 +2100,16 @@ load-bearing" is a claim about code that nothing checks.
 passes on a hole that was silently convexified. The emitted loop must turn **both ways** (a reflex
 corner in the developed pattern), and in the solid it must contribute one wall per edge — the same
 check that catches a loop quietly collapsed to its bounding band. Already asserted, with both
-assertions mutation-verified, on the pinned pre-state.
+assertions mutation-verified, on the pinned pre-state. The traced L adds the sharper form: at a
+ruling through the notch its loop is met **four** times, which is precisely what a near/far rail
+pair has no way to carry.
+
+*A differential's tolerance may not be derived from the quantity under test.* The tracer is checked
+against the band builder on the band's own fixture, and the first version of that check compared the
+two loops to within `band.eps + traced.eps` — which grows exactly when the tracer gets worse. It
+passed a mutation that made the tracer's ε **8× worse**, silently. The tolerance is now a fixed
+multiple of the *band's* bound alone, and the mutation fails it. State it as a criterion because the
+vacuous version looks more rigorous than the sound one: it cites both certificates instead of one.
 
 *The ring stays refused, and for its own reason.* A footprint with its own hole is not a
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two

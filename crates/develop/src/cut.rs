@@ -217,6 +217,18 @@ pub enum CutFitFault {
     /// ([`Cast::contains`](crate::extrude::Cast::contains) returning `None` at every offset tried).
     /// A refusal, not a guess.
     ShadowUndecided,
+    /// Two or more stretches merged **and** split inside one event bracket, so which boundary end
+    /// continues into which is not determined by the sweep. Refine: a narrower event tolerance
+    /// separates the events, and each one alone is an ordinary merge or split.
+    ShadowEventTangled,
+    /// One traced loop lies **inside** another: the footprint has a hole of its own, so the cut
+    /// would leave an island of material floating free — two parts, not one hole
+    /// (`docs/cutter-extrude-design.md` §11.6). A ring profile lands here, by name.
+    ShadowNested,
+    /// A traced boundary did not close: some vertex carried other than the two rails a boundary
+    /// vertex must have. A refusal rather than a repair — an open loop is exactly what the flat
+    /// boolean would stitch into something else.
+    ShadowLoopOpen,
     /// A [`structure_events`] Sturm chain failed its own runtime hypothesis check
     /// ([`SturmChain::verify_chain`]). The root count it would give is not one to be trusted, so
     /// the event set is refused rather than taken on faith — the same discipline
@@ -1269,6 +1281,533 @@ where
         eps: crate::pcurve::snap_up(&eps, BITS),
         tangent_gap,
     })
+}
+
+/// Build **every** closed boundary loop of a cutter's footprint in the domain — the general
+/// tracer, which lifts [`shadow_cut_loop`]'s band restriction to any connected non-convex profile
+/// (`docs/cutter-extrude-design.md` §11).
+///
+/// The footprint is swept in σ. At each sampled ruling [`ruling_patches`] gives the stretches the
+/// ruling spends inside the cutter, and between two consecutive rulings the stretches are matched
+/// by µ̂-**overlap** — which reads off, with no case analysis of its own, whether a stretch
+/// continues, is born, dies, merges with its neighbour or splits. Continuations become rail pieces;
+/// births, deaths and merge saddles identify two boundary ends into one vertex, exactly as
+/// [`quadric_cut_loop`] closes a band at its tangent rulings. The closed loops are then read off the
+/// resulting graph, in which every boundary vertex has exactly two rails.
+///
+/// Sampling is driven by [`structure_events`]: the window is cut at the event brackets and each
+/// resulting cell is sampled `√`-graded from both ends, since a branch turns like a square root at
+/// a birth, a death or a saddle. **The events do not enter the matching**, which applies the same
+/// rule to every consecutive pair of columns — so an event the sweep stepped over is a sampling
+/// loss, not a wrong answer, and a profile corner is simply a cell boundary rather than the
+/// dedicated bisection sweep §10.2 needed.
+///
+/// Certification is unchanged from §10.3 and is what the soundness rests on: every piece is bounded
+/// against the wall its own endpoints name, **and** compared at its σ-midpoint against the boundary
+/// the exact fill rule reports there, with the deviation folded into `eps`. `gap` — the half-width
+/// closed at each pinch and saddle — is folded in too, so nothing is unaccounted.
+///
+/// Refuses rather than guessing: a footprint reaching the window edge is
+/// [`ShadowUnbounded`](CutFitFault::ShadowUnbounded), a bracket in which stretches both merge and
+/// split is [`ShadowEventTangled`](CutFitFault::ShadowEventTangled), and a boundary that does not
+/// close is [`ShadowLoopOpen`](CutFitFault::ShadowLoopOpen).
+#[allow(clippy::too_many_arguments)]
+pub fn shadow_cut_loops<B: Backend, F>(
+    chart: &Chart<B>,
+    walls: &[CutSurface<B>],
+    inside: F,
+    window: &Interval<B>,
+    w: &Rat<B>,
+    segments: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<Vec<CutLoop<B>>, CutFitFault, Rat<B>>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    use core::cmp::Ordering;
+    match shadow_loops_inner(chart, walls, &inside, window, w, segments, clearance, cfg) {
+        Err(f) => Verdict::Refuted(f),
+        Ok(loops) => {
+            let drc = clearance.mul(&Rat::new(1, 2));
+            let worst = loops
+                .iter()
+                .map(|l| l.eps.clone())
+                .max_by(|a, b| a.cmp(b))
+                .unwrap_or_else(|| Rat::from_i128(0));
+            if loops.is_empty() {
+                Verdict::Refuted(CutFitFault::DegenerateSpan)
+            } else if worst.cmp(&drc) == Ordering::Less {
+                Verdict::Verified(loops)
+            } else {
+                Verdict::Unresolved(worst)
+            }
+        }
+    }
+}
+
+/// One boundary end of one stretch on one sampled ruling — the tracer's vertex before any
+/// identification. `Lo`/`Hi` is which side of the stretch it bounds, and the side is kept because
+/// the σ-midpoint honesty check compares against the boundary of the *same* side.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Lo,
+    Hi,
+}
+
+/// Union-find with path halving, over the tracer's boundary ends.
+fn uf_find(parent: &mut [usize], mut x: usize) -> usize {
+    while parent[x] != x {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    x
+}
+
+/// [`shadow_cut_loops`]' body, in `Result` form so the refusals read as `?`.
+#[allow(clippy::too_many_arguments)]
+fn shadow_loops_inner<B: Backend, F>(
+    chart: &Chart<B>,
+    walls: &[CutSurface<B>],
+    inside: &F,
+    window: &Interval<B>,
+    w: &Rat<B>,
+    segments: usize,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Result<Vec<CutLoop<B>>, CutFitFault>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    use crate::pcurve::snap;
+    use core::cmp::Ordering;
+    /// The dyadic grid every emitted coordinate is snapped to (as [`quadric_cut_loop`]).
+    const BITS: u32 = 30;
+    /// Sub-intervals per piece for the per-piece certificate.
+    const PIECE_SUBDIV: usize = 64;
+
+    if window.lo.cmp(&window.hi) != Ordering::Less {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+    if walls.is_empty() {
+        return Err(CutFitFault::DegenerateSurface);
+    }
+    let mut forms = Vec::with_capacity(walls.len());
+    for wall in walls {
+        forms.push(cut_mu_form(chart, wall, w).ok_or(CutFitFault::DegenerateSurface)?);
+    }
+    let unit = Rat::new(1, 1i128 << BITS);
+    let half_of = |a: &Rat<B>, b: &Rat<B>| a.add(b).mul(&Rat::new(1, 2));
+
+    // — 1. Localize the footprint inside the (possibly much larger) window, exactly as the band
+    //   builder does: `window` may be a bounding circle's, and a budget spread over *that* buys no
+    //   resolution where the cutter actually is. A footprint reaching the scan's own first or last
+    //   ruling has no closing boundary there — §10.2's `ShadowUnbounded`, and the reason the two
+    //   flanking empty columns below are load-bearing rather than decorative. —
+    let n = segments.max(2);
+    let scan = (4 * n).max(48);
+    let width = window.hi.sub(&window.lo);
+    let at = |k: usize| {
+        window
+            .lo
+            .add(&width.mul(&Rat::new(k as i128, scan as i128)))
+    };
+    let (mut first, mut last) = (None, None);
+    for k in 0..=scan {
+        if !ruling_patches(&forms, &at(k), inside, &cfg.sqrt_eps)?.is_empty() {
+            first.get_or_insert(k);
+            last = Some(k);
+        }
+    }
+    let (first, last) = match (first, last) {
+        (Some(f), Some(l)) => (f, l),
+        _ => return Err(CutFitFault::DegenerateSpan),
+    };
+    if first == 0 || last == scan {
+        return Err(CutFitFault::ShadowUnbounded);
+    }
+    let span = Interval {
+        lo: at(first - 1),
+        hi: at(last + 1),
+    };
+
+    // — 2. Columns: the footprint's own σ-range cut at the event brackets, each cell √-graded from
+    //   both ends (a branch turns like a square root at a birth, a death or a saddle). —
+    let events = structure_events(&forms, &span, &unit)?;
+    let mut cells: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    let mut cur = span.lo.clone();
+    for e in &events {
+        if cur.cmp(&e.at.lo) == Ordering::Less {
+            cells.push((cur.clone(), e.at.lo.clone()));
+        }
+        if e.at.hi.cmp(&cur) == Ordering::Greater {
+            cur = e.at.hi.clone();
+        }
+    }
+    if cur.cmp(&span.hi) == Ordering::Less {
+        cells.push((cur, span.hi.clone()));
+    }
+    // `segments` is a budget for the whole footprint, not per cell: an L has a cell per corner, and
+    // spending `n` on each of them buys resolution nobody asked for and pays for it in emitted
+    // pieces — which become faces downstream. Cells share the budget by width, with a floor of two
+    // so even a sliver cell keeps its own two ends.
+    let total = cells
+        .iter()
+        .fold(Rat::from_i128(0), |acc, (a, b)| acc.add(&b.sub(a)));
+    let mut sigmas: Vec<Rat<B>> = Vec::new();
+    for (a, b) in &cells {
+        let width = b.sub(a);
+        // `floor` lands on an integer-valued rational; step up from 2 until it is reached, which
+        // needs no exact→integer conversion (there is none) and is bounded by `n`.
+        let mut share: i128 = 2;
+        if total.sign() > 0 {
+            let want = width.div(&total).mul(&Rat::from_i128(n as i128));
+            while share < n as i128 && Rat::from_i128(share + 1).cmp(&want) != Ordering::Greater {
+                share += 1;
+            }
+        }
+        let half = width.mul(&Rat::new(1, 2));
+        sigmas.push(snap(a, BITS));
+        sigmas.push(snap(b, BITS));
+        // One grid step inside each end — §10.2's corner bracketing, now at every cell boundary.
+        // This is what keeps a birth, a death or a saddle *tight*: the two ends identified there
+        // are a grid step from the true event, so the half-width folded into `eps` is the branch's
+        // own width at 2⁻³⁰ rather than at whatever the interior grading happened to reach. Without
+        // it a polygon's pinch was measured 12% of a cell inside, and `gap` — not the certificate —
+        // dominated ε.
+        let (lo_in, hi_in) = (a.add(&unit), b.sub(&unit));
+        if lo_in.cmp(b) == Ordering::Less {
+            sigmas.push(snap(&lo_in, BITS));
+        }
+        if hi_in.cmp(a) == Ordering::Greater {
+            sigmas.push(snap(&hi_in, BITS));
+        }
+        for k in 1..share {
+            let f = Rat::new(k, share);
+            let d = f.mul(&f).mul(&half);
+            sigmas.push(snap(&a.add(&d), BITS));
+            sigmas.push(snap(&b.sub(&d), BITS));
+        }
+    }
+    sigmas.retain(|s| s.cmp(&span.lo) != Ordering::Less && s.cmp(&span.hi) != Ordering::Greater);
+    sigmas.sort();
+    sigmas.dedup_by(|a, b| (*a).cmp(&*b) == Ordering::Equal);
+    if sigmas.len() < 3 {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+
+    // — 3. Sample every column. The two flanking columns are empty by the scan above, so every
+    //   boundary closes inside the span rather than running off its edge. —
+    let mut cols: Vec<(Rat<B>, Vec<RulingPatch<B>>)> = Vec::with_capacity(sigmas.len());
+    for s in sigmas {
+        let ps = ruling_patches(&forms, &s, inside, &cfg.sqrt_eps)?;
+        cols.push((s, ps));
+    }
+    if !cols[0].1.is_empty() || !cols[cols.len() - 1].1.is_empty() {
+        return Err(CutFitFault::ShadowUnbounded);
+    }
+
+    // — 4. Boundary ends, and the identifications that close them. —
+    let mut base: Vec<usize> = Vec::with_capacity(cols.len());
+    let mut pos: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    let mut label: Vec<Option<WallRoot>> = Vec::new();
+    for (s, ps) in &cols {
+        base.push(pos.len());
+        for p in ps {
+            pos.push((s.clone(), snap(&p.lo, BITS)));
+            label.push(Some(p.lo_at));
+            pos.push((s.clone(), snap(&p.hi, BITS)));
+            label.push(Some(p.hi_at));
+        }
+    }
+    let end = |ci: usize, j: usize, side: Side| -> usize {
+        base[ci] + 2 * j + usize::from(side == Side::Hi)
+    };
+    let mut parent: Vec<usize> = (0..pos.len()).collect();
+    let mut edges: Vec<(usize, usize, Side)> = Vec::new();
+    // The largest half-width closed at a pinch or a saddle — the generalization of `tangent_gap`,
+    // and folded into `eps` the same way.
+    let mut gap = Rat::from_i128(0);
+    let join = |parent: &mut Vec<usize>,
+                pos: &mut Vec<(Rat<B>, Rat<B>)>,
+                label: &mut Vec<Option<WallRoot>>,
+                gap: &mut Rat<B>,
+                a: usize,
+                b: usize| {
+        let (ra, rb) = (uf_find(parent, a), uf_find(parent, b));
+        if ra == rb {
+            return;
+        }
+        let mid = half_of(&pos[ra].1, &pos[rb].1);
+        let h = abs_rat(&pos[ra].1.sub(&pos[rb].1)).mul(&Rat::new(1, 2));
+        if h.cmp(gap) == Ordering::Greater {
+            *gap = h;
+        }
+        parent[rb] = ra;
+        pos[ra] = (pos[ra].0.clone(), snap(&mid, BITS));
+        // A vertex two boundaries meet at lies on neither wall alone, so it names none — the same
+        // convention the band's two pinch vertices use.
+        label[ra] = None;
+    };
+
+    for ci in 0..cols.len() - 1 {
+        let (l, r) = (&cols[ci].1, &cols[ci + 1].1);
+        // Same count ⇒ match by µ̂ order. Stretches are ordered and disjoint and cannot cross, so
+        // index matching is the topologically consistent reading, and it is the *only* reliable one
+        // where two columns are far apart: overlap alone ties a thin lobe to its neighbour as soon
+        // as the lobe travels further than its own width between samples, which reads as a merge
+        // and a split at once (`ShadowEventTangled`) on perfectly ordinary geometry. The overlap
+        // walk is for the columns that straddle an event, where the count changes and the two
+        // columns sit a bracket apart.
+        if l.len() == r.len() {
+            for k in 0..l.len() {
+                edges.push((end(ci, k, Side::Lo), end(ci + 1, k, Side::Lo), Side::Lo));
+                edges.push((end(ci, k, Side::Hi), end(ci + 1, k, Side::Hi), Side::Hi));
+            }
+            continue;
+        }
+        let overlaps = |a: &RulingPatch<B>, b: &RulingPatch<B>| {
+            a.lo.cmp(&b.hi) != Ordering::Greater && b.lo.cmp(&a.hi) != Ordering::Greater
+        };
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < l.len() || j < r.len() {
+            if i < l.len() && j < r.len() && overlaps(&l[i], &r[j]) {
+                // Grow the overlap component: consecutive stretches on either side that reach it.
+                let (i0, j0) = (i, j);
+                let (mut ie, mut je) = (i + 1, j + 1);
+                loop {
+                    let mut grew = false;
+                    while ie < l.len() && (j0..je).any(|jj| overlaps(&l[ie], &r[jj])) {
+                        ie += 1;
+                        grew = true;
+                    }
+                    while je < r.len() && (i0..ie).any(|ii| overlaps(&l[ii], &r[je])) {
+                        je += 1;
+                        grew = true;
+                    }
+                    if !grew {
+                        break;
+                    }
+                }
+                let (p, q) = (ie - i0, je - j0);
+                match (p, q) {
+                    (1, 1) => {
+                        edges.push((end(ci, i0, Side::Lo), end(ci + 1, j0, Side::Lo), Side::Lo));
+                        edges.push((end(ci, i0, Side::Hi), end(ci + 1, j0, Side::Hi), Side::Hi));
+                    }
+                    // A merge: the group's outer rails continue, and each inner pair of ends is a
+                    // saddle — the two branches that met there.
+                    (_, 1) => {
+                        edges.push((end(ci, i0, Side::Lo), end(ci + 1, j0, Side::Lo), Side::Lo));
+                        edges.push((
+                            end(ci, ie - 1, Side::Hi),
+                            end(ci + 1, j0, Side::Hi),
+                            Side::Hi,
+                        ));
+                        for k in i0..ie - 1 {
+                            join(
+                                &mut parent,
+                                &mut pos,
+                                &mut label,
+                                &mut gap,
+                                end(ci, k, Side::Hi),
+                                end(ci, k + 1, Side::Lo),
+                            );
+                        }
+                    }
+                    // A split: the mirror image, with the saddles on the right column.
+                    (1, _) => {
+                        edges.push((end(ci, i0, Side::Lo), end(ci + 1, j0, Side::Lo), Side::Lo));
+                        edges.push((
+                            end(ci, i0, Side::Hi),
+                            end(ci + 1, je - 1, Side::Hi),
+                            Side::Hi,
+                        ));
+                        for k in j0..je - 1 {
+                            join(
+                                &mut parent,
+                                &mut pos,
+                                &mut label,
+                                &mut gap,
+                                end(ci + 1, k, Side::Hi),
+                                end(ci + 1, k + 1, Side::Lo),
+                            );
+                        }
+                    }
+                    _ => return Err(CutFitFault::ShadowEventTangled),
+                }
+                i = ie;
+                j = je;
+            } else if i < l.len() && (j >= r.len() || l[i].hi.cmp(&r[j].lo) == Ordering::Less) {
+                // A death: the stretch's two ends close on one vertex, as a band does at a tangent.
+                join(
+                    &mut parent,
+                    &mut pos,
+                    &mut label,
+                    &mut gap,
+                    end(ci, i, Side::Lo),
+                    end(ci, i, Side::Hi),
+                );
+                i += 1;
+            } else {
+                // A birth: the same, on the right column.
+                join(
+                    &mut parent,
+                    &mut pos,
+                    &mut label,
+                    &mut gap,
+                    end(ci + 1, j, Side::Lo),
+                    end(ci + 1, j, Side::Hi),
+                );
+                j += 1;
+            }
+        }
+    }
+
+    // — 5. Read the closed loops off the graph: every boundary vertex carries exactly two rails. —
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); pos.len()];
+    let mut ends: Vec<(usize, usize)> = Vec::with_capacity(edges.len());
+    for (ei, (a, b, _)) in edges.iter().enumerate() {
+        let (ra, rb) = (uf_find(&mut parent, *a), uf_find(&mut parent, *b));
+        adj[ra].push(ei);
+        adj[rb].push(ei);
+        ends.push((ra, rb));
+    }
+    for (v, es) in adj.iter().enumerate() {
+        if !es.is_empty() && es.len() != 2 && uf_find(&mut parent, v) == v {
+            return Err(CutFitFault::ShadowLoopOpen);
+        }
+    }
+    let mut used = vec![false; edges.len()];
+    let mut cycles: Vec<Vec<usize>> = Vec::new();
+    for e0 in 0..edges.len() {
+        if used[e0] {
+            continue;
+        }
+        let start = ends[e0].0;
+        let mut verts = vec![start];
+        let (mut v, mut e) = (start, e0);
+        loop {
+            used[e] = true;
+            let (a, b) = ends[e];
+            v = if a == v { b } else { a };
+            if v == start {
+                break;
+            }
+            verts.push(v);
+            match adj[v].iter().find(|&&ei| !used[ei]) {
+                Some(&ei) => e = ei,
+                None => return Err(CutFitFault::ShadowLoopOpen),
+            }
+        }
+        if verts.len() >= 3 {
+            cycles.push(verts);
+        }
+    }
+    if cycles.is_empty() {
+        return Err(CutFitFault::DegenerateSpan);
+    }
+
+    // — 6. Nested loops are the ring, and the ring is a different feature (§11.6): a hole with a
+    //   hole of its own leaves an island of material floating free, which is two parts rather than
+    //   one cut. Refuse by name rather than emit a loop the downstream would have to interpret.
+    //
+    //   Containment is decided by an exact even-odd ray cast in the domain — the loops are
+    //   polylines over ℚ, so this needs no tolerance; the half-open span rule (`lo ≤ σ < hi`)
+    //   is what keeps a ray through a vertex from being counted twice. —
+    let contains = |c: &[usize], p: &(Rat<B>, Rat<B>)| -> bool {
+        let mut odd = false;
+        for k in 0..c.len() {
+            let (a, b) = (&pos[c[k]], &pos[c[(k + 1) % c.len()]]);
+            let (lo, hi, mlo, mhi) = if a.0.cmp(&b.0) == Ordering::Less {
+                (&a.0, &b.0, &a.1, &b.1)
+            } else {
+                (&b.0, &a.0, &b.1, &a.1)
+            };
+            if lo.cmp(&p.0) != Ordering::Greater && p.0.cmp(hi) == Ordering::Less {
+                // The edge's µ̂ at this σ, above the point ⇒ one crossing of the upward ray.
+                let t = p.0.sub(lo).div(&hi.sub(lo));
+                if mlo.add(&mhi.sub(mlo).mul(&t)).cmp(&p.1) == Ordering::Greater {
+                    odd = !odd;
+                }
+            }
+        }
+        odd
+    };
+    for a in 0..cycles.len() {
+        for b in 0..cycles.len() {
+            if a != b && contains(&cycles[b], &pos[cycles[a][0]]) {
+                return Err(CutFitFault::ShadowNested);
+            }
+        }
+    }
+
+    // — 7. Emit and certify, piece by piece, exactly as the band does (§10.3). —
+    let mut out = Vec::with_capacity(cycles.len());
+    for verts in cycles {
+        let mut eps = gap.clone();
+        let mut pieces = Vec::with_capacity(verts.len());
+        for k in 0..verts.len() {
+            let (va, vb) = (verts[k], verts[(k + 1) % verts.len()]);
+            let (a, b) = (pos[va].clone(), pos[vb].clone());
+            if a.0.cmp(&b.0) == Ordering::Equal {
+                // Consecutive vertices share a σ only if a rail was dropped; an open or doubled
+                // loop is worse downstream than a refusal here.
+                return Err(CutFitFault::ShadowLoopOpen);
+            }
+            let piece = segment(&a, &b);
+            let mut targets: Vec<usize> = Vec::with_capacity(2);
+            for v in [va, vb] {
+                if let Some((wi, _)) = label[v]
+                    && !targets.contains(&wi)
+                {
+                    targets.push(wi);
+                }
+            }
+            for wi in targets {
+                match pcurve_cut_fit(chart, &piece, &walls[wi], w, PIECE_SUBDIV, clearance, cfg) {
+                    Verdict::Verified(v) => {
+                        if v.eps.cmp(&eps) == Ordering::Greater {
+                            eps = v.eps;
+                        }
+                    }
+                    Verdict::Unresolved(e) => {
+                        if e.cmp(&eps) == Ordering::Greater {
+                            eps = e;
+                        }
+                    }
+                    Verdict::Refuted(f) => return Err(f),
+                }
+            }
+            // On the boundary, not merely near a wall: compare the emitted chord at its own
+            // σ-midpoint against the nearest boundary the fill rule reports there. A missed event
+            // lands here as a loose ε, never as a hole that is quietly the wrong shape.
+            let sm = half_of(&a.0, &b.0);
+            let mm = half_of(&a.1, &b.1);
+            let truth = ruling_patches(&forms, &sm, inside, &cfg.sqrt_eps)?;
+            let mut best: Option<Rat<B>> = None;
+            for p in &truth {
+                for t in [&p.lo, &p.hi] {
+                    let d = abs_rat(&mm.sub(t));
+                    if best.as_ref().is_none_or(|m| d.cmp(m) == Ordering::Less) {
+                        best = Some(d);
+                    }
+                }
+            }
+            if let Some(d) = best
+                && d.cmp(&eps) == Ordering::Greater
+            {
+                eps = d;
+            }
+            pieces.push(piece);
+        }
+        out.push(CutLoop {
+            pieces,
+            eps: crate::pcurve::snap_up(&eps, BITS),
+            tangent_gap: gap.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// Pull a [`CutSurface`] back to its µ̂-form [`MuCut`] on `chart` at layer offset `w` (the
@@ -3141,6 +3680,266 @@ mod tests {
             interior_crossings > 0,
             "this fixture must actually exercise the case — no carrier crossed the L's interior"
         );
+    }
+
+    // ── AUTH.2c: the tracer ─────────────────────────────────────────────────────────────────
+
+    /// The square-prism cutter of AUTH.1e.4 — walls, fill rule and the bounding circle's window.
+    #[allow(clippy::type_complexity)]
+    fn square_cutter() -> (
+        geom::chart::Chart<Bignum>,
+        Vec<CutSurface<Bignum>>,
+        crate::extrude::Cast<Bignum>,
+        Vec<geom::content::Edge<Bignum>>,
+        Interval<Bignum>,
+    ) {
+        let chart = fixtures::devices::cone_wrap();
+        let (cx, cy, h) = (Q::new(-1, 2), Q::new(27, 10), Q::new(1, 8));
+        let profile = arrange2d::profile::Profile::new()
+            .rect(cx.clone(), cy.clone(), h.clone(), h.clone())
+            .into_edges();
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("four distinct lines");
+        let window = bounding_window(
+            &chart,
+            &CutSurface::Cylinder {
+                axis_point: [cx, cy, Q::from_i128(0)],
+                axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+                r2: h.mul(&h).mul(&Q::from_i128(2)),
+            },
+        );
+        (chart, walls, cast, profile, window)
+    }
+
+    /// **The tracer reproduces the band on the geometry the band was built for.** Same cutter, same
+    /// window, two independent constructions — AUTH.1e.4 walks one stretch between two bisected
+    /// tangent rulings; the tracer sweeps every stretch and reads loops off a graph — and their
+    /// emitted boundaries must agree to the bounds they each certify.
+    ///
+    /// This is the differential that says the generalization did not change the answer, and it is
+    /// what licenses replacing the caller in AUTH.2d rather than keeping two builders.
+    #[test]
+    fn the_tracer_reproduces_the_band_on_a_convex_profile() {
+        let (chart, walls, cast, profile, window) = square_cutter();
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        let band = match shadow_cut_loop(
+            &chart,
+            &walls,
+            inside,
+            &window,
+            &zero,
+            16,
+            &Q::from_i128(1),
+            &cfg,
+        ) {
+            Verdict::Verified(l) => l,
+            other => panic!("the band must certify: {:?}", verdict_tag(&other)),
+        };
+        let traced = match shadow_cut_loops(
+            &chart,
+            &walls,
+            inside,
+            &window,
+            &zero,
+            16,
+            &Q::from_i128(1),
+            &cfg,
+        ) {
+            Verdict::Verified(l) => l,
+            other => panic!("the tracer must certify: {:?}", verdict_tag(&other)),
+        };
+        assert_eq!(traced.len(), 1, "a convex footprint is one loop");
+
+        // The tolerance is a fixed multiple of the **band's** bound, never of the tracer's own: a
+        // differential whose tolerance is derived from the quantity under test cannot fail, and
+        // this one silently did not — deleting the tracer's grid-adjacent cell-end nodes made its
+        // ε 8× worse and the sum-tolerance absorbed every bit of it.
+        let tol = band.eps.mul(&Q::from_i128(4));
+        assert!(
+            traced[0].eps.cmp(&tol) != core::cmp::Ordering::Greater,
+            "the tracer's bound must stay within 4× the band's on the band's own fixture: \
+             {:.3e} vs {:.3e}",
+            to_f64(&traced[0].eps),
+            to_f64(&band.eps)
+        );
+        let mut probed = 0;
+        for k in 1..8 {
+            let s = window.lo.add(&window.hi.sub(&window.lo).mul(&Q::new(k, 8)));
+            let (b, t) = (
+                loop_mu_at(&band.pieces, &s),
+                loop_mu_at(&traced[0].pieces, &s),
+            );
+            let (Some(blo), Some(bhi), Some(tlo), Some(thi)) = (
+                b.iter().min_by(|x, y| x.cmp(y)),
+                b.iter().max_by(|x, y| x.cmp(y)),
+                t.iter().min_by(|x, y| x.cmp(y)),
+                t.iter().max_by(|x, y| x.cmp(y)),
+            ) else {
+                continue; // outside the footprint
+            };
+            probed += 1;
+            for (x, y, side) in [(blo, tlo, "lower"), (bhi, thi, "upper")] {
+                let d = abs_rat(&x.sub(y));
+                assert!(
+                    d.cmp(&tol) != core::cmp::Ordering::Greater,
+                    "the {side} boundaries must agree to the certified bounds at σ = {:.6}: \
+                     band {:.6} vs tracer {:.6} (tol {:.3e})",
+                    to_f64(&s),
+                    to_f64(x),
+                    to_f64(y),
+                    to_f64(&tol)
+                );
+            }
+        }
+        assert!(
+            probed >= 3,
+            "the comparison must actually reach the footprint"
+        );
+    }
+
+    /// **A non-convex footprint traces one closed loop that a band cannot express.** The L's loop
+    /// must *turn around in σ*: at a ruling through the notch it has **four** boundary points, not
+    /// two, which is exactly the shape a near/far rail pair has no way to carry.
+    #[test]
+    fn the_l_slot_traces_one_loop_that_turns_around_in_sigma() {
+        let (chart, _forms, cast, profile, window) = l_cutter();
+        let walls = cast.carrier_walls(&profile).expect("six distinct lines");
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        let traced = match shadow_cut_loops(
+            &chart,
+            &walls,
+            inside,
+            &window,
+            &zero,
+            16,
+            &Q::from_i128(1),
+            &cfg,
+        ) {
+            Verdict::Verified(l) => l,
+            other => panic!("the L must trace: {:?}", verdict_tag(&other)),
+        };
+        assert_eq!(traced.len(), 1, "a connected L is one loop");
+        // Somewhere across the window the loop is met four times by a ruling.
+        const SCAN: i128 = 400;
+        let mut four = 0;
+        for k in 0..=SCAN {
+            let s = window
+                .lo
+                .add(&window.hi.sub(&window.lo).mul(&Q::new(k, SCAN)));
+            if loop_mu_at(&traced[0].pieces, &s).len() >= 4 {
+                four += 1;
+            }
+        }
+        assert!(
+            four > 0,
+            "the traced loop must double back through the notch — a band never does"
+        );
+    }
+
+    /// **Refining `segments` tightens the traced bound.** The contract the whole milestone rests on
+    /// is that a loose loop is `Unresolved` and refinable, never a quietly wrong one, so ε must
+    /// actually respond to the knob on the shape that exercises the tracer's own machinery.
+    #[test]
+    fn the_traced_bound_refines_with_segments() {
+        let (chart, _forms, cast, profile, window) = l_cutter();
+        let walls = cast.carrier_walls(&profile).expect("six distinct lines");
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        let eps_at = |segs: usize| -> Q {
+            match shadow_cut_loops(
+                &chart,
+                &walls,
+                inside,
+                &window,
+                &zero,
+                segs,
+                &Q::from_i128(1),
+                &cfg,
+            ) {
+                Verdict::Verified(l) => l[0].eps.clone(),
+                other => panic!("the L must trace at {segs}: {:?}", verdict_tag(&other)),
+            }
+        };
+        let (coarse, fine) = (eps_at(8), eps_at(32));
+        assert!(
+            fine.cmp(&coarse) == core::cmp::Ordering::Less,
+            "ε must tighten with segments: {:.3e} at 8 vs {:.3e} at 32",
+            to_f64(&coarse),
+            to_f64(&fine)
+        );
+    }
+
+    /// **A ring is refused as a nested loop — by name, and for its own reason.** The tracer has no
+    /// trouble *tracing* an annulus: it is two loops, one inside the other. What makes it a refusal
+    /// is the geometry it would describe — a through-cut leaving a disc of material floating free,
+    /// which is two parts rather than one hole (§11.6).
+    #[test]
+    fn a_ring_is_refused_as_nested_rather_than_traced() {
+        let chart = fixtures::devices::cone_wrap();
+        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
+        let profile = arrange2d::profile::Profile::new()
+            .circle(cx.clone(), cy.clone(), Q::new(1, 4))
+            .circle(cx.clone(), cy.clone(), Q::new(1, 8))
+            .into_edges();
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("two distinct circles");
+        // A strict superset of the ring's own window, so the footprint closes *inside* it: the
+        // outer circle's tangent-to-tangent window is exactly filled by its own footprint, which
+        // the tracer rightly reads as reaching the edge (`ShadowUnbounded`) before it ever gets to
+        // ask about nesting.
+        let window = bounding_window(
+            &chart,
+            &CutSurface::Cylinder {
+                axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
+                axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+                r2: Q::new(1, 4),
+            },
+        );
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        match shadow_cut_loops(
+            &chart,
+            &walls,
+            inside,
+            &window,
+            &zero,
+            16,
+            &Q::from_i128(1),
+            &DevConfig::tight(),
+        ) {
+            Verdict::Refuted(CutFitFault::ShadowNested) => {}
+            other => panic!(
+                "a ring must be refused as nested, got {:?}",
+                verdict_tag(&other)
+            ),
+        }
     }
 
     // ── AUTH.2a: the exact event set ────────────────────────────────────────────────────────
