@@ -80,6 +80,14 @@ fn rail_cylinder_crossings<B: Backend>(
 /// fields (pedal *with* support), so it is correct on offset tails and under wrapping
 /// parametrizations; the apex-ray shortcut it replaces (the A2 finding) silently assumed a cone
 /// through the origin. `None` unless the cutter subtends exactly one clean two-tangent arc.
+///
+/// **The scan is sound here because `span` is derived from the window it is looking for** — its
+/// caller pads a resolved hole window by a sixteenth of its own width, so the two tangents sit
+/// well inside the scanned interval whatever the window's absolute size. A *fixed* subdivision of
+/// a whole σ-band is a different thing and was a fail-open defect (#268): a window narrower than
+/// one cell puts both roots in it, the scan sees no sign change, and the cut is dropped with no
+/// trace anywhere downstream. Where the window is not known in advance, use
+/// [`develop::cut::tangent_events`], which isolates every root exactly instead.
 pub fn surface_tangents<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
@@ -100,7 +108,11 @@ pub fn surface_tangents<B: Backend>(
 /// cylinder along *two* windows, one per sheet of the ruling line; [`surface_tangents`] is the
 /// single-window special case). Consecutive pairs with a positive discriminant between them are
 /// the cutter's real σ-windows. `None` on a pole at a scan node.
-pub fn surface_disc_roots<B: Backend>(
+///
+/// Private, and staying that way: this is a *scan*, sound only where the caller's `span` is
+/// derived from the window it seeks ([`surface_tangents`]). Deriving windows over a whole σ-band
+/// is [`develop::cut::tangent_events`]' job — see #268 for what the difference cost.
+fn surface_disc_roots<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
     span: &Interval<B>,

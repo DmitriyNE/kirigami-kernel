@@ -21,10 +21,9 @@
 use crate::part::Extrusion;
 use crate::part::{BuiltRegions, Cutter, OpKind, OpRole, Part, PartFault, RegionPick};
 use certify_core::Verdict;
-use develop::cut::{CutSurface, MuCut, cut_mu_form};
+use develop::cut::{CutSurface, MuCut, cut_mu_form, tangent_events};
 use develop::pick::{Sheet, Span, ray_crossings, select};
 use export::approx::{f64_to_rat, rat_to_f64};
-use export::trim::surface_disc_roots;
 use lattice::{Backend, Interval, Rat};
 
 /// Which µ̂-root of an op's pullback a boundary label refers to.
@@ -108,6 +107,19 @@ impl<B: Backend> Clone for Structure<B> {
 
 /// The resolver's sample-grid density per region (also the realizer's corner pad unit).
 pub(crate) const CELLS: usize = 48;
+
+/// How tightly a wall's tangent rulings are bracketed when its σ-windows are derived:
+/// `2⁻⁴⁰ ≈ 9·10⁻¹³`.
+///
+/// A window is read as the **gap between two brackets**, so this is how much of the window's own
+/// ends the derivation gives up — three orders below the `2⁻³⁰` grid every emitted vertex is
+/// snapped to, and so invisible in the artifact, while any looser choice starts to trim a hole's
+/// tangent tips visibly. It is not an accuracy knob in the old sense: [`tangent_events`] isolates
+/// every root first and bisects a bracket it has already proved to contain one, so no window is
+/// *missed* however coarse this is — the sampling that could miss one is what it replaced.
+pub(crate) fn tangent_tol<B: Backend>() -> Rat<B> {
+    Rat::new(1, 1i128 << 40)
+}
 
 /// One connected piece of a µ̂-shadow (float bounds, labels exact).
 enum Patch {
@@ -802,10 +814,13 @@ pub(crate) fn sweep<B: Backend>(
                 // the circle's reality, which is a different surface.
                 let form = cut_mu_form(&built.charts[ri], wall, &zero)
                     .ok_or(PartFault::CutUnresolved { op })?;
-                let roots = surface_disc_roots(&built.charts[ri], wall, &rf.band, 256, 60)
-                    .unwrap_or_default();
-                for w in roots.windows(2) {
-                    let (t1, t2) = (&w[0], &w[1]);
+                let brackets = tangent_events(&form, &rf.band, &tangent_tol())
+                    .map_err(|_| PartFault::CutUnresolved { op })?;
+                for w in brackets.windows(2) {
+                    // Each bracket **contains** its tangent ruling, so the gap between two of them
+                    // lies inside the true window and the discriminant has one sign across it: a
+                    // single evaluation at the midpoint decides the whole gap.
+                    let (t1, t2) = (&w[0].hi, &w[1].lo);
                     let mid = t1.add(t2).mul(&Rat::new(1, 2));
                     let real = form
                         .disc()

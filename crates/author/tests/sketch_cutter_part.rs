@@ -146,6 +146,50 @@ fn a_parallel_extrusion_reproduces_the_metric_cylinder() {
     );
 }
 
+/// **#268 — a cut whose σ-window is narrower than one cell of the old root scan still cuts.**
+///
+/// The resolver used to target its sample stations from a fixed 256-subdivision sign-change scan of
+/// the whole σ-band; on this gore that is a cell `7/256 ≈ 0.02734` wide, and a cutter whose window
+/// is narrower puts *both* of its tangent rulings inside one cell. The scan sees no sign change, the
+/// op resolves `Inactive`, and nothing downstream can object — a hole that was never derived leaves
+/// no trace in the flat pattern, the solid or ε. This is the fail-**open** direction, and it is
+/// arithmetic rather than geometric: these two discs have the **same radius**, and the only
+/// difference between them is that one window (`0.02703`) fell under the cell width and the other
+/// (`0.02779`) did not.
+///
+/// So the pin is a differential rather than a verdict. Development is an isometry, so a disc of a
+/// given radius cuts the same *area* wherever on the sheet it sits — the narrow-window drill must
+/// therefore develop to the wide one's hole, not merely to some hole.
+#[test]
+fn a_disc_whose_window_is_a_fraction_of_a_scan_cell_still_cuts() {
+    let r2 = q(1, 256);
+    let narrow = develop_or_panic(
+        acceptance::sketch_drill(q(1, 16), q(37, 16), r2.clone()),
+        "the narrow-window drill",
+    );
+    assert_eq!(
+        narrow.report().ops[3].role,
+        OpRole::Hole,
+        "the drill pierces the sheet — an `Inactive` here is a green certificate on a cut that \
+         did nothing, and the whole point is that no other output would show it"
+    );
+    let wide = develop_or_panic(
+        acceptance::sketch_drill(q(1, 16), q(9, 4), r2),
+        "the wide-window drill",
+    );
+    let area = |f: &author::part::FlatPattern<Bignum>| {
+        let rings = measure::emitted_hole_rings(f.region());
+        assert_eq!(rings.len(), 1, "one panel face");
+        assert_eq!(rings[0].len(), 1, "carrying exactly one hole");
+        measure::ring_area(&rings[0][0])
+    };
+    let (a, b) = (area(&narrow), area(&wide));
+    assert!(
+        (a - b).abs() < 0.02 * b,
+        "the two drills share a radius, so their developed holes share an area: {a:.6} vs {b:.6}"
+    );
+}
+
 /// **AUTH.1e.4 — a many-walled profile realizes, and cuts the shape it was drawn as.**
 ///
 /// A square prism's hole must contain the hole of the cylinder inscribed in it and sit inside the

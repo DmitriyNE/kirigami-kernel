@@ -767,10 +767,34 @@ fine — this is a log, not a schema.
   trace in the flat pattern, the solid, or ε. Worth stating as a pattern — the resolver's station
   targeting is still a *scan* while AUTH.2a built the **exact** event set (disc + resultant,
   Sturm-isolated) for the tracer, so the fix is to point the same machinery at this one. Not fixed
-  here: it is a pre-existing AUTH.1 gap with a blast radius across every pinned ε, chord golden and
-  work budget, and it deserves its own slice. The AUTH.2f probes were placed clear of the threshold
-  instead, which is itself the reason to record the number: the next fixture placed by eye will land
-  on it. *2026-08-16 · `crates/export/src/trim.rs::surface_disc_roots`, `crates/author/src/resolve.rs`*
+  in AUTH.2f: it is a pre-existing AUTH.1 gap with a blast radius across every pinned ε, chord golden
+  and work budget, and it deserved its own slice (next entry). The AUTH.2f probes were placed clear
+  of the threshold instead, which is itself the reason to record the number: the next fixture placed
+  by eye will land on it.
+  *2026-08-16 · `crates/export/src/trim.rs::surface_disc_roots`, `crates/author/src/resolve.rs`*
+
+- **The feared blast radius was nil, and that is the finding.** Pointing AUTH.2a's exact machinery at
+  the resolver's window derivation — `develop::cut::tangent_events`, the `Tangent` family on one form,
+  Sturm-isolated — turns "did the scan happen to straddle both roots" into "isolate every root, then
+  read a window as the **gap between two brackets**". The gap is the part of the window the brackets
+  prove root-free, so the discriminant has one sign across it and a single midpoint evaluation decides
+  it; that is a property a sign scan cannot offer at any subdivision. The reproduction now resolves
+  `Hole`, and its pin is a differential rather than a verdict: development is an isometry, so the same
+  radius cuts the same **area** wherever it sits, and the narrow-window drill must develop to the wide
+  one's hole (0.018307 both). What was expected to be expensive was re-measuring the pins. Every
+  printed number in the author suite — VV.1 counters (γ cells 2256, γ′ 2640, cut evals 4096), VV.2 ε
+  (develop 4.1481e-1 · fold 1.3879e-1 · refold 5.9982e-3 · solid 5.7663e-2 · flex 2.7573e-1 · L-slot
+  4.8792e-1 / cut 2.8439e-4 · keyhole cut 1.4320e-2), VV.3 goldens (3.0 / 7.7 / 9.1 / 9.4 / 10.1 %),
+  the probe areas and the fold residual — is **bit-identical** before and after, because for every
+  window the scan *did* find, the exact brackets land within `2⁻⁴⁰` of its bisected roots and
+  everything emitted snaps to `2⁻³⁰`. Worth keeping as a pattern: *a sampling assumption's blast
+  radius is feared for the cases it got wrong, but it is measured on the cases it got right — and
+  those are exactly the ones a sound method reproduces*. Runtime is unchanged too (one Sturm chain
+  over a reduced discriminant per wall per region, against 256 polynomial evaluations). The related
+  scan in `surface_tangents` is deliberately left: its `span` is the resolved window padded by a
+  sixteenth of its own width, so it is a *relative* scan and cannot exhibit this defect — the doc now
+  says so, and `surface_disc_roots` is private, so the absolute-band form is no longer reachable.
+  *2026-08-16 · `crates/develop/src/cut.rs::tangent_events`, `crates/author/src/{resolve,realize}.rs`*
 
 - **A merge is not distinguished by its stretch count, and the first version of the keyhole test
   proved nothing.** AUTH.2f needed a fixture exercising a genuine **merge** — two ruling stretches

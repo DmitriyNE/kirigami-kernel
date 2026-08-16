@@ -779,8 +779,14 @@ profile received a σ-window covering only its quadric part, so the tracer saw t
 the scan's edge and refused a perfectly good keyhole; and a small metric disc whose σ-window is
 narrower than one cell of `surface_disc_roots`' fixed 256-subdivision seed resolves `Inactive` — a
 green certificate on a cut that does nothing. The first is fixed here (the bounding proxy is used
-whenever *any* wall is affine, not only when all of them are); the second is a pre-existing AUTH.1
-sampling gap and is filed.
+whenever *any* wall is affine, not only when all of them are); the second was a pre-existing AUTH.1
+sampling gap, filed and then closed with §11.2's own machinery — `tangent_events` isolates the wall's
+tangent rulings exactly and the resolver reads a window as the **gap between two brackets**, which
+the isolation proves root-free, so one midpoint evaluation decides it. The pin is a differential:
+development is an isometry, so a disc of a given radius cuts the same area wherever it sits, and the
+narrow-window drill must develop to the wide one's hole rather than merely to some hole. Every pinned
+ε, chord golden and work counter is bit-identical across that change, which is the answer to the
+question the deferral asked.
 
 **And a third, on the far side of the certificates: the shell OCCT would not write.** Every verdict
 on the L-slot solid passed — watertight, manifold, genus-1, rails inside ε — and

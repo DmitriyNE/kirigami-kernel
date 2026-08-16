@@ -353,46 +353,11 @@ pub fn structure_events<B: Backend>(
     tol: &Rat<B>,
 ) -> Result<Vec<StructureEvent<B>>, CutFitFault> {
     use core::cmp::Ordering;
-    use lattice::SturmChain;
-    /// Bisection cap per bracket — 2⁻⁶⁴ of the starting width, well past any usable `tol`.
-    const MAX_BISECT: usize = 64;
 
     let mut found: Vec<(Interval<B>, EventKind)> = Vec::new();
     let mut collect = |rf: &RatFunc<B>, kind: EventKind| -> Result<(), CutFitFault> {
-        // Reduce before isolating, and it is not a micro-optimization: these families are products
-        // of the chart's own rational fields, so they arrive carrying the chart denominator several
-        // times over. On the AUTH.1e.4 square prism a raw pairwise resultant is **degree 78** and
-        // its reduced form is **degree 4** — the difference between a naive ℚ-PRS Sturm chain over
-        // 78 coefficients and one over 4, measured at 273 ms → 16 ms for the whole event set. The
-        // cancelled factors are shared with the denominator, so their roots are removable
-        // singularities rather than events; dropping them is also the more honest partition.
-        let reduced = rf.reduce();
-        let p = reduced.num();
-        // An identically-zero family (duplicate walls, say) has no *isolated* event, and a nonzero
-        // constant has no root at all. Neither is a fault: the fill rule still decides membership.
-        if p.is_zero() || p.degree().unwrap_or(0) == 0 {
-            return Ok(());
-        }
-        let chain = SturmChain::new(p);
-        if !chain.verify_chain(p) {
-            return Err(CutFitFault::EventChainUnverified);
-        }
-        for iv in chain.isolate(window) {
-            // Narrow by bisection on the Sturm *count*, not on a sign change: an even-multiplicity
-            // root never flips sign, and those are exactly the tangential events worth locating.
-            let (mut lo, mut hi) = (iv.lo, iv.hi);
-            for _ in 0..MAX_BISECT {
-                if hi.sub(&lo).cmp(tol) != Ordering::Greater {
-                    break;
-                }
-                let mid = lo.add(&hi).mul(&Rat::new(1, 2));
-                if chain.count_in(&lo, &mid) > 0 {
-                    hi = mid;
-                } else {
-                    lo = mid;
-                }
-            }
-            found.push((Interval { lo, hi }, kind));
+        for iv in isolate_roots(rf, window, tol)? {
+            found.push((iv, kind));
         }
         Ok(())
     };
@@ -423,6 +388,108 @@ pub fn structure_events<B: Backend>(
             }),
         }
     }
+    Ok(out)
+}
+
+/// The isolating brackets of a rational function's roots in `window`, in σ order, each bisected
+/// until narrower than `tol` — the exact root locator every event family is built from.
+///
+/// Roots of a rational function are roots of its numerator, isolated by `lattice`'s Sturm chain,
+/// which counts **distinct** roots even when the polynomial is not squarefree — so a double root (a
+/// tangential touch rather than a transverse crossing) is located rather than stepped over. The
+/// brackets are disjoint and each holds exactly one root, which is what lets a caller treat the gaps
+/// between them as intervals of constant sign.
+///
+/// `Err` only if a Sturm chain fails its own hypothesis check ([`CutFitFault::EventChainUnverified`]).
+fn isolate_roots<B: Backend>(
+    rf: &RatFunc<B>,
+    window: &Interval<B>,
+    tol: &Rat<B>,
+) -> Result<Vec<Interval<B>>, CutFitFault> {
+    use core::cmp::Ordering;
+    use lattice::SturmChain;
+    /// Bisection cap per bracket — 2⁻⁶⁴ of the starting width, well past any usable `tol`.
+    const MAX_BISECT: usize = 64;
+
+    // Reduce before isolating, and it is not a micro-optimization: these families are products
+    // of the chart's own rational fields, so they arrive carrying the chart denominator several
+    // times over. On the AUTH.1e.4 square prism a raw pairwise resultant is **degree 78** and
+    // its reduced form is **degree 4** — the difference between a naive ℚ-PRS Sturm chain over
+    // 78 coefficients and one over 4, measured at 273 ms → 16 ms for the whole event set. The
+    // cancelled factors are shared with the denominator, so their roots are removable
+    // singularities rather than events; dropping them is also the more honest partition.
+    let reduced = rf.reduce();
+    let p = reduced.num();
+    // An identically-zero family (duplicate walls, say) has no *isolated* root, and a nonzero
+    // constant has no root at all. Neither is a fault: the fill rule still decides membership.
+    if p.is_zero() || p.degree().unwrap_or(0) == 0 {
+        return Ok(Vec::new());
+    }
+    let chain = SturmChain::new(p);
+    if !chain.verify_chain(p) {
+        return Err(CutFitFault::EventChainUnverified);
+    }
+    let mut out = Vec::new();
+    for iv in chain.isolate(window) {
+        // Narrow by bisection on the Sturm *count*, not on a sign change: an even-multiplicity
+        // root never flips sign, and those are exactly the tangential events worth locating.
+        let (mut lo, mut hi) = (iv.lo, iv.hi);
+        for _ in 0..MAX_BISECT {
+            if hi.sub(&lo).cmp(tol) != Ordering::Greater {
+                break;
+            }
+            let mid = lo.add(&hi).mul(&Rat::new(1, 2));
+            if chain.count_in(&lo, &mid) > 0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        out.push(Interval { lo, hi });
+    }
+    Ok(out)
+}
+
+/// One wall's **tangent rulings** over `window`: the σ where its µ̂-pullback's discriminant
+/// vanishes, as disjoint isolating brackets in σ order, each narrower than `tol`.
+///
+/// A wall whose pullback is a genuine quadratic carries material only where the discriminant is
+/// positive, so these brackets delimit its σ-windows: between consecutive brackets the discriminant
+/// has **constant sign**, and one evaluation anywhere in the gap decides whether that gap is a
+/// window. That is the property a sign-change scan cannot offer — a window narrower than one scan
+/// cell puts both of its roots in the same cell, the scan sees no sign change, and the wall is
+/// reported as never touching the material at all (the fail-*open* direction: a cut that was never
+/// derived leaves no trace in the flat pattern, the solid, or ε). This is [`structure_events`]'
+/// `Tangent` family on a single form, which is what the resolver needs when it is asking about one
+/// wall rather than about a profile's whole stretch structure.
+///
+/// ```
+/// use develop::cut::{MuCut, tangent_events};
+/// use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
+///
+/// type Q = Rat<Bignum>;
+/// let poly = |c: &[i128]| {
+///     RatFunc::from_poly(Poly::from_coeffs(c.iter().map(|v| Q::from_i128(*v)).collect()))
+/// };
+/// // `µ̂² + σ² − 1 = 0`: real between the tangent rulings σ = ±1, and nowhere else.
+/// let wall = MuCut { a: poly(&[1]), b: poly(&[]), c: poly(&[-1, 0, 1]) };
+/// let window = Interval { lo: Q::from_i128(-2), hi: Q::from_i128(2) };
+/// let ts = tangent_events(&wall, &window, &Q::new(1, 1 << 20)).unwrap();
+/// assert_eq!(ts.len(), 2);
+/// assert!(ts[0].lo <= Q::from_i128(-1) && Q::from_i128(-1) <= ts[0].hi);
+/// assert!(ts[1].lo <= Q::from_i128(1) && Q::from_i128(1) <= ts[1].hi);
+/// ```
+pub fn tangent_events<B: Backend>(
+    form: &MuCut<B>,
+    window: &Interval<B>,
+    tol: &Rat<B>,
+) -> Result<Vec<Interval<B>>, CutFitFault> {
+    // Sorted here rather than relied on: `SturmChain::isolate` returns the brackets in its own
+    // recursion order (the `+1` root before the `−1` one on the doctest above), and a caller
+    // reading consecutive pairs as windows needs σ order. `structure_events` sorts for the same
+    // reason, one step later, after merging its three families.
+    let mut out = isolate_roots(&form.disc(), window, tol)?;
+    out.sort_by(|a, b| a.lo.cmp(&b.lo));
     Ok(out)
 }
 

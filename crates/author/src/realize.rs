@@ -220,9 +220,9 @@ fn certify_boundary<B: Backend>(
     // Reading it that way rather than matching on `Cutter` is what lets a multi-walled cutter join
     // — and it reproduces the old behaviour exactly, since a cylinder's wall is quadratic and a
     // half-space's is not.
-    /// Per region, per op, per wall: the wall's tangent-ruling σ roots, or `None` where the wall
-    /// is affine and has no windows.
-    type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Rat<B>>>>>>;
+    /// Per region, per op, per wall: the brackets isolating the wall's tangent rulings, or `None`
+    /// where the wall is affine and has no windows.
+    type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Interval<B>>>>>>;
     let mut disc_roots: DiscRoots<B> = Vec::new();
     for (ri, band) in bands.iter().enumerate() {
         let mut row = Vec::with_capacity(part.ops.len());
@@ -232,13 +232,16 @@ fn certify_boundary<B: Backend>(
                 .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
             let mut per_wall = Vec::with_capacity(walls.len());
             for wall in &walls {
-                let quadratic =
-                    develop::cut::cut_mu_form(&built.charts[ri], wall, &Rat::from_i128(0))
-                        .is_some_and(|f| !f.a.is_zero());
-                per_wall.push(if quadratic {
-                    export::trim::surface_disc_roots(&built.charts[ri], wall, band, 256, 60)
-                } else {
-                    None
+                // The same exact isolation the resolver derived its windows from, so the span this
+                // clamps to and the window that attributed the hole are the *same* interval — a
+                // sampled approximation on one side and an exact one on the other would clamp a
+                // fit to a window the structure was never resolved over.
+                let form = develop::cut::cut_mu_form(&built.charts[ri], wall, &Rat::from_i128(0));
+                per_wall.push(match form {
+                    Some(f) if !f.a.is_zero() => {
+                        develop::cut::tangent_events(&f, band, &crate::resolve::tangent_tol()).ok()
+                    }
+                    _ => None,
                 });
             }
             row.push(per_wall);
@@ -246,11 +249,12 @@ fn certify_boundary<B: Backend>(
         disc_roots.push(row);
     }
     let window_around = |ri: usize, op: usize, wall: usize, at: &Rat<B>| -> Extent<B> {
-        let roots = disc_roots[ri][op].get(wall)?.as_ref()?;
-        for w in roots.windows(2) {
-            if w[0].cmp(at) == Ordering::Less && at.cmp(&w[1]) == Ordering::Less {
-                let inset = w[1].sub(&w[0]).mul(&Rat::new(1, 200));
-                return Some((w[0].add(&inset), w[1].sub(&inset)));
+        let brackets = disc_roots[ri][op].get(wall)?.as_ref()?;
+        for w in brackets.windows(2) {
+            let (lo, hi) = (&w[0].hi, &w[1].lo);
+            if lo.cmp(at) == Ordering::Less && at.cmp(hi) == Ordering::Less {
+                let inset = hi.sub(lo).mul(&Rat::new(1, 200));
+                return Some((lo.add(&inset), hi.sub(&inset)));
             }
         }
         None

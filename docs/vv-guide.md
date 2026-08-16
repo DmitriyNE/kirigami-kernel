@@ -2058,6 +2058,22 @@ exact fill rule reports there, with the deviation folded into ε. State it as a 
 failure it guards is invisible to the per-piece certificate: a chord that stays on wall A across a
 missed corner certifies perfectly while the true boundary dips onto wall B beneath it.
 
+*Nor may a **window derivation** rest on a scan, and the difference is absolute versus relative.* The
+resolver read a cutter's σ-windows from a fixed 256-subdivision sign scan of the whole band, so a
+window narrower than one cell had both its roots in that cell and the op resolved `Inactive` (#268) —
+the same fail-open verdict as above, reached arithmetically rather than structurally: the two discs
+that separate the cases have the **same radius**. Where the window is not known in advance, isolate:
+`tangent_events` brackets every root exactly, and a window read as the *gap between two brackets* is
+proved root-free, so one midpoint evaluation decides it. A scan whose interval is derived from the
+window it seeks (`surface_tangents`, padded by a sixteenth of the window's own width) is a different
+thing and stays. Two criteria come out of this. **Pin such a fix with a differential, not a verdict**
+— development is an isometry, so a disc of a given radius cuts the same *area* wherever it sits, and
+the narrow-window drill must develop to the wide one's hole; asserting only `Hole` would pass on any
+hole at all. And **the deferral's cost is itself a measurement**: this one was deferred for a blast
+radius across every pinned ε, golden and work counter, and re-measuring found all of them
+bit-identical, because the cases a sampling assumption got right are the ones a sound method
+reproduces. Record the comparison rather than the expectation.
+
 ### AUTH.2 acceptance criteria (the general non-convex footprint — the tracer)
 
 Lifts 1e.4's band restriction for footprints that are **non-convex but connected** (L-slot, T-slot,
