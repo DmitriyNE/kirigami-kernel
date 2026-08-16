@@ -683,6 +683,24 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **"Edges are not carriers" has a converse, and it only bites on non-convex profiles: a carrier
+  crossing the cutter's own interior is not a boundary.** AUTH.1e.2 found that `arrange2d` splits a
+  circle into two arcs sharing one carrier, so a per-*edge* wall list duplicates a surface
+  (`Cast::carrier_walls` was the fix). AUTH.2b hit the dual: a carrier is the whole infinite **line**,
+  not the profile edge lying on it, so a non-convex profile has carriers that run through its own
+  interior — an L's `y = 1` bounds one arm and is interior to the other. Those crossings arrive in
+  `ruling_patches`' sorted list like any other, and taken as-is they break one inside stretch into
+  two abutting ones. Measured on an L-profile cutter: some rulings reported **three** stretches,
+  which a straight line meeting two convex arms cannot do, and one L orientation reported two
+  stretches at 27 of 401 sampled rulings where the truth was one. Fixed by merging stretches that
+  share an endpoint — exact rather than a tolerance, since the union of two intervals sharing an
+  endpoint *is* the interval, and the shared value is one `Rat` by construction. **Convex profiles
+  cannot exhibit it** (their carriers are supporting lines, so every extra crossing falls outside the
+  inside stretch), which is why AUTH.1e.4 shipped without it and why no existing test moved. Worth
+  keeping next to its sibling: both defects come from conflating a *carrier* with the *edge* on it,
+  in opposite directions, and both were invisible until a shape that distinguishes them showed up.
+  *2026-08-16 · resolved · `develop::cut::ruling_patches`, #260*
+
 - **The textbook resultant is identically zero on exactly the case AUTH.2 exists for, and a
   differential built from generic inputs would not have noticed.** AUTH.2a's event set needs
   `Res_µ̂(f_i, f_j)` — zero where two walls cross a ruling at the same µ̂ — and the quadratic-by-

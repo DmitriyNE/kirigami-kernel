@@ -2104,7 +2104,7 @@ assertions mutation-verified, on the pinned pre-state.
 
 *The ring stays refused, and for its own reason.* A footprint with its own hole is not a
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two
-parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.5).
+parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.6).
 
 ---
 

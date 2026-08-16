@@ -331,8 +331,8 @@ however many tests run through it.
 | **AUTH.1e.4** | multi-wall hole loops (§10) — **done** (`develop::cut::shadow_cut_loop`, `export::trim::shadow_hole_loop`) |
 | **AUTH.2.0** | §11 + `vv-matrix` rows + the scout's pre-state pinned as tests (the GO-gate) |
 | **AUTH.2a** | the exact event set: `disc_µ̂(f_i)` ∪ `Res_µ̂(f_i,f_j)`, Sturm-isolated (§11.2) |
-| **AUTH.2b** | `ruling_patch` → `ruling_patches`: every inside stretch, not the first only |
-| **AUTH.2c** | the cell/graph tracer — `shadow_cut_loop` → closed loops over the event partition (§11.3) |
+| **AUTH.2b** | `ruling_patch` → `ruling_patches`: every inside stretch, merged at interior carriers (§11.3) |
+| **AUTH.2c** | the cell/graph tracer — `shadow_cut_loop` → closed loops over the event partition (§11.4) |
 | **AUTH.2d** | the flat path: several loops per hole op |
 | **AUTH.2e** | the solid path: clip a general loop per σ-slice, lifting the station restriction (§11.1) |
 | **AUTH.2f** | acceptance: an L-slot through the device, developed, folded, exported; the ring still refused by name |
@@ -451,7 +451,7 @@ The refusal is **deliberate, not incidental**. Before 1e.4 a ring failed closed 
 a window search declining a shape it could not read; now it is refused by name, so the author learns
 that the profile is the problem.
 
-The non-convex row is lifted in §11. The ring's is not, and §11.4 says why the two were never the
+The non-convex row is lifted in §11. The ring's is not, and §11.6 says why the two were never the
 same problem.
 
 ### 10.2 Three things follow from the wall changing
@@ -503,7 +503,7 @@ is caught downstream by `pcurve_cut_fit` as `NappeCrossed`, a refusal.
 An L-slot, a T-slot, a keyhole, a dogbone — the shapes fab actually asks for — are **non-convex but
 connected**, and §10's band cannot hold them: a ruling meets such a cutter in several stretches, and
 how many changes with σ as the stretches merge and split. This section lifts that restriction. It
-does **not** lift the ring's (§11.5).
+does **not** lift the ring's (§11.6).
 
 ### 11.1 The band is confined to one file, and that is a measurement
 
@@ -572,7 +572,26 @@ static and decidable; an isolated σ where a genuine conic's `a(σ)` vanishes ne
 because the 2 × 2 form factors there as `a_j·(a_j c_i² + b_i² c_j − b_i b_j c_i)` — vanishing exactly
 when the 2 × 1 condition does — and those σ are `Escape` events in their own right.
 
-### 11.3 Between events nothing changes, so the tracer is a sweep
+### 11.3 A carrier crossing the interior is not a boundary
+
+Reading *every* stretch rather than one turns out to need a correction that reading one never did.
+§6.2 established that edges are not carriers — `arrange2d` splits a circle into two arcs sharing one
+carrier, so a per-edge wall list duplicates a surface. The converse bites here: a carrier is the
+whole infinite **line**, not the profile edge lying on it, so a non-convex profile has carriers that
+run through its own interior. An L's `y = 1` bounds one arm and is interior to the other.
+
+Such a crossing arrives in the sorted list like any other and is *not* a boundary point, so taken at
+face value it splits one inside stretch into two abutting ones — measured on an L-profile cutter,
+some rulings reported **three** stretches, which a straight line meeting two convex arms cannot do.
+Stretches sharing an endpoint are therefore merged, which is exact rather than a tolerance: the union
+of two intervals sharing an endpoint *is* the interval, and the shared value is one rational by
+construction.
+
+A convex profile cannot exhibit this — its carriers are supporting lines, so every extra crossing
+lands outside the inside stretch. That is why §10's band builder never needed the rule, and it is a
+fair warning about the rest of §11: the convex path's silence is not evidence.
+
+### 11.4 Between events nothing changes, so the tracer is a sweep
 
 Partition the window at the event set. Inside a cell the stretch count is constant and each
 stretch's two ends are continuous in σ, so the footprint restricted to a cell **is** a stack of
@@ -584,7 +603,7 @@ are read off the resulting graph. A footprint that is one connected region yield
 vertex sequence turns around in σ — which p-curves have carried since PC.1 and a rail chain never
 could.
 
-### 11.4 The search buys tightness; soundness rests where it already did
+### 11.5 The search buys tightness; soundness rests where it already did
 
 Worth stating plainly because it is what makes the milestone safe to build incrementally:
 **nothing rests on the event set being complete.** §10.3's discipline is unchanged — every emitted
@@ -594,7 +613,7 @@ the deviation folded into `ε`. An event the sweep stepped over shows up as a lo
 performance improvement over bisection sweeps, not a soundness dependency, and the milestone carries
 a test that says so: perturb the event set and `ε` degrades while the geometry stays honest.
 
-### 11.5 What stays refused, and why each is its own feature
+### 11.6 What stays refused, and why each is its own feature
 
 - **A footprint with its own hole** (the ring, §10.1's third row). An annular through-cut leaves a
   disc of material floating, disconnected from the rest — that is two parts, not one hole, and the

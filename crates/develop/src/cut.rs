@@ -314,7 +314,7 @@ impl<B: Backend> MuCut<B> {
 ///
 /// **This is a tightness device, not a soundness one.** A σ this misses — two events inside one
 /// `tol`-wide bracket, say — costs the tracer accuracy, and the σ-midpoint comparison against the
-/// fill rule is what keeps the emitted boundary honest regardless (§11.4). Erring toward *more*
+/// fill rule is what keeps the emitted boundary honest regardless (§11.5). Erring toward *more*
 /// brackets is therefore free, which is why nothing here works to suppress a spurious root.
 ///
 /// `Err` only if a Sturm chain fails its own hypothesis check ([`CutFitFault::EventChainUnverified`]).
@@ -778,24 +778,27 @@ pub struct RulingPatch<B: Backend = Bignum> {
 
 /// The ruling at `sigma`, intersected with the solid whose **boundary** is `forms` (one µ̂-form per
 /// wall) and whose **inside** is `inside(σ, µ̂)` — the two-view split of
-/// `docs/cutter-extrude-design.md` §2.1, read along one ruling.
+/// `docs/cutter-extrude-design.md` §2.1, read along one ruling. **Every** stretch the ruling spends
+/// inside the solid, in increasing µ̂.
 ///
 /// Every wall contributes its crossings; sorted, they cut the ruling into stretches, each wholly
 /// inside the solid or wholly outside, so one membership test per stretch classifies it exactly.
-/// This is the exact sibling of the resolver's float `extruded_shadow` — same construction, but the
-/// crossings are rationals rather than `f64`, because what is built from them is emitted geometry
-/// rather than a structural decision.
+/// This is the exact sibling of the resolver's float `extruded_shadow` — same construction and now
+/// the same *shape* of answer (`Shadow(Vec<Patch>)` since AUTH.1e.1), but the crossings are
+/// rationals rather than `f64`, because what is built from them is emitted geometry rather than a
+/// structural decision. That the two views agree stretch-for-stretch is what §10.4's D2 contract
+/// rests on.
 ///
-/// `Ok(None)` when the ruling misses the solid. Refuses rather than guessing: several inside
-/// stretches are [`ShadowNotSimple`](CutFitFault::ShadowNotSimple), an inside stretch running to
-/// infinity is [`ShadowUnbounded`](CutFitFault::ShadowUnbounded), an unreadable fill is
-/// [`ShadowUndecided`](CutFitFault::ShadowUndecided).
-fn ruling_patch<B: Backend, F>(
+/// An empty result means the ruling misses the solid. Two refusals survive the generalization,
+/// because neither is about *how many* stretches there are: an inside stretch running to infinity is
+/// [`ShadowUnbounded`](CutFitFault::ShadowUnbounded) — not an interior hole at all — and an
+/// unreadable fill is [`ShadowUndecided`](CutFitFault::ShadowUndecided).
+fn ruling_patches<B: Backend, F>(
     forms: &[MuCut<B>],
     sigma: &Rat<B>,
     inside: &F,
     sqrt_eps: &Rat<B>,
-) -> Result<Option<RulingPatch<B>>, CutFitFault>
+) -> Result<Vec<RulingPatch<B>>, CutFitFault>
 where
     F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
 {
@@ -831,7 +834,7 @@ where
         return if decide(&Rat::from_i128(0), &one)? {
             Err(CutFitFault::ShadowUnbounded)
         } else {
-            Ok(None)
+            Ok(Vec::new())
         };
     }
     let span = cuts[cuts.len() - 1].0.sub(&cuts[0].0);
@@ -849,27 +852,63 @@ where
             return Err(CutFitFault::ShadowUnbounded);
         }
     }
-    let mut found: Option<RulingPatch<B>> = None;
+    let mut found: Vec<RulingPatch<B>> = Vec::new();
     for pair in cuts.windows(2) {
         let (lo, hi) = (&pair[0], &pair[1]);
         let width = hi.0.sub(&lo.0);
         if width.sign() <= 0 {
-            continue;
+            continue; // two walls crossing at the same µ̂ — a corner, not a stretch
         }
         if !decide(&lo.0.add(&hi.0).mul(&Rat::new(1, 2)), &width)? {
             continue;
         }
-        if found.is_some() {
-            return Err(CutFitFault::ShadowNotSimple);
+        // Merge with the previous stretch when they share their endpoint. A **carrier** is the
+        // whole infinite line, not the profile edge on it, so a non-convex profile has carriers
+        // that run through its own interior — the L's `y = 1` is the top of one arm and interior
+        // to the other. A ruling crossing there gets a crossing point that is not a boundary
+        // point, and reporting it would split one stretch into two abutting ones (measured: an L
+        // reporting *three* stretches where a straight line can meet it in at most two). The
+        // union of two intervals sharing an endpoint is the interval, so merging is exact rather
+        // than a tolerance. Convex profiles never hit this — their carriers are supporting lines,
+        // so every extra crossing lands outside the inside stretch — which is why AUTH.1e.4 could
+        // not have seen it.
+        match found.last_mut() {
+            Some(prev) if prev.hi.cmp(&lo.0) == Ordering::Equal => {
+                prev.hi = hi.0.clone();
+                prev.hi_at = hi.1;
+            }
+            _ => found.push(RulingPatch {
+                lo: lo.0.clone(),
+                hi: hi.0.clone(),
+                lo_at: lo.1,
+                hi_at: hi.1,
+            }),
         }
-        found = Some(RulingPatch {
-            lo: lo.0.clone(),
-            hi: hi.0.clone(),
-            lo_at: lo.1,
-            hi_at: hi.1,
-        });
     }
     Ok(found)
+}
+
+/// [`ruling_patches`] restricted to a **band**: the single stretch, or
+/// [`ShadowNotSimple`](CutFitFault::ShadowNotSimple) if the ruling meets the cutter more than once.
+///
+/// The AUTH.1e.4 band builder's view of the ruling, kept as thin sugar over the general reader
+/// rather than as a second implementation: one engine computes the stretches, and the band's scope
+/// restriction is the one line that says *how many* it is willing to take. AUTH.2c replaces the
+/// caller, not the engine.
+fn ruling_patch<B: Backend, F>(
+    forms: &[MuCut<B>],
+    sigma: &Rat<B>,
+    inside: &F,
+    sqrt_eps: &Rat<B>,
+) -> Result<Option<RulingPatch<B>>, CutFitFault>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    let mut patches = ruling_patches(forms, sigma, inside, sqrt_eps)?;
+    if patches.len() > 1 {
+        return Err(CutFitFault::ShadowNotSimple);
+    }
+    Ok(patches.pop())
 }
 
 /// One vertex of a multi-wall loop's boundary: the ruling, both of its ends, and which wall bounds
@@ -2929,6 +2968,179 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── AUTH.2b: every inside stretch ───────────────────────────────────────────────────────
+
+    /// An L-shaped profile at `(cx, cy)`, CCW, arm `1/4` and thickness `1/8` — one reflex corner,
+    /// so a ruling can meet it in two stretches. The shape AUTH.2 exists for.
+    fn l_profile(cx: &Q, cy: &Q) -> Vec<geom::content::Edge<Bignum>> {
+        let (arm, th, z) = (Q::new(1, 4), Q::new(1, 8), Q::from_i128(0));
+        let pt = |dx: &Q, dy: &Q| [cx.add(dx), cy.add(dy)];
+        arrange2d::profile::Profile::new()
+            .polygon(&[
+                pt(&z, &z),
+                pt(&arm, &z),
+                pt(&arm, &th),
+                pt(&th, &th),
+                pt(&th, &arm),
+                pt(&z, &arm),
+            ])
+            .into_edges()
+    }
+
+    /// The pieces an L-profile cutter needs: its walls, their µ̂-forms, the fill rule, and a window.
+    #[allow(clippy::type_complexity)]
+    fn l_cutter() -> (
+        geom::chart::Chart<Bignum>,
+        Vec<MuCut<Bignum>>,
+        crate::extrude::Cast<Bignum>,
+        Vec<geom::content::Edge<Bignum>>,
+        Interval<Bignum>,
+    ) {
+        let chart = fixtures::devices::cone_wrap();
+        let (cx, cy) = (Q::new(-1, 2), Q::new(27, 10));
+        let profile = l_profile(&cx, &cy);
+        let cast = crate::extrude::Cast::new(
+            xy_frame(),
+            crate::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("six distinct lines");
+        let zero = Q::from_i128(0);
+        let forms: Vec<MuCut<Bignum>> = walls
+            .iter()
+            .map(|w| cut_mu_form(&chart, w, &zero).expect("each wall pulls back"))
+            .collect();
+        let window = bounding_window(
+            &chart,
+            &CutSurface::Cylinder {
+                axis_point: [cx, cy, Q::from_i128(0)],
+                axis_dir: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+                r2: Q::from_i128(1),
+            },
+        );
+        (chart, forms, cast, profile, window)
+    }
+
+    /// **A ruling that meets a non-convex cutter twice reports both stretches — and the band still
+    /// refuses it.** The engine reads the footprint; the band's scope restriction is one line in the
+    /// sugar over it, which is what lets AUTH.2c replace the caller without touching the reader.
+    ///
+    /// The two stretches are shown to be *genuinely* separate rather than an artifact: the fill rule
+    /// says **outside** at the midpoint of the gap between them.
+    #[test]
+    fn a_non_convex_ruling_reports_both_stretches_while_the_band_refuses() {
+        let (chart, forms, cast, profile, window) = l_cutter();
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        const SCAN: i128 = 400;
+        let mut double: Option<(Q, Vec<RulingPatch<Bignum>>)> = None;
+        let mut single = 0;
+        for k in 0..=SCAN {
+            let s = window
+                .lo
+                .add(&window.hi.sub(&window.lo).mul(&Q::new(k, SCAN)));
+            let Ok(ps) = ruling_patches(&forms, &s, &inside, &cfg.sqrt_eps) else {
+                continue;
+            };
+            match ps.len() {
+                0 => {}
+                1 => single += 1,
+                _ => {
+                    if double.is_none() {
+                        double = Some((s, ps));
+                    }
+                }
+            }
+        }
+        let (s, ps) = double.expect("some ruling must cross both arms of the L");
+        assert_eq!(
+            ps.len(),
+            2,
+            "an L is two convex arms: at most two stretches"
+        );
+        assert!(single > 0, "and most rulings still meet it once");
+
+        // The gap between them is really outside — otherwise this is one stretch misreported.
+        let gap_mid = ps[0].hi.add(&ps[1].lo).mul(&Q::new(1, 2));
+        assert_eq!(
+            inside(&s, &gap_mid),
+            Some(false),
+            "the two stretches must be separated by material the cutter does not cover"
+        );
+        assert!(
+            ps[0].hi.cmp(&ps[1].lo) == core::cmp::Ordering::Less,
+            "and ordered in µ̂"
+        );
+
+        // The band reader, at the same ruling, refuses by name rather than picking a stretch.
+        match ruling_patch(&forms, &s, &inside, &cfg.sqrt_eps) {
+            Err(CutFitFault::ShadowNotSimple) => {}
+            Err(f) => panic!("the band must refuse as ShadowNotSimple, got {f:?}"),
+            Ok(_) => panic!("the band must refuse a two-stretch ruling, not accept one"),
+        }
+    }
+
+    /// **A carrier crossing the cutter's own interior is not a boundary, and must not split a
+    /// stretch.** A carrier is the whole infinite line, not the profile edge on it, so a non-convex
+    /// profile has carriers running through its own interior — the L's `y = 1` bounds one arm and is
+    /// interior to the other. Those crossings arrive in the sorted list like any other, and reported
+    /// as-is they break one stretch into two abutting ones: measured before the fix, this L reported
+    /// **three** stretches on some rulings, which a straight line meeting two convex arms cannot do.
+    ///
+    /// Convex profiles cannot exhibit it — their carriers are supporting lines, so every extra
+    /// crossing falls outside the inside stretch — which is exactly why AUTH.1e.4 never saw it.
+    #[test]
+    fn a_carrier_crossing_the_interior_does_not_split_a_stretch() {
+        let (chart, forms, cast, profile, window) = l_cutter();
+        let cfg = DevConfig::tight();
+        let zero = Q::from_i128(0);
+        let inside = |s: &Q, mu: &Q| -> Option<bool> {
+            let p = chart.surface(mu, &zero).eval(s)?;
+            cast.contains(&p, &profile)
+        };
+        const SCAN: i128 = 400;
+        let mut interior_crossings = 0;
+        for k in 0..=SCAN {
+            let s = window
+                .lo
+                .add(&window.hi.sub(&window.lo).mul(&Q::new(k, SCAN)));
+            let Ok(ps) = ruling_patches(&forms, &s, &inside, &cfg.sqrt_eps) else {
+                continue;
+            };
+            // No stretch may report more than the two an L can offer, at any ruling.
+            assert!(
+                ps.len() <= 2,
+                "an L cannot meet a straight ruling in {} stretches — a carrier crossing its own \
+                 interior was reported as a boundary",
+                ps.len()
+            );
+            // Count the crossings that fall strictly *inside* a reported stretch: each is a
+            // phantom boundary the merge had to absorb.
+            for form in &forms {
+                let Some(roots) = form.roots_at(&s, &cfg.sqrt_eps) else {
+                    continue;
+                };
+                for (mu, _) in roots {
+                    if ps.iter().any(|p| {
+                        p.lo.cmp(&mu) == core::cmp::Ordering::Less
+                            && mu.cmp(&p.hi) == core::cmp::Ordering::Less
+                    }) {
+                        interior_crossings += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            interior_crossings > 0,
+            "this fixture must actually exercise the case — no carrier crossed the L's interior"
+        );
     }
 
     // ── AUTH.2a: the exact event set ────────────────────────────────────────────────────────
