@@ -11,5 +11,7 @@ lattice.workspace = true
 certify-core.workspace = true
 author.workspace = true
 develop.workspace = true
+geom.workspace = true
+arrange2d.workspace = true
 export.workspace = true
 fixtures.workspace = true

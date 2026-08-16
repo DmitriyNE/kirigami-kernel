@@ -722,3 +722,62 @@ emits today — is what is left to refuse.
 - **Disconnected footprints.** The tracer produces one loop per component naturally, and disjoint
   loops cost the downstream nothing — so this may fall out free. It is not promised, and no fixture
   depends on it.
+
+### 11.9 The acceptance demo, and what it had to measure (AUTH.2f)
+
+Three fixtures go through the device gore, and the reason there are three is that each measures
+something the others cannot.
+
+**The L-slot is the milestone's own shape, and its fixture had to be argued into existing** (§11.6):
+arms along the rulings give a band, so the L is laid out on the rotated `(3,4,5)` axes with its notch
+opening *across* them. That the fixture then produces the phenomenon is not asserted — it is
+**measured on the emitted flat pattern**, and the measurement is available because the development
+is an isometry that sends each ruling to a ray from the flat apex. A ruling meeting the cutter twice
+is therefore a ray meeting the developed hole in two intervals, four crossings; every band gives
+two, however non-convex its planar shape. Measured: the slot 4, the three metric probes 2 / 2 / 2.
+`acceptance::measure::max_ray_crossings` is the whole of it, and it reads the same polylines the SVG
+draws.
+
+**The two-sided differential needs a third clause once the footprint is non-convex.** AUTH.1e.4's
+`disc(h) ⊂ square(h) ⊂ disc(h√2)` transfers directly — the slot must contain a disc inscribed in one
+arm and lie within one circumscribing the whole L — but both containments are satisfied by a slot
+silently convexified to its bounding band, which is the failure the milestone is most exposed to. So
+a third probe sits **inside the notch the L does not cover**, and the slot must be disjoint from it.
+All three are `Cutter::vertical_cylinder`, the metric path, which shares no line of code with the
+tracer. Measured areas: `0.018307 < 0.069952 < 0.175750`, notch `0.011717` disjoint. Containment is
+decided by non-crossing plus one interior point rather than by sampling vertices, because a vertex
+test passes on a ring that pokes out between two of its own vertices.
+
+**The keyhole exists for the mixed-degree case.** Every wall of a polygon is affine, and §11.2's
+warning was that the published quadratic-by-quadratic resultant is *identically zero* on two affine
+walls — so a test set of polygons cannot distinguish a correct pairwise resultant from a wrong one.
+The keyhole's two stretches rejoin over a saddle whose two walls are the head's **circle** and a
+straight stem side, which is that case; the `develop` sweep test asserts it by reading the walls each
+end of the closing gap names and checking their pullbacks differ in degree. Building the fixture was
+itself a measurement: the notch beside the stem is what a ruling has to pass through, so the stem is
+narrow (`7/25` of the head radius) and the profile rotated — 14 two-stretch rulings against 9 and 8
+for the alternatives.
+
+**A σ-station crossing is invisible in the artifact, so it is counted.** A hole that crossed a
+station and one that sat inside a slice certify alike, build alike, and differ only in which branch
+of the builder ran — there is nothing in the emitted solid to assert. `develop::counters` gained
+`poly_slice_clips`, bumped once per slice the general polygon channel trims; with the slot as the
+part's only polygon hole, above 1 says it crossed. Measured 2 for both fixtures, 0 for the control.
+Without it the demo could only have asserted consequences a within-slice hole shares, and AUTH.2e/2
+would have been on the demo's critical path by assertion rather than by evidence.
+
+**Direction ② is checked against the profile, not against itself.** The flat pattern's own emitted
+vertices are folded back through the certified inversion, and since the sweep is parallel to `z` a
+point of the cutter's wall projects onto the **authored profile's boundary** — so the residual is the
+distance from the recovered `(x, y)` to the L's own polygon, a quantity neither leg computes. A
+round-trip compared against its own input would be satisfied by both legs sharing a mistake.
+Measured 1.3e-9 against the L's `1/8` thickness.
+
+**What the demo found.** Two engine defects surfaced only here, both of the fail-*open* kind the
+certificates cannot see, and both recorded in `docs/engineering-log.md`: a mixed quadric/affine
+profile received a σ-window covering only its quadric part, so the tracer saw the footprint run off
+the scan's edge and refused a perfectly good keyhole; and a small metric disc whose σ-window is
+narrower than one cell of `surface_disc_roots`' fixed 256-subdivision seed resolves `Inactive` — a
+green certificate on a cut that does nothing. The first is fixed here (the bounding proxy is used
+whenever *any* wall is affine, not only when all of them are); the second is a pre-existing AUTH.1
+sampling gap and is filed.

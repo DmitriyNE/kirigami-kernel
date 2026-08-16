@@ -9,7 +9,7 @@ use export::approx::rat_to_f64;
 use fixtures::devices::cone;
 use lattice::{Bignum, Interval, Rat};
 
-mod common;
+use acceptance::measure as common;
 
 type Q = Rat<Bignum>;
 

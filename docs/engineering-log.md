@@ -683,6 +683,106 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Every certificate `Verified` and the STEP write refused the shell: the exact tier's minimum
+  feature is smaller than the exporter's.** The AUTH.2f acceptance demo's traced-slot solid audited
+  clean — watertight, manifold, genus as expected — and OCCT's `BRepBuilderAPI_MakeEdge` then
+  rejected it with `DifferentPointsOnClosedCurve`. The mechanism is a seam, not a bug in either
+  side. The tracer samples one grid step (`2⁻³⁰ ≈ 9.3·10⁻¹⁰`) inside each cell end, which is what
+  keeps a pinch tight (§11.4), so a traced loop carries a pair of vertices `≈10⁻⁹` apart at every
+  cell boundary; each becomes a wall whose curved rails span `≈10⁻⁸` in 3-D, an order **below**
+  OCCT's `10⁻⁷` vertex tolerance. The curve's own two ends therefore read as coincident — a closed
+  curve — while the two vertices handed with it are distinct, and OCCT declines. Measured on the
+  L-slot: 220 shell vertices at only **145 distinct positions**, 76 sub-tolerance Bézier edges;
+  the disc and metric-drill panels, whose loops have no cell structure, had none. Fixed on both
+  sides of the same principle — `hole_poly` merges emitted vertices closer than a declared
+  `MIN_STEP` (`2⁻²⁰`, three orders above the snap grid and three below the device's certified cut
+  bound), and the solid builder's station list is thinned the same way, since a slice `10⁻⁹` wide
+  has the same problem in its lids. The keyhole then exports clean (156/156 distinct vertices, 0
+  sub-tolerance edges) and the L-slot's residue fell 76 → 4, **still enough for OCCT to refuse**.
+  The four survivors sit at `σ = 0`, where this L's authored corner lands exactly on the panel's own
+  station, and they are not polygon vertices or stations — coarsening `MIN_STEP` by 16× does not
+  move them — so they come from a third source (a boundary rail-piece pair, most likely two
+  independent rational fits evaluated at their shared join). Left open, with a task. Two general
+  points are worth keeping. **The verdict does not cover the exporter**: `Verified` is a statement
+  about the rails, and says nothing about whether a floating-point consumer can represent what was
+  built — a demo that does not actually run the exporter cannot discover that. And **an export
+  profile needs a declared minimum feature size, enforced where geometry crosses into it**, rather
+  than an assumption that the exact tier never emits anything smaller.
+  *2026-08-16 · `crates/export/src/trim.rs::hole_poly`, `crates/export/src/brep_build.rs::thin_stations`*
+
+- **A σ-window derived from the quadric walls does not cover a profile that also has affine ones —
+  and the tracer refuses the cut rather than mis-building it.** Station targeting needs the σ-range
+  where a cutter is active. For a quadric wall that is its tangent-ruling window; a profile of
+  straight edges has none, so AUTH.1e.2 gave an **all-affine** profile a bounding-circle proxy. The
+  criterion was one case too narrow: a *mixed* profile — AUTH.2f's keyhole, a circular head with a
+  straight stem — took its window from the head's circle alone, and the stem runs past it. The
+  tracer then found its footprint occupying the scan's own first or last ruling and refused with
+  `ShadowUnbounded`, surfacing as `PartFault::CutUnresolved`, insensitive to `clearance` and
+  `segments` because it was structural rather than loose. Fixed by asking for the proxy whenever
+  **any** wall is affine; a profile whose walls are all quadric still needs none, since each wall's
+  window covers its own arc. The same edit removed a second latent error: the "is this bracket a
+  real window" test read the *wall-indexed* pullback, which is the proxy's own only in the all-affine
+  case, so a mixed profile filtered the proxy's brackets by the circle's reality. Both are the same
+  mistake — a rule stated for the case that motivated it rather than for the property it needs. The
+  general form is worth keeping: **a superset of stations costs only samples where the cut is
+  absent; a missing one loses the cut**, so when the covering argument is in doubt, widen.
+  *2026-08-16 · `crates/author/src/resolve.rs`, AUTH.2f*
+
+- **A small metric disc can resolve `Inactive` — a green certificate on a cut that does nothing —
+  when its σ-window is narrower than one cell of the resolver's root scan.** Found while building
+  AUTH.2f's metric probes: a disc of radius `1/16` at `(1/16, 37/16)` on the device gore resolves
+  `OpRole::Inactive` and develops to a hole-free panel, while the *same radius* at `(1/16, 9/4)`
+  cuts a hole. The two are geometrically indistinguishable in kind, and the discriminator is
+  arithmetic: `surface_disc_roots` seeds its sign-change scan with a fixed **256** subdivisions of
+  the whole σ-band `[−7/2, 7/2]`, a cell width of `7/256 ≈ 0.02734`, and the two windows are
+  `0.02703` and `0.02779` wide. The narrower one puts both tangent roots inside one cell, the scan
+  sees no sign change, and the op is reported as never touching the material. This is the
+  fail-**open** direction and nothing downstream can object: a hole that was never derived leaves no
+  trace in the flat pattern, the solid, or ε. Worth stating as a pattern — the resolver's station
+  targeting is still a *scan* while AUTH.2a built the **exact** event set (disc + resultant,
+  Sturm-isolated) for the tracer, so the fix is to point the same machinery at this one. Not fixed
+  here: it is a pre-existing AUTH.1 gap with a blast radius across every pinned ε, chord golden and
+  work budget, and it deserves its own slice. The AUTH.2f probes were placed clear of the threshold
+  instead, which is itself the reason to record the number: the next fixture placed by eye will land
+  on it. *2026-08-16 · `crates/export/src/trim.rs::surface_disc_roots`, `crates/author/src/resolve.rs`*
+
+- **A merge is not distinguished by its stretch count, and the first version of the keyhole test
+  proved nothing.** AUTH.2f needed a fixture exercising a genuine **merge** — two ruling stretches
+  rejoining — as opposed to the L's births and deaths. The first test asserted exactly that: sweep,
+  find the drop from two stretches to one, and check that what closed was the **gap** between them
+  rather than either one's width. It passed. Pointed at the L instead of the keyhole, it also
+  passed, because an L's two arms *do* rejoin at the reflex corner — the premise that the L only
+  births and dies was simply wrong, and the test was measuring a property both shapes have. What is
+  actually the keyhole's own is **which walls face across the closing gap**: the head's circle and a
+  straight stem side, so the saddle is the mixed quadric-against-affine case of the pairwise
+  resultant, which no polygon can reach and which §11.2 asks for by name. Re-asserted by reading the
+  wall each end names and checking their pullbacks differ in degree; the L now fails it. The general
+  lesson is the vv-guide's, one turn further in: it is not enough to name the phenomenon a fixture is
+  for — the *assertion* has to be one the other fixtures fail. *2026-08-16 · `crates/develop/src/cut.rs`*
+
+- **The fixture that produces the phenomenon had to be searched for, twice, and the search is
+  recorded because it is not free.** §11.6 already noted that an L along the rulings has a band
+  footprint. The keyhole added the same lesson for a curved profile: what a ruling has to cross to
+  see two stretches is the small **notch beside the stem**, so a stem `3/5` as wide as the head
+  nearly closes it. Measured over an 800-ruling sweep, a wide stem gave 9 two-stretch rulings, a
+  narrow one (`7/25`) 14, and the rotation mattered as much — the unrotated keyhole gave 8, four
+  orientations gave 0. Both constants in `keyhole_profile` are therefore load-bearing, and the doc
+  comment says so, because the next person to "simplify" the fixture to round numbers will silently
+  delete the property it exists to exercise. *2026-08-16 · `crates/develop/src/cut.rs`, `crates/acceptance/src/lib.rs`*
+
+- **A σ-station crossing leaves no trace in the artifact, so the acceptance demo counts it.** A hole
+  that crossed a station and one that sat inside a single slice certify alike and build alike; the
+  emitted solid has nothing that distinguishes them, since the extra wall a crossing adds is
+  indistinguishable from an ordinary one. AUTH.2f could therefore assert only *consequences* a
+  within-slice hole shares — watertight, manifold, one added handle — and would have had AUTH.2e/2
+  on its critical path by assertion rather than by evidence. `develop::counters::poly_slice_clips`
+  closes it: bumped once per slice the builder's general polygon channel trims, so with the slot as
+  the part's only polygon hole a count above 1 *is* the crossing. Measured 2 for both AUTH.2f
+  fixtures and 0 for the un-slotted control (the control's zero matters — otherwise the counter
+  might be measuring the panel rather than the slot). Worth generalizing: when a milestone's claim is
+  about **which branch ran**, the artifact is the wrong place to look for it, and a counter is not a
+  performance tool but a witness. *2026-08-16 · `crates/develop/src/counters.rs`, `crates/export/src/brep_build.rs`*
+
 - **"A radial at an interior station is a shared cross-ring" was a property of `HoleRail`, not of
   the builder — and reading it as the builder's made a `Verified` solid with four free edges.** The
   trim builder emits a wall per footprint edge except a radial at an interior σ-station, which two

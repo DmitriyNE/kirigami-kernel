@@ -1,35 +1,38 @@
-//! The **sketch-extrude cutter** (AUTH.1) on the construction facade — a *drafted* hole.
+//! The **sketch-extrude cutter** (AUTH.1 / AUTH.2) on the construction facade — drafted holes and
+//! non-convex slots through the Stage-1 device gore, both product directions, per stage certified.
 //!
-//! The Stage-1 device-cone gore, authored as a [`Part`] exactly as `flex_panel` does, but with the
-//! interior feature cut by [`Cutter::extrude`]: a profile drawn in a rational frame and swept from
-//! a homogeneous apex. Here the apex is a finite **cast point**, so the wall is a cone and the hole
-//! narrows with depth — the draft angle the milestone is named for. Pushing the cast point outward
-//! degrades it continuously to the parallel drill; there is no discontinuity at "parallel", because
-//! parallel is `w = 0`.
+//! Three features are cut through the same panel, and the point of running all three is that the
+//! certificates cannot tell them apart. `ε` is the max over pipeline stages and this ~296° gore's
+//! boundary dominates it, so a drafted hole, an undrafted one and a slot that missed entirely all
+//! report the same number. What distinguishes them is **geometry**, which is what this driver
+//! measures and prints:
 //!
-//! For comparison the same panel is emitted with the hole authored as a **direction** sweep, which
-//! is exactly `Cutter::vertical_cylinder` — the two agree to the digit, which is the point: the
-//! general cutter reproduces the special one it generalizes.
+//! - a **drafted disc**, swept from a finite cast point, against the parallel sweep of the same
+//!   profile — the taper law `1 − z/z_apex` the apex implies (AUTH.1f);
+//! - an **L-slot**, whose footprint no near/far band can express: a ruling meets it twice, and the
+//!   flat pattern is bracketed by three metric discs — one it must contain, one it must lie within,
+//!   and one, in the notch, it must leave alone (AUTH.2f);
+//! - a **keyhole**, whose head is a circle and whose stem is straight, so its saddle joins walls of
+//!   different degree — the case no polygon reaches.
 //!
-//! **Not yet.** A profile of several walls — a polygonal slot, a ring — resolves correctly but
-//! cannot be *realized*: the hole loop is built from one surface's two µ̂-branches, and a
-//! multi-wall footprint's boundary switches between walls at the profile's corners. See AUTH.1e.4.
+//! Both directions run. Direction ① develops the 3-D cut to the flat pattern and writes the SVG;
+//! direction ② folds the flat pattern's own vertices back and reports how far they land from the
+//! profile they were drawn from. The solid is written as STEP under `--features step`.
 //!
 //! ```text
-//! cargo run --example sketch_cutter                                   # panel + SVG
+//! cargo run --example sketch_cutter                                   # panels + SVG
 //! nix develop -c cargo run --example sketch_cutter --features step    # + STEP
 //! ```
 //!
-//! Flags: `--segments <n>` (rail discretization, default 72), `--out-dir <dir>` (default
-//! `generated-demos/`).
+//! Flags: `--out-dir <dir>` (default `generated-demos/`).
 
+use acceptance::measure;
 use arrange2d::profile::Profile;
-use author::construct;
-use author::part::{Cutter, Part, SupportFn};
+use author::part::{FlatPattern, Part};
 use certify_core::Verdict;
-use develop::extrude::{Apex, Frame};
+use develop::counters;
+use develop::extrude::Apex;
 use export::approx::rat_to_f64;
-use fixtures::devices::cone;
 use geom::content::Edge;
 use lattice::{Bignum, Rat};
 
@@ -42,84 +45,186 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// A disc's boundary, through the shared [`Profile`] builder.
-///
-/// This used to be twenty lines of hand-built `ArcPiece`s — the ergonomics gap this demo made
-/// visible. `Profile` closed it: each constructor builds a `Curve` and hands it to `arrange2d`'s
-/// own `decompose`, so nothing here re-derives an arc.
-fn disc(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
-    Profile::new().circle(cx, cy, r).into_edges()
+fn parallel() -> Apex<Bignum> {
+    Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction")
 }
 
-/// The `z = 0` sketch plane in world coordinates, orthonormal so a profile circle is a true circle.
-fn sketch_plane() -> Frame<Bignum> {
-    Frame::new(
-        [qi(0), qi(0), qi(0)],
-        [qi(1), qi(0), qi(0)],
-        [qi(0), qi(1), qi(0)],
-    )
-    .expect("the axes are independent")
+fn panel(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
+    acceptance::sketch_panel(Some((apex, profile)))
 }
 
-/// The panel recipe. `with_cuts` adds the two extruded features (off = the blank).
-fn panel(segments: usize, with_cuts: bool, apex: Apex<Bignum>) -> Part<Bignum> {
-    let witness = cone()
-        .surface(&qi(2), &qi(0))
-        .eval(&qi(0))
-        .expect("the device cone is regular at σ = 0");
-    let mut part = construct::from_chart::<Bignum>(&cone())
-        .region_sigma(q(-7, 2), q(7, 2), SupportFn::inherit())
-        .keep_near(witness)
-        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3))) // bound the blank
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2))) // the annulus
-        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16))) // rim notch
-        .clearance(qi(1))
-        .thickness(q(1, 8))
-        .segments(segments);
-    if with_cuts {
-        // The interior hole, swept from the given apex. With a finite cast point the wall is a
-        // cone, so the cut narrows the further the sheet sits from the sketch plane.
-        part = part.subtract(Cutter::extrude(
-            sketch_plane(),
-            apex,
-            disc(qi(0), q(11, 5), q(1, 5)),
-        ));
-    }
-    part
-}
-
-/// The widest extent of the first interior hole in the developed pattern — the measurable the
-/// faithfulness check compares, since a drafted cut must come out smaller than a parallel one.
-///
-/// Goes through `export::svg::region_to_polys`, the **quarantined** exact→`f64` bridge, rather than
-/// converting coordinates by hand: a profile boundary's endpoints can be algebraic and their
-/// rational brackets large enough that a naive `rat_to_f64` returns NaN — which `min`/`max` then
-/// swallow, turning a real measurement into a silent "could not measure".
-fn hole_width(flat: &author::part::FlatPattern<Bignum>) -> Option<f64> {
-    let polys = export::svg::region_to_polys(flat.region());
-    // The outer ring comes first, so the first interior ring is the hole.
-    let ring = polys.faces.first()?.rings.get(1)?;
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for p in ring {
-        if p[0].is_finite() {
-            lo = lo.min(p[0]);
-            hi = hi.max(p[0]);
+/// Develop, print the per-stage line, and hand back the pattern.
+fn develop(name: &str, part: &Part<Bignum>) -> Option<FlatPattern<Bignum>> {
+    let t0 = std::time::Instant::now();
+    match part.develop() {
+        Verdict::Verified(f) => {
+            let cut = f.report().ops[3]
+                .cut_eps
+                .as_ref()
+                .map(rat_to_f64)
+                .unwrap_or(f64::NAN);
+            println!(
+                "{name:<9} develop   Verified   ε {:.3e}   cut ε {cut:.3e}   1 face · {} hole(s)   \
+                 [{:.1}s]",
+                rat_to_f64(f.eps()),
+                f.region().faces[0].holes.len(),
+                t0.elapsed().as_secs_f64()
+            );
+            Some(f)
+        }
+        Verdict::Refuted(fault) => {
+            println!("{name:<9} develop   Refuted({fault:?})");
+            None
+        }
+        Verdict::Unresolved(e) => {
+            println!(
+                "{name:<9} develop   Unresolved at ε {:.3e} — raise clearance/segments",
+                rat_to_f64(&e)
+            );
+            None
         }
     }
-    (hi > lo).then_some(hi - lo)
+}
+
+/// The one interior hole's emitted ring.
+fn ring(f: &FlatPattern<Bignum>) -> Vec<[f64; 2]> {
+    measure::emitted_hole_rings(f.region())
+        .first()
+        .and_then(|face| face.first().cloned())
+        .unwrap_or_default()
+}
+
+fn width(ring: &[[f64; 2]]) -> f64 {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in ring {
+        lo = lo.min(p[0]);
+        hi = hi.max(p[0]);
+    }
+    hi - lo
+}
+
+fn write_svg(out_dir: &str, name: &str, f: &FlatPattern<Bignum>) {
+    let svg = f.svg(720);
+    let path = format!("{out_dir}/sketch_{name}.svg");
+    std::fs::write(&path, &svg).expect("write the flat pattern");
+    println!("{name:<9} SVG       wrote {path}   ({} bytes)", svg.len());
+}
+
+#[cfg(feature = "step")]
+fn write_step(out_dir: &str, name: &str, part: &Part<Bignum>) {
+    counters::reset();
+    match part.solid() {
+        Verdict::Verified(solid) => {
+            let path = format!("{out_dir}/sketch_{name}.step");
+            let report = solid.write_step(&path);
+            let b = solid.brep();
+            println!(
+                "{name:<9} solid     {}   {} faces · free {} · non-manifold {} · {} slice clips \
+                 → {path}",
+                report.summary(),
+                b.faces().len(),
+                b.free_edges(),
+                b.nonmanifold_edges(),
+                counters::poly_slice_clips()
+            );
+        }
+        Verdict::Refuted(fault) => println!("{name:<9} solid     Refuted({fault:?})"),
+        Verdict::Unresolved(e) => {
+            println!("{name:<9} solid     Unresolved at ε {:.3e}", rat_to_f64(&e))
+        }
+    }
+}
+
+#[cfg(not(feature = "step"))]
+fn write_step(_out_dir: &str, name: &str, part: &Part<Bignum>) {
+    // Without OCCT the shell is still built and audited — only the `.step` file is skipped.
+    counters::reset();
+    match part.solid() {
+        Verdict::Verified(solid) => {
+            let b = solid.brep();
+            println!(
+                "{name:<9} solid     Verified   ε {:.3e}   {} faces · free {} · non-manifold {} · \
+                 {} slice clips   (STEP skipped — build under `nix develop --features step`)",
+                rat_to_f64(solid.eps()),
+                b.faces().len(),
+                b.free_edges(),
+                b.nonmanifold_edges(),
+                counters::poly_slice_clips()
+            );
+        }
+        Verdict::Refuted(fault) => println!("{name:<9} solid     Refuted({fault:?})"),
+        Verdict::Unresolved(e) => {
+            println!("{name:<9} solid     Unresolved at ε {:.3e}", rat_to_f64(&e))
+        }
+    }
+}
+
+/// Direction ②: fold the developed hole's own vertices back to 3-D and report the worst distance
+/// from the recovered `(x, y)` to the profile it was drawn from. The sweep is parallel to `z`, so
+/// a point of the cutter's wall projects onto the authored profile's boundary — a residual neither
+/// leg computes, since neither knows about the other.
+fn fold_back(name: &str, part: &Part<Bignum>, f: &FlatPattern<Bignum>, corners: &[[f64; 2]]) {
+    let Some(hole) = f.holes().first() else {
+        return;
+    };
+    let n = hole.vertices.len();
+    let seg_dist = |p: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (ux, uy) = (a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+        (ux * ux + uy * uy).sqrt()
+    };
+    let (mut worst, mut folded, mut eps) = (0.0f64, 0usize, 0.0f64);
+    for k in (0..n).step_by(n.div_ceil(12).max(1)) {
+        let (x, y) = hole.vertices[k].center();
+        match part.fold(&[[x, y]], &qi(0)) {
+            Verdict::Verified(w) => {
+                let p = &w.points[0];
+                let xy = [rat_to_f64(&p[0].mid()), rat_to_f64(&p[1].mid())];
+                let d = (0..corners.len())
+                    .map(|i| seg_dist(xy, corners[i], corners[(i + 1) % corners.len()]))
+                    .fold(f64::INFINITY, f64::min);
+                worst = worst.max(d);
+                eps = eps.max(rat_to_f64(&w.eps));
+                folded += 1;
+            }
+            other => {
+                println!(
+                    "{name:<9} fold      vertex {k}: {}",
+                    match other {
+                        Verdict::Refuted(fault) => format!("Refuted({fault:?})"),
+                        _ => "Unresolved".into(),
+                    }
+                );
+                return;
+            }
+        }
+    }
+    println!(
+        "{name:<9} fold      Verified   {folded} vertices   round-trip ε {eps:.3e}   worst \
+         profile residual {worst:.3e}"
+    );
+}
+
+/// The L-slot's six authored corners in world `(x, y)`, mirroring `acceptance::ell_slot`.
+fn ell_corners() -> Vec<[f64; 2]> {
+    let (cx, cy, a, t) = (-0.1f64, 2.2f64, 0.25f64, 0.125f64);
+    let (ux, uy, vx, vy) = (0.8f64, -0.6f64, 0.6f64, 0.8f64);
+    let p = |su: f64, sv: f64| [cx + ux * su + vx * sv, cy + uy * su + vy * sv];
+    vec![p(0.0, 0.0), p(a, 0.0), p(a, t), p(t, t), p(t, a), p(0.0, a)]
 }
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let mut segments = 72usize;
     let mut out_dir = "generated-demos".to_string();
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--segments" => {
-                segments = argv[i + 1].parse().expect("--segments <n>");
-                i += 2;
-            }
             "--out-dir" => {
                 out_dir = argv[i + 1].clone();
                 i += 2;
@@ -127,98 +232,90 @@ fn main() {
             other => panic!("unknown flag {other}"),
         }
     }
+    std::fs::create_dir_all(&out_dir).expect("create --out-dir");
 
-    println!("sketch-extrude cutter — device cone (β≈42°), gore σ∈[−7/2,7/2] (~296°)");
-    println!("  a DRAFTED hole: a profile disc swept from the cast point (0, 11/5, 12)");
+    println!("sketch-extrude cutter — device cone (β≈42°), gore σ∈[−7/2,7/2] (~296°)\n");
 
-    let drafted = Apex::point([qi(0), q(11, 5), qi(12)]);
-    let parallel = Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction");
-    let flat = match panel(segments, true, drafted.clone()).develop() {
-        Verdict::Verified(f) => f,
-        Verdict::Refuted(fault) => {
-            println!("develop: Refuted({fault:?}) — stopping");
-            std::process::exit(1);
-        }
-        Verdict::Unresolved(e) => {
-            println!(
-                "develop: Unresolved at ε ≈ {:.3e} — raise clearance/segments",
-                rat_to_f64(&e)
-            );
-            std::process::exit(1);
-        }
-    };
-    for (k, op) in flat.report().ops.iter().enumerate() {
+    // ── AUTH.1f: the draft angle ────────────────────────────────────────────────────────────────
+    let disc = |r: Q| Profile::new().circle(qi(0), q(11, 5), r).into_edges();
+    let drafted_part = panel(Apex::point([qi(0), q(11, 5), qi(12)]), disc(q(1, 5)));
+    let drafted = develop("drafted", &drafted_part);
+    let flat_par = develop("parallel", &panel(parallel(), disc(q(1, 5))));
+    if let (Some(a), Some(b)) = (&drafted, &flat_par) {
+        let (wa, wb) = (width(&ring(a)), width(&ring(b)));
         println!(
-            "op {k}:        {}  → {:?}   (derived)",
-            if op.subtract {
-                "subtract "
-            } else {
-                "intersect"
-            },
-            op.role
+            "drafted   faithful  {wa:.4} vs parallel {wb:.4}   ratio {:.3}   (taper law ≈ 0.797)",
+            wa / wb
+        );
+        write_svg(&out_dir, "drafted", a);
+    }
+
+    // ── AUTH.2f: the non-convex footprints ──────────────────────────────────────────────────────
+    let mut slot: Option<Vec<[f64; 2]>> = None;
+    for (name, profile, corners) in [
+        ("L-slot", acceptance::ell_slot(), Some(ell_corners())),
+        ("keyhole", acceptance::keyhole_slot(), None),
+    ] {
+        println!();
+        let part = panel(parallel(), profile);
+        let Some(f) = develop(name, &part) else {
+            continue;
+        };
+        let r = ring(&f);
+        if name == "L-slot" {
+            slot = Some(r.clone());
+        }
+        println!(
+            "{name:<9} phenom    a ruling meets the cut {} time(s)   (a band gives 1; the \
+             development sends rulings to rays from the flat apex)",
+            measure::max_ray_crossings(&r) / 2
+        );
+        println!(
+            "{name:<9} golden    longest emitted edge {:.1}% of the hole's extent",
+            measure::longest_edge_fraction(&r) * 100.0
+        );
+        write_svg(&out_dir, name, &f);
+        if let Some(c) = corners {
+            fold_back(name, &part, &f, &c);
+        }
+        write_step(&out_dir, name, &part);
+    }
+
+    // ── The two-sided differential, all three probes through the metric path ────────────────────
+    println!();
+    let [inner, outer, notch] = acceptance::ell_probes();
+    let probe = |(cx, cy, r2): (Q, Q, Q), name: &str| {
+        develop(name, &acceptance::sketch_drill(cx, cy, r2)).map(|f| ring(&f))
+    };
+    let (pi, po, pn) = (
+        probe(inner, "inscribed"),
+        probe(outer, "circumscr"),
+        probe(notch, "notch"),
+    );
+    if let (Some(s), Some(a), Some(o), Some(n)) = (&slot, &pi, &po, &pn) {
+        println!(
+            "\nL-slot    two-sided  contains the inscribed disc: {}   lies within the \
+             circumscribing one: {}   leaves the notch alone: {}",
+            measure::ring_inside(a, s),
+            measure::ring_inside(s, o),
+            measure::rings_disjoint(n, s),
+        );
+        println!(
+            "L-slot    areas      {:.6} < {:.6} < {:.6}   (notch {:.6}, disjoint)",
+            measure::ring_area(a),
+            measure::ring_area(s),
+            measure::ring_area(o),
+            measure::ring_area(n),
         );
     }
-    println!(
-        "develop:     Verified   ε ≈ {:.3e}   1 face · {} holes ({} outer verts)",
-        rat_to_f64(flat.eps()),
-        flat.region().faces[0].holes.len(),
-        flat.region().faces[0].outer.len()
-    );
 
-    std::fs::create_dir_all(&out_dir).expect("create --out-dir");
-    let svg = flat.svg(720);
-    let svg_path = format!("{out_dir}/sketch_cutter.svg");
-    std::fs::write(&svg_path, &svg).expect("write sketch_cutter.svg");
-    println!("SVG:         wrote {svg_path}   ({} bytes)", svg.len());
-
-    // The same hole swept PARALLEL is the metric cylinder — the general cutter reproducing the
-    // special one. But ε cannot tell the two apart: it is the max over stages and the boundary
-    // dominates, so both report the same number. The faithfulness check is therefore GEOMETRIC —
-    // the drafted hole must come out SMALLER, by the taper its cast point implies.
-    match panel(segments, true, parallel).develop() {
-        Verdict::Verified(par) => {
-            println!(
-                "parallel:    Verified   ε ≈ {:.3e}   (= Cutter::vertical_cylinder)",
-                rat_to_f64(par.eps())
-            );
-            match (hole_width(&flat), hole_width(&par)) {
-                (Some(a), Some(b)) if b > 0.0 => println!(
-                    "faithful:    drafted {a:.4} vs parallel {b:.4}   ratio {:.3}   (taper law ≈ 0.80)",
-                    a / b
-                ),
-                _ => println!("faithful:    could not measure the hole"),
-            }
-        }
-        other => println!(
-            "parallel:    not Verified ({})",
-            match other {
-                Verdict::Refuted(f) => format!("Refuted({f:?})"),
-                _ => "Unresolved".into(),
-            }
+    // ── The scope refusal, by name ──────────────────────────────────────────────────────────────
+    println!();
+    match panel(parallel(), acceptance::ring_slot()).develop() {
+        Verdict::Refuted(fault) => println!(
+            "ring      refused   {fault:?}   (§11.8 — an annular \
+             through-cut leaves an island of material, which is two parts)"
         ),
+        _ => println!("ring      NOT REFUSED — the scope boundary moved"),
     }
-
-    #[cfg(feature = "step")]
-    {
-        let emit = |name: &str, with_cuts: bool, path: String| match panel(
-            segments,
-            with_cuts,
-            drafted.clone(),
-        )
-        .solid()
-        {
-            Verdict::Verified(solid) => {
-                let report = solid.write_step(&path);
-                println!("{name}   {}   → {path}", report.summary());
-            }
-            Verdict::Refuted(fault) => println!("{name}   Refuted({fault:?})"),
-            Verdict::Unresolved(e) => {
-                println!("{name}   Unresolved at ε ≈ {:.3e}", rat_to_f64(&e));
-            }
-        };
-        emit("STEP I: ", false, format!("{out_dir}/sketch_cutter_I.step"));
-        emit("STEP II:", true, format!("{out_dir}/sketch_cutter_II.step"));
-    }
-    #[cfg(not(feature = "step"))]
-    println!("STEP:        skipped — build under `nix develop` with `--features step`");
 }

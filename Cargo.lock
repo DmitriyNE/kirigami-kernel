@@ -6,11 +6,13 @@ version = 4
 name = "acceptance"
 version = "0.0.0"
 dependencies = [
+ "arrange2d",
  "author",
  "certify-core",
  "develop",
  "export",
  "fixtures",
+ "geom",
  "lattice",
 ]
 

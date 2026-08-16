@@ -15,7 +15,9 @@ use std::process::ExitCode;
 
 /// Milestones that have shipped — the `vv_matrix` gate only enforces ★ rows whose milestone
 /// has landed. Extend as each ships (mirrors the former `vv_matrix_gate.sh` `landed=` var).
-const LANDED: &[&str] = &["M0", "M1", "M2", "M3a", "M3c", "M3d", "M3e", "AUTH.1"];
+const LANDED: &[&str] = &[
+    "M0", "M1", "M2", "M3a", "M3c", "M3d", "M3e", "AUTH.1", "AUTH.2",
+];
 
 /// The repo root, embedded at compile time (this crate lives at `<root>/xtask`).
 fn repo_root() -> PathBuf {

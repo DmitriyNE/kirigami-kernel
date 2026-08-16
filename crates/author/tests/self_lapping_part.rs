@@ -9,7 +9,7 @@ use certify_core::Verdict;
 use export::approx::rat_to_f64;
 use lattice::{Bignum, Rat};
 
-mod common;
+use acceptance::measure as common;
 
 type Q = Rat<Bignum>;
 

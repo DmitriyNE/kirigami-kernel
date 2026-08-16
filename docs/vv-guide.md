@@ -2134,6 +2134,51 @@ refusal added for a combination one believes unrepresentable encodes a belief ab
 "a rail branch is not a polygon operand" was false for every hole the kernel emits — the band is a
 polyline, so both channels share a slice by conversion rather than by refusal.
 
+*AUTH.2f — the acceptance demo measures the phenomenon, not its consequences.* The milestone's
+claim is that a footprint no band can express goes through the whole pipeline, and the criteria are
+what make that claim checkable on the artifact rather than on the verdicts.
+
+The **ruling-crossing signature is readable off the flat pattern**, and that is the criterion worth
+stating generally: development is an isometry sending each ruling to a ray from the flat apex, so
+"a ruling meets the cutter twice" is "a ray meets the developed hole in two intervals". Four
+crossings. Every band gives two, however non-convex its planar shape — so the metric probes are
+measured alongside and must give two, which is what turns the four into a signature rather than a
+number. Without it the demo asserts only what a within-slice band-shaped hole also satisfies.
+
+*A two-sided differential needs a third clause once the footprint is non-convex.* 1e.4's
+`disc ⊂ square ⊂ disc√2` transfers — the slot contains a disc inscribed in one arm and lies within
+one circumscribing it — but **both containments are satisfied by a slot convexified to its bounding
+band**, which is precisely the failure mode. The third probe sits in the notch the slot does not
+cover and must be **disjoint** from it. State the containment test too: non-crossing plus one
+interior point, never a vertex sample, because a vertex test passes on a ring that pokes out between
+two of its own vertices.
+
+*When the claim is about which branch ran, the artifact is the wrong place to look.* A hole that
+crossed a σ-station and one that sat inside a slice certify alike and build alike; nothing in the
+emitted solid distinguishes them. The criterion is therefore a **counter**, not an assertion:
+`develop::counters::poly_slice_clips` witnesses the general channel running on more than one slice,
+with the un-slotted control asserted at zero so the counter is known to be measuring the slot. A
+milestone slice that cannot be seen in the output has to be made countable or it is on the demo's
+critical path only by assertion.
+
+*The round-trip is checked against the input's own source, not against itself.* Direction ② folds
+the flat pattern's emitted vertices back and measures the distance to the **authored profile's
+boundary** — a quantity neither leg computes. A round-trip compared against its own input is
+satisfied by both legs sharing a mistake.
+
+*The exact tier and the export tier have different minimum feature sizes, and the seam is where the
+demo failed.* Every certificate was `Verified` and the STEP write refused the shell: the tracer
+samples one grid step (`2⁻³⁰`) inside each cell end to keep pinches tight, and those vertices become
+edges whose 3-D span is an order **below** OCCT's `10⁻⁷` vertex tolerance, so the edge's own curve
+reads as closed while its two vertices are distinct. Measured on the L-slot: 220 shell vertices at
+145 distinct positions, 76 sub-tolerance Bézier edges. The criterion has two halves. First, an
+export profile needs a **declared minimum step** enforced where geometry is handed to it
+(`hole_poly`, the station partition), not a hope that the exact tier never emits anything smaller.
+Second — and this is why it belongs in the acceptance criteria rather than the design notes — *the
+verdict does not cover the exporter*: `Verified` is about the rails, and an artifact that no
+downstream consumer can read is a failed demo whatever the certificate says. A demo that does not
+run the exporter cannot discover this.
+
 *The ring stays refused, and for its own reason.* A footprint with its own hole is not a
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two
 parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.8).

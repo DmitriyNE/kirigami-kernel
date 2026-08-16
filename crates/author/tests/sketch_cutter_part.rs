@@ -1,18 +1,21 @@
-//! **AUTH.1f — the sketch-extrude cutter, checked for faithfulness rather than for verdicts.**
+//! **AUTH.1f / AUTH.2f — the sketch-extrude cutter, checked for faithfulness rather than for
+//! verdicts.**
 //!
-//! A cut authored with [`Cutter::extrude`] must do what it was *drawn* to do, and the certificates
+//! A cut authored with `Cutter::extrude` must do what it was *drawn* to do, and the certificates
 //! cannot say whether it did: `ε` is the max over pipeline stages and the panel's boundary
 //! dominates it, so a drafted hole and an undrafted one report the **same** `ε`. Only the emitted
 //! geometry distinguishes them, which is what these tests measure.
+//!
+//! The device, the profiles and the measurements all come from the `acceptance` crate, so the demo
+//! driver reports the same numbers these assert over the same part.
 
+use acceptance::measure;
 use arrange2d::profile::Profile;
-use author::construct;
-use author::part::{Cutter, Part, SupportFn};
+use author::part::{OpRole, Part, PartFault};
 use certify_core::Verdict;
-use develop::extrude::{Apex, Frame};
+use develop::counters;
+use develop::extrude::Apex;
 use export::approx::rat_to_f64;
-use fixtures::devices::cone;
-use geom::content::Edge;
 use lattice::{Bignum, Rat};
 
 type Q = Rat<Bignum>;
@@ -25,47 +28,23 @@ fn qi(n: i128) -> Q {
 }
 
 /// A disc's boundary, through the shared `Profile` builder — no hand-built arcs.
-fn disc(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
+fn disc(cx: Q, cy: Q, r: Q) -> Vec<geom::content::Edge<Bignum>> {
     Profile::new().circle(cx, cy, r).into_edges()
 }
 
 /// The axis-aligned square of half-side `h` about `(cx, cy)`.
-fn square(cx: Q, cy: Q, h: Q) -> Vec<Edge<Bignum>> {
+fn square(cx: Q, cy: Q, h: Q) -> Vec<geom::content::Edge<Bignum>> {
     Profile::new().rect(cx, cy, h.clone(), h).into_edges()
 }
 
-fn sketch_plane() -> Frame<Bignum> {
-    Frame::new(
-        [qi(0), qi(0), qi(0)],
-        [qi(1), qi(0), qi(0)],
-        [qi(0), qi(1), qi(0)],
-    )
-    .expect("the axes are independent")
+/// A parallel (`w = 0`) sweep along `z` — the apex every AUTH.2 fixture is cut with.
+fn parallel() -> Apex<Bignum> {
+    Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction")
 }
 
-/// The Stage-1 gore, with the sketch cut applied only when `cut` is given — so the same panel builds
-/// with and without it and any difference is attributable to that cut alone.
-fn panel_maybe(cut: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>) -> Part<Bignum> {
-    let witness = cone()
-        .surface(&qi(2), &qi(0))
-        .eval(&qi(0))
-        .expect("the device cone is regular at σ = 0");
-    let base = construct::from_chart::<Bignum>(&cone())
-        .region_sigma(q(-7, 2), q(7, 2), SupportFn::inherit())
-        .keep_near(witness)
-        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
-        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)));
-    let base = match cut {
-        Some((apex, profile)) => base.subtract(Cutter::extrude(sketch_plane(), apex, profile)),
-        None => base,
-    };
-    base.clearance(qi(1)).thickness(q(1, 8)).segments(72)
-}
-
-/// The Stage-1 gore with its interior hole cut by `profile` swept from `apex`.
-fn panel_with(apex: Apex<Bignum>, profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
-    panel_maybe(Some((apex, profile)))
+/// The acceptance panel with `profile` swept from `apex`.
+fn panel_with(apex: Apex<Bignum>, profile: Vec<geom::content::Edge<Bignum>>) -> Part<Bignum> {
+    acceptance::sketch_panel(Some((apex, profile)))
 }
 
 /// The genus of a closed shell: `χ = V − E + (2F − L)` over the doubled faces, `g = (2 − χ)/2`.
@@ -77,64 +56,6 @@ fn genus(b: &export::brep::Brep<Bignum>) -> i64 {
     (2 - (v - e + (2 * f - l))) / 2
 }
 
-/// An L-shape with its corner at `(cx, cy)`, arm `a`, thickness `t`, CCW — but laid out on the
-/// **rotated** axes `u = (3/5, 4/5)`, `v = (−4/5, 3/5)` rather than on `x`/`y`.
-///
-/// The rotation is the point, and it is geometry rather than decoration. This cone's rulings
-/// project to *radial* rays, so an L whose arms lie along the radius is met by every ray exactly
-/// once: its footprint is a band and the notch never appears in `(σ, µ̂)` at all. **Non-convex
-/// profile does not imply non-convex footprint** — what AUTH.2 lifts is a restriction on
-/// footprints, and a fixture has to produce one. Nor is a reflex corner in the flat pattern
-/// evidence: a band `[lo(σ), hi(σ)]` can be a perfectly non-convex *region*. The signature that
-/// counts is a ruling meeting the cutter **twice**, which needs the notch to open **across** the
-/// rulings rather than along them — hence these axes rather than the first pair tried. The
-/// `(3,4,5)` triple keeps every vertex rational, so the frame is exact rather than a rounded 45°.
-fn ell(cx: Q, cy: Q, a: Q, t: Q) -> Vec<Edge<Bignum>> {
-    let (ux, uy) = (q(4, 5), q(-3, 5));
-    let (vx, vy) = (q(3, 5), q(4, 5));
-    let p = |su: &Q, sv: &Q| {
-        [
-            cx.add(&ux.mul(su)).add(&vx.mul(sv)),
-            cy.add(&uy.mul(su)).add(&vy.mul(sv)),
-        ]
-    };
-    let z = qi(0);
-    Profile::new()
-        .polygon(&[
-            p(&z, &z),
-            p(&a, &z),
-            p(&a, &t),
-            p(&t, &t),
-            p(&t, &a),
-            p(&z, &a),
-        ])
-        .into_edges()
-}
-
-/// The AUTH.1f panel: the same gore, its feature a disc of radius `1/5`.
-fn panel(apex: Apex<Bignum>) -> Part<Bignum> {
-    panel_with(apex, disc(qi(0), q(11, 5), q(1, 5)))
-}
-
-/// The same gore with a **metric** cylinder of squared radius `r2` in place of the extrusion —
-/// the control both faithfulness tests compare against.
-fn metric_panel(r2: Q) -> Part<Bignum> {
-    let witness = cone()
-        .surface(&qi(2), &qi(0))
-        .eval(&qi(0))
-        .expect("the device cone is regular at σ = 0");
-    construct::from_chart::<Bignum>(&cone())
-        .region_sigma(q(-7, 2), q(7, 2), SupportFn::inherit())
-        .keep_near(witness)
-        .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
-        .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(11, 5), r2))
-        .clearance(qi(1))
-        .thickness(q(1, 8))
-        .segments(72)
-}
-
 fn develop_or_panic(part: Part<Bignum>, name: &str) -> author::part::FlatPattern<Bignum> {
     match part.develop() {
         Verdict::Verified(f) => f,
@@ -143,22 +64,35 @@ fn develop_or_panic(part: Part<Bignum>, name: &str) -> author::part::FlatPattern
     }
 }
 
-fn developed(apex: Apex<Bignum>) -> author::part::FlatPattern<Bignum> {
-    match panel(apex).develop() {
-        Verdict::Verified(f) => f,
-        Verdict::Refuted(fault) => panic!("refuted: {fault:?}"),
-        Verdict::Unresolved(e) => panic!("unresolved at ε ≈ {}", rat_to_f64(&e)),
+fn solid_or_panic(part: Part<Bignum>, name: &str) -> author::part::PartSolid<Bignum> {
+    match part.solid() {
+        Verdict::Verified(s) => s,
+        Verdict::Refuted(fault) => panic!("{name}: solid refuted: {fault:?}"),
+        Verdict::Unresolved(e) => panic!("{name}: solid unresolved at ε ≈ {}", rat_to_f64(&e)),
     }
+}
+
+fn developed(apex: Apex<Bignum>) -> author::part::FlatPattern<Bignum> {
+    develop_or_panic(
+        panel_with(apex, disc(qi(0), q(11, 5), q(1, 5))),
+        "the AUTH.1f disc",
+    )
+}
+
+/// The one interior hole's emitted ring, as the SVG draws it.
+fn hole_ring(flat: &author::part::FlatPattern<Bignum>) -> Vec<[f64; 2]> {
+    let faces = measure::emitted_hole_rings(flat.region());
+    assert_eq!(faces.len(), 1, "one face");
+    assert_eq!(faces[0].len(), 1, "one interior hole");
+    faces[0][0].clone()
 }
 
 /// The developed hole's width, through the **quarantined** exact→`f64` bridge — never a hand-rolled
 /// conversion, which returns NaN on large rationals and is then swallowed by `min`/`max`.
 fn hole_width(flat: &author::part::FlatPattern<Bignum>) -> f64 {
-    let polys = export::svg::region_to_polys(flat.region());
-    let face = polys.faces.first().expect("one face");
-    let ring = face.rings.get(1).expect("the outer ring, then the hole");
+    let ring = hole_ring(flat);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for p in ring {
+    for p in &ring {
         assert!(p[0].is_finite(), "the bridge must not emit a non-finite x");
         lo = lo.min(p[0]);
         hi = hi.max(p[0]);
@@ -176,13 +110,7 @@ fn hole_width(flat: &author::part::FlatPattern<Bignum>) -> f64 {
 #[test]
 fn a_drafted_hole_is_smaller_by_exactly_its_taper() {
     let drafted = developed(Apex::point([qi(0), q(11, 5), qi(12)]));
-    let parallel = developed(Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"));
-
-    // Same topology either way: one face, one interior hole.
-    for (name, f) in [("drafted", &drafted), ("parallel", &parallel)] {
-        assert_eq!(f.region().faces.len(), 1, "{name}: one face");
-        assert_eq!(f.region().faces[0].holes.len(), 1, "{name}: one hole");
-    }
+    let parallel = developed(parallel());
 
     let (a, b) = (hole_width(&drafted), hole_width(&parallel));
     assert!(a > 0.0 && b > 0.0, "both holes must be measurable");
@@ -201,8 +129,11 @@ fn a_drafted_hole_is_smaller_by_exactly_its_taper() {
 /// not merely to the same resolved structure, which is all AUTH.1e.2's differential compared.
 #[test]
 fn a_parallel_extrusion_reproduces_the_metric_cylinder() {
-    let extruded = developed(Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"));
-    let metric = develop_or_panic(metric_panel(q(1, 25)), "the metric control");
+    let extruded = developed(parallel());
+    let metric = develop_or_panic(
+        acceptance::sketch_drill(qi(0), q(11, 5), q(1, 25)),
+        "the metric control",
+    );
 
     let (a, b) = (hole_width(&extruded), hole_width(&metric));
     assert!(
@@ -229,23 +160,15 @@ fn a_parallel_extrusion_reproduces_the_metric_cylinder() {
 fn a_square_prism_cuts_a_hole_between_its_inscribed_and_circumscribed_discs() {
     let h = q(1, 5);
     let square_hole = develop_or_panic(
-        panel_with(
-            Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
-            square(qi(0), q(11, 5), h.clone()),
-        ),
+        panel_with(parallel(), square(qi(0), q(11, 5), h.clone())),
         "the square prism",
     );
-    // One face, one interior hole — the same topology the disc gives.
-    assert_eq!(square_hole.region().faces.len(), 1, "one face");
-    assert_eq!(
-        square_hole.region().faces[0].holes.len(),
-        1,
-        "one interior hole"
+    let inscribed = develop_or_panic(
+        acceptance::sketch_drill(qi(0), q(11, 5), h.mul(&h)),
+        "the inscribed cylinder",
     );
-
-    let inscribed = develop_or_panic(metric_panel(h.mul(&h)), "the inscribed cylinder");
     let circumscribed = develop_or_panic(
-        metric_panel(h.mul(&h).mul(&qi(2))),
+        acceptance::sketch_drill(qi(0), q(11, 5), h.mul(&h).mul(&qi(2))),
         "the circumscribed cylinder",
     );
     let (sq, lo, hi) = (
@@ -267,14 +190,9 @@ fn a_square_prism_cuts_a_hole_between_its_inscribed_and_circumscribed_discs() {
 /// that could not express two stretches.
 #[test]
 fn a_ring_profile_is_refused_by_name() {
-    let mut profile = disc(qi(0), q(11, 5), q(1, 5));
-    profile.extend(disc(qi(0), q(11, 5), q(1, 10)));
-    let part = panel_with(
-        Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
-        profile,
-    );
+    let part = panel_with(parallel(), acceptance::ring_slot());
     match part.develop() {
-        Verdict::Refuted(author::part::PartFault::ProfileNotSimple { .. }) => {}
+        Verdict::Refuted(PartFault::ProfileNotSimple { .. }) => {}
         other => panic!(
             "a ring must be refused as not-a-band, got {}",
             match other {
@@ -288,32 +206,18 @@ fn a_ring_profile_is_refused_by_name() {
 
 /// **AUTH.2d — a non-convex cutter develops, and the flat pattern keeps its reflex corner.**
 ///
-/// This is the capability the milestone exists for, end to end: an L-slot authored as a
-/// `Cutter::extrude`, resolved, traced, developed and cut into the exact flat boolean. Two things
-/// are checked beyond the verdict, because a verdict cannot see either:
+/// Two things are checked beyond the verdict, because a verdict cannot see either: the topology is
+/// what an L should give (one face, one hole — a footprint the tracer split in two, or one it
+/// silently closed around the notch, changes this count), and the hole is still non-convex where it
+/// matters. A developed L must turn **both ways**; a hole quietly convexified to its bounding band
+/// passes every ε gate ever written.
 ///
-/// *The topology is what an L should give* — one face, one hole. A footprint the tracer split into
-/// two loops, or one it silently closed around the notch, changes this count.
-///
-/// *The hole is still non-convex where it matters.* A developed L must turn **both ways**: the
-/// reflex corner is the whole point, and a hole quietly convexified to its bounding band passes
-/// every ε gate ever written. Measured on the emitted polygon, through the quarantined exact→`f64`
-/// bridge rather than a hand-rolled conversion.
+/// The **VV.2 ε budget** and the **VV.3 chord golden** for this fixture are pinned here, on the
+/// same emitted polygon.
 #[test]
 fn an_l_slot_develops_and_keeps_its_reflex_corner() {
-    let flat = develop_or_panic(
-        panel_with(
-            Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
-            ell(q(-1, 10), q(11, 5), q(1, 4), q(1, 8)),
-        ),
-        "the L-slot",
-    );
-    assert_eq!(flat.region().faces.len(), 1, "one face");
-    assert_eq!(flat.region().faces[0].holes.len(), 1, "one interior hole");
-
-    let polys = export::svg::region_to_polys(flat.region());
-    let face = polys.faces.first().expect("one face");
-    let ring = face.rings.get(1).expect("the outer ring, then the hole");
+    let flat = develop_or_panic(panel_with(parallel(), acceptance::ell_slot()), "the L-slot");
+    let ring = hole_ring(&flat);
     let n = ring.len();
     assert!(
         n >= 6,
@@ -341,10 +245,129 @@ fn an_l_slot_develops_and_keeps_its_reflex_corner() {
         left && right,
         "the developed L must turn both ways — a convexified hole turns only one"
     );
+
+    // **VV.2** — measured 4.8792e-1 (2026-08-16) against the DRC ceiling of 1/2, so this ~296° gore
+    // certifies at 98% of it: the budget is a ratchet here rather than the flex panel's 55%
+    // headroom, and a widening of the boundary bound would surface as `Unresolved` before it
+    // surfaced here.
+    println!("[budget] L-slot develop {:.4e}", rat_to_f64(flat.eps()));
+    assert!(
+        flat.eps().cmp(&q(1, 2)) == core::cmp::Ordering::Less,
+        "L-slot develop ε {:.4e} is not under the DRC gate 5.0000e-1",
+        rat_to_f64(flat.eps())
+    );
+    // **The σ-midpoint honesty check, read as a number.** The cut's *own* certified bound — the one
+    // `eps()` hides, since the panel boundary dominates it — folds in the comparison of every
+    // emitted piece against the boundary the exact fill rule reports at its σ-midpoint (§11.5).
+    // Measured 2.8439e-4 (2026-08-16) — three orders under the part-level ε, which is the point:
+    // the panel boundary is what this device certifies loosely, and the traced cut is not.
+    let cut = flat.report().ops[3]
+        .cut_eps
+        .clone()
+        .expect("the slot resolved as a hole and so carries its own cut bound");
+    println!("[budget] L-slot cut {:.4e}", rat_to_f64(&cut));
+    assert!(
+        cut.cmp(&q(1, 1000)) == core::cmp::Ordering::Less,
+        "the traced cut certified to {:.4e}, above its 1.0000e-3 budget",
+        rat_to_f64(&cut)
+    );
+
+    // **VV.3** — the chord golden. Measured 7.7% (2026-08-16); the 20% gate is the structural one,
+    // wider than the round holes' 15% because an L's own long straight arm is legitimately a large
+    // fraction of its bounding box.
+    let frac = measure::longest_edge_fraction(&ring);
+    println!(
+        "[golden] L-slot hole: longest edge {:.1}% of extent",
+        frac * 100.0
+    );
+    assert!(
+        frac < 0.20,
+        "the L-slot's longest emitted edge is {:.1}% of its extent",
+        frac * 100.0
+    );
 }
 
-/// **AUTH.2 end to end.** A non-convex *footprint* — traced, not authored — becomes a tunnel through
-/// the device. Both of the solid path's restrictions are gone:
+/// **The fixture produces the phenomenon, and the metric probes bound the shape — both measured on
+/// the emitted flat pattern.**
+///
+/// Two independent things, in one test because they read the same four developments.
+///
+/// *A ruling meets the cutter twice.* The development is an isometry sending each ruling to a ray
+/// from the flat apex, so this is a ray meeting the developed hole in **two** intervals — four
+/// crossings. Every band footprint gives two however non-convex its flat shape, which is why the
+/// reflex corner above proves nothing about the footprint (§11.6); the three metric discs are
+/// measured here as the control and give exactly two.
+///
+/// *The two-sided differential.* AUTH.1e.4 sandwiched a square between two discs; a non-convex
+/// footprint needs a third clause, because both containments are satisfied by a slot silently
+/// convexified to its bounding band. So: the L **contains** a disc inscribed in one arm,
+/// **lies within** a disc circumscribing it, and is **disjoint** from a disc inside the notch it
+/// does not cover. All three come from `Cutter::vertical_cylinder` — the metric path, which shares
+/// no line of code with the tracer — and all three are compared in the same flat frame, since the
+/// four parts differ only in the cutter and so develop identically everywhere else.
+#[test]
+fn the_traced_slot_is_met_four_times_and_bracketed_by_its_metric_probes() {
+    let slot = hole_ring(&develop_or_panic(
+        panel_with(parallel(), acceptance::ell_slot()),
+        "the L-slot",
+    ));
+    let [inner, outer, notch] = acceptance::ell_probes();
+    let probe = |(cx, cy, r2): (Q, Q, Q), name: &str| {
+        hole_ring(&develop_or_panic(
+            acceptance::sketch_drill(cx, cy, r2),
+            name,
+        ))
+    };
+    let inner = probe(inner, "the inscribed probe");
+    let outer = probe(outer, "the circumscribing probe");
+    let notch = probe(notch, "the notch probe");
+
+    let (rs, ri, ro, rn) = (
+        measure::max_ray_crossings(&slot),
+        measure::max_ray_crossings(&inner),
+        measure::max_ray_crossings(&outer),
+        measure::max_ray_crossings(&notch),
+    );
+    println!("[phenom] ray crossings: slot {rs}, probes {ri}/{ro}/{rn}");
+    assert_eq!(
+        rs, 4,
+        "some ruling must meet the slot twice — a footprint met once everywhere is a band, and \
+         AUTH.2 would not be on this demo's critical path"
+    );
+    assert_eq!(
+        (ri, ro, rn),
+        (2, 2, 2),
+        "and every metric disc is met once, which is what makes the four a signature"
+    );
+
+    let (ai, as_, ao, an) = (
+        measure::ring_area(&inner),
+        measure::ring_area(&slot),
+        measure::ring_area(&outer),
+        measure::ring_area(&notch),
+    );
+    println!("[diff] areas: inner {ai:.6} < slot {as_:.6} < outer {ao:.6}   notch {an:.6}");
+    assert!(
+        measure::ring_inside(&inner, &slot),
+        "the slot must contain the disc inscribed in its arm"
+    );
+    assert!(
+        measure::ring_inside(&slot, &outer),
+        "…and lie inside the disc that circumscribes it"
+    );
+    assert!(
+        measure::rings_disjoint(&notch, &slot),
+        "…and leave the notch alone: a slot convexified to its bounding band swallows it, and \
+         passes both containments while doing so"
+    );
+    assert!(
+        ai < as_ && as_ < ao,
+        "the areas order with the containments"
+    );
+}
+
+/// **AUTH.2 end to end.** A non-convex *footprint* — traced, not authored — becomes a tunnel
+/// through the device. Both of the solid path's restrictions are gone:
 ///
 /// 1. `hole_rail` consumed an interior hole as a near/far **band**, which a loop the ruling meets
 ///    twice is not (2e/1): such a loop now goes to the builder's general channel as the `(σ, µ̂)`
@@ -352,37 +375,182 @@ fn an_l_slot_develops_and_keeps_its_reflex_corner() {
 /// 2. That channel took an arbitrary loop only **within one σ-slice** (2e/2): it now clips the loop
 ///    per slice with the exact boolean, so a loop crossing stations is ordinary.
 ///
-/// The verdict alone would pass on a cut that missed, so the check is topological: the slot adds
-/// **exactly one** handle to the same panel built without it — it goes all the way through, once.
+/// The verdict alone would pass on a cut that missed, so the checks are topological and counted:
+/// the slot adds **exactly one** handle to the same panel built without it — it goes all the way
+/// through, once — and the builder's general channel ran on **more than one slice**, which is the
+/// only thing that distinguishes a hole that crossed a σ-station from one that did not. Both
+/// certify, both build; nothing else in the emitted solid tells them apart.
 #[test]
-fn a_traced_non_convex_loop_builds_a_certified_solid() {
-    let part = panel_with(
-        Apex::direction([qi(0), qi(0), qi(1)]).expect("a real direction"),
-        ell(q(-1, 10), q(11, 5), q(1, 4), q(1, 8)),
+fn a_traced_non_convex_loop_builds_a_certified_solid_across_a_station() {
+    counters::reset();
+    let cut = solid_or_panic(
+        panel_with(parallel(), acceptance::ell_slot()),
+        "the traced L-slot",
     );
-    let name = |v: &Verdict<_, author::part::PartFault, Q>| match v {
-        Verdict::Verified(_) => "Verified".to_string(),
-        Verdict::Refuted(f) => format!("Refuted({f:?})"),
-        Verdict::Unresolved(e) => format!("Unresolved({})", rat_to_f64(e)),
-    };
-    let cut = match part.solid() {
-        Verdict::Verified(s) => s,
-        other => panic!(
-            "a traced non-convex loop builds a solid, got {}",
-            name(&other)
-        ),
-    };
+    let clips = counters::poly_slice_clips();
     let brep = cut.brep();
     assert_eq!(brep.free_edges(), 0, "the slotted solid is watertight");
     assert_eq!(brep.nonmanifold_edges(), 0, "…and manifold");
+    println!(
+        "[work] L-slot solid: {clips} polygon-channel slice clips, {} faces",
+        brep.faces().len()
+    );
+    assert!(
+        clips >= 2,
+        "the slot is the part's only polygon hole, so {clips} slice clip(s) means it sat inside a \
+         single σ-slice — AUTH.2e/2 is then not exercised and the demo proves less than it claims"
+    );
 
-    let plain = match panel_maybe(None).solid() {
-        Verdict::Verified(s) => s,
-        other => panic!("the un-slotted panel builds, got {}", name(&other)),
-    };
+    counters::reset();
+    let plain = solid_or_panic(acceptance::sketch_panel(None), "the un-slotted panel");
+    assert_eq!(
+        counters::poly_slice_clips(),
+        0,
+        "the control has no polygon hole at all — otherwise the counter is measuring the panel"
+    );
     assert_eq!(
         genus(brep),
         genus(plain.brep()) + 1,
         "the L-slot is one tunnel through the panel — not a dent, and not two"
+    );
+}
+
+/// **The keyhole: a profile that mixes a circle with straight edges, end to end.**
+///
+/// Every wall of the L is affine, so the L never reaches the pairwise resultant's mixed case — and
+/// the published quadratic-by-quadratic closed form is *identically zero* on two affine walls, so a
+/// differential built only from polygons would have missed a wrong one entirely (§11.2). The
+/// keyhole's saddle joins the head's circle to a stem side, which is that case; that it does so is
+/// asserted where the stretch structure is visible, in `develop`'s own sweep test.
+///
+/// Here it is carried through the whole device: resolved, traced, developed and built, met four
+/// times by a ruling like the L, and crossing a σ-station in the solid. Its ε budget and chord
+/// golden are pinned alongside.
+#[test]
+fn a_keyhole_profile_develops_and_builds_a_solid() {
+    let flat = develop_or_panic(
+        panel_with(parallel(), acceptance::keyhole_slot()),
+        "the keyhole",
+    );
+    assert_eq!(
+        flat.report().ops[3].role,
+        OpRole::Hole,
+        "the keyhole pierces the sheet — an `Inactive` here is a green certificate on a cut that \
+         did nothing"
+    );
+    let ring = hole_ring(&flat);
+    assert_eq!(
+        measure::max_ray_crossings(&ring),
+        4,
+        "a ruling must cross the head, the notch beside the stem, and the stem"
+    );
+    // **VV.2 / VV.3** — measured 4.8792e-1 (the shared panel bound), a cut bound of 1.4320e-2 and
+    // a 9.1% chord golden (2026-08-16). The cut bound is fifty times the L's: the head's circular
+    // wall is chorded, where every wall of the L is straight and fits its rail exactly.
+    println!(
+        "[budget] keyhole develop {:.4e}   cut {:.4e}",
+        rat_to_f64(flat.eps()),
+        flat.report().ops[3]
+            .cut_eps
+            .as_ref()
+            .map(rat_to_f64)
+            .unwrap_or(f64::NAN)
+    );
+    assert!(flat.eps().cmp(&q(1, 2)) == core::cmp::Ordering::Less);
+    assert!(
+        flat.report().ops[3]
+            .cut_eps
+            .as_ref()
+            .is_some_and(|e| e.cmp(&q(3, 100)) == core::cmp::Ordering::Less),
+        "the keyhole's cut bound is above its 3.0000e-2 budget"
+    );
+    let frac = measure::longest_edge_fraction(&ring);
+    println!(
+        "[golden] keyhole hole: longest edge {:.1}% of extent",
+        frac * 100.0
+    );
+    assert!(frac < 0.20, "keyhole chord golden {:.1}%", frac * 100.0);
+
+    counters::reset();
+    let solid = solid_or_panic(
+        panel_with(parallel(), acceptance::keyhole_slot()),
+        "the keyhole",
+    );
+    assert_eq!(solid.brep().free_edges(), 0, "watertight");
+    assert_eq!(solid.brep().nonmanifold_edges(), 0, "manifold");
+    assert!(
+        counters::poly_slice_clips() >= 2,
+        "the keyhole crosses a σ-station too"
+    );
+}
+
+/// **Direction ② closes the loop: a developed slot vertex, folded back, lands on the profile it was
+/// drawn from.**
+///
+/// Everything above measures direction ① — 3-D cut to flat pattern. This one runs the certified
+/// fold-inversion on the flat pattern's own emitted vertices and asks where they come back to. The
+/// sweep is parallel to `z`, so a point of the cutter's wall projects to a point of the **authored
+/// profile's boundary**, and the residual is the distance from the recovered `(x, y)` to the L's own
+/// polygon — a quantity the certificates never compute, since neither leg knows about the other.
+#[test]
+fn a_folded_slot_vertex_lands_on_the_profile_it_was_drawn_from() {
+    let part = panel_with(parallel(), acceptance::ell_slot());
+    let flat = develop_or_panic(panel_with(parallel(), acceptance::ell_slot()), "the L-slot");
+    let hole = flat
+        .holes()
+        .first()
+        .expect("the traced slot's developed loop");
+    let n = hole.vertices.len();
+    assert!(n >= 6, "a developed L has at least its corners");
+
+    // The authored L's boundary, as the segments the fold must land on.
+    let seg_dist = |p: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (qx, qy) = (a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+        (qx * qx + qy * qy).sqrt()
+    };
+    let corners: Vec<[f64; 2]> = {
+        // The L's own six corners, in the same rotated frame `acceptance::ell_slot` draws them in.
+        let (cx, cy, a, t) = (-0.1f64, 2.2f64, 0.25f64, 0.125f64);
+        let (ux, uy, vx, vy) = (0.8f64, -0.6f64, 0.6f64, 0.8f64);
+        let p = |su: f64, sv: f64| [cx + ux * su + vx * sv, cy + uy * su + vy * sv];
+        vec![p(0.0, 0.0), p(a, 0.0), p(a, t), p(t, t), p(t, a), p(0.0, a)]
+    };
+
+    let mut worst = 0.0f64;
+    let mut folded = 0;
+    for k in (0..n).step_by(n.div_ceil(8).max(1)) {
+        let (x, y) = hole.vertices[k].center();
+        let wire = match part.fold(&[[x, y]], &qi(0)) {
+            Verdict::Verified(w) => w,
+            Verdict::Unresolved(e) => panic!("fold unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+            Verdict::Refuted(f) => panic!("fold refuted at vertex {k}: {f:?}"),
+        };
+        let p = &wire.points[0];
+        let xy = [rat_to_f64(&p[0].mid()), rat_to_f64(&p[1].mid())];
+        let d = (0..corners.len())
+            .map(|i| seg_dist(xy, corners[i], corners[(i + 1) % corners.len()]))
+            .fold(f64::INFINITY, f64::min);
+        worst = worst.max(d);
+        folded += 1;
+    }
+    println!("[round-trip] {folded} folded slot vertices, worst profile residual {worst:.3e}");
+    assert!(
+        folded >= 6,
+        "enough vertices to be a loop, not a spot check"
+    );
+    // The developed loop's own chords sit a certified ε from the true cut, and the fold adds its
+    // own round-trip bound; 5e-3 is loose against both and tight against the L's 1/8 thickness —
+    // a vertex that came back onto the *wrong* edge, or onto no edge, is off by that much.
+    assert!(
+        worst < 5e-3,
+        "a folded slot vertex landed {worst:.3e} from the authored profile — direction ② does not \
+         return what direction ① emitted"
     );
 }
