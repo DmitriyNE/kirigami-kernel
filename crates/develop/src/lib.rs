@@ -17,11 +17,15 @@
 pub mod anchor;
 pub mod bonded;
 pub mod cone;
+pub mod counters;
 pub mod cut;
+pub mod extrude;
 pub mod flat;
 pub mod fold;
 pub mod interval;
 pub mod part;
+pub mod pcurve;
+pub mod pick;
 pub mod place;
 pub mod seam_frame;
 pub mod unroll;

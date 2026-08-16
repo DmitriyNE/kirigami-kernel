@@ -18,7 +18,7 @@
 //!   into a certified watertight solid.
 
 use crate::part::{
-    BuiltRegions, FlatPattern, OpReport, Part, PartFault, RegionEcho, ResolveReport,
+    BuiltRegions, Cutter, FlatPattern, OpReport, Part, PartFault, RegionEcho, ResolveReport,
 };
 use crate::resolve::{BranchSide, Label, Structure};
 use certify_core::Verdict;
@@ -28,8 +28,8 @@ use export::brep::Brep;
 use export::brep_build::{HoleRail, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
-    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_rail,
-    surface_hole_loop,
+    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_poly,
+    hole_rail, shadow_hole_loops, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
 
@@ -215,29 +215,46 @@ fn certify_boundary<B: Backend>(
     // window's ends makes the oracle decline. So a cylinder label's span clamps to the
     // disc-positive window that contains it (inset a hair, the hole-loop margin doctrine).
     // Planes have no windows.
-    let mut disc_roots: Vec<Vec<Option<Vec<Rat<B>>>>> = Vec::new();
+    // Windowing is a property of the WALL, not of the cutter variant: a wall whose µ̂-pullback is a
+    // genuine quadratic (`a ≢ 0`) is real only between tangent rulings, an affine one everywhere.
+    // Reading it that way rather than matching on `Cutter` is what lets a multi-walled cutter join
+    // — and it reproduces the old behaviour exactly, since a cylinder's wall is quadratic and a
+    // half-space's is not.
+    /// Per region, per op, per wall: the brackets isolating the wall's tangent rulings, or `None`
+    /// where the wall is affine and has no windows.
+    type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Interval<B>>>>>>;
+    let mut disc_roots: DiscRoots<B> = Vec::new();
     for (ri, band) in bands.iter().enumerate() {
         let mut row = Vec::with_capacity(part.ops.len());
-        for (_, cutter) in &part.ops {
-            row.push(match cutter {
-                crate::part::Cutter::Cylinder { .. } => export::trim::surface_disc_roots(
-                    &built.charts[ri],
-                    &cutter.surface(),
-                    band,
-                    256,
-                    60,
-                ),
-                crate::part::Cutter::HalfSpace { .. } => None,
-            });
+        for (op, (_, cutter)) in part.ops.iter().enumerate() {
+            let walls = cutter
+                .walls()
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+            let mut per_wall = Vec::with_capacity(walls.len());
+            for wall in &walls {
+                // The same exact isolation the resolver derived its windows from, so the span this
+                // clamps to and the window that attributed the hole are the *same* interval — a
+                // sampled approximation on one side and an exact one on the other would clamp a
+                // fit to a window the structure was never resolved over.
+                let form = develop::cut::cut_mu_form(&built.charts[ri], wall, &Rat::from_i128(0));
+                per_wall.push(match form {
+                    Some(f) if !f.a.is_zero() => {
+                        develop::cut::tangent_events(&f, band, &crate::resolve::tangent_tol()).ok()
+                    }
+                    _ => None,
+                });
+            }
+            row.push(per_wall);
         }
         disc_roots.push(row);
     }
-    let window_around = |ri: usize, op: usize, at: &Rat<B>| -> Extent<B> {
-        let roots = disc_roots[ri][op].as_ref()?;
-        for w in roots.windows(2) {
-            if w[0].cmp(at) == Ordering::Less && at.cmp(&w[1]) == Ordering::Less {
-                let inset = w[1].sub(&w[0]).mul(&Rat::new(1, 200));
-                return Some((w[0].add(&inset), w[1].sub(&inset)));
+    let window_around = |ri: usize, op: usize, wall: usize, at: &Rat<B>| -> Extent<B> {
+        let brackets = disc_roots[ri][op].get(wall)?.as_ref()?;
+        for w in brackets.windows(2) {
+            let (lo, hi) = (&w[0].hi, &w[1].lo);
+            if lo.cmp(at) == Ordering::Less && at.cmp(hi) == Ordering::Less {
+                let inset = hi.sub(lo).mul(&Rat::new(1, 200));
+                return Some((lo.add(&inset), hi.sub(&inset)));
             }
         }
         None
@@ -254,7 +271,8 @@ fn certify_boundary<B: Backend>(
                 hi: span_hi,
             };
             let mid = span.lo.add(&span.hi).mul(&Rat::new(1, 2));
-            if let Some((t1, t2)) = window_around(ri, label.0, &mid) {
+            if let Some((t1, t2)) = window_around(ri, label.0, crate::resolve::wall_of(label), &mid)
+            {
                 span = Interval {
                     lo: rmax(&span.lo, &t1),
                     hi: rmin(&span.hi, &t2),
@@ -282,10 +300,21 @@ fn certify_boundary<B: Backend>(
             let pick = match label.1 {
                 BranchSide::Lower => RootPick::Lower,
                 BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
+                BranchSide::Wall(_, upper) => {
+                    if upper {
+                        RootPick::Upper
+                    } else {
+                        RootPick::Lower
+                    }
+                }
             };
+            let walls = part.ops[label.0]
+                .1
+                .walls()
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
             let (mu, e) = match certified_rail_surface(
                 &built.charts[ri],
-                &part.ops[label.0].1.surface(),
+                &walls[crate::resolve::wall_of(label)],
                 pick,
                 &span,
                 fit,
@@ -392,10 +421,8 @@ fn certify_holes<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
     structure: &Structure<B>,
-    fit: RailFit,
     segments: usize,
-) -> Result<Vec<HoleLoop<B>>, RErr<B>> {
-    use core::cmp::Ordering;
+) -> Result<Vec<(usize, HoleLoop<B>)>, RErr<B>> {
     let mut out = Vec::with_capacity(structure.holes.len());
     for (op, ri, window) in &structure.holes {
         let (op, ri) = (*op, *ri);
@@ -406,58 +433,68 @@ fn certify_holes<B: Backend>(
             lo: rmax(&window.lo.sub(&pad), &part.regions[ri].band.lo),
             hi: rmin(&window.hi.add(&pad), &part.regions[ri].band.hi),
         };
-        let base = RailFit {
-            degree: fit.degree.min(3),
-            ..fit
-        };
-        let mut certified: Option<HoleLoop<B>> = None;
-        let mut tightest: Option<Rat<B>> = None;
-        // NOTE: escalating the tangent inset (1/200 → 1/20) trades hole-shape fidelity near the
-        // tangents — the bridged micro-caps (`HoleLoop::max_microcap`, µ̂ units) are NOT folded
-        // into ε (the flat-length bound needs a certified ρ conversion; logged V&V gap, with
-        // the fit-basis rework).
-        'ladder: for margin_den in [200i128, 20] {
-            for mult in [1usize, 4, 16] {
-                let rung = RailFit {
-                    subdiv: base.subdiv.saturating_mul(mult),
-                    ..base
-                };
-                match surface_hole_loop(
-                    &built.charts[ri],
-                    &part.ops[op].1.surface(),
+        let cutter = &part.ops[op].1;
+        let walls = cutter
+            .walls()
+            .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+        // One wall is its own boundary, and its two branches come off one µ̂-quadratic. Several
+        // walls have no such quadratic: which one bounds the hole changes along the loop, at every
+        // profile corner, so the boundary is read from the cutter's own fill rule instead.
+        let verdict = match (walls.len(), cutter) {
+            (1, _) => match surface_hole_loop(
+                &built.charts[ri],
+                &walls[0],
+                &span,
+                &part.clearance,
+                &part.cfg,
+                segments,
+            ) {
+                // One wall is its own boundary and gives one loop; the plural shape is the general
+                // one, so the single-surface path joins it rather than being special-cased around.
+                Verdict::Verified(h) => Verdict::Verified(vec![h]),
+                Verdict::Unresolved(e) => Verdict::Unresolved(e),
+                Verdict::Refuted(f) => Verdict::Refuted(f),
+            },
+            (_, Cutter::Extrude(e)) => {
+                let cast = e
+                    .cast()
+                    .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+                let chart = &built.charts[ri];
+                let zero = Rat::from_i128(0);
+                // The same footprint the resolver read — `Cast::contains` on the chart's own
+                // surface point — so the certified loop bounds the region the structure was
+                // resolved from, not a stricter one. (The authored nappe is enforced downstream:
+                // a loop reaching the mirror nappe is `NappeCrossed`, a refusal.)
+                shadow_hole_loops(
+                    chart,
+                    &walls,
+                    |sigma: &Rat<B>, mu: &Rat<B>| {
+                        let p = chart.surface(mu, &zero).eval(sigma)?;
+                        cast.contains(&p, &e.profile)
+                    },
                     &span,
-                    rung,
                     &part.clearance,
                     &part.cfg,
-                    &Rat::new(1, margin_den),
                     segments,
-                ) {
-                    Verdict::Verified(h) => {
-                        certified = Some(h);
-                        break 'ladder;
-                    }
-                    Verdict::Unresolved(e) => {
-                        tightest = Some(match tightest {
-                            Some(t) if t.cmp(&e) == Ordering::Less => t,
-                            _ => e,
-                        });
-                    }
-                    Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
-                        return Err(RErr::Fault(PartFault::Pole));
-                    }
-                    Verdict::Refuted(_) => {
-                        return Err(RErr::Fault(PartFault::CutUnresolved { op }));
-                    }
-                }
+                )
             }
-        }
-        match certified {
-            Some(h) => out.push(h),
-            None => {
-                return Err(RErr::Loose(
-                    tightest.unwrap_or_else(|| part.clearance.clone()),
-                ));
+            // Unreachable today: only an extrusion has several walls.
+            _ => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
+        };
+        match verdict {
+            Verdict::Verified(hs) => out.extend(hs.into_iter().map(|h| (op, h))),
+            Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
+            Verdict::Refuted(develop::cut::CutFitFault::PoleInEval) => {
+                return Err(RErr::Fault(PartFault::Pole));
             }
+            // A deliberate scope refusal, not a looseness: say which, so the author learns that the
+            // profile is the problem rather than the resolution. Since AUTH.2c the tracer reads a
+            // non-convex footprint directly, so this is the **ring** — a hole with a hole of its
+            // own, which would leave an island of material floating free.
+            Verdict::Refuted(develop::cut::CutFitFault::ShadowNested) => {
+                return Err(RErr::Fault(PartFault::ProfileNotSimple { op }));
+            }
+            Verdict::Refuted(_) => return Err(RErr::Fault(PartFault::CutUnresolved { op })),
         }
     }
     Ok(out)
@@ -576,11 +613,10 @@ pub(crate) fn flat_pattern<B: Backend>(
         part,
         built,
         &structure,
-        part.fit,
         (part.segments / 2).max(4),
     ));
     let mut hole_outlines: Vec<FlatOutline<B>> = Vec::new();
-    for hole in &holes {
+    for (_, hole) in &holes {
         eps_all = rmax(&eps_all, &hole.eps);
         let flat = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
@@ -638,7 +674,7 @@ pub(crate) fn flat_pattern<B: Backend>(
     }
 
     // — 9. The report echo. —
-    let report = build_report(part, &structure);
+    let report = build_report(part, &structure, &holes);
     Verdict::Verified(FlatPattern {
         outline,
         holes: hole_outlines,
@@ -689,14 +725,37 @@ pub(crate) fn solid_brep<B: Backend>(
         Err(f) => return Verdict::Refuted(f),
     };
 
-    // Interior holes as near/far HoleRails (the tangent σ dyadic-snapped inside `hole_rail`).
-    let hole_loops = bail!(certify_holes(part, built, &structure, fit, 4));
+    // Interior holes are p-curve loops now (they pass through their tangent rulings rather than
+    // being two graphs bridged by a chord). The solid builder still consumes them as a near/far
+    // band — which they are: the branches are functions of σ, just not polynomials near the
+    // tangents — so `hole_rail` splits each loop at its two σ-extremes into contiguous rail
+    // chains, and the hole may still span σ-stations.
+    // Fewer hole segments than the flat pattern uses: every piece boundary of a hole's chains
+    // becomes a σ-station, so segment count drives the solid's face count directly (48 segments
+    // cost ~770 faces on the doctest panel, 16 cost ~250). The solid is already emitted at the
+    // low-degree STEP profile, so it takes the coarser loop; the flat pattern — the artifact that
+    // is actually manufactured — keeps the fine one.
+    let hole_loops = bail!(certify_holes(
+        part,
+        built,
+        &structure,
+        part.segments.clamp(8, 16)
+    ));
     let mut holes: Vec<HoleRail<B>> = Vec::new();
-    for h in &hole_loops {
+    let mut traced_polys: Vec<Vec<(Rat<B>, Rat<B>)>> = Vec::new();
+    for (_, h) in &hole_loops {
         eps_all = rmax(&eps_all, &h.eps);
         match hole_rail(h) {
             Some(r) => holes.push(r),
-            None => return Verdict::Refuted(PartFault::LoopBroken),
+            // A loop that turns around in σ more than twice has no near/far split — the shape
+            // AUTH.2c's tracer emits for a non-convex footprint. It goes to the builder's general
+            // channel instead, as the `(σ, µ̂)` polygon it already is: a lid inner wire plus a wall
+            // per edge. The band channel keeps the loops it can carry, because only it spans
+            // σ-stations (AUTH.2e lifts that).
+            None => match hole_poly(h) {
+                Some(p) => traced_polys.push(p),
+                None => return Verdict::Refuted(PartFault::LoopBroken),
+            },
         }
     }
 
@@ -705,6 +764,7 @@ pub(crate) fn solid_brep<B: Backend>(
     // polygon cuts alongside the domain-authored ones. `fold_point_pw` gates each vertex by the
     // round-trip DRC, so a loose fold surfaces as `Unresolved`, never as a silently drifted hole.
     let mut poly_holes = part.domain_holes.clone();
+    poly_holes.extend(traced_polys);
     // A polygon cut needs at least a triangle — the builder indexes vertices unchecked, and
     // this evaluator must stay fail-closed even without the flat gate (defense in depth for
     // both authored hole classes).
@@ -758,12 +818,31 @@ pub(crate) fn solid_brep<B: Backend>(
         Some(s) => s,
         None => return Verdict::Refuted(PartFault::SolidRefused),
     };
-    let report = build_report(part, &structure);
+    let report = build_report(part, &structure, &hole_loops);
     Verdict::Verified((solid, eps_all, report))
 }
 
-/// The report echo: snapped region bands + derived op roles.
-fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> ResolveReport<B> {
+/// The report echo: snapped region bands, derived op roles, and each hole op's own certified cut
+/// bound (the largest over its loops — see [`OpReport::cut_eps`]).
+fn build_report<B: Backend>(
+    part: &Part<B>,
+    structure: &Structure<B>,
+    holes: &[(usize, HoleLoop<B>)],
+) -> ResolveReport<B> {
+    let per_op = |op: usize| -> (Option<Rat<B>>, Option<Rat<B>>) {
+        holes
+            .iter()
+            .filter(|(o, _)| *o == op)
+            .fold((None, None), |(e, g), (_, h)| {
+                let up = |acc: Option<Rat<B>>, v: &Rat<B>| {
+                    Some(match acc {
+                        Some(a) => rmax(&a, v),
+                        None => v.clone(),
+                    })
+                };
+                (up(e, &h.eps), up(g, &h.tangent_gap))
+            })
+    };
     ResolveReport {
         regions: part
             .regions
@@ -777,9 +856,15 @@ fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> Resolve
             .roles
             .iter()
             .zip(part.ops.iter())
-            .map(|(role, (kind, _))| OpReport {
-                subtract: matches!(kind, crate::part::OpKind::Subtract),
-                role: *role,
+            .enumerate()
+            .map(|(op, (role, (kind, _)))| {
+                let (cut_eps, tangent_gap) = per_op(op);
+                OpReport {
+                    subtract: matches!(kind, crate::part::OpKind::Subtract),
+                    role: *role,
+                    cut_eps,
+                    tangent_gap,
+                }
             })
             .collect(),
     }
@@ -787,11 +872,145 @@ fn build_report<B: Backend>(part: &Part<B>, structure: &Structure<B>) -> Resolve
 
 /// The `(σ, µ̂)` endpoint of the last arc pushed so far.
 fn last_end<B: Backend>(arcs: &[BoundaryArc<B>]) -> Option<(Rat<B>, Rat<B>)> {
-    arcs.last().map(|arc| match arc {
-        BoundaryArc::Rail { mu, sigma_end, .. } => (
+    arcs.last().and_then(|arc| match arc {
+        BoundaryArc::Rail { mu, sigma_end, .. } => Some((
             sigma_end.clone(),
             mu.eval(sigma_end).expect("rail evaluable at its own end"),
-        ),
-        BoundaryArc::Cap { sigma, mu_end, .. } => (sigma.clone(), mu_end.clone()),
+        )),
+        BoundaryArc::Cap { sigma, mu_end, .. } => Some((sigma.clone(), mu_end.clone())),
+        // The boundary chain this walks is built from rails and caps; a p-curve arc appears only
+        // in an interior cut loop, which is assembled whole rather than chained corner by corner.
+        BoundaryArc::Curve { curve, .. } => curve.eval(&curve.domain.hi).map(|[s, m]| (s, m)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::construct;
+    use crate::part::{Cutter, SupportFn};
+    use develop::cone::DevConfig;
+    use export::trim::RailFit;
+    use fixtures::devices::{cone, cone_wrap};
+    use lattice::{Bignum, Rat};
+
+    type Q = Rat<Bignum>;
+    fn q(n: i128, d: i128) -> Q {
+        Q::new(n, d)
+    }
+    fn qi(n: i128) -> Q {
+        Q::from_i128(n)
+    }
+
+    /// `acceptance::flex_panel()`, copied verbatim — `acceptance` depends on `author`, so an
+    /// in-crate test cannot use it without linking a second copy of this crate.
+    fn flex_panel() -> Part<Bignum> {
+        construct::from_chart::<Bignum>(&cone())
+            .region_sigma(qi(-1), qi(1), SupportFn::inherit())
+            .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+            .subtract(Cutter::vertical_cylinder(q(-9, 4), q(9, 4), q(9, 16)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(11, 5), q(1, 25)))
+            .clearance(qi(1))
+    }
+
+    /// `acceptance::self_lapping_cone(segments, support_panels, true)`, copied verbatim.
+    fn self_lapping_cone(segments: usize, support_panels: usize) -> Part<Bignum> {
+        let d = q(1, 10);
+        let rz0 = cone_wrap()
+            .ruling()
+            .comp(2)
+            .eval(&qi(0))
+            .expect("the wrap chart's ruling is regular at σ = 0");
+        let mu_w = q(-3, 1).div(&rz0);
+        let witness = cone_wrap()
+            .surface(&mu_w, &qi(0))
+            .eval(&qi(0))
+            .expect("the mid-annulus witness point is regular");
+        construct::from_chart::<Bignum>(&cone_wrap())
+            .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
+            .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
+            .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
+            .keep_near(witness)
+            .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
+            .clearance(qi(1))
+            .thickness(q(1, 20))
+            .fit(RailFit {
+                degree: 4,
+                subdiv: 160,
+                bits: 44,
+            })
+            .segments(segments)
+            .support_panels(support_panels)
+            .budget(DevConfig {
+                terms: 14,
+                sqrt_eps: q(1, 1_000_000_000),
+            })
+            .subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)))
+    }
+
+    /// OPT.2.0 Q1 — stage attribution on the real test payloads.
+    ///
+    /// The two fixtures are a **γ-controlled pair by design**: `flex_panel`'s apex cone has a
+    /// vanishing pedal and develops with `γ ≡ 0` throughout, while `self_lapping_cone` carries a
+    /// nonzero flat directrix on its ramp and tail. The difference isolates the quadrature.
+    /// Run with `cargo test -p author --lib stage_attribution -- --ignored --nocapture`.
+    /// Ignored by default: it develops each fixture twice and takes minutes — the very cost
+    /// OPT.2 exists to reduce.
+    #[test]
+    #[ignore = "profiling harness, minutes long; run explicitly"]
+    fn stage_attribution() {
+        let cases: [(&str, Part<Bignum>); 2] = [
+            ("flex_panel   (gamma=0)", flex_panel()),
+            ("self_lapping (gamma!=0)", self_lapping_cone(16, 8)),
+        ];
+        for (name, part) in cases {
+            develop::counters::reset();
+            let clock = std::time::Instant::now();
+            let _ = part.develop();
+            let t_total = clock.elapsed().as_secs_f64();
+            std::eprintln!(
+                "  [gamma] whole develop: {} cells, {} cut_evals",
+                develop::counters::gamma_cells(),
+                develop::counters::cut_evals()
+            );
+
+            let c = std::time::Instant::now();
+            let built = part.build_regions().expect("regions develop");
+            let t_build = c.elapsed().as_secs_f64();
+
+            let c = std::time::Instant::now();
+            let structure = crate::resolve::sweep(&part, &built).expect("the sweep resolves");
+            let t_sweep = c.elapsed().as_secs_f64();
+
+            develop::counters::reset();
+            let c = std::time::Instant::now();
+            let _ = certify_boundary(&part, &built, &structure, part.fit, false);
+            let t_bnd = c.elapsed().as_secs_f64();
+            let (g_b, e_b) = (
+                develop::counters::gamma_cells(),
+                develop::counters::cut_evals(),
+            );
+
+            develop::counters::reset();
+            let c = std::time::Instant::now();
+            let _ = certify_holes(&part, &built, &structure, (part.segments / 2).max(4));
+            let t_holes = c.elapsed().as_secs_f64();
+            let (g_h, e_h) = (
+                develop::counters::gamma_cells(),
+                develop::counters::cut_evals(),
+            );
+
+            let rest = t_total - t_build - t_sweep - t_bnd - t_holes;
+            std::eprintln!(
+                "\n{name}  total {t_total:7.1}s\n\
+                 \x20 build_regions {t_build:7.1}s\n\
+                 \x20 sweep         {t_sweep:7.1}s\n\
+                 \x20 boundary      {t_bnd:7.1}s   (gamma {g_b}, cut_evals {e_b})\n\
+                 \x20 holes         {t_holes:7.1}s   (gamma {g_h}, cut_evals {e_h})\n\
+                 \x20 rest          {rest:7.1}s   (unroll + flat boolean + topology)"
+            );
+        }
+    }
 }

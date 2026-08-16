@@ -1453,34 +1453,84 @@ impl_def refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat :
     refbackend.RefBackend.Insts.LatticeBackendBackendRefIntRefRat.rat_denom
 }
 
-/-- [lattice::small::gcd_u128]: loop body 0:
-    Source: 'crates/lattice/src/small.rs', lines 12:4-16:5 -/
+/-- [lattice::small::gcd_u128]: loop body 1:
+    Source: 'crates/lattice/src/small.rs', lines 52:12-56:13 -/
 @[rust_loop_body]
-def small.gcd_u128_loop.body
-  (a : Std.U128) (b : Std.U128) :
+def small.gcd_u128_loop0_loop0.body
+  (p : Std.U64) (q : Std.U64) :
+  Result (ControlFlow (Std.U64 × Std.U64) Std.U64)
+  := do
+  if q != 0#u64
+  then let t ← p % q
+       ok (cont (q, t))
+  else ok (done p)
+
+/-- [lattice::small::gcd_u128]: loop 1:
+    Source: 'crates/lattice/src/small.rs', lines 52:12-56:13 -/
+@[rust_loop]
+def small.gcd_u128_loop0_loop0
+  (p : Std.U64) (q : Std.U64) : Result Std.U64 := do
+  loop
+    (fun (p1, q1) => small.gcd_u128_loop0_loop0.body p1 q1)
+    (p, q)
+
+/-- [lattice::small::gcd_u128]: loop body 0:
+    Source: 'crates/lattice/src/small.rs', lines 48:4-64:1 -/
+@[rust_loop_body]
+def small.gcd_u128_loop0.body
+  (shift : Std.U32) (x : Std.U128) (y : Std.U128) :
   Result (ControlFlow (Std.U128 × Std.U128) Std.U128)
   := do
-  if b != 0#u128
-  then let t ← a % b
-       ok (cont (b, t))
-  else ok (done a)
+  if y != 0#u128
+  then
+    let i ← lift (UScalar.cast .U128 core.num.U64.MAX)
+    if x <= i
+    then
+      let i1 ← lift (UScalar.cast .U128 core.num.U64.MAX)
+      if y <= i1
+      then
+        let p ← lift (UScalar.cast .U64 x)
+        let q ← lift (UScalar.cast .U64 y)
+        let p1 ← small.gcd_u128_loop0_loop0 p q
+        let i2 ← lift (UScalar.cast .U128 p1)
+        let b ← i2 <<< shift
+        ok (done b)
+      else let t ← x % y
+           ok (cont (y, t))
+    else let t ← x % y
+         ok (cont (y, t))
+  else let b ← x <<< shift
+       ok (done b)
 
 /-- [lattice::small::gcd_u128]: loop 0:
-    Source: 'crates/lattice/src/small.rs', lines 12:4-16:5 -/
+    Source: 'crates/lattice/src/small.rs', lines 48:4-64:1 -/
 @[rust_loop]
-def small.gcd_u128_loop (a : Std.U128) (b : Std.U128) : Result Std.U128 := do
+def small.gcd_u128_loop0
+  (shift : Std.U32) (x : Std.U128) (y : Std.U128) : Result Std.U128 := do
   loop
-    (fun (a1, b1) => small.gcd_u128_loop.body a1 b1)
-    (a, b)
+    (fun (x1, y1) => small.gcd_u128_loop0.body shift x1 y1)
+    (x, y)
 
 /-- [lattice::small::gcd_u128]:
-    Source: 'crates/lattice/src/small.rs', lines 11:0-18:1 -/
-@[reducible]
+    Source: 'crates/lattice/src/small.rs', lines 37:0-64:1 -/
 def small.gcd_u128 (a : Std.U128) (b : Std.U128) : Result Std.U128 := do
-  small.gcd_u128_loop a b
+  if a = 0#u128
+  then ok b
+  else
+    if b = 0#u128
+    then ok a
+    else
+      let ia ← core.num.U128.trailing_zeros a
+      let ib ← core.num.U128.trailing_zeros b
+      let shift ← if ia < ib
+                    then ok ia
+                    else ok ib
+      let x ← a >>> ia
+      let y ← b >>> ib
+      small.gcd_u128_loop0 shift x y
 
 /-- [lattice::small::i128_gcd]:
-    Source: 'crates/lattice/src/small.rs', lines 22:0-24:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 68:0-70:1 -/
 def small.i128_gcd
   (a : Std.I128) (b : Std.I128) : Result (Option Std.I128) := do
   let i ← core.num.I128.unsigned_abs a
@@ -1490,14 +1540,14 @@ def small.i128_gcd
   core.result.Result.ok r
 
 /-- [lattice::small::neg_mag::LIM]
-    Source: 'crates/lattice/src/small.rs', lines 28:4-28:44 -/
+    Source: 'crates/lattice/src/small.rs', lines 74:4-74:44 -/
 @[global_simps, irreducible]
 def small.neg_mag.LIM : Result Std.U128 := do
   let i ← lift (IScalar.hcast .U128 core.num.I128.MAX)
   i + 1#u128
 
 /-- [lattice::small::neg_mag]:
-    Source: 'crates/lattice/src/small.rs', lines 27:0-34:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 73:0-80:1 -/
 def small.neg_mag (m : Std.U128) : Result (Option Std.I128) := do
   let i ← small.neg_mag.LIM
   let o ← lift (core.cmp.impls.OrdU128.cmp m i)
@@ -1510,35 +1560,35 @@ def small.neg_mag (m : Std.U128) : Result (Option Std.I128) := do
   | Ordering.gt => ok none
 
 /-- [lattice::small::{impl core::clone::Clone for lattice::small::SmallRat}::clone]:
-    Source: 'crates/lattice/src/small.rs', lines 38:9-38:14
+    Source: 'crates/lattice/src/small.rs', lines 84:9-84:14
     Visibility: public -/
 def small.SmallRat.Insts.CoreCloneClone.clone
   (self : small.SmallRat) : Result small.SmallRat := do
   ok self
 
 /-- Trait implementation: [lattice::small::{impl core::clone::Clone for lattice::small::SmallRat}]
-    Source: 'crates/lattice/src/small.rs', lines 38:9-38:14 -/
+    Source: 'crates/lattice/src/small.rs', lines 84:9-84:14 -/
 @[reducible]
 def small.SmallRat.Insts.CoreCloneClone : core.clone.Clone small.SmallRat := {
   clone := small.SmallRat.Insts.CoreCloneClone.clone
 }
 
 /-- Trait implementation: [lattice::small::{impl core::marker::Copy for lattice::small::SmallRat}]
-    Source: 'crates/lattice/src/small.rs', lines 38:16-38:20 -/
+    Source: 'crates/lattice/src/small.rs', lines 84:16-84:20 -/
 @[reducible]
 def small.SmallRat.Insts.CoreMarkerCopy : core.marker.Copy small.SmallRat := {
   cloneInst := small.SmallRat.Insts.CoreCloneClone
 }
 
 /-- Trait implementation: [lattice::small::{impl core::marker::StructuralPartialEq for lattice::small::SmallRat}]
-    Source: 'crates/lattice/src/small.rs', lines 38:22-38:31 -/
+    Source: 'crates/lattice/src/small.rs', lines 84:22-84:31 -/
 @[reducible]
 def small.SmallRat.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq small.SmallRat := {
 }
 
 /-- [lattice::small::{impl core::cmp::PartialEq<lattice::small::SmallRat> for lattice::small::SmallRat}::eq]:
-    Source: 'crates/lattice/src/small.rs', lines 38:22-38:31
+    Source: 'crates/lattice/src/small.rs', lines 84:22-84:31
     Visibility: public -/
 def small.SmallRat.Insts.CoreCmpPartialEqSmallRat.eq
   (self : small.SmallRat) (other : small.SmallRat) : Result Bool := do
@@ -1547,7 +1597,7 @@ def small.SmallRat.Insts.CoreCmpPartialEqSmallRat.eq
   else ok false
 
 /-- Trait implementation: [lattice::small::{impl core::cmp::PartialEq<lattice::small::SmallRat> for lattice::small::SmallRat}]
-    Source: 'crates/lattice/src/small.rs', lines 38:22-38:31 -/
+    Source: 'crates/lattice/src/small.rs', lines 84:22-84:31 -/
 @[reducible]
 impl_def small.SmallRat.Insts.CoreCmpPartialEqSmallRat : core.cmp.PartialEq
   small.SmallRat small.SmallRat := {
@@ -1557,14 +1607,14 @@ impl_def small.SmallRat.Insts.CoreCmpPartialEqSmallRat : core.cmp.PartialEq
 }
 
 /-- [lattice::small::{impl core::cmp::Eq for lattice::small::SmallRat}::assert_fields_are_eq]:
-    Source: 'crates/lattice/src/small.rs', lines 38:33-38:35
+    Source: 'crates/lattice/src/small.rs', lines 84:33-84:35
     Visibility: public -/
 def small.SmallRat.Insts.CoreCmpEq.assert_fields_are_eq
   (self : small.SmallRat) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [lattice::small::{impl core::cmp::Eq for lattice::small::SmallRat}]
-    Source: 'crates/lattice/src/small.rs', lines 38:33-38:35 -/
+    Source: 'crates/lattice/src/small.rs', lines 84:33-84:35 -/
 @[reducible]
 def small.SmallRat.Insts.CoreCmpEq : core.cmp.Eq small.SmallRat := {
   partialEqInst := small.SmallRat.Insts.CoreCmpPartialEqSmallRat
@@ -1572,7 +1622,7 @@ def small.SmallRat.Insts.CoreCmpEq : core.cmp.Eq small.SmallRat := {
 }
 
 /-- [lattice::small::{impl core::fmt::Debug for lattice::small::SmallRat}::fmt]:
-    Source: 'crates/lattice/src/small.rs', lines 38:37-38:42
+    Source: 'crates/lattice/src/small.rs', lines 84:37-84:42
     Visibility: public -/
 def small.SmallRat.Insts.CoreFmtDebug.fmt
   (self : small.SmallRat) (f : core.fmt.Formatter) :
@@ -1584,19 +1634,19 @@ def small.SmallRat.Insts.CoreFmtDebug.fmt
     "num") dyn (toStr "den") dyn1
 
 /-- Trait implementation: [lattice::small::{impl core::fmt::Debug for lattice::small::SmallRat}]
-    Source: 'crates/lattice/src/small.rs', lines 38:37-38:42 -/
+    Source: 'crates/lattice/src/small.rs', lines 84:37-84:42 -/
 @[reducible]
 def small.SmallRat.Insts.CoreFmtDebug : core.fmt.Debug small.SmallRat := {
   fmt := small.SmallRat.Insts.CoreFmtDebug.fmt
 }
 
 /-- [lattice::small::{lattice::small::SmallRat}::int]:
-    Source: 'crates/lattice/src/small.rs', lines 46:4-48:5 -/
+    Source: 'crates/lattice/src/small.rs', lines 92:4-94:5 -/
 def small.SmallRat.int (v : Std.I128) : Result small.SmallRat := do
   ok { num := v, den := 1#i128 }
 
 /-- [lattice::small::{lattice::small::SmallRat}::reduce]:
-    Source: 'crates/lattice/src/small.rs', lines 53:4-68:5 -/
+    Source: 'crates/lattice/src/small.rs', lines 99:4-114:5 -/
 def small.SmallRat.reduce
   (num : Std.I128) (den : Std.I128) : Result (Option small.SmallRat) := do
   if den = 0#i128
@@ -1647,14 +1697,14 @@ def small.SmallRat.reduce
           small.SmallRat residual
 
 /-- [lattice::small::{lattice::small::SmallRat}::from_reduced]:
-    Source: 'crates/lattice/src/small.rs', lines 72:4-75:5 -/
+    Source: 'crates/lattice/src/small.rs', lines 118:4-121:5 -/
 def small.SmallRat.from_reduced
   (num : Std.I128) (den : Std.I128) : Result small.SmallRat := do
   massert (den > 0#i128)
   ok { num, den }
 
 /-- [lattice::small::add]:
-    Source: 'crates/lattice/src/small.rs', lines 80:0-88:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 126:0-134:1 -/
 def small.add
   (x : small.SmallRat) (y : small.SmallRat) :
   Result (Option small.SmallRat)
@@ -1699,7 +1749,7 @@ def small.add
       small.SmallRat residual
 
 /-- [lattice::small::sub]:
-    Source: 'crates/lattice/src/small.rs', lines 91:0-99:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 137:0-145:1 -/
 def small.sub
   (x : small.SmallRat) (y : small.SmallRat) :
   Result (Option small.SmallRat)
@@ -1744,7 +1794,7 @@ def small.sub
       small.SmallRat residual
 
 /-- [lattice::small::mul]:
-    Source: 'crates/lattice/src/small.rs', lines 102:0-106:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 148:0-152:1 -/
 def small.mul
   (x : small.SmallRat) (y : small.SmallRat) :
   Result (Option small.SmallRat)
@@ -1766,7 +1816,7 @@ def small.mul
       small.SmallRat residual
 
 /-- [lattice::small::div]:
-    Source: 'crates/lattice/src/small.rs', lines 110:0-114:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 156:0-160:1 -/
 def small.div
   (x : small.SmallRat) (y : small.SmallRat) :
   Result (Option small.SmallRat)
@@ -1788,12 +1838,12 @@ def small.div
       small.SmallRat residual
 
 /-- [lattice::small::recip]:
-    Source: 'crates/lattice/src/small.rs', lines 118:0-120:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 164:0-166:1 -/
 def small.recip (x : small.SmallRat) : Result (Option small.SmallRat) := do
   small.SmallRat.reduce x.den x.num
 
 /-- [lattice::small::neg]:
-    Source: 'crates/lattice/src/small.rs', lines 123:0-128:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 169:0-174:1 -/
 def small.neg (x : small.SmallRat) : Result (Option small.SmallRat) := do
   let o ← core.num.I128.checked_neg x.num
   let cf ← core.option.Option.Insts.CoreOpsTry_traitTry.branch o
@@ -1805,7 +1855,7 @@ def small.neg (x : small.SmallRat) : Result (Option small.SmallRat) := do
       small.SmallRat residual
 
 /-- [lattice::small::cmp]:
-    Source: 'crates/lattice/src/small.rs', lines 132:0-136:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 178:0-182:1 -/
 def small.cmp
   (x : small.SmallRat) (y : small.SmallRat) : Result (Option Ordering) := do
   let o ← lift (I128.checked_mul x.num y.den)
@@ -1826,7 +1876,7 @@ def small.cmp
       Ordering residual
 
 /-- [lattice::small::sign]:
-    Source: 'crates/lattice/src/small.rs', lines 139:0-141:1 -/
+    Source: 'crates/lattice/src/small.rs', lines 185:0-187:1 -/
 def small.sign (x : small.SmallRat) : Result Std.I8 := do
   let i ← core.num.I128.signum x.num
   ok (IScalar.cast .I8 i)

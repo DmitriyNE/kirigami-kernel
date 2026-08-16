@@ -32,7 +32,7 @@ impl_def core.cmp.Ordering.Insts.CoreCmpPartialEqOrdering : core.cmp.PartialEq
 }
 
 /-- Trait implementation: [lattice::rat::{impl core::clone::Clone for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
-    Source: 'crates/lattice/src/rat.rs', lines 347:0-347:33
+    Source: 'crates/lattice/src/rat.rs', lines 466:0-466:33
     Name pattern: [core::clone::Clone<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
 @[reducible, rust_trait_impl
   "core::clone::Clone<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
@@ -44,7 +44,7 @@ def lattice.rat.Rat.Insts.CoreCloneClone {B : Type} {Clause0_Int : Type}
 }
 
 /-- Trait implementation: [lattice::rat::{impl core::cmp::PartialEq<lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>> for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
-    Source: 'crates/lattice/src/rat.rs', lines 355:0-355:37
+    Source: 'crates/lattice/src/rat.rs', lines 474:0-474:37
     Name pattern: [core::cmp::PartialEq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
 @[reducible, rust_trait_impl
   "core::cmp::PartialEq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
@@ -58,7 +58,7 @@ impl_def lattice.rat.Rat.Insts.CoreCmpPartialEqRat {B : Type} {Clause0_Int :
 }
 
 /-- Trait implementation: [lattice::rat::{impl core::cmp::Eq for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
-    Source: 'crates/lattice/src/rat.rs', lines 360:0-360:30
+    Source: 'crates/lattice/src/rat.rs', lines 479:0-479:30
     Name pattern: [core::cmp::Eq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
 @[reducible, rust_trait_impl
   "core::cmp::Eq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
@@ -70,7 +70,7 @@ def lattice.rat.Rat.Insts.CoreCmpEq {B : Type} {Clause0_Int : Type}
 }
 
 /-- Trait implementation: [lattice::rat::{impl core::cmp::PartialOrd<lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>> for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
-    Source: 'crates/lattice/src/rat.rs', lines 361:0-361:38
+    Source: 'crates/lattice/src/rat.rs', lines 480:0-480:38
     Name pattern: [core::cmp::PartialOrd<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
 @[reducible, rust_trait_impl
   "core::cmp::PartialOrd<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]
@@ -84,7 +84,7 @@ def lattice.rat.Rat.Insts.CoreCmpPartialOrdRat {B : Type} {Clause0_Int : Type}
 }
 
 /-- Trait implementation: [lattice::rat::{impl core::cmp::Ord for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}]
-    Source: 'crates/lattice/src/rat.rs', lines 366:0-366:31
+    Source: 'crates/lattice/src/rat.rs', lines 485:0-485:31
     Name pattern: [core::cmp::Ord<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>] -/
 @[reducible, rust_trait_impl
   "core::cmp::Ord<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>"]

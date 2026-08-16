@@ -758,6 +758,40 @@ where
     F: Fn(&RatIv<B>) -> Option<RatIv<B>>,
     D: Fn(&RatIv<B>) -> Option<RatIv<B>>,
 {
+    let [v] = integrate_on_slope_n(
+        |iv| f(iv).map(|x| [x]),
+        |iv| fprime(iv).map(|x| [x]),
+        lo,
+        sigma,
+        panels,
+    )?;
+    Some(v)
+}
+
+/// [`integrate_on_slope`] for an **`N`-component** integrand, evaluated **once per point**.
+///
+/// The scalar form above is the `N = 1` case, so there is one implementation of the rule and no
+/// second copy to drift.
+///
+/// This exists because integrating a vector-valued integrand component-by-component evaluates it
+/// once *per component*, discarding the rest of each result. Measured on the acceptance device,
+/// `γ` did exactly that — `directrix_velocity` and `directrix_accel` each return `[x, y]` and were
+/// called twice per point, once keeping `[0]` and once keeping `[1]` — so **every γ integrand
+/// evaluation happened twice**. That is invisible to a wall-clock reading and to a cell count; it
+/// shows up only when the integrand evaluations themselves are counted
+/// ([`counters::gamma_velocity`](crate::counters::gamma_velocity), which exists because of this).
+pub fn integrate_on_slope_n<B, F, D, const N: usize>(
+    f: F,
+    fprime: D,
+    lo: &Rat<B>,
+    sigma: &Rat<B>,
+    panels: usize,
+) -> Option<[RatIv<B>; N]>
+where
+    B: Backend,
+    F: Fn(&RatIv<B>) -> Option<[RatIv<B>; N]>,
+    D: Fn(&RatIv<B>) -> Option<[RatIv<B>; N]>,
+{
     use core::cmp::Ordering::Less;
     if panels == 0 || sigma.cmp(lo) == Less {
         return None;
@@ -766,16 +800,18 @@ where
     let two = Rat::from_i128(2);
     // h²/8 — the remainder scale; `∫_a^b (s−m) ds = 0` cancels the linear term, leaving this.
     let coeff = width.mul(&width).div(&Rat::from_i128(8));
-    let mut acc = RatIv::point(Rat::from_i128(0));
+    let mut acc: [RatIv<B>; N] = core::array::from_fn(|_| RatIv::point(Rat::from_i128(0)));
     let mut a = lo.clone();
     for _ in 0..panels {
         let b = a.add(&width);
         let m = a.add(&b).div(&two);
         let fm = f(&RatIv::point(m))?; // thin midpoint value — no dependency overestimation
-        let w = fprime(&RatIv::new(a.clone(), b.clone()))?.width();
-        let bound = coeff.mul(&w);
-        let rem = RatIv::new(bound.neg(), bound);
-        acc = acc.add(&fm.scale(&width)).add(&rem).rounded();
+        let fp = fprime(&RatIv::new(a.clone(), b.clone()))?;
+        for i in 0..N {
+            let bound = coeff.mul(&fp[i].width());
+            let rem = RatIv::new(bound.neg(), bound);
+            acc[i] = acc[i].add(&fm[i].scale(&width)).add(&rem).rounded();
+        }
         a = b;
     }
     Some(acc)

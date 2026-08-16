@@ -4,13 +4,12 @@
 //! roles, the **per-window seam drill** (one cylinder, two derived holes — head and tail flap),
 //! a flat-authored hexagon, and the certified fold closing the round trip.
 
-use author::construct;
-use author::part::{Cutter, OpRole, Part, SupportFn};
+use author::part::{OpRole, Part};
 use certify_core::Verdict;
 use export::approx::rat_to_f64;
-use export::trim::RailFit;
-use fixtures::devices::cone_wrap;
 use lattice::{Bignum, Rat};
+
+use acceptance::measure as common;
 
 type Q = Rat<Bignum>;
 
@@ -21,42 +20,10 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// The device: `D = 1/10` lap offset, regions body `[−5/4, 1/2]` (`h ≡ 0`), ramp `[1/2, 1]`
-/// (smoothstep `0 → D`), tail `[1, 5/4]` (`h ≡ D`); concentric outer D1 (intersect), eccentric
-/// apex-containing inner D2 (subtract), and the seam drill over the lap (subtract — pierces the
-/// head at σ ≈ −0.9 and the tail flap at σ ≈ 1.1: one cutter, two derived holes).
+/// The acceptance device at the suite's lean budget — the same recipe the demo runs at higher
+/// fidelity, from the one shared definition (see the `acceptance` crate).
 fn device(with_drill: bool) -> Part<Bignum> {
-    let d = q(1, 10);
-    // A witness on the kept sheet: the σ = 0 ruling's point at z = −3 (mid-annulus). The wrap
-    // chart keeps material on both sheets of the double cover (the antipodal ray crosses the
-    // disks too), so the recipe must designate the component — exactly the PR 2 finding.
-    let rz0 = cone_wrap().ruling().comp(2).eval(&qi(0)).unwrap();
-    let mu_w = q(-3, 1).div(&rz0);
-    let witness = cone_wrap().surface(&mu_w, &qi(0)).eval(&qi(0)).unwrap();
-    let mut part = construct::from_chart::<Bignum>(&cone_wrap())
-        .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
-        .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
-        .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
-        .keep_near(witness)
-        .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
-        .clearance(qi(1))
-        .thickness(q(1, 20))
-        .fit(RailFit {
-            degree: 4,
-            subdiv: 160,
-            bits: 44,
-        })
-        .segments(16)
-        .support_panels(8)
-        .budget(develop::cone::DevConfig {
-            terms: 14,
-            sqrt_eps: q(1, 1_000_000_000),
-        });
-    if with_drill {
-        part = part.subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)));
-    }
-    part
+    acceptance::self_lapping_cone(16, 8, with_drill)
 }
 
 /// The flat sector sweeps more than one full 3-D turn (2π·sinβ ≈ 240.9°) yet stays under 360° —
@@ -93,6 +60,29 @@ fn the_seam_drill_derives_two_holes_across_the_lap() {
         2,
         "ONE drill cutter, TWO derived holes: the head and the lapping tail flap"
     );
+
+    // **The chord golden (VV.3).** The holes must not just exist, they must be *round*. This is
+    // the metric that caught the reported defect: while a closed cut was represented as two
+    // µ̂ = f(σ) graphs bridged by a straight radial chord, each hole's longest emitted edge spanned
+    // 30–48% of its own diameter. Measured on the polylines the SVG actually draws.
+    let faces = common::emitted_hole_rings(flat.region());
+    for (h, ring) in faces[0].iter().enumerate() {
+        let frac = common::longest_edge_fraction(ring);
+        // Measured 9.4% and 10.1% (2026-08-14); the graph model gave 30–48% on this very drill.
+        // 15% is a *structural* gate, not a ratchet: it separates "chord spacing" from "a bridge
+        // across the tangent rulings" without being brittle to a resolution change (the metric
+        // scales as ~1/n).
+        println!(
+            "[golden] self-lapping hole {h}: longest edge {:.1}% of diameter",
+            frac * 100.0
+        );
+        assert!(
+            frac < 0.15,
+            "hole {h}: longest emitted edge is {:.1}% of the hole diameter — a chord that large is \
+             the graph-model tangent bridge coming back, not chord spacing",
+            frac * 100.0
+        );
+    }
 }
 
 /// The certified round trip: outline vertices developed by `develop()` fold back through
@@ -155,5 +145,168 @@ fn the_flat_pattern_folds_back_isometrically() {
     assert!(
         worst < 1e-1,
         "gross isometry breakage: chord defect {worst:.3e}"
+    );
+}
+
+/// **The chord golden detects the defect it was built for.** A quality gate nobody has seen fail
+/// is a guess. This reconstructs the shape the graph model actually emitted — a round hole with a
+/// run of samples missing, so one straight edge bridges what used to be the tangent gap — and
+/// checks the metric both scores it in the historically observed 30–48% band and rejects it at the
+/// 15% gate. Pure geometry, no pipeline: it pins the *instrument*, not the kernel.
+#[test]
+fn the_chord_golden_rejects_a_bridged_hole() {
+    let (n, r) = (32usize, 0.5f64);
+    // A unit-diameter circle missing samples 1..4 — the gap spans 5/32 of a turn, so the bridging
+    // chord is 2r·sin(5π/32) ≈ 0.48 of the diameter.
+    let bridged: Vec<[f64; 2]> = (0..n)
+        .filter(|i| !(1..4).contains(i))
+        .map(|i| {
+            let t = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+            [r * t.cos(), r * t.sin()]
+        })
+        .collect();
+    let frac = common::longest_edge_fraction(&bridged);
+    assert!(
+        (0.30..0.50).contains(&frac),
+        "the reconstructed defect must land in the observed 30–48% band, got {:.1}%",
+        frac * 100.0
+    );
+    assert!(frac >= 0.15, "and the 15% gate must reject it");
+
+    // The same circle intact scores as ordinary chord spacing and passes.
+    let intact: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let t = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+            [r * t.cos(), r * t.sin()]
+        })
+        .collect();
+    let clean = common::longest_edge_fraction(&intact);
+    assert!(
+        clean < 0.15,
+        "an evenly sampled circle must pass the gate, got {:.1}%",
+        clean * 100.0
+    );
+}
+
+/// **The ε budget (VV.2).** Every other test here asks only whether a stage *certifies* — but a
+/// `Verified` verdict means "ε is under the clearance", and the clearance is 1, so a change that
+/// made every bound ten times worse would still pass the whole suite. These are the quality
+/// bounds: each stage's certified ε, pinned just above its measured value. **A failure here is
+/// not unsoundness** — the geometry is still certified — it means an edit moved a bound, and the
+/// budget line says by how much. Tighten the constants whenever a change legitimately improves
+/// one; that is the ratchet.
+///
+/// Measured on this device (`segments(16)`, `support_panels(8)`, 2026-08-14):
+///
+/// | stage   | measured  | budget | headroom |
+/// |---------|-----------|--------|----------|
+/// | develop | 4.1481e-1 | 0.45   | 1.08×    |
+/// | fold    | 1.3878e-1 | 0.2    | 1.44×    |
+/// | refold  | 5.9975e-3 | 0.01   | 1.67×    |
+/// | solid   | 5.7663e-2 | 0.1    | 1.73×    |
+///
+/// `develop` gets the least headroom because it has the least to give: the DRC gate is
+/// `clearance/2 = 1/2`, so at 4.15e-1 this device already certifies at **83% of its ceiling** and
+/// a 21% degradation would stop certifying at all. That is worth knowing on its own — it is why
+/// `segments(12)` on the demo device returns `Unresolved` (see the OPT.0 entry in the engineering
+/// log) — and it means `develop` has no room to absorb a bound-loosening optimization.
+#[test]
+fn the_certified_bounds_stay_within_budget() {
+    // Pinned bounds. Raise ONLY with a recorded reason; lower freely when a change earns it.
+    let develop_max = q(45, 100);
+    let solid_max = q(1, 10);
+    let fold_max = q(1, 5);
+    let refold_max = q(1, 100);
+
+    let part = device(true);
+    let flat = match part.develop() {
+        Verdict::Verified(f) => f,
+        Verdict::Unresolved(e) => panic!("develop unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+        Verdict::Refuted(f) => panic!("develop refuted: {f:?}"),
+    };
+    let develop_eps = flat.eps().clone();
+
+    // The fold leg, sampled across all three support regions (body γ ≡ 0, ramp and tail γ ≠ 0):
+    // the worst certified round-trip bound over the sample.
+    let verts = &flat.outline().vertices;
+    let n = verts.len();
+    let mut fold_eps = q(0, 1);
+    for k in 0..6 {
+        let i = (k * n) / 6;
+        let (x, y) = verts[i].center();
+        match part.fold(&[[x, y]], &qi(0)) {
+            Verdict::Verified(w) => {
+                if w.eps.cmp(&fold_eps) == core::cmp::Ordering::Greater {
+                    fold_eps = w.eps.clone();
+                }
+            }
+            Verdict::Unresolved(e) => panic!("fold unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+            Verdict::Refuted(f) => panic!("fold refuted at outline vertex {i}: {f:?}"),
+        }
+    }
+
+    // The round trip that actually matters to the device: the two flat drill holes, far apart in
+    // the pattern, must fold back onto the ONE drill cylinder they were cut from.
+    let (dcx, dcy, dr2) = (-0.5f64, 2.7f64, 1.0 / 40.0);
+    let mut refold = 0.0f64;
+    for hole in flat.holes() {
+        let hv = &hole.vertices;
+        for j in (0..hv.len()).step_by(8) {
+            let (x, y) = hv[j].center();
+            match part.fold(&[[x, y]], &qi(0)) {
+                Verdict::Verified(w) => {
+                    let p = &w.points[0];
+                    let (px, py) = (rat_to_f64(&p[0].mid()), rat_to_f64(&p[1].mid()));
+                    let d = ((px - dcx).powi(2) + (py - dcy).powi(2) - dr2).abs();
+                    refold = refold.max(d);
+                }
+                Verdict::Unresolved(e) => panic!("refold unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+                Verdict::Refuted(f) => panic!("refold refuted: {f:?}"),
+            }
+        }
+    }
+
+    let solid = match part.solid() {
+        Verdict::Verified(s) => s,
+        Verdict::Unresolved(e) => panic!("solid unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),
+        Verdict::Refuted(f) => panic!("solid refuted: {f:?}"),
+    };
+    let solid_eps = solid.eps().clone();
+
+    println!(
+        "[budget] develop {:.4e}/{:.4e}  fold {:.4e}/{:.4e}  refold {:.4e}/{:.4e}  solid {:.4e}/{:.4e}",
+        rat_to_f64(&develop_eps),
+        rat_to_f64(&develop_max),
+        rat_to_f64(&fold_eps),
+        rat_to_f64(&fold_max),
+        refold,
+        rat_to_f64(&refold_max),
+        rat_to_f64(&solid_eps),
+        rat_to_f64(&solid_max),
+    );
+
+    let within = |got: &Q, max: &Q| got.cmp(max) != core::cmp::Ordering::Greater;
+    assert!(
+        within(&develop_eps, &develop_max),
+        "develop ε {:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&develop_eps),
+        rat_to_f64(&develop_max)
+    );
+    assert!(
+        within(&fold_eps, &fold_max),
+        "fold ε {:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&fold_eps),
+        rat_to_f64(&fold_max)
+    );
+    assert!(
+        refold < rat_to_f64(&refold_max),
+        "refold defect {refold:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&refold_max)
+    );
+    assert!(
+        within(&solid_eps, &solid_max),
+        "solid ε {:.4e} exceeds its budget {:.4e}",
+        rat_to_f64(&solid_eps),
+        rat_to_f64(&solid_max)
     );
 }

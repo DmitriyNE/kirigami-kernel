@@ -92,7 +92,7 @@ axiom lattice.rat.Rat.sign
   lattice.rat.Rat B Clause0_Int Clause0_Rat → Result Std.I8
 
 /-- [lattice::rat::{impl core::clone::Clone for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}::clone]:
-    Source: 'crates/lattice/src/rat.rs', lines 348:4-348:27
+    Source: 'crates/lattice/src/rat.rs', lines 467:4-467:27
     Name pattern: [lattice::rat::{core::clone::Clone<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>}::clone]
     Visibility: public -/
 @[rust_fun
@@ -104,7 +104,7 @@ axiom lattice.rat.Rat.Insts.CoreCloneClone.clone
     Clause0_Int Clause0_Rat)
 
 /-- [lattice::rat::{impl core::cmp::PartialEq<lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>> for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}::eq]:
-    Source: 'crates/lattice/src/rat.rs', lines 356:4-356:34
+    Source: 'crates/lattice/src/rat.rs', lines 475:4-475:34
     Name pattern: [lattice::rat::{core::cmp::PartialEq<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>}::eq]
     Visibility: public -/
 @[rust_fun
@@ -116,7 +116,7 @@ axiom lattice.rat.Rat.Insts.CoreCmpPartialEqRat.eq
     Clause0_Rat → Result Bool
 
 /-- [lattice::rat::{impl core::cmp::PartialOrd<lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>> for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}::partial_cmp]:
-    Source: 'crates/lattice/src/rat.rs', lines 362:4-362:55
+    Source: 'crates/lattice/src/rat.rs', lines 481:4-481:55
     Name pattern: [lattice::rat::{core::cmp::PartialOrd<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>, lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>}::partial_cmp]
     Visibility: public -/
 @[rust_fun
@@ -128,7 +128,7 @@ axiom lattice.rat.Rat.Insts.CoreCmpPartialOrdRat.partial_cmp
     Clause0_Rat → Result (Option Ordering)
 
 /-- [lattice::rat::{impl core::cmp::Ord for lattice::rat::Rat<B, Clause0_Int, Clause0_Rat>}::cmp]:
-    Source: 'crates/lattice/src/rat.rs', lines 367:4-367:39
+    Source: 'crates/lattice/src/rat.rs', lines 486:4-486:39
     Name pattern: [lattice::rat::{core::cmp::Ord<lattice::rat::Rat<@B, @Clause0_Int, @Clause0_Rat>>}::cmp]
     Visibility: public -/
 @[rust_fun

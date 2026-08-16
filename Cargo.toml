@@ -37,3 +37,14 @@ export = { path = "crates/export" }
 fixtures = { path = "crates/fixtures" }
 difftest = { path = "crates/difftest" }
 author = { path = "crates/author" }
+acceptance = { path = "crates/acceptance" }
+
+# Tests run exact rational arithmetic in bulk; at the default `opt-level = 0` the suite spends most
+# of its time in unoptimized bignum code. Optimize the test/dev profiles but KEEP `debug-assertions`
+# and `overflow-checks` (their defaults here) — a two-tier lattice that silently wrapped would be a
+# correctness bug, not a performance one, and these are exactly the tests that would catch it.
+[profile.test]
+opt-level = 2
+
+[profile.dev]
+opt-level = 2

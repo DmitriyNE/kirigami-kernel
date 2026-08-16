@@ -19,6 +19,28 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **AUTH.1 deferrals — scope decisions, taken with the user, not oversights.** Recorded so the
+  narrower first slice reads as a choice: **(a) per-edge draft slope** — a single cast point forces
+  one projective taper and cannot give edge A 5° and edge B 0°, which is real fab practice; wanted
+  later. **(b) p-curve profile edges** — lines and arcs keep every wall a plane-or-quadric (degree
+  ≤2 over ℚ(σ)); admitting the PC p-curves pushes walls past degree 2 into new certificate
+  territory. **(c) per-generatrix span** — each generatrix terminating on its own hit count, so cut
+  depth varies across the profile; the reference-ray ordinal ships first. **(d) cutting a real
+  stackup** per-layer — cuts currently happen at flow stage 2, *before* a stackup exists, so a span
+  counts neutral surfaces; nothing in the span rule forecloses layers later.
+  *2026-08-15 · deferred(→post-AUTH.1) · `docs/cutter-extrude-design.md` §8, #237*
+
+- **Two CI gaps the OPT.3 pre-push gate exposed — neither is a code bug, both hide real failures.**
+  **(1) The self-hosted Linux runner is dead in the water** (#241): `nix-installer-action` hangs and the
+  job dies at the 6 h cap before running a single gate step, so half the matrix — and the *only* leg
+  covering `x86_64-linux` — reports nothing. Fix the runner or pin the installer action. **(2) Nothing
+  locally type-checks feature-gated code** (#242): `--features step` / `--features cgal` / `--features
+  fuzzing` targets are compiled out of the default `--workspace` legs, which is how a PC.5/PC.6 call-site
+  break survived two weeks (see Findings). Cheapest fix is a `cargo check --workspace --all-targets
+  --all-features` in the fast loop; the fuller one is a `cargo xtask gate` that replays the CI step list
+  so "run the gate" is one command instead of a hand-assembled script.
+  *2026-08-15 · open · `.github/workflows/ci.yml`, #241, #242*
+
 - **The driving requirement (product north star): the bidirectional multilayer flex-PCB transform.** The kernel
   exists to (**① develop** 3D→flat — generate the flat PCB outline by intersecting the generating shape with 3D
   geometry, then unroll) and (**② fold** flat→3D — fold flat ECAD data into folded 3D geometry). Framing + the
@@ -608,6 +630,19 @@ fine — this is a log, not a schema.
 
 ## Tech debt / sketchy
 
+- **A local `xtask gate --full` failed three OCCT/CGAL legs once and passed them on a clean re-run —
+  cause unidentified, so it is recorded rather than dismissed.** The run reported `FAIL` for *OCCT
+  STEP export*, *OCCT STEP doctests* and *CGAL differential*, while its own compile legs
+  (`clippy --features step`, `--features cgal`) passed in the same invocation. Running the failed
+  legs' exact commands by hand immediately after — same shell, same `nix develop` — passed
+  (91/91 on `export --features step`), and a full re-run was green on all 16 legs. The one
+  suspicious antecedent is that a **non-nix** `cargo clippy -p export --features step` had been run
+  just before, which fails at the OCCT build script; a poisoned `target/` fingerprint is the
+  hypothesis, not a finding. Worth naming because the failure mode is the dangerous direction — a
+  gate that reports FAIL when the code is fine trains people to re-run until green, which is how a
+  real failure gets waved through. If it recurs, capture the leg's stderr (the gate summary alone
+  does not carry it) before re-running. *2026-08-16 · watching · `xtask/src/main.rs` gate legs*
+
 - **γ≠0 chord-certified unroll re-runs the verified quadrature per rail edge — needs the perf pass before multilayer.** The piecewise unroll's anchor frames call `gamma_at(edge.lo)` and the checker's `point_from_on` integrates `∫γ′` from the region window start per edge/subdivision point, each at the region's full `panels` count regardless of span width. `PiecewiseDevelopment` now memoizes the cumulative-γ prefixes (budget-keyed `RefCell` — the dominant cross-region re-integration is gone), but the per-edge own-window integrals remain O(edges × panels × interval-transcendental evals) — a γ-heavy part at fab segment counts takes minutes in debug builds. The **piecewise fold** (PR 3) joins the same family: each `invert_sigma_from` bisection step re-integrates `directrix_between(lo, mid)` at full panel count, so a γ-region fold costs O(iters × panels) — same fix family applies. Candidate fixes, in order of principle: **(a)** scale the quadrature panel count with the integration span (the midpoint-slope rule's error is O((w/panels)²·w), so short spans need few panels — soundness is panel-count-independent); **(b)** an incremental frame walk in the unroll (edges march monotonically; each frame extends the previous by one short increment, the demo's old `gamma_grid` shape); **(c)** release-profile evaluation for authoring workflows. *2026-08-14 · open · `develop::part` (`gamma_at`/`anchor_pieces`), `develop::cone::directrix_between`, `develop::fold` (pw) · surfaced by the `author` facade's piecewise tests (budgets right-sized there in the meantime).*
 
 - **The self-lapping demo keeps a C¹ cubic ramp; the C² quintic is blocked by the trim geometry, not the γ-quadrature.** As of task #216 the `integrate_on_slope` quadrature develops the quintic smootherstep tightly (the original blocker is gone), but restoring it (now `SupportFn::InU` in `crates/author/examples/self_lapping_cone.rs` — the old hand-wired demo is deleted) fails at the **trim rail**: the quintic reshapes the ramp surface so the fixed outer/inner cylinder cuts (tuned for the cubic) no longer produce a smooth low-degree rail over the ramp region (D1-outer ε≈14.7; raising the fit degree makes it *and* the unchanged body region worse — Runge, i.e. a geometry/branch wall). **To restore C²:** re-tune the trim-cylinder placement/radii (and/or sub-band the ramp) for the steeper quintic surface, then regenerate the SVG/STEP artifacts. Purely a demo-geometry task — the kernel quadrature is done. *2026-08-12 · open · the self-lapping recipe (now `author/examples/self_lapping_cone.rs`)*
@@ -647,6 +682,975 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **Every certificate `Verified` and the STEP write refused the shell: the exact tier's minimum
+  feature is smaller than the exporter's.** The AUTH.2f acceptance demo's traced-slot solid audited
+  clean — watertight, manifold, genus as expected — and OCCT's `BRepBuilderAPI_MakeEdge` then
+  rejected it with `DifferentPointsOnClosedCurve`. The mechanism is a seam, not a bug in either
+  side. The tracer samples one grid step (`2⁻³⁰ ≈ 9.3·10⁻¹⁰`) inside each cell end, which is what
+  keeps a pinch tight (§11.4), so a traced loop carries a pair of vertices `≈10⁻⁹` apart at every
+  cell boundary; each becomes a wall whose curved rails span `≈10⁻⁸` in 3-D, an order **below**
+  OCCT's `10⁻⁷` vertex tolerance. The curve's own two ends therefore read as coincident — a closed
+  curve — while the two vertices handed with it are distinct, and OCCT declines. Measured on the
+  L-slot: 220 shell vertices at only **145 distinct positions**, 76 sub-tolerance Bézier edges;
+  the disc and metric-drill panels, whose loops have no cell structure, had none. Fixed on both
+  sides of the same principle — `hole_poly` merges emitted vertices closer than a declared
+  `MIN_STEP` (`2⁻²⁰`, three orders above the snap grid and three below the device's certified cut
+  bound), and the solid builder's station list is thinned the same way, since a slice `10⁻⁹` wide
+  has the same problem in its lids. The keyhole then exports clean (156/156 distinct vertices, 0
+  sub-tolerance edges) and the L-slot's residue fell 76 → 4, **still enough for OCCT to refuse**.
+  The four survivors sit at `σ = 0`, where this L's authored corner lands exactly on the panel's own
+  station, and they are not polygon vertices or stations — coarsening `MIN_STEP` by 16× does not
+  move them — so they come from a third source, found and closed the next day (next entry). Two
+  general points are worth keeping. **The verdict does not cover the exporter**: `Verified` is a statement
+  about the rails, and says nothing about whether a floating-point consumer can represent what was
+  built — a demo that does not actually run the exporter cannot discover that. And **an export
+  profile needs a declared minimum feature size, enforced where geometry crosses into it**, rather
+  than an assumption that the exact tier never emits anything smaller.
+  *2026-08-16 · `crates/export/src/trim.rs::hole_poly`, `crates/export/src/brep_build.rs::thin_stations`*
+
+- **The last four were the loop and the partition disagreeing by less than either could carry —
+  neither wrong, and the pair unbuildable.** The residue above was neither a rail-piece join (the
+  builder already stitches those to agree *exactly*, `stitched_poly_chain`) nor a station pair (they
+  are thinned). Instrumenting every emitted rail edge with its σ-interval named it in one run: the
+  four edges run from `σ = 0` to `σ = ∓2⁻³⁰`, spans `5.8·10⁻⁹` and `9.7·10⁻⁹`. `σ = 0` is the gore's
+  own midpoint station and the L's authored corner lands there, so the tracer — sampling one grid
+  step inside each cell end (§11.4) — puts the loop's vertex `2⁻³⁰` from it; the slice boolean then
+  clips the loop *at* the station and the lid runs from that clip to the vertex beside it.
+  `hole_poly`'s merge could not see it, because it compares a loop's vertices with **each other**,
+  and this pair is a vertex against a partition point derived independently of the loop. Fixed by
+  reconciling them where both are known — the builder snaps a polygon-hole vertex within
+  `min_export_step` of a station onto it (`snap_poly_to_stations`) — and the **vertex** moves, not
+  the station: the station is shared by every rail and every other hole and carries the exported
+  patches' positive-weight validity, while `hole_poly` already declares this polygon to be the loop
+  only to within that same step. The L-slot now writes its `.step` (`occt=ok`, 80 faces, shortest
+  emitted edge `1.6·10⁻³`), and the regression is a fixture rather than a device: a stepped hole
+  authored `2⁻³⁰` off the station must build **what the same hole authored on it builds, vertex for
+  vertex** — with the snap disabled that assertion fails, and OCCT returns the original
+  `MakeEdge(bezier) failed`. Two things worth keeping. The measurement that ends a hunt like this is
+  the **emission site with its domain coordinates**, not the artifact: three plausible sources were
+  eliminated by argument and the fourth arrived with its σ printed. And the general shape of the
+  defect — *two independently derived structures reconciled nowhere, disagreeing by less than the
+  consumer's resolution* — is where to look first the next time everything certifies and the
+  exporter still says no. Deliberately **not** extended to the band channel's own piece boundaries:
+  no such disagreement has been measured there, and `HoleRail` is itself up for retirement (#266).
+  *2026-08-16 · `crates/export/src/brep_build.rs::snap_poly_to_stations`, `crates/export/src/trim.rs::export_apart`*
+
+- **A σ-window derived from the quadric walls does not cover a profile that also has affine ones —
+  and the tracer refuses the cut rather than mis-building it.** Station targeting needs the σ-range
+  where a cutter is active. For a quadric wall that is its tangent-ruling window; a profile of
+  straight edges has none, so AUTH.1e.2 gave an **all-affine** profile a bounding-circle proxy. The
+  criterion was one case too narrow: a *mixed* profile — AUTH.2f's keyhole, a circular head with a
+  straight stem — took its window from the head's circle alone, and the stem runs past it. The
+  tracer then found its footprint occupying the scan's own first or last ruling and refused with
+  `ShadowUnbounded`, surfacing as `PartFault::CutUnresolved`, insensitive to `clearance` and
+  `segments` because it was structural rather than loose. Fixed by asking for the proxy whenever
+  **any** wall is affine; a profile whose walls are all quadric still needs none, since each wall's
+  window covers its own arc. The same edit removed a second latent error: the "is this bracket a
+  real window" test read the *wall-indexed* pullback, which is the proxy's own only in the all-affine
+  case, so a mixed profile filtered the proxy's brackets by the circle's reality. Both are the same
+  mistake — a rule stated for the case that motivated it rather than for the property it needs. The
+  general form is worth keeping: **a superset of stations costs only samples where the cut is
+  absent; a missing one loses the cut**, so when the covering argument is in doubt, widen.
+  *2026-08-16 · `crates/author/src/resolve.rs`, AUTH.2f*
+
+- **A small metric disc can resolve `Inactive` — a green certificate on a cut that does nothing —
+  when its σ-window is narrower than one cell of the resolver's root scan.** Found while building
+  AUTH.2f's metric probes: a disc of radius `1/16` at `(1/16, 37/16)` on the device gore resolves
+  `OpRole::Inactive` and develops to a hole-free panel, while the *same radius* at `(1/16, 9/4)`
+  cuts a hole. The two are geometrically indistinguishable in kind, and the discriminator is
+  arithmetic: `surface_disc_roots` seeds its sign-change scan with a fixed **256** subdivisions of
+  the whole σ-band `[−7/2, 7/2]`, a cell width of `7/256 ≈ 0.02734`, and the two windows are
+  `0.02703` and `0.02779` wide. The narrower one puts both tangent roots inside one cell, the scan
+  sees no sign change, and the op is reported as never touching the material. This is the
+  fail-**open** direction and nothing downstream can object: a hole that was never derived leaves no
+  trace in the flat pattern, the solid, or ε. Worth stating as a pattern — the resolver's station
+  targeting is still a *scan* while AUTH.2a built the **exact** event set (disc + resultant,
+  Sturm-isolated) for the tracer, so the fix is to point the same machinery at this one. Not fixed
+  in AUTH.2f: it is a pre-existing AUTH.1 gap with a blast radius across every pinned ε, chord golden
+  and work budget, and it deserved its own slice (next entry). The AUTH.2f probes were placed clear
+  of the threshold instead, which is itself the reason to record the number: the next fixture placed
+  by eye will land on it.
+  *2026-08-16 · `crates/export/src/trim.rs::surface_disc_roots`, `crates/author/src/resolve.rs`*
+
+- **The feared blast radius was nil, and that is the finding.** Pointing AUTH.2a's exact machinery at
+  the resolver's window derivation — `develop::cut::tangent_events`, the `Tangent` family on one form,
+  Sturm-isolated — turns "did the scan happen to straddle both roots" into "isolate every root, then
+  read a window as the **gap between two brackets**". The gap is the part of the window the brackets
+  prove root-free, so the discriminant has one sign across it and a single midpoint evaluation decides
+  it; that is a property a sign scan cannot offer at any subdivision. The reproduction now resolves
+  `Hole`, and its pin is a differential rather than a verdict: development is an isometry, so the same
+  radius cuts the same **area** wherever it sits, and the narrow-window drill must develop to the wide
+  one's hole (0.018307 both). What was expected to be expensive was re-measuring the pins. Every
+  printed number in the author suite — VV.1 counters (γ cells 2256, γ′ 2640, cut evals 4096), VV.2 ε
+  (develop 4.1481e-1 · fold 1.3879e-1 · refold 5.9982e-3 · solid 5.7663e-2 · flex 2.7573e-1 · L-slot
+  4.8792e-1 / cut 2.8439e-4 · keyhole cut 1.4320e-2), VV.3 goldens (3.0 / 7.7 / 9.1 / 9.4 / 10.1 %),
+  the probe areas and the fold residual — is **bit-identical** before and after, because for every
+  window the scan *did* find, the exact brackets land within `2⁻⁴⁰` of its bisected roots and
+  everything emitted snaps to `2⁻³⁰`. Worth keeping as a pattern: *a sampling assumption's blast
+  radius is feared for the cases it got wrong, but it is measured on the cases it got right — and
+  those are exactly the ones a sound method reproduces*. Runtime is unchanged too (one Sturm chain
+  over a reduced discriminant per wall per region, against 256 polynomial evaluations). The related
+  scan in `surface_tangents` is deliberately left: its `span` is the resolved window padded by a
+  sixteenth of its own width, so it is a *relative* scan and cannot exhibit this defect — the doc now
+  says so, and `surface_disc_roots` is private, so the absolute-band form is no longer reachable.
+  *2026-08-16 · `crates/develop/src/cut.rs::tangent_events`, `crates/author/src/{resolve,realize}.rs`*
+
+- **A merge is not distinguished by its stretch count, and the first version of the keyhole test
+  proved nothing.** AUTH.2f needed a fixture exercising a genuine **merge** — two ruling stretches
+  rejoining — as opposed to the L's births and deaths. The first test asserted exactly that: sweep,
+  find the drop from two stretches to one, and check that what closed was the **gap** between them
+  rather than either one's width. It passed. Pointed at the L instead of the keyhole, it also
+  passed, because an L's two arms *do* rejoin at the reflex corner — the premise that the L only
+  births and dies was simply wrong, and the test was measuring a property both shapes have. What is
+  actually the keyhole's own is **which walls face across the closing gap**: the head's circle and a
+  straight stem side, so the saddle is the mixed quadric-against-affine case of the pairwise
+  resultant, which no polygon can reach and which §11.2 asks for by name. Re-asserted by reading the
+  wall each end names and checking their pullbacks differ in degree; the L now fails it. The general
+  lesson is the vv-guide's, one turn further in: it is not enough to name the phenomenon a fixture is
+  for — the *assertion* has to be one the other fixtures fail. *2026-08-16 · `crates/develop/src/cut.rs`*
+
+- **The fixture that produces the phenomenon had to be searched for, twice, and the search is
+  recorded because it is not free.** §11.6 already noted that an L along the rulings has a band
+  footprint. The keyhole added the same lesson for a curved profile: what a ruling has to cross to
+  see two stretches is the small **notch beside the stem**, so a stem `3/5` as wide as the head
+  nearly closes it. Measured over an 800-ruling sweep, a wide stem gave 9 two-stretch rulings, a
+  narrow one (`7/25`) 14, and the rotation mattered as much — the unrotated keyhole gave 8, four
+  orientations gave 0. Both constants in `keyhole_profile` are therefore load-bearing, and the doc
+  comment says so, because the next person to "simplify" the fixture to round numbers will silently
+  delete the property it exists to exercise. *2026-08-16 · `crates/develop/src/cut.rs`, `crates/acceptance/src/lib.rs`*
+
+- **A σ-station crossing leaves no trace in the artifact, so the acceptance demo counts it.** A hole
+  that crossed a station and one that sat inside a single slice certify alike and build alike; the
+  emitted solid has nothing that distinguishes them, since the extra wall a crossing adds is
+  indistinguishable from an ordinary one. AUTH.2f could therefore assert only *consequences* a
+  within-slice hole shares — watertight, manifold, one added handle — and would have had AUTH.2e/2
+  on its critical path by assertion rather than by evidence. `develop::counters::poly_slice_clips`
+  closes it: bumped once per slice the builder's general polygon channel trims, so with the slot as
+  the part's only polygon hole a count above 1 *is* the crossing. Measured 2 for both AUTH.2f
+  fixtures and 0 for the un-slotted control (the control's zero matters — otherwise the counter
+  might be measuring the panel rather than the slot). Worth generalizing: when a milestone's claim is
+  about **which branch ran**, the artifact is the wrong place to look for it, and a counter is not a
+  performance tool but a witness. *2026-08-16 · `crates/develop/src/counters.rs`, `crates/export/src/brep_build.rs`*
+
+- **"A radial at an interior station is a shared cross-ring" was a property of `HoleRail`, not of
+  the builder — and reading it as the builder's made a `Verified` solid with four free edges.** The
+  trim builder emits a wall per footprint edge except a radial at an interior σ-station, which two
+  adjacent slices are assumed to share. That assumption held for as long as every interior hole was
+  a `HoleRail`: its near/far branches are *continuous in σ*, so both slices cut the station at the
+  same two µ̂ and the two lids really do meet along one edge. AUTH.2e's polygon channel breaks it —
+  a hole with a `σ = const` edge sitting **on** a station keeps material on one side and not the
+  other, so the two lids differ there and the step between them is a wall. Skipped, it left four
+  free edges under a `Verified` verdict: an open shell reported as a solid, and the pipeline had
+  nothing to object with, since `Part::solid()`'s verdict is about the *certificates* upstream and
+  not about the shell it hands back. Found by measuring rather than reasoning — the fixture already
+  in the suite (`fold_part`'s authored L, whose step lands exactly on σ = 0, which is where an
+  authored corner tends to fall) was about to be flipped from `SolidRefused` to green on the
+  strength of the verdict alone. The rule now asks the neighbouring slice for its segments on that
+  station and emits the wall unless one matches exactly; a partial overlap is refused rather than
+  sewn. Exact matching is sound *because* each slice runs its boolean against the whole loop rather
+  than a pre-clipped one, so both sides see the same crossings on the shared line.
+  *Generalizable:* when lifting a restriction, the invariants the old special case *supplied* are as
+  load-bearing as the ones it required — and they are invisible, because nothing states them.
+  *2026-08-16 · resolved · `export::brep_build::{cross_ring,radial_segments}`, design §11.7*
+
+- **A fail-closed refusal is only as honest as the premise it rests on — and mine was false for
+  every hole the kernel emits.** Bringing the general polygon channel up to per-slice clipping, I
+  refused any slice reached by *both* a polygon hole and a `HoleRail`, reasoning that a rail's
+  branches are curved and a boolean has no operand for a curve. The gate rejected it in the first
+  run: the doctest panel is precisely that case (an authored slot beside a derived drill), and the
+  leg the milestone was explicitly not allowed to regress is the one that broke. The premise was
+  wrong — `hole_rail` builds **linear** rails between consecutive loop vertices, so a band *is* a
+  polygon, and converting it (`rail_hole_poly`) lets both kinds join one boolean. Two things worth
+  keeping: a refusal added because "I cannot represent that" deserves the same scrutiny as a claim,
+  since it encodes a belief about the data; and it was cheap to be wrong here only because the
+  regression suite already owned the case — the design doc's §11.1 measurement said the
+  within-slice mixture worked, and the test said so too.
+  *2026-08-16 · resolved · `export::brep_build::rail_hole_poly`, design §11.7*
+
+- **A non-convex profile does not give a non-convex footprint, and a reflex corner in the flat
+  pattern does not prove one either.** AUTH.2d's fixture is an L-slot cutter, and the first two
+  attempts were *false negatives that looked like tracer bugs*. **(1)** This cone's rulings project
+  to radial rays, so an L whose arms lie along the radius is met by every ray exactly once: the
+  notch never appears in `(σ, µ̂)` at all and the footprint is an ordinary band. An L is only
+  non-band when the notch opens **across** the rulings, which took an exact `(3,4,5)` rotation of
+  the profile's axes to arrange — and then a placement that keeps every vertex in the material (the
+  first landed on the panel's inner carve and came back `AmbiguousRegion`, a resolver fault two
+  stages upstream of the thing being tested). **(2)** Worse, the obvious check is not a check: the
+  developed hole had a genuine reflex corner and *still* came from a band, because a band
+  `[lo(σ), hi(σ)]` can be a perfectly non-convex planar region. The signature that actually
+  distinguishes them is a ruling meeting the cutter twice — pinned here as `solid()` refusing with
+  `LoopBroken`, since the near/far rail adapter is exactly what a non-band loop breaks. What AUTH.2
+  lifts is a restriction on **footprints**; "non-convex profile" is neither necessary nor sufficient
+  and the fixtures have to demonstrate the real thing.
+  *2026-08-16 · resolved · `author/tests/sketch_cutter_part.rs`, design §11.6*
+
+- **`hole_rail` accepted a loop it cannot represent and built a certified solid around the wrong
+  hole.** The near/far rail adapter splits an interior loop at its two σ-extremes, which assumes the
+  loop turns around in σ exactly twice — true of every band, and false of a traced non-convex loop.
+  Handed one, `chain` swapped the ends of each backward step and sorted, producing **overlapping**
+  σ-bands that the slice builder read as a hole of a different shape: the L-slot part came back
+  `Verified` with a solid whose hole was not the loop that had been certified. Nothing in the
+  pipeline objected, because every certificate along the way is about the *loop*, and the loop was
+  fine. Newly reachable the moment AUTH.2c's tracer replaced the band builder, and found only
+  because a test asserted the refusal that ought to happen — the pin written to make AUTH.2e's
+  landing visible caught a live defect instead. Fixed by counting σ-direction reversals and refusing
+  anything but two. *Own-goal worth recording:* the first version of that count walked `0..n` and
+  never compared the last step back to the first, so a band counted **one** reversal and every hole
+  was refused — a cycle is a cycle, including its wrap.
+  *2026-08-16 · resolved · `export::trim::hole_rail`*
+
+- **A differential whose tolerance is built from the quantity under test cannot fail — and it looks
+  more rigorous than the sound version.** AUTH.2c's headline check is that the new general tracer
+  reproduces AUTH.1e.4's band builder on the band's own square-prism fixture. Written the obvious
+  way, it compared the two emitted boundaries to within `band.eps + traced.eps` — "each is a
+  certified distance to the same walls, so they may differ by at most the sum", which is *true* and
+  useless: the tolerance grows exactly when the tracer degrades. Mutation-testing the sampling (drop
+  the grid-adjacent nodes at each cell end) made the tracer's ε **8× worse**, `1.79e-2` against the
+  band's `2.24e-3`, and the check passed without a murmur. Rewritten to a fixed multiple of the
+  **band's** bound alone — an external reference, unaffected by the code under test — the same
+  mutation fails it immediately. Generalizes past this one test: a two-sided bound is only a test if
+  at least one side is independent of what it is testing. *Related process note:* restoring a
+  mutated file from a copy can leave it with an **older mtime than the build artifact**, so cargo
+  silently reuses the mutated binary — a "the fix did not take" result that is really a stale build.
+  `touch` after restoring. *2026-08-16 · resolved · `develop::cut` tests, vv-guide AUTH.2 criteria*
+
+- **"Edges are not carriers" has a converse, and it only bites on non-convex profiles: a carrier
+  crossing the cutter's own interior is not a boundary.** AUTH.1e.2 found that `arrange2d` splits a
+  circle into two arcs sharing one carrier, so a per-*edge* wall list duplicates a surface
+  (`Cast::carrier_walls` was the fix). AUTH.2b hit the dual: a carrier is the whole infinite **line**,
+  not the profile edge lying on it, so a non-convex profile has carriers that run through its own
+  interior — an L's `y = 1` bounds one arm and is interior to the other. Those crossings arrive in
+  `ruling_patches`' sorted list like any other, and taken as-is they break one inside stretch into
+  two abutting ones. Measured on an L-profile cutter: some rulings reported **three** stretches,
+  which a straight line meeting two convex arms cannot do, and one L orientation reported two
+  stretches at 27 of 401 sampled rulings where the truth was one. Fixed by merging stretches that
+  share an endpoint — exact rather than a tolerance, since the union of two intervals sharing an
+  endpoint *is* the interval, and the shared value is one `Rat` by construction. **Convex profiles
+  cannot exhibit it** (their carriers are supporting lines, so every extra crossing falls outside the
+  inside stretch), which is why AUTH.1e.4 shipped without it and why no existing test moved. Worth
+  keeping next to its sibling: both defects come from conflating a *carrier* with the *edge* on it,
+  in opposite directions, and both were invisible until a shape that distinguishes them showed up.
+  *2026-08-16 · resolved · `develop::cut::ruling_patches`, #260*
+
+- **The textbook resultant is identically zero on exactly the case AUTH.2 exists for, and a
+  differential built from generic inputs would not have noticed.** AUTH.2a's event set needs
+  `Res_µ̂(f_i, f_j)` — zero where two walls cross a ruling at the same µ̂ — and the quadratic-by-
+  quadratic closed form `(a₁c₂−a₂c₁)² − (a₁b₂−a₂b₁)(b₁c₂−b₂c₁)` went into the design doc backed by an
+  exact check against a 4×4 Sylvester determinant over 2000 random rational pairs, plus the
+  shared-root and *linear-vs-quadratic* degenerate cases. All green, and all beside the point: that
+  closed form is the Sylvester determinant of the two forms **padded to degree 2**, and padding a
+  genuinely affine form adds a shared root at infinity. With one wall affine the padding is harmless
+  (the determinant picks up a nonzero factor). With **both** affine it collapses to `0` — for walls
+  that meet and walls that never meet alike. Every wall of a polygonal profile is affine, so the
+  L-slot, the T-slot and the keyhole — the shapes the whole milestone is for — would have had every
+  corner erased, presenting as a tracer that quietly found no events rather than as an arithmetic
+  error. Fixed by dispatching on `a ≡ 0` as a rational function (2×2 / 2×1 / 1×1 forms, design doc
+  §11.2); an isolated σ where a genuine conic's `a(σ)` vanishes needs no case, since the 2×2 form
+  factors there into the 2×1 condition times `a_j ≠ 0`. Three tests catch the naive version, one of
+  them end-to-end on the square prism, all mutation-verified against it. *The lesson is about test
+  selection, not resultants:* the differential was real, independent, and exhaustive over the
+  **generic** stratum, and the defect lived in the degenerate one — which is where the feature lives.
+  When a formula has degenerate cases, the test set has to contain the case the feature is for.
+  *2026-08-16 · resolved · `develop::cut::{MuCut::resultant, structure_events}`, #259*
+
+- **AUTH.2's scout: the band lives in one file, and everything downstream already takes a general
+  loop.** #256 sized the work as "holes must become regions end to end, through the flat boolean and
+  into the B-rep builder", and named `HoleRail`'s band (`brep_build.rs:222`) as the load-bearing
+  blocker to scout before planning. Measured instead, by drilling a deliberately **non-convex**
+  L-shaped `(σ, µ̂)` loop through the doctest panel with `Part::hole_domain` (the authored-polygon
+  channel, which is the same currency a traced footprint would produce): **(1)** the flat leg is
+  free — develop → exact `arrange2d` boolean → topology gate, all `Verified`, with a convex rectangle
+  as the control; **(2)** the solid leg is *also* free while the loop stays inside one σ-slice —
+  `brep_trim_solid_regions`' `poly_holes` channel takes an arbitrary `(σ,µ̂)` loop as a lid inner
+  wire and sweeps a wall per edge, and the shell certifies; **(3)** the one real solid-path gap is a
+  loop **crossing a σ-station**, refused by name at `brep_build.rs:1739` (`SolidRefused`), confirmed
+  by placing the same slot across `σ=0` with the drill removed. So `HoleRail`'s band is not what
+  stands between us and non-convex profiles — it is the channel for *station-crossing* holes, which
+  is an orthogonal axis. Two corollaries: the **resolver was already general** (AUTH.1e.1's
+  `Shadow(Vec<Patch>)` carries several µ̂-stretches per ruling, so structure/stations/spans need no
+  work), and the refusal is confined to **two lines** in `develop::cut` (`ruling_patch`'s
+  several-stretches check, `cut.rs:663`, and the window-gap check, `cut.rs:812`). AUTH.2 is therefore
+  a **tracer** milestone, not a plumbing one. *Method note:* the first three runs all refused with
+  `TopologyMismatch` and it took a convex control to show that was placement, not convexity — the
+  slot was sitting on the panel's existing drill, and then on the inner boundary. A refusal that
+  looks like the thing you are testing is worth one control run before it becomes a finding.
+  *2026-08-16 · resolved · #256, `crates/develop/src/cut.rs`, `crates/export/src/brep_build.rs`*
+
+- **A drafted round hole is not a round cone, and AUTH.1a's surface-class table said it was.** The
+  GO-gate's table (`docs/cutter-extrude-design.md` §2.2) mapped *arc + finite apex* to a `Cone` and
+  *arc + direction* to the existing `Cylinder`, meaning the two metric surfaces the kernel already
+  had. Both cells are wrong, for two reasons that are independent — either one alone forces the
+  general form. **(1)** The cone over a circle from an apex **off that circle's own axis** is an
+  *oblique* circular cone, which as a quadric is an **elliptic** cone, not a right circular one. A
+  cutter has one cast point serving the whole profile, so it is off-axis for all but one of the
+  profile's arcs — the on-axis case is the exception, not the rule. **(2)** Under the *affine* frame
+  §3 argues for, a profile "circle" is already an ellipse in 3-D, so even the parallel case sweeps an
+  elliptic cylinder. Resolved with **one** new variant, `CutSurface::Quadric` (general `XᵀMX+b·X+c`
+  on one `Nappe`), which is *fewer* new variants than the table implied while being strictly more
+  general; `Plane`/`Cylinder` keep their exact closed-form distances untouched. The knock-on is the
+  real cost: a general quadric **has no closed-form distance**, so the certificate needed new
+  machinery — the first-order gradient-flow bound (see the next entry). Worth noting how the error
+  survived review: the table was checked for *degree* (everything stays ≤ 2, which is true and is
+  what the pullback needs) and that was silently read as also fixing the *metric class*, which it
+  does not.
+
+- **A semi-hermetic build only looks hermetic until it meets a bare machine.** The first
+  `x86_64-linux` CI signal in eight days came back red — not on any AUTH.1 code (90/90 `export`
+  tests passed there, including the 122s `full_panel_assembles`) but on the **doctests**:
+  `libTKDESTEP.so.7.9: cannot open shared object file`. The devShell lists `opencascade-occt`, which
+  puts OCCT on the *compile* path, and `build.rs` derives `-L <occt>/lib` from it — but nothing ever
+  declared it a **runtime** dependency. Ordinary test binaries survive because nix's ld-wrapper bakes
+  an rpath at the final link; rustdoc's doctest binaries are linked without the build script's link
+  args, carry no rpath, and the loader has nowhere to look. It had worked everywhere OCCT happened to
+  be reachable by other means; a runner with nothing installed globally has nothing to fall back on.
+  Fixed by declaring the runtime path once in the devShell (`LD_LIBRARY_PATH` +
+  `DYLD_FALLBACK_LIBRARY_PATH`). The general shape is worth remembering: **a dependency that is only
+  ever declared at build time is untested as a runtime dependency**, and the machine that finds out
+  is the most minimal one you own. It also took eight days to learn, because a CI leg that never
+  finishes is indistinguishable from one that passes — the hang (fault a) hid the misconfiguration
+  (fault c) completely.
+
+- **A green certificate on a cut that did nothing — and the doc had predicted it.** AUTH.1e.2's
+  station criterion is "a wall whose µ̂-pullback is a genuine quadratic (`a ≢ 0`) has tangent windows
+  and needs targeted stations; an affine one does not." That reproduces `Cylinder` vs `HalfSpace`
+  exactly — and gives a **polygon zero stations**, because every wall of a polygon is affine. A
+  square slot subtending ≈0.045 in σ against ≈0.146 sample cells fell between them and the resolver
+  derived `OpRole::Inactive`: the part certified, the authored cut was simply absent. That is
+  verbatim `docs/cutter-extrude-design.md` §6's prediction — "an extruded cutter would silently
+  receive no targeted stations and drop small features between cells" — reintroduced *while*
+  carefully preserving the behaviour §6 was warning about. Fixed with the profile's bounding circle
+  as a probe: its wall is a quadric, so it has one tangent window, and that window contains the whole
+  profile's σ-support. A **superset is the right error** here — extra stations sample where the cut
+  is absent and cost nothing, a missing one loses the cut silently.
+
+- **ε cannot see a draft angle, so the acceptance check had to be geometric.** The drafted and
+  parallel variants of the same hole certify at *the same* ε (4.879e-1 both), because ε is the max
+  over pipeline stages and the panel's boundary dominates. Every certificate in the pipeline was
+  green on a cut whose *shape* was the entire point. The check that distinguishes them measures the
+  developed hole — 0.4759 vs 0.5969, ratio 0.797 against the taper law's 0.797 — and is a test, not
+  demo output. Worth generalising: when a feature's headline property is a *shape*, a residual bound
+  that is dominated by something else is not evidence about it, however green.
+
+- **Four wrong diagnoses before one controlled comparison.** Chasing why the demo failed, I: read
+  ε ≈ 0.94 as the `Unresolved(clearance)` sentinel (it is exactly 1.0 — I quoted the number without
+  checking what it implied); blamed `fit_cut_rail` declining `Quadric` (real code fact, wrong
+  culprit — extruded cuts derive `Hole` and take the p-curve route, which works); predicted the ring
+  would silently emit a disc (it fails closed); and estimated the fix as PC.3-scale (the half that
+  mattered was 30 lines). The actual cause was my demo recipe dropping the rim notch — nothing to do
+  with AUTH.1. What ended it was authoring the *same solid* two ways and comparing, which is the
+  first thing I should have done. **Write a new recipe by changing one line of a working one.**
+
+- **Edges are not carriers, and the difference cost a duplicated hole.** AUTH.1b built
+  `Cast::walls` per *edge* and documented that as deliberate: "carriers are not deduplicated, which
+  is what the caller wants when it is walking edges." AUTH.1e.2's caller wants the opposite and the
+  doc note did not save me. `arrange2d` hands out **decomposed** pieces — a circle arrives as its
+  two x-monotone arcs — and both arcs sweep the *same* quadric, so an extruded disc produced two
+  identical walls. The µ̂-shadow survived that (coincident crossings leave zero-width stretches,
+  which the scan skips), but the σ-window station loop runs per wall, so the window was recorded
+  twice and the resolver derived **two interior holes where the cylinder it equals derives one**.
+  Fixed with `Cast::carrier_walls`, which dedupes by carrier — lines normalized against their first
+  nonzero coefficient so the same line at a different scale collapses too.
+  Two things worth keeping. First, **what caught it**: not the three unit tests of `extruded_shadow`
+  (all green, all passing before and after), but the end-to-end differential that authored the *same
+  solid* two ways and compared the resolved structures. The bug lived entirely in the layer above
+  the function under test. Second, the smell in advance: I had written "which is what the caller
+  wants" about a caller that did not exist yet. A justification written for a hypothetical consumer
+  is worth re-checking the moment a real one appears.
+
+- **A lap is made of support, not of charts — so a span counts regions.** AUTH.1d started from the
+  design's phrase "neutral surfaces (chart embeddings)" and the obvious reading, one chart = one
+  surface, is wrong on the very device the acceptance test uses. Cast down the seam-drill axis at
+  the *bare* wrap chart and it reports **three** crossings — but two of them are at the **same 3-D
+  point**, because with `h ≡ 0` the flap and the body coincide exactly; the chart is a double cover
+  there and the two σ are the same material. Give each region its own support law and they separate
+  by the ramp height (measured: `2.892` vs `3.042` along the ray, a gap of `0.149`). So the unit of
+  counting is a **region**, and a span computed against a bare chart counts a double cover rather
+  than layers. Two smaller things fell out of the same probe: the ordering must be by **ray
+  parameter**, which on this device is the *reverse* of the σ order — an ordinal read off σ inverts
+  the lap — and a `Ray` is a ray, not a line, so the far wall the same line meets at `t = −3.04` is
+  not a crossing. Both are now filters, and both are in the named test.
+
+- **A backward-error bound can be blind to the quantity that matters downstream.** AUTH.1c's
+  obvious residual is the distance from the picked frame's origin to the cast ray's *line*, and it
+  is a perfectly good bound — of the wrong thing. The ray parameter `t` is what the span (§5) orders
+  hits by, and a `t` of the **wrong sign** puts the point on the same line, so the line bound
+  certifies it happily. There was in fact a sign error in the 2×2 Cramer solve (`t` negated), and it
+  survived the first green test run: ε was ~10⁻¹⁵ and every certificate passed. What exposed it was
+  not the certificate but an ordering test that turned out to be **vacuous** — the probe ray crossed
+  the cone once, so the `windows(2)` loop asserted nothing. Fixing the fixture to a ray that crosses
+  twice made `t` observable, and the exact corroboration `t₀ + t₁ = 10` (the crossings are symmetric
+  about the axis the ray is aimed at) pinned it. The residual is now point-to-point, which is
+  strictly stronger at no cost and certifies `t` along with the position. Two habits earned their
+  keep: **be suspicious of tests that pass first try**, and check that a bound constrains the
+  quantity a consumer will actually read, not merely a quantity that sounds like it.
+
+- **Building walls from carriers instead of endpoints deleted three problems at once.** AUTH.1a
+  built a wall from the *endpoints* of a profile edge (`segment_wall`: one determinant through two
+  3-D points and the apex), following the GO-gate's §4 wording. AUTH.1b needed the same thing for a
+  profile coming out of `arrange2d`, where that shape does not fit: an edge's endpoints are `Surd`
+  (degree-2 algebraic after any boolean) and an arc's circle is stored by **`r²`**, never `r`.
+  Rather than plumb algebraic coordinates through, the wall is now read off the edge's **carrier**
+  and built by the one rule in §2.3 — frame coordinates are a rational quotient, so any 2-D carrier
+  equation becomes a 3-D surface by substituting it and clearing the denominator. Three things fell
+  out of that single change: the `Surd` endpoints never enter (a wall is unbounded; trimming is a
+  `(σ, µ̂)` boolean); `r²` survives the clearing **linearly**, so no root is ever taken; and each
+  wall inherits its own carrier's sign, which leaves the fill rule with the region and is exactly
+  why a non-convex profile with holes needs no decomposition. `segment_wall` was then a second
+  derivation of what `line_wall` computes, with no consumer left — deleted per the standing
+  no-ossification rule, its property re-pinned against the engine that survived. The general lesson
+  is the one the milestone keeps producing: the *carrier* is the durable object, the endpoints are
+  trim data, and code that reaches for endpoints is usually about to need a coordinate type it
+  cannot afford.
+
+- **The first-order distance bound wants headroom, and says so.** `Plane` and `Cylinder` have exact
+  distances; a quadric gets `dist ≤ |F|/g` from the gradient-flow lemma, valid when `|∇F| ≥ g > 0` on
+  a ball `B̄(X, R)` and `|F|/g ≤ R`. Three things fell out while building it. **The hypothesis is
+  free**: the largest useful `R` is `clearance/2`, which is exactly the DRC gate, so the lemma holds
+  on precisely the runs that end `Verified`. **`R` must be searched small-first**: `g` is a minimum
+  over the ball, so a smaller ball gives a tighter ε — always using the ceiling would inflate ε by
+  the ratio of the clearance to the true error, i.e. by the whole quantity being measured. And the
+  bound **cannot** work when the ball reaches the surface's singular locus (a cone's apex, a
+  cylinder's axis): measured on the device's `R = 1/5` drill, an error of `5·10⁻⁴` certifies at 1.4×
+  the exact distance, while an error of `6·10⁻²` — a chord across a third of the hole — is
+  `Unresolved`. That is the honest verdict rather than a defect: at that scale "distance to the
+  surface" is not a first-order quantity. The test that first hit this was measuring the wrong thing
+  (a deliberately-coarse chord rail) and its failure was the finding.
+
+- **The axiom gate was rejecting the one axiom the docs say it should accept — and its parser could
+  have missed a real one.** `main` has been CI-red since 2026-08-09 on the Lean step, with the build
+  itself clean (8823 jobs, every footprint `[propext, Classical.choice, Quot.sound]`) and the failure
+  coming entirely from the audit: `AXIOM AUDIT FAILED: non-allowlisted axiom(s): sturm_root_count`.
+  That axiom is the *deliberate citation* on `verify_chain_sound` — the 📌 row of
+  `docs/proofs/ledger.md`, whose header states 📌 rows are in the gate. When the audit was tightened
+  from "grep for `sorryAx`" to "allowlist `[propext, Classical.choice, Quot.sound]`" the documented
+  citation was not carried across, so the gate contradicted the ledger. **The interesting part is the
+  second defect**, found while fixing the first: the old parser did `grep "depends on axioms:"` and
+  then flattened every footprint into one anonymous stream. That has two consequences — it *cannot*
+  express a per-theorem rule (so the obvious fix, adding `sturm_root_count` to the global allowlist,
+  would have let that axiom appear under **any** proof unnoticed, which is precisely the leak the gate
+  exists to catch), and because `#print axioms` **wraps long footprints across lines** while only the
+  first line matches the grep, any axiom pushed onto a continuation line was invisible — a `sorryAx`
+  could have slipped through on a sufficiently long footprint. Replaced by
+  [`scripts/check-axioms.sh`](../scripts/check-axioms.sh): joins wrapped records, checks each
+  theorem's footprint against *its own* declared citation, and is **two-sided** — a citation that
+  stops appearing also fails, so discharging Sturm later forces the ledger row from 📌 to ✅ instead
+  of silently going stale. Guard verified by negative test, not just by passing: dropping the
+  citation, inventing one, and renaming a theorem each exit 1 with the right message.
+  *2026-08-15 · resolved · `scripts/check-axioms.sh`, `.github/workflows/ci.yml`, `docs/proofs/{ledger,README}.md`*
+
+- **A Kani harness that has never once run in CI, and costs 45+ min when it does.** DEV.2a
+  (`3e18c61`, 2026-08-10) added `floor_ceil_fast_path_panic_free_full_domain` together with its
+  `--harness` entry, and the commit message states "Kani harness runs in CI." **It never has.** The
+  Kani step is 10th of 13, and no run since has reached it: the `main` runs that *did* pass Kani
+  predate the harness (their logs tally `3 successfully verified harnesses` for `lattice`, and the
+  echoed command lists only three), `dev-go-gate` died at `fmt`, `pcurve` died at the OCCT step, the
+  rest are `fuzz-nightly` (a different workflow) or queued behind the dead Linux runner. So the
+  green-looking 21-second Kani step everyone remembers is a step that was never asked to do this work.
+  **The cost is real:** locally the harness runs 45+ min of single-threaded CBMC (kani 0.67.0,
+  aarch64-darwin, 211 k vars / 1.12 M clauses) while the other twelve harnesses together take ~21 s.
+  **Why:** the harness asserts the Euclid identity `num == f * den + rem` over the *full* `i128`
+  domain, so on top of two symbolic 128-bit divisions CBMC must bit-blast a symbolic **128×128
+  multiply**. That is a correctness claim, not a panic-freedom one — and `proof.rs`'s own header
+  assigns exactly that split elsewhere ("BMC is the wrong tool for iterative number theory"; gcd /
+  reduce *correctness* is Lean's, Kani keeps the gcd-free bridge + panic-freedom), with the defining
+  brackets already covered natively by `floor_ceil_fast_path_grid` + the slow-tier differential. So
+  the expensive assertion is both the odd one out doctrinally and the whole cost. **Measured, not
+  guessed:** a probe harness identical but for that one line verified in **18.8 s** against the
+  original's 45 min+. **Resolved** by dropping the identity and keeping every panic-freedom
+  assertion — the whole four-harness `lattice` leg now verifies in 170 s including the build.
+  Note what the assertion actually claimed: the harness *mirrors* the fast path rather than calling
+  `Rat::floor`, so `num == f * den + rem` is `div_euclid`/`rem_euclid`'s own **libcore** contract
+  restated symbolically, not a fact about `lattice`. **That mirroring is itself a smell** worth
+  carrying: a harness that re-implements the code under test passes even when the two diverge, and
+  this one never exercised `Rat::floor`'s Fast/Slow dispatch at all.
+  *2026-08-15 · resolved · #244, `crates/lattice/src/proof.rs`*
+
+- **A feature-gated test is only as good as the leg that compiles it — and a CI matrix is only as good
+  as the legs you actually read.** Running the full gate locally before pushing the OPT.3 arc turned up
+  a hard compile failure in `cargo clippy -p export --features step --all-targets`:
+  `trim::tests::full_panel_solid_exports` still called the pre-PC.6 **10-arg** `hole_loop` (with the
+  deleted `fit`/`margin` ladder args) and still built `HoleRail` with the pre-PC.5 **scalar** `near`/`far`,
+  which PC.5 had widened to `Vec<(Interval, RatFunc)>`. Nothing in the OPT.0–OPT.3 arc touched `trim.rs`;
+  the break was ~2 weeks stale. **Mechanism:** the test is `#[cfg(feature = "step")]`, and the default
+  `--workspace` clippy/nextest legs pass no `--features`, so it is *compiled out* of every fast local
+  check. Exactly one of the thirteen CI steps builds it, and it sits eighth — so the whole cheap prefix
+  stays green and the local loop never types the code at all. The sibling *flat* test
+  `full_panel_assembles`, two screens up in the same module, had been migrated by PC.6 correctly; the
+  gated one was simply invisible. **The remote agrees and adds a second failure:** run `31800967684`
+  (the PC.5 commit) failed the macOS leg at precisely that step, exit 101, and every push since
+  (PC.6 → OPT.0–3 → VV.1 → MAP.1) is still `queued`/`in_progress` behind a backlog — so no green run
+  exists for any of it. Meanwhile `build (self-hosted, Linux, x64)` hung *inside*
+  `DeterminateSystems/nix-installer-action@main` and was killed by the 6 h job cap without reaching step
+  one, so `x86_64-linux` — a first-class target per `environment-and-crate-layout.md §4` — has had **zero**
+  signal for days. Both failure modes are silent in the way that matters: one hides behind a feature
+  flag, the other behind a queue. *2026-08-15 · the break resolved, the two gaps open · `crates/export/src/trim.rs`, #241, #242*
+
+- **The OPT.3 re-proof hits a TCB question, not a proof-difficulty question: `trailing_zeros` is an
+  intrinsic Aeneas cannot model.** Regenerating the model (`nix run .#extract`, clean) lifts the new
+  gcd tidily — `gcd_u128_loop0_loop0` (the `u64` inner Euclid, structurally the old proof at a second
+  width), `gcd_u128_loop0` (outer, with the narrowing branch), and a wrapper. But `lake build` fails
+  on the *model*, not the theorem: **`Unknown identifier core.num.U128.trailing_zeros`**, emitted
+  into `extract/lattice.FunsExternal_Template.lean` as a bare `axiom … : Std.U128 → Result Std.U32`.
+  `Lattice/FunsExternal.lean` states the house rule plainly: such holes are filled with a *faithful
+  `def`* rather than left as axioms, "which would pollute every downstream proof's `#print axioms`
+  footprint and defeat the axiom-clean guarantee", and those defs "are the ENTIRE hand-written TCB
+  surface of the `lattice` model" (guarded by `scripts/check-externals.sh`). So the shipped gcd needs
+  **one new entry on that audited surface** — small and auditable ("count of trailing zero bits, 128
+  for 0"), arguably simpler than the `unsigned_abs` already there, but growth nonetheless.
+  **The alternative costs performance instead of TCB:** strip the twos with a plain loop, which lifts
+  natively and is provable with the same `loop.spec_decr_nat` machinery. Measured: **80.1 ns/call
+  (3.24×)** against the intrinsic version's **44.2 ns (5.87×)** — end-to-end roughly **1.7× vs 2.0×**,
+  i.e. ~14% of the overall win traded for zero TCB growth. Note the intrinsic route is also *less*
+  proof work (one def + one lemma, versus three loop specs), so this is not a
+  effort-versus-purity trade — it is purely performance versus audited surface.
+  *Either way the remaining theorem work is shared*: the `u64` loop spec (the existing proof at a
+  second width), the strip-twos identity `gcd(2^i·m, 2^j·n) = 2^min(i,j)·gcd(m,n)`, and the
+  shift-no-overflow bound `gcd(m,n)·2^shift ≤ min(a,b)`. *2026-08-14 · open · OPT.3-proof (#240)*
+
+- **Stein / binary GCD benchmarked head-to-head and rejected on evidence — it is not faster here, on
+  either operand mix.** The earlier rejection was an argument about proof cost; since OPT.3 already
+  owes a re-proof, the question was legitimately reopened and settled by measurement instead.
+  *On the harvested mix:* pure Stein **243.4 ns/call — 1.08×**, essentially no better than the plain
+  Euclidean loop it would replace. The reason is the same fact that made strip-twos win: 84.7% of
+  calls have a power-of-two operand, whose odd part is 1, and Stein walks ~bit-length shift/subtract
+  iterations to discover `gcd(m, 1) = 1` where one comparison settles it. Add that trivial exit and
+  Stein lands at **44.6 ns — identical to the shipped strip-twos (1.00×)**, because the exit is
+  doing all the work and the algorithm underneath is irrelevant.
+  *On general operands only* (the power-of-two share removed, to test whether the conclusion is an
+  artifact of this device's dyadic grids): current 399.7 ns, **shipped 283.2 ns (1.41×)**, Stein
+  336.5 ns (1.19×) — **Stein is 0.84× the shipped speed, i.e. 16% slower**. The `u64` narrowing puts
+  the general case on a *hardware* divide, which beats an O(bit-length) shift/subtract loop; Stein's
+  advantage only materializes where no divide is fast at any width.
+  **Conclusion: no case for Stein at any point in the mix, and it carries the larger proof burden
+  (new measure + invariant) — so the strip-twos shape stands.** Worth keeping because the intuition
+  is genuinely misleading: "the divide is slow, so use the division-free algorithm" is exactly the
+  wrong inference when the real win is an early exit and a narrower divide.
+  *2026-08-14 · resolved · OPT.3 (#239)*
+
+- **OPT.3's proof debt is discharged — `gcd_u128` re-proven, same axiom footprint.**
+  `CertifyCheck.gcd_u128_spec` is green at **`[propext, Classical.choice, Quot.sound]`**, identical
+  to what the original Euclidean proof carried, and `Lattice/FunsExternal.lean` gained a *faithful
+  `def`* for `trailing_zeros` rather than an axiom — so nothing leaked into any downstream
+  `#print axioms`. `check-externals.sh` green at 13 modelled items, full `lake build` green.
+  **The pricing done up front held exactly.** The plan was: reuse the loop argument, add the
+  strip-twos identity, mirror the loop at `u64` width. That is what shipped —
+  `gcd_u128_loop0_loop0_spec` is the original `loop.spec_decr_nat` argument transplanted verbatim
+  to `u64`, and `gcd_two_pow_mul` (`gcd(2^i·m, 2^j·n) = 2^min(i,j)·gcd(m,n)`, via `Nat.gcd_mul_left`
+  plus coprime cancellation on the odd parts) is the only genuinely new mathematics. This is the
+  concrete reason a binary/Stein gcd was the wrong choice even before the benchmark said it was
+  slower: it would have discarded that reusable loop argument.
+  **Two things that cost time and are worth knowing.** *(1)* Aeneas's `<<<` **wraps** mod `2^128`
+  and carries a `shift < 128` side condition — it does not fail on value overflow — so the
+  no-wrap fact has to be threaded as a hypothesis (`hfit`) through the loop invariant rather than
+  discharged locally. *(2)* `simp`/`scalar_tac` hit `maxRecDepth` on the 39-digit `u128` literal in
+  the zero branches, the same hazard `FunsExternal`'s `irreducible_def i128FitBound` is sealed
+  against; targeted `rw` with `Nat.gcd_zero_left/right` avoids it.
+  *2026-08-15 · resolved · OPT.3-proof (#240)*
+
+- **OPT.3 shipped — 1.7× on `develop`, 2.9× on `fold`, and the hot spot is gone.** `gcd_u128` is now
+  strip-twos + `u64`-narrowed Euclidean (see step 0/1 below for the harvest, the benchmark and why
+  this shape rather than a binary gcd). **Measured end-to-end** on `scale_probe` at the demo's
+  fidelity: `develop` **89.87 → 52.27 s (1.72×)**, `fold` **136.8 → 47.6 ms/pt (2.87×)**; the author
+  suites fell 78.4 → 62.1 s, 16.8 → 12.1 s, 38.9 → 25.8 s. **Re-profiled**: `u128_div_rem` drops from
+  **53% of samples to 13.8%**, and the profile is now *flat* — allocation (`malloc`/`free`/`Repr`
+  drop+clone, ~20%) is comparable to division, and the `dashu` bignum path is relatively more
+  prominent than `small`. The single dominant hotspot no longer exists, which means the next
+  optimization needs its own profile rather than an extrapolation from this one.
+  **Arithmetically invisible, as designed and as checked**: every pinned ε bit-identical (`develop`
+  4.1481e-1, `fold` 1.3879e-1, `refold` 5.9982e-3, `solid` 5.7663e-2, flex 2.7573e-1/1.3663e-1),
+  every chord golden unchanged (3.0/9.4/10.1%), every VV.1 work counter unchanged (2256 γ cells,
+  4096 cut evals). That was the whole point of picking a value-preserving optimization: correctness
+  evidence is exact equality, not a tolerance.
+  **It shipped with a proof debt, now discharged** — see the OPT.3-proof entry above. Rust-side
+  evidence remains a differential test against the Euclidean reference over ~80k pairs (powers of
+  two, `u64`-boundary straddles, `2^127`) plus the bit-identical pins.
+  *2026-08-14 · open (proof debt) · OPT.3 (#239)*
+
+- **OPT.3 step 0/1 — the gcd operand mix is 85% powers of two, and ~6× is available for one
+  standard identity.** *Harvested* (temporary counters in `gcd_u128`, one `scale_probe` run):
+  **168 246 619 gcd calls** in 36 s — **84.7% have a power-of-two operand**, 76.5% have both
+  operands under `2^64`, 17.6% are trivial, mean **11.98** Euclidean iterations, max width 127 bits.
+  That is ~2 × 10⁹ `u128 %` operations, which is the 60% the profile attributed. The operand mix is
+  not an accident: the kernel snaps coordinates to `2^-30` and `2^-50` dyadic grids everywhere, so
+  denominators are powers of two by construction.
+  *Benchmarked* (`benchmarks/gcd-hot-path`, 2M pairs matching the harvested mix, every candidate
+  checked against the shipping implementation on 200k pairs): current **265.6 ns/call**; power-of-two
+  fast path **63.7 ns (4.17×)**; + `u64`-narrowed Euclidean **43.8 ns (6.06×)**; strip-twos +
+  `u64` **44.8 ns (5.93×)**. Since gcd-driven division is ~60% of runtime, ~6× on it predicts
+  **≈2× end-to-end across every crate**.
+  **Preferred shape: strip the common power of two, then Euclidean on the odd parts** —
+  `gcd(2^i·m, 2^j·n) = 2^min(i,j)·gcd(m, n)`. It matches the branchy version's speed (within noise)
+  but the power-of-two case stops being a special case: a power of two has odd part 1, so the
+  Euclidean call returns immediately. One standard identity to state instead of a pile of branches.
+  **Proof cost (step 1), priced rather than guessed:** `docs/proofs/ledger.md` puts `small::gcd_u128`
+  under `GcdReduce.lean` and `SmallRat::reduce` under `Reduce.lean`, both ✅ axiom-clean. The gcd
+  proof is **45 lines** and is structurally tied to the Euclidean loop — `loop.spec_decr_nat` with
+  invariant `Nat.gcd st.1 st.2 = Nat.gcd a b` (discharged by `Nat.gcd_rec`) and measure `st.2.val`
+  (discharged by `Nat.mod_lt`). Consequences: a **binary/Stein gcd would need an entirely new proof**
+  (different measure, 2-factor bookkeeping) — which is why it is *not* the recommendation despite
+  being the obvious textbook answer; whereas strip-twos keeps that loop verbatim and adds the one
+  identity above plus the zero cases, and the `u64` narrowing is the same proof at a second width
+  plus a cast. Tractable, bounded, and it does not reopen the previously-rejected binary-GCD
+  question.
+  **Correctness check available for free:** the change computes *identical rationals*, so every
+  pinned ε must return bit-identical (VV.2) and every work counter unchanged (VV.1). Any movement at
+  all is a bug, not a tradeoff. *2026-08-14 · open · OPT.3 (#239)*
+
+- **60% of the kernel's runtime is 128-bit software division inside the i128 rational tier — and no
+  amount of algorithmic work upstream would have found it.** Profiled (`sample`, macOS) on the new
+  fold-heavy `scale_probe`, 43 757 top-of-stack samples: `compiler_builtins::…::u128_div_rem`
+  **23 320 (53%)**, plus `__umodti3` 2 065, `__udivti3` 508, `__divti3` 250 — together **~60%**.
+  The callers are not the bignum path: `lattice::small::div` 5 518, `::mul` 4 025, `::add` 3 378,
+  `::sub` 207, `SmallRat::reduce` 100, against ~600 for all of `dashu` combined. The reason is
+  visible in `small.rs`: every `add`/`sub` computes `i128_gcd(x.den, y.den)`, divides both
+  denominators by it, and then calls `SmallRat::reduce`, which computes a **second** gcd — and
+  `i128_gcd` is Euclidean, so each gcd is a chain of `u128 %`, which on ARM64 is a *software*
+  routine (no hardware 128-bit divide).
+  **Why this matters more than anything else on the list:** it is not specific to fold. Every
+  certificate, every enclosure, every boolean, in every crate, pays this tax on every rational
+  operation. It also explains why OPT.1 and MAP.1 returned so much less than their operation-count
+  reductions suggested — they removed *operations*, but each surviving operation still pays a
+  software-division tax that dominates it. And uniquely among the levers considered, **a faster gcd
+  is semantically identical**: it computes the same rational, so ε does not move, no certificate
+  changes, and no enclosure structure is touched. Compare the float filter, which changes what the
+  enclosures *are*.
+  **Candidate levers, cheapest first:** *(a)* a **u64 fast path** — the common operands are dyadic
+  (`2^-30`, `2^-50` grids) and small integers, and ARM64 *does* have hardware 64-bit divide, so
+  gcd-and-divide on values that fit in `u64` skips the software routine entirely; *(b)* **fewer
+  reductions** — `add` currently reduces twice, once via the lcm trick and once in `reduce`;
+  *(c)* **binary (Stein) gcd**, shifts and subtractions only, no division at all.
+  **The catch, stated plainly:** this hot spot is in `lattice` — the **pure tier / TCB**, where Lean
+  owns gcd/reduce correctness. Changing it is not free the way a shell-tier change is, and a
+  binary-GCD was previously *rejected* — but that rejection was about using it as a bandage for a
+  **verification** gap, not a response to a profile. The performance case is new evidence, and the
+  decision should be re-taken on its own terms rather than assumed either way.
+  *2026-08-14 · open · profile (follows MAP.1 #234); supersedes the float-filter-first
+  recommendation in `docs/atlas-transform-design.md` §"levers"*
+
+- **A "fast path" that mostly did not fire, and the counter that caught it (MAP.1).** The
+  search/certificate split landed with every certificate green and every pinned ε *identical* —
+  `develop` 4.1481e-1, `fold` 1.3879e-1, `refold` 5.9982e-3, `solid` 5.7663e-2, chord goldens
+  unchanged. That proves nothing. A seeded bracket and a bisection compute the **same** certified
+  answer; the bisection is merely slower. So identical ε is exactly what a silently-never-firing
+  fast path also produces. The `bracket_seeded` / `bracket_bisected` counters said **seeded 2,
+  bisected 6** — the path was taken a quarter of the time, and without the counter it would have
+  shipped looking like a success.
+  **Two bugs, both mine, both arithmetic rather than design.** *(1) The widening budget could not
+  reach the root.* The window starts at `2^-36`·domain and quadruples at most 14 times, reaching
+  only `2^-8`·domain — so any seed further off than 0.4% of the domain was unreachable no matter how
+  correct it was. *(2) The seed was coarser than the window searching for it.* `from_f64` snapped to
+  a `2^-30` grid (~1e-9), a hundred times the initial half-width of ~1.5e-11·domain, so the snap's
+  own error placed the root outside the first window by construction. Fixed by a `2^-50` grid and 26
+  attempts → **seeded 6, bisected 2**. A third case — a vertex sitting on a region seam, where
+  `cross` straddles zero at the clamped endpoint and no *definite* sign exists — is legitimately
+  relaxable: at a domain endpoint the caller's gore precondition already established the same
+  one-sided fact, and the bisection starts from exactly that bracket under exactly that precondition.
+  Accepting it there gives **seeded 7, bisected 1**, and is no weaker, because in both cases the
+  certificate is the downstream round-trip residual and not the bracket.
+  **Then the fixed version was a regression, which only the demo showed.** With 7/8 seeded, the
+  acceptance demo came back **slower and less accurate**: fold 17.5 s → 26.1 s, fold ε 3.562e-2 →
+  1.521e-1, refold 5.803e-4 → 1.158e-3. Cause: the seeded bracket was being *returned as the
+  answer*. A widened window is a valid bracket but a **wide** one, and ε is set by the bracket's
+  width — so every widening both cost an evaluation pair and multiplied ε by four. The unit-level
+  hit-rate counter could not see this; only the end-to-end ε and timing could.
+  **The fix is structural, and is the shape this should have had from the start:** the seed only
+  ever *narrows the starting bracket*; the bisection still runs, to a **width target** derived from
+  `iters` (the width it would have reached anyway). A good seed then removes almost every bisection
+  step, and a bad or widened seed costs a little time and **never** accuracy. Result: pins equal or
+  better — `develop`/`fold`/`solid` ε identical, and **refold improved to 4.3633e-3** from the
+  5.9982e-3 baseline, because a seeded bracket starts narrower and the same budget converges further.
+  **And then the premise itself turned out to be wrong.** Measured properly — 40 acceptance-outline
+  vertices folded in **one** `fold` call, so region construction is paid once as the demo pays it —
+  the split is worth **1.16×**: 158.0 ms/pt with the seed off, **136.8 ms/pt** at three widening
+  attempts (69% hit rate, identical ε). Not the ~50× the design document projected from "≈50
+  bisection steps become one evaluation". **The bisection is not the dominant cost of a fold point.**
+  OPT.1 had already removed the γ cost that made it look dominant; what remains per point is the
+  per-region trials, `directrix_on_iv`, `radius_on`, `lift_box`, and the round-trip `point_on` —
+  and that last one *is* the certificate, so it cannot be optimized away at all.
+  **Roadmap consequence, and it is the important part:** MAP.2's fitted map replaces the same
+  search, so its speedup on the fold is bounded by the same ~1.2×. The certified fold has a **floor
+  set by the residual certification**, not by the search. Getting the order of magnitude the product
+  needs therefore requires making the *enclosure evaluations themselves* cheaper — the float-filter
+  lever — not eliminating the search. MAP.2 remains worth building for the other three reasons (it
+  is the ECAD artifact, it amortizes across the stackup, it is what an optimization loop re-certifies
+  cheaply), but **not** as the fold's performance answer. `docs/atlas-transform-design.md` §4.2
+  overstates that and should be corrected when MAP.2 is specified.
+  **Three general lessons.** *(1)* An optimization that preserves outputs exactly is **unfalsifiable
+  by its outputs** — when the fast and slow paths agree by construction, the only honest evidence
+  the fast path exists is an instrument counting which one ran. *(2)* A fast path must be built so
+  that failing is *only* slower, never worse: returning the search's own bracket made accuracy
+  depend on how well the search happened to do, while routing it through the same convergence
+  criterion makes the optimization unable to damage the certificate even when it misses. *(3)* The
+  instrument must isolate what it claims to measure — the first probe folded point-by-point, so 95%
+  of its 740 ms/pt was `build_regions` and the inversion signal was invisible.
+  *2026-08-14 · MAP.1 (#234)*
+
+- **The perf gate counts operations, not seconds (VV.1) — and it is proven to fire.** There was no
+  performance regression detection for the geometry pipeline at all; the only benchmarks in the tree
+  measure algebra backends, which is why a 10× slowdown survived a whole milestone and was found by
+  accident. A committed wall-clock baseline would have been a flaky gate — it moves with machine
+  speed and load, so it is either too loose to catch a real regression or it cries wolf — and the
+  regression in question was a *complexity* change, `N × panels` where `N + cells` was available.
+  So `develop::counters` counts **γ cells integrated** and **cut-certificate sub-interval
+  evaluations**, thread-local (parallel tests cannot perturb each other) and always compiled in (a
+  `Cell<u64>` bump is free beside exact-rational interval arithmetic). Measured on the acceptance
+  device at `segments(16)`/`support_panels(8)`: **2 256 γ cells · 4 096 cut evaluations**, budgeted
+  at 3 200 / 5 800. **Verified live by sabotage:** forcing every cache lookup to miss — exactly what
+  deleting the memoization does — makes the sweep cost **512 = 32 × 16 cells**, the naive `N ×
+  panels` shape on the nose, with no reuse on repeat, and drives `develop` to 4 160 γ cells, failing
+  the budget with the message that names the cause. The second test asserts the property directly
+  rather than inferring it from a total: *asking for γ again costs nothing*. Wall-clock is
+  deliberately not asserted anywhere; the demo's `[time]` lines carry it for humans.
+  *2026-08-14 · resolved · VV.1 (#229)*
+
+- **The γ prefix table buys 2.7× overall and 14.8× on the fold — and shows the remaining cost is
+  *not* γ (OPT.1).** `γ` is an integral, so it is additive; memoizing prefix sums over a grid
+  anchored at the integration origin turns `N` queries × `panels` subintervals into `cells + N`.
+  Measured on the acceptance demo at `segments=24`: **627 s → 235 s** (10:34 → 3:55 wall), with
+  `develop` 163.1 → 89.9 s (1.8×), **`fold` 259.7 → 17.5 s (14.8×)**, `solid` 203.5 → 126.2 s (1.6×).
+  The fold wins hugely because it ran at `GAMMA_PANELS = 64` *per bisection step*; develop and solid
+  ran at 20 and spend much of their time elsewhere. **Certificates are preserved**: `develop`
+  ε 2.687e-1 and refold 5.803e-4 bit-identical, `fold` ε 3.561e-2 → 3.562e-2, STEP still
+  `cert=Verified occt=ok 148 faces 0 free`; on the test-tier parts `develop`/`solid` ε identical,
+  `fold` 1.3878e-1 → 1.3879e-1, `refold` 5.9975e-3 → 5.9982e-3 (~0.01%). The ε pins from VV.2 are
+  what make that a *measurement* rather than a hope.
+  **The honest part: this does not restore the pre-p-curve ~1 min.** OPT.0 established that γ was the
+  dominant *per-point* cost; it did not establish what fraction of each stage was γ, and now we know —
+  γ was ~73 s of develop and ~77 s of solid, but nearly all of fold. The remaining 216 s is the
+  p-curve node-count increase multiplying *non-γ* per-node work (rail fitting, the interval arithmetic
+  in the cut certificates, the arrangement). That is a separate optimization, and the `develop::cut`
+  unbounded-rounding item below is one concrete lead into it.
+  *Design notes worth keeping:* the grid step is set by the **first** query as `(σ₁ − lo)/panels`, so
+  the error at σ₁ equals the direct rule's exactly, farther queries get more cells (tighter) and
+  nearer ones fewer (looser, but bounded by σ₁'s error) — since ε is a max over queried points, the
+  worst case is preserved, which is what the measurements above confirm. Four origins are cached
+  because `directrix_at` (origin 0) and `directrix_between` (region `lo`) interleave and a
+  single-entry cache would thrash into being *slower* than no cache.
+  **The bug worth remembering:** the first version always used the *last* prefix entry, so a query
+  landing *below* a table built by an earlier farther query integrated backwards from a grid point
+  past σ — `integrate_on_slope` correctly returned `None` and six tests failed on `unwrap`. The index
+  must be searched for (largest grid point ≤ σ), not assumed to be the end.
+  *2026-08-14 · resolved · OPT.1 (#232)*
+
+- **`flex_part` — a part with a *derived* hole — had no `solid()` test at all (VV.3).** Building the
+  golden metric turned up the coverage gap directly: `solid()` on the Stage-1 flex panel was only
+  ever exercised by an *example*, never by a test, even though it carries a derived interior hole
+  (D4). That is precisely the shape of the PC.4 regression, where `solid()` broke for every part
+  with a derived hole and all 205 tests still passed — the flat path was covered and the solid path
+  was not. Now closed, and asserted with `free_edges == 0` ∧ `nonmanifold_edges == 0` rather than a
+  face count, because those are the two conditions the PC.5 defects actually violated (a zero-length
+  edge at a collapsed tangent cap; a corner inheriting the wrong rail, giving an edge incidence 4).
+  A face count would have passed through both. **The chord golden itself:** longest emitted edge as
+  a fraction of the hole's own diameter, measured on the polylines `region_to_polys` hands the SVG —
+  self-lapping holes **9.4%** and **10.1%**, flex D4 **3.0%**, against the **30–48%** the graph model
+  produced on this very drill. Gated at 15%, deliberately a *structural* threshold (does a chord
+  bridge the tangent rulings?) rather than an ε-style ratchet, since the metric scales as ~1/n and
+  would otherwise be brittle to any resolution change. The gate is proved live by
+  `the_chord_golden_rejects_a_bridged_hole`, which reconstructs the defect shape from a circle with
+  a run of samples removed and checks the metric both scores it in the observed band and rejects it.
+  *2026-08-14 · resolved · VV.3 (#231)*
+
+- **The acceptance device certifies at 83% of its DRC ceiling — `develop` has no room to absorb a
+  looser bound (VV.2).** Pinning the ε budget (`the_certified_bounds_stay_within_budget`) measured
+  the self-lapping device at `segments(16)`/`support_panels(8)`: **develop 4.1481e-1 · fold
+  1.3878e-1 · refold 5.9975e-3 · solid 5.7663e-2**, and the γ≡0 flex panel at **develop 2.7573e-1**.
+  The DRC gate is `clearance/2 = 1/2`, so the self-lapping `develop` sits at **83%** of the value
+  that would stop it certifying at all (the flex panel is at 55%). A 21% degradation turns the
+  acceptance demo red — which is exactly what `segments(12)` already does (`Unresolved` at 5.737e-1,
+  see the OPT.0 entry). **Consequence:** OPT.1's prefix-table change to γ *repartitions* `[0, σ]` and
+  will move ε; if it moves `develop` the wrong way by even a fifth, the device stops certifying. So
+  the budget is not bureaucracy here, it is the only thing standing between an optimization and a
+  silently un-shippable part. Both parts are pinned so a moved bound can be *localized*: the flex
+  panel has no flat directrix, so if it moves too, the cause is not the γ quadrature.
+  *2026-08-14 · resolved · VV.2 (#230)*
+
+- **The post-p-curve 10× slowdown is the γ quadrature re-run per point, not the p-curve subdivision
+  (OPT.0 triage).** The demo went ~1 min → 10.5 min across the p-curve milestone, and the standing
+  suspicion was the certificate's first-order bound forcing node count up. **Measured, and that is
+  not where the time is.** One real drill-hole `quadric_cut_loop` at `n=12` costs **9.5 s**, and the
+  demo runs ~4 of them (2 holes × flat `n=12`, solid `n=16`) — ~45 s of a 627 s run, ~7%. The stage
+  split at `segments=24`: **`develop` 163.1 s (26%) · `fold` 259.7 s (41%) · `solid` 203.5 s (33%) ·
+  `write_step` 0.8 s · svg 0.0 s** — i.e. spread across all three geometry stages, *not* concentrated
+  in the flat side as previously assumed (flat = develop+fold = 67%, solid = 33%). The real driver: a single
+  `ConeDevelopment::point` costs **1.34 ms** at `γ ≡ 0` but **111 ms** at `γ ≠ 0` with the demo's
+  `support_panels(20)` — **83×** — and scales *linearly* in `panels` (4.0× measured for 4× panels).
+  `directrix_at`/`directrix_between` call `integrate_on_slope` over all `panels` subintervals **from
+  scratch on every query**, twice (x and y), with no prefix table or memoization — and `fold.rs:29`
+  already says so in its own doc comment ("each `invert_sigma` bisection step re-integrates `γ(σ)`
+  from 0"), at `GAMMA_PANELS = 64`, so the fold pays it once *per bisection step*. Clean in-run
+  confirmation: fold rings 1 and 2 are the two drill holes with **identical 24-point counts** but cost
+  **15.3 s vs 64.7 s** — a 4.2× spread whose only variable is whether the hole sits in the γ≡0 body or
+  the γ≠0 lap. So the cost is
+  `(#γ≠0 point evaluations) × 2 × panels × (velocity+accel enclosure)`, and what the p-curve
+  milestone changed was the *first* factor: a hole went from ~4 boundary arcs to ~4n ≈ 48. **The 10×
+  is a node-count increase multiplying an already-quadratic-in-disguise per-node cost.** Consequence
+  for planning: the fix is **bounded** — γ is an integral, so it is additive; accumulating a prefix
+  table over a shared panel grid turns `N×P` into `N+P` (interval addition of adjacent panel
+  enclosures is the *same* quadrature, so the certificate is untouched). It is **not** the
+  certificate redesign the first-order bound would have implied. **But it will move ε**: a prefix
+  table answers a query as `prefix[k] + partial panel`, a *different* partition of `[0, σ]` than the
+  `panels`-uniform one, so the enclosure shifts (tighter or looser, must be measured). That is the
+  concrete reason to land VV.2 (ε pinning, #230) **before** OPT.1 rather than after — without it the
+  change is invisible, since a 10×-worse ε still certifies `Verified` under the clearance.
+  *Second measurement, worth keeping:*
+  at `segments=12` `develop` returns **Unresolved at ε 5.737e-1** against **2.687e-1** at 24 — ratio
+  2.13 for 2× segments, i.e. first-order convergence confirmed at the top level, and the acceptance
+  demo sits close to its DRC margin. *2026-08-14 · open · OPT.0 (#228), fix tracked as OPT.1 (#232)*
+
+- **`develop::cut`'s p-curve hot path never applies the outward rounding `interval.rs` exists to
+  provide.** `cut.rs` contains **zero** `.rounded()` calls, against 33 in `cone.rs` and 16 in
+  `interval.rs`; `eval_poly_on` is a bare interval Horner and `chart_point_on`/`surface_distance_on`
+  chain exact-rational interval ops with no budget. With degree-24 field denominators over 2⁻³⁰-grid
+  endpoints, an evaluation reaches ~720-bit denominators before the three fields even combine.
+  `ROUND_BITS = 60` (DEV.2a) is documented as the mechanism that bounds exactly this growth. Not
+  currently the dominant cost (the cut loops are ~7% of the demo), so it is a *secondary* OPT.1
+  candidate rather than the headline — but it is a real unbounded-growth path in a hot certified
+  routine, and rounding outward is sound by construction (a wider enclosure is still an enclosure).
+  *2026-08-14 · open · OPT.0 (#228)*
+
+- **Interior holes are shaped by a representation choice, not a fit-quality limit — the p-curve
+  milestone (PC.0 GO-gate).** The device's drill holes export as two cubic rails sewn by two
+  straight chords. Measured on the emitted flat pattern, each hole's two longest edges are ~0.14
+  against a 0.46 hole diameter — **31% flats**, 2.3× longer than any other edge — and in the STEP
+  solid those chords are literal straight lines between two Bézier rails. Root cause: the trim
+  layer represents a cut as a **graph** `µ̂ = f(σ)`. A closed cut turns around in σ at the two
+  tangent rulings (where the cutter grazes the sheet and `dµ̂/dσ` blows up), which no graph can
+  represent, so the loop is split into near/far graphs that must stop short of the turning points,
+  and the gap is bridged straight. The gap closes only as **√inset**, so it is stubborn.
+  **Spike (three strategies, on the real drill; window width 0.053, hole height 0.291):** *(S1)*
+  the current fitted rail — the best rung over the whole margin×subdiv ladder is a **30% cap at
+  ε 0.257** (margin 1/200, subdiv ×16); the rung that certifies in the demo gives **48%**. There
+  is no rung with a small cap: shrinking the inset to fix the shape makes the fit diverge, which
+  is exactly why the ladder escalated the inset *up* and capped degree at 3 — it traded the hole's
+  shape to buy certification. *(S2)* graded pieces marching toward the tangent, reusing the
+  existing fit — **ε 1.6e2 … 1.9e9**, catastrophic: a cubic in σ over a 1e-5-wide window at
+  σ ≈ −0.94 is Vandermonde-hopeless, so the monomial basis blocks the piecewise route until #220
+  lands. *(S3)* the **exact algebraic branch** — the cut is `a(σ)µ̂² + b(σ)µ̂ + c(σ) = 0`, so the
+  boundary is `µ̂ = m(σ) ± √H(σ)` with `m = −b/2a` and `H = (b²−4ac)/4a²` *exact rational
+  functions*; with no fit in the way the cap follows √inset with no floor (4.5% at 1/2000, below
+  f64 resolution at 1/200000). **Decision: represent domain cut curves as p-curves `(σ(t), µ̂(t))`,
+  not graphs.** This is not hole-specific — `Cutter::Extrude` (PR 4) puts turning points on the
+  *outer* boundary too, so general intersections need the machinery regardless. Cheaper than it
+  looks: the deepest certified layer is **already parametric** — `AnchorDevCert` has always carried
+  `sigma`/`mu` as functions of a parameter `t`, and the unroll merely instantiates it with the
+  identity reparametrization. The graph assumption is bolted on above it in four places
+  (`BoundaryArc::Rail`, `HoleRail`'s near/far band, `cut_fit`, and the solid builder's
+  single-slice restriction on polygon holes). History note: the deleted demo's `drill_hole` was
+  the exact-branch construction — no margin, no fit, tangent vertices exactly at `disc = 0`, no
+  caps, refold defect 1.4e-6 against today's 1.8e-3 — but float-sampled and uncertified, which is
+  why the facade replaced it. The milestone's point is to have both. *2026-08-14 · PC.0 GO ·
+  branch `pcurve` · tasks #221–#227*
+
+- **Making the hole faithful broke the B-rep: a collapsed tangent cap is a zero-length edge
+  (PC.5).** The graph model bridged each tangent ruling with a straight chord ~30–48% of the hole
+  across; the p-curve loop meets its tangent at a *single point*, both branches evaluating to the
+  midline there. The solid builder still emitted that σ-cap as an edge, so it asked OCCT to build
+  a **zero-length line** — `MakeEdge(line) failed`, and the STEP certificate came back `REFUTED`
+  (the gate working exactly as intended: the shell was refused, not shipped). The lesson is worth
+  keeping: *the more faithful the hole gets, the more certainly this fires* — a defect that hides
+  behind a coarse approximation and appears when the approximation improves. Fixed by collapsing
+  corner pairs that map to the same `(σ, µ̂)` point before lifting, which is also the honest
+  topology — the loop really does have one vertex there, not two. **Also measured (PC.5):** hole
+  chain-piece boundaries become σ-stations, so hole segment count now drives the solid's face
+  count directly (48 segments → ~770 faces on the doctest panel against 28 before; the solid takes
+  a loop clamped to 16 → ~256). Build time rose sharply with it, and the cause was **not** the face
+  count: the slice loop re-`reduce()`d the chart's surface fields *per slice*, and `reduce()` is a
+  polynomial gcd over degree-24 denominators, so the cost scaled with hole fidelity through the
+  station count. Hoisting the reduction to once per region (regions are few; slices are now many)
+  cut the doctest panel's solid from ~21s to 8.2s. The general lesson for this builder: anything
+  expensive that depends only on the *region* must not sit inside the *slice* loop, because the
+  slice count is now driven by authored fidelity rather than by the chart.
+  **The sliver-slice defect and its fix.** Making every chain-piece boundary a σ-station worked but
+  was the wrong coupling: √-graded nodes sit ~1e-4 apart in σ, so the whole panel inherited sliver
+  slices, OCCT rejected the reloaded shape's `BRepCheck`, and the build took 10.5 min at 516 faces.
+  Resolving a hole and partitioning a panel are different concerns. The partition went back to what
+  it was, and the footprint now emits a corner at each chain-piece boundary along a hole's rail
+  runs (each carrying the piece covering the span ahead, which is the rail `lift_trim_edge` already
+  uses) — so a hole's fidelity buys hole *edges* and nothing else. Result: **`occt=ok`**, faces
+  516 → 148, and the per-slice hole projection deleted (net −36 lines).
+  **A collapsed corner must inherit the OUTGOING rail, not the incoming one.** With `occt=ok` the
+  shell was still refused by our own certificate: 0 free edges but **4 non-manifold edges**, 2 per
+  hole, each with incidence *4* while listed by only *3* faces — one face's wire traversing an edge
+  **twice**, a spike. Cause: a corner's rail is the rail of the edge *leaving* it, and the dedup
+  kept the first of each coincident pair. At a hole's tangent the far run ends and the near run
+  begins at the same point, so the survivor carried the **far** rail while the next edge was meant
+  to follow the **near** branch back — giving that edge far-rail geometry over the same σ-span as
+  the real far edge. Identical geometry, so the builder's edge dedup merged the two into one and
+  the wire walked it twice. Keeping the outgoing rail on collapse fixes it: non-manifold edges
+  **4 → 0**, the shell is a closed 2-manifold. The general rule: when merging coincident corners,
+  position comes from either but the rail must come from the *later* one.
+  **Device green (2026-08-14):** `cert=Verified  occt=ok  (148 faces, 0 free)`. Note the shape of
+  this milestone's bug tail — every one of the three solid-path defects was *caused by the geometry
+  getting better*, and each had been invisible while a hole was two graphs bridged by a 30–48%
+  chord: a zero-length edge where the cap used to be, sliver slices from tying hole resolution to
+  panel partitioning, and a wrong-branch rail at the collapsed corner. Coarse approximations hide
+  degeneracies; improving them is what exposes the assumptions built on top.
+  **Remaining cost:** the device's demo takes ~10.5 min wall clock (against ~1 min before the
+  milestone) — the flat pattern's fine hole loops, not the solid, now dominate. Untriaged; the
+  γ-quadrature per-edge item is the standing suspect. *2026-08-14 · PC.5 · branch `pcurve`*
+
+- **Interior cuts are p-curve loops on the flat path — measured (PC.4).** `surface_hole_loop` no
+  longer fits two graphs and bridges them; it returns the closed p-curve loop of
+  `quadric_cut_loop`, and `unroll` grew a `BoundaryArc::Curve` whose chords are certified by the
+  *same* lift bound (which was always parametric — only the identity reparametrization was
+  hard-coded). On the acceptance demo, measured on the emitted flat pattern: each drill hole went
+  from 27 vertices with two anomalous 0.14 edges — **31% of the hole**, 2.3× any other edge — to
+  49 vertices whose longest edge is 0.029, i.e. **7%, and no longer an outlier at all** but simply
+  the uniform chord spacing of a smooth loop. Develop ε fell 3.688e-1 → **2.687e-1** (the hole
+  ladder's 0.33 contribution is gone; the boundary rails now dominate) and the refold defect
+  1.779e-3 → **5.803e-4**. On the offset-support ramp fixture the hole certifies at ε 9.1e-3 with
+  a tangent gap of 2.7e-5. **Known limitation, pinned by a test rather than left to be
+  discovered:** the solid builder consumes interior holes as either a near/far `HoleRail` band —
+  which cannot express a curve that turns around in σ — or an exact `(σ, µ̂)` polygon, which it
+  requires to sit inside one σ-slice. Derived holes are drilled as polygons now, so a hole
+  straddling a station is refused with a typed fault until per-slice clipping lands (PC.5); the
+  flat pattern, which is the manufacturing artifact, is unaffected and already carries the good
+  geometry. Worth recording how that was caught: the whole 205-test suite passed after the switch
+  because **no test exercised `solid()` with a derived hole expecting success** — the gap was
+  found by probing the path deliberately, not by the gate. *2026-08-14 · PC.4 · branch `pcurve`*
+
+- **The p-curve cut certificate must enclose in the domain, not compose into the parameter — and
+  its bound is first-order (PC.2/PC.3).** The tidy way to state "this curve traces the surface" is
+  to compose the chart fields into the curve's parameter and enclose the resulting residual, as
+  the graph checker does in σ. On the device's wrapping chart that is **numerically ruinous**:
+  substituting an affine `σ(t)` into a degree-24 field denominator produces monomial coefficients
+  around 10²⁰⁰ whose true value is ~10², and interval evaluation of that cancellation straddles
+  zero — so a *pole* is reported at every single node of a perfectly regular hole. The fix is to
+  enclose `(σ, µ̂)` over the parameter sub-interval and then evaluate the chart's own fields at the
+  enclosed σ, keeping every polynomial in its own well-scaled variable. The price is the lost
+  µ̂↔σ correlation across a piece, which makes the bound **first-order** in the subdivision
+  (measured on an exact plane rail: ε 3.7e-1 → 4.0e-2 → 4.9e-3 for 8× steps) where the symbolic
+  graph residual is exact. Consequences, all deliberate: graph rails keep using `cut_fit`
+  (unchanged, still ε ≈ 0); the p-curve path is for curves the graph cannot express at all; and
+  composition stays, tested and exact, for the *export* lift, where a p-curve's 3-D image being
+  rational in `t` is what gives an exact Bézier. **Tightening is a known follow-up** — a
+  mean-value/centred form would restore second order. To be precise about what is and is not
+  avoidable (user, 2026-08-14): *subdivision itself is not avoidable* — certifying a curve of any
+  real complexity means resolving it, and no formulation escapes that. What the formulation does
+  decide is the **order**: at first order, halving ε costs twice the work forever; at second, four
+  times the resolution per halving. That is the difference between a boundary that certifies at a
+  few hundred sub-intervals and one that needs tens of thousands, and it is the reason this is
+  tracked rather than shrugged off. It becomes load-bearing the moment p-curves carry *outer*
+  boundaries (`Cutter::Extrude`), where a single curve spans the whole part instead of a hole's
+  short pieces. A second lesson from the same stage: curve
+  vertices derived from surds and 60-step bisected roots carry thousand-digit numerators, and the
+  residual polynomials built from them stop being evaluable at all; every emitted coordinate is
+  snapped to a 2⁻³⁰ grid and the accumulated ε rounded *up* onto it (sound — a larger upper bound
+  is still an upper bound), which is what keeps the certificate both small and honest.
+  *2026-08-14 · resolved (PC.2/PC.3) · branch `pcurve`*
+
+- **A root landing exactly on a scan node was invisible to the rational root scanner.**
+  `scan_roots` only registered a *sign change* between adjacent nodes, and required both signs
+  non-zero — so a root sitting precisely on a node was skipped twice (each flanking cell has a
+  zero endpoint, so neither reads as a change). Symmetric geometry produces this routinely: a
+  curve turning at `t = 0`, a hole centred on a ruling, any dyadic scan over a symmetric span.
+  Found by the p-curve core's own turning-point test (the unit circle's turn at `t = 0` reported
+  zero turns). Fixed by taking an exact zero at a node as a root as it stands. The primitive moved
+  down to `develop::pcurve` (the curve core needs it to locate turning points and station
+  crossings) and `export::trim` now re-exports it instead of keeping a second copy — the copy was
+  how the two drifted. Full workspace re-run after the fix: no behaviour change anywhere else.
+  *2026-08-14 · resolved (PC.1) · branch `pcurve`*
 
 - **Construction-API PR 3 — the piecewise/side fold, and what the self-lapping rewrite flushed
   out.** `develop::fold::{fold_point_pw, fold_outline_pw}` invert the *signed* connected
@@ -809,7 +1813,7 @@ fine — this is a log, not a schema.
 
 - **Algebraic-σ arrangement vertices → the micro-cap treatment.** Arrangement-derived boundary transitions (D3∩D1 crossings; the D4 tangent rulings where near meets far) land at **algebraic (non-rational) σ**, but `unroll::BoundaryArc` requires **rational** `sigma_start/end` and `unroll_trim_loop` chains loops **exactly** (`sm_eq`). Fail-closed treatment: snap σ to a rational (from a certified bisection of the relevant rational residual — the D1-rail∩D3-cylinder `h(σ)`, or `tangent_poly` `g(σ)`), and bridge the tiny `μ̂` mismatch between the two adjacent rails with a **micro-cap** (an exact radial `Cap`). The loop then chains exactly while the geometric error is a certified-small residual. **SVG-polish refinement:** for a *transverse* crossing (D3∩D1) the micro-cap is driven to ~0 by refining the crossing σ to where the **fitted** D3 meets D1 (`μ̂_D3fit − μ̂_D1 = 0`, a bisection) instead of the exact geometric crossing — the two rails then coincide there and the D1↔D3 corner is a **clean join**, no visible step. Below the development's rounding precision the two developed points collapse to the *same* rational (a zero-length edge `arrange2d` rejects as `DegenerateLine`), so `flat_to_poly` also **dedups exactly-coincident consecutive vertices** (float-free). D4 tangent micro-caps stay (the √-branch residual, see next). *2026-08-11 · resolved (`5973302`, `131ca8c`; SVG polish follow-up) · branch `roadmap-flex-pcb`*
 
-- **A developed circular hole has slightly-flattened tangent points — an irreducible √-branch limit, not a bug.** A circle's boundary is double-valued in σ (near/far branches meeting at the two tangent rulings, where `μ̂` has a vertical tangent — a √-branch point). A polynomial rail cannot match the vertical tangent, so the near/far fits stop meeting a small gap short (~0.06 μ̂ on a ~0.4-tall hole, floor independent of margin/degree); the two branches are joined by a tangent micro-cap → the developed hole's two points are slightly flattened (an exact, watertight `Cap`). Fully-exact alternative (AlgReal-σ `BoundaryArc`, or a per-point developed polyline) deferred. *2026-08-11 · watching · branch `roadmap-flex-pcb`*
+- **A developed circular hole has slightly-flattened tangent points — an irreducible √-branch limit, not a bug.** A circle's boundary is double-valued in σ (near/far branches meeting at the two tangent rulings, where `μ̂` has a vertical tangent — a √-branch point). A polynomial rail cannot match the vertical tangent, so the near/far fits stop meeting a small gap short (~0.06 μ̂ on a ~0.4-tall hole, floor independent of margin/degree); the two branches are joined by a tangent micro-cap → the developed hole's two points are slightly flattened (an exact, watertight `Cap`). Fully-exact alternative (AlgReal-σ `BoundaryArc`, or a per-point developed polyline) deferred. *2026-08-11 · watching · branch `roadmap-flex-pcb`* — **AMENDED 2026-08-14: "irreducible" was true only of the *graph* representation `µ̂ = f(σ)`, and the flattening is far larger than this entry's ~0.06 estimate suggests.** The limit is not the √-branch as such but the decision to represent a closed cut as two graphs; measured on the device drill, the *best* the graph model achieves over every margin/degree/subdiv rung is a chord ~30% of the hole's height (the shipped rung gives 48%). See the p-curve entry at the top of this section — the deferred "per-point developed polyline" was in fact built and shipped in the old demo, then deleted with it.
 
 - **The cut oracle's monomial-basis Vandermonde fit is ill-conditioned over a narrow off-origin σ-range.** Fitting the D3 notch's near branch over `σ≈[0.3,0.5]` (narrow, far from the σ-origin) with `fit_cut_rail`'s monomial Vandermonde yields huge coefficients at degree ≥ 4, whose interval evaluation explodes (`cut_fit` ε ~ 100s–1000s, *growing* with degree). A **low degree** (3; the dip is gentle) certifies tightly there. The hole fit is unaffected because its range straddles the origin. A Chebyshev-basis oracle would remove the per-rail degree cap; deferred (oracle-only, float-side, fail-closed regardless). *2026-08-11 · watching · branch `roadmap-flex-pcb`*
 
@@ -960,6 +1964,192 @@ fine — this is a log, not a schema.
   the DCEL directly. The occupancy packet stays a `sew`-searcher product; `certify_core::sew` consumes it
   origin-agnostic. *2026-08-08 · finding · `crates/sew/src/*`, `docs/vv-guide.md §8` (M5)*
 
+- **`DevConfig::terms` is NOT the transcendental bottleneck — and four attempts to tame the bignum
+  traffic all failed.** Recorded as a NEGATIVE result so it is not re-derived. Re-profiling in an
+  OPTIMIZED build (after the profile fix) inverted the picture: no `arctan`/`cos_on`/`sin_on` frame
+  appears at all; ~a third of samples are ALLOCATION (malloc/free/memmove/memset/`Repr::clone`/
+  `Repr::drop`) and the rest is dashu BIG-integer work (`lehmer_guess`, `gcd_large_dword`,
+  `mul_large`, `UBig::div`). `lattice::small` — which dominated the UNOPTIMIZED profile — is now
+  minor. Two profiles of the same code disagreed about the hot spot because one of them was
+  measuring the wrong build.
+  Tried, all reverted: (1) `ROUND_BITS` 60→30 — **30% faster and rejected**, because VV.1's
+  `the_fold_takes_the_seeded_bracket` failed "seeded 0, bisected 8": at 2^-30 the enclosure is too
+  wide to verify and MAP.1's fast path silently degrades to bisection, same certified answer, quietly
+  weaker. That test's doc says it is "the only check that would notice"; it was. (2) rounding the
+  product before adding in `point_from_on`, 6 sites — no gain. (3) rounding between Horner's multiply
+  and add in `eval_poly_on` — no gain. (4) large polynomial coefficients — disproved, 18/9/4 digits.
+  The arithmetic made (2)/(3) look compelling: `SmallRat` is `i128/i128`, so at 60-bit operands ONE
+  op fits and the second unrounded op overflows to bignum. Shortening the chains should have helped
+  and measurably did not — so either promotion is not the cost, or the allocation traffic comes from
+  somewhere else. **That is the question any future attempt must answer before optimizing**, and it
+  is why the follow-ups are filed (#257) rather than attempted.
+  The one clean lesson: a speedup that a gate rejects is not a speedup. (1) would have shipped a 30%
+  win that quietly disabled a certified fast path.
+  *2026-08-16 · finding · task #233 → #257*
+
+- **The test suite had no `[profile]` section at all — every test ran at `opt-level = 0`.** The
+  single largest factor in the suite's runtime, and it was configuration, not code: **185.0s → 25.6s
+  (7.2×)**; the heaviest test 157.6s → 22.0s. Counters byte-identical (2 256 / 2 640 / 4 096), so
+  only code generation changed.
+  **HOW IT SURFACED — the profile named it, twice removed.** A flat `sample` profile showed
+  `copy_nonoverlapping::precondition_check` 537, `is_aligned_to` 361, `from_raw_parts::
+  precondition_check` 283, `ub_checks::maybe_is_nonoverlapping` 250 — ~6% of samples in **std's debug
+  preconditions**, which exist only in an unoptimized build. Those lines are not a cost to optimize;
+  they are a *fingerprint* of the whole build being unoptimized. Reading a profile for what its
+  presence implies, not just for its hot rows.
+  KEPT ON DELIBERATELY: `debug-assertions` and `overflow-checks`. A two-tier lattice that silently
+  wrapped would be a correctness bug, and these are the tests that would catch it; `opt-level` is
+  orthogonal to both.
+  **SCOPE — this is a developer-time win, NOT a product win.** Demos and production already build in
+  release. OPT.2.1/2.2 were genuine engine wins that help release too; this one only shortens the
+  measure-fix-measure loop. Worth separating, or a 25× headline gets attributed to the engine.
+  **LTO DOES NOT PAY HERE** (checked, since the crate chain lattice→geom→develop→export→author looks
+  like a cross-crate-inlining candidate): fat LTO + cgu=1 ran 22.9s but cost ~112s to build vs ~74s —
+  ~11% run for ~50% build, a loss for iteration AND for CI, which builds cold anyway. Thin LTO was
+  dominated on both axes (27.1s run, ~127s build). **The ceiling is low for a structural reason: the
+  hot arithmetic is generic over `Backend`, so `Rat`'s methods are monomorphized into each consuming
+  crate — cross-crate inlining already happens without LTO.** O3 gives a real but marginal ~3%
+  (7.61s vs 7.83s on the heavy test, repeatable) for ~8% more build; kept O2, and note the ambient
+  run-to-run variance (~5%) is larger than that gap.
+  *2026-08-16 · finding · `Cargo.toml`, task #233*
+
+- **A vector-valued integrand integrated component-by-component evaluates itself once per
+  component.** OPT.2.2. `directrix_accumulated`'s cell integrated `γ` by calling
+  `integrate_on_slope` twice — once with `|p| directrix_velocity(..).map(|f| f[0])`, once with
+  `f[1]`. But `directrix_velocity` (and `directrix_accel`) return **both** components in one call, so
+  each was computed twice and half of each result thrown away. **Every γ integrand evaluation
+  happened twice.**
+  **MEASURED:** `gamma_velocity` 4 896 → **2 640**; `self_lapping`'s develop **85.1s → 58.9s (−31%)**;
+  `flex_panel` (γ≡0) unchanged at 25.8s, which is the check — a change that sped up the γ≡0 fixture
+  would mean something other than the γ integrand had moved. `gamma_cells` and `cut_evals` both
+  unchanged. The residual decomposes exactly: solving `2a + b = 4896`, `a + b = 2640` gives
+  a = 2 256 (one per γ cell, precisely the cell count) and b = 384 (96 lift-bound edges × subdiv 4,
+  the direct `directrix_between_on` tail term) — nothing unexplained.
+  FIX: `integrate_on_slope_n`, the same slope rule generalised over `N` components, evaluating the
+  integrand once per point. The scalar form is now the `N = 1` wrapper, so there is ONE
+  implementation of the rule and no second copy to drift.
+  **THE PROCESS POINT, which is why this was found at all.** The plan was "make each evaluation
+  faster" (the transcendental series at `terms: 14`). Settling *is the count honest?* first was what
+  exposed the doubling — a per-eval speedup would have multiplied against a doubled base and left
+  the waste in place, permanently, looking like a win. Three hypotheses died on the way: anchor-piece
+  over-splitting (exactly 1 piece/edge), `develop_arc` (224 of 4 896), and the code path itself
+  (predicted 384 against 3 392 measured — the 8.8× gap that had to come from somewhere).
+  **AND IT WAS ONLY VISIBLE BECAUSE THE COUNTER HAD JUST BEEN ADDED** one commit earlier: wall clock
+  cannot see it, and `gamma_cells` counts *cells*, which never changed. The instrumentation gap and
+  the waste were the same finding twice.
+  RIDER: the first budget for the new counter was 1.4× of the *pre-fix* 4 896 = 6 900, which could
+  not have caught a revert (4 896 < 6 900). Re-baselined to 3 700. A budget that cannot detect the
+  regression it was written for is decoration.
+  *2026-08-15 · finding · `crates/develop/src/{interval,cone}.rs`, task #233 (OPT.2.2)*
+
+- **Rational ADDITION multiplies denominators — five unrounded ops turned 18 digits into 120, on
+  every evaluation.** OPT.2.1. `develop::cut` carried ZERO `.rounded()` calls against `cone.rs`'s 37
+  and `interval.rs`'s 16; it never adopted the DEV.2a outward-rounding discipline. `eval_ratfunc_on`
+  rounds, so chart fields arrived ~18 digits — but `chart_point_on`'s `p + µ̂·r + w·n` is five more
+  ops, and adding coprime-denominator rationals multiplies the denominators, so the point came out
+  ~120 digits. `metric_distance_on` then squared and summed those and took an exact rational √,
+  whose enclosure must *narrow* as its input box narrows — so finer subdivision bought hundreds of
+  digits instead of a tighter answer, reaching **499 digits at subdiv ≥ 64**.
+  **MEASURED:** cut-certificate path 8.5–9× faster (77.2→8.6s, 163.3→19.3s), whole develop 2.9–3.9×
+  (99.1→25.1s, 248.0→84.3s), with **`cut_evals` IDENTICAL** (6144, 4096) — pure cost-per-operation.
+  Cost: `2^-60 ≈ 8.7e-19` per op against ε ≈ 0.15; VV.2's pinned ε and VV.1's counters both pass
+  unchanged.
+  **THE METHODOLOGICAL POINT, which is the durable part.** `develop::counters` counts γ cells and cut
+  evals — and total time was ~LINEAR in subdiv, so a count-based reading said "constant cost per
+  operation, nothing here". The constant was not constant: it doubled at subdiv 64 when operands
+  crossed into bignum. Counts are the right *gate* (machine-independent, cannot flake — VV.1's whole
+  rationale) and are **insufficient for diagnosis**. What found this was measuring operand SIZE
+  (`numer_denom_decimal().len()`) at each link of the chain: t-endpoints 2, σ 11, µ̂ 13, chart_point
+  **120**, distance **499** — the inflation is localised to the two sites with no rounding.
+  Pinned by `the_certificate_chain_keeps_its_operands_bounded`, mutation-verified: deleting one
+  `.rounded()` returns chart_point to 119 digits and fails.
+  **Also corrected en route:** OPT.0's "cut certificates are ~7% of runtime" was STALE — it measured
+  the *demo* before the p-curve milestone multiplied the hole path's node count. On the test payloads
+  `certify_holes` was 66–78% of a develop. And γ is no longer hot: `gamma_cells` is 0 in both
+  boundary and holes on both fixtures; OPT.1 did its job. After this fix the profile INVERTS again —
+  unroll + flat boolean + topology is now 63–72%.
+  *2026-08-15 · finding · `crates/develop/src/cut.rs`, task #233 (OPT.2.1)*
+
+- **A constraint I asserted twice did not exist — the helper had ossified into a believed property.**
+  Designing the `Profile` builder I claimed circles need a *rational radius*, because an arc's
+  extreme points must be named exactly, and offered the user a refuse-or-bracket decision for a
+  squared-radius constructor. Wrong on both counts. `Surd::new(a, b, d)` is `a + b√d` for any
+  rational `d ≥ 0`, so an extreme point is exactly `Surd::new(cx, ±1, r2)` — and `arrange2d`'s own
+  `decompose::extrema` **already computes precisely that**. The belief came from the test helpers,
+  which happen to take a rational `r` and pass `Surd::from_rat(cx ± r)`; I generalised the helper's
+  shape into a property of the arrangement. Verified the correction against `r² = 1/40` (the device
+  drill's own, irrational) end to end. Consequences: `circle_r2` is the primary constructor and
+  `circle(r)` the sugar, and the builder is ~80 lines of `Curve` + `decompose` rather than a fourth
+  hand-rolled decomposition. **The pattern is [[no-interface-ossification]] in its cheapest form** —
+  an example hardening into a constraint — and the tell was that I could state the limitation but
+  not point at the line enforcing it. *2026-08-15 · finding · `crates/arrange2d/src/profile.rs`*
+
+- **Scripted inserts anchored on "nearest preceding `///`" cut into the neighbouring doc comment.**
+  Twice now. In `23276f9` an insert placed a helper *inside* the doc block of
+  `a_polygonal_slot_is_not_dropped_between_sample_cells`, truncating it mid-sentence ("The result
+  was") — and it shipped, because a mangled doc comment compiles. Found only when a later edit to
+  the same region failed to parse. Anchor scripted edits on **unique whole-line matches** with an
+  asserted occurrence count, never on a scan backwards for a comment marker.
+  *2026-08-15 · finding · `crates/author/src/resolve.rs`*
+
+- **A gate that compiles gated code *out* is not a gate over it — `cargo xtask gate`.** The default
+  `--workspace` clippy/nextest legs pass no `--features`, so `export`'s `step` items, `difftest`'s
+  `cgal` items and `lattice`'s `fuzzing` items are absent from the everyday loop entirely. PC.5 and
+  PC.6 each broke `full_panel_solid_exports` and it went unnoticed locally for the whole OPT/VV/MAP
+  arc. The new `cargo xtask gate` mirrors the CI step list and runs `clippy --all-targets` on **each
+  feature combination** (which compiles the gated *tests*, the part that was missing); `--full` adds
+  the test legs. Verified by mutation: a deliberate break inside the step-gated test leaves the plain
+  `clippy` leg **green** and fails only `clippy --features step (export)` — the exact PC.5/PC.6
+  signature. Two design points worth keeping: steps the gate does not run (Kani, dylint, the Lean
+  audit) are **named in the summary with their commands**, because a gate that quietly covers less
+  than it appears to is worse than one that covers less and says so; and it found a real hit on its
+  first run — `ratfuzz.rs`'s `unreachable!()` violates the pure tier's panic-freedom deny, which no
+  CI step evaluated because CI runs `cargo test` on `--features fuzzing`, never `clippy`. Fixed by
+  making `3 => …` the catch-all (`opcode % 4` is `0..=3`), removing the panic path rather than
+  discharging it. **What it does NOT close:** platform-specific *runtime* linkage, e.g. #241(c)'s
+  Linux doctest failure — that is invisible on macOS at any feature setting.
+  *2026-08-15 · finding · `xtask/src/main.rs`, `AGENT.md` (#242)*
+
+- **A quantity no test reads quantitatively is unverified, however many tests run through it.**
+  `Extrusion::extent` (AUTH.1f) bracketed segment endpoints with `arrange2d::locate::rational_above`
+  — a strict upper bound found by *doubling from zero* — and used it for **both** sides of the box.
+  A square at `(0, 11/5) ± 1/5` came out `[0, 1] × [3, 3]`: zero height, containing none of the
+  profile. Everything built on it (`bounding_wall`'s σ-window, `reference_point`'s span ray) was
+  therefore wrong for every polygonal profile. It survived two slices because nothing *read* the box:
+  the arc path derives its extent from an exact centre and never calls `rational_above`; the
+  polygonal-slot test only asserts the role is not `Inactive`; and `reference_point` is
+  short-circuited for a `Through` span. AUTH.1e.4 was the first consumer that needed the number to be
+  right, and it surfaced as a `ShadowUnbounded` refusal on a cut that should have realized.
+  **Fix:** `[rational_below, rational_above]` bisected to `2⁻⁴⁸` — the raw doubling bracket is sound
+  but answers at integer scale, and a bounding circle an order of magnitude too big is its own
+  problem. Regression test asserts the extent brackets the corners *tightly*, and was checked against
+  a re-introduction of the bug.
+  *2026-08-15 · finding · `crates/author/src/part.rs`, `docs/cutter-extrude-design.md` §6.3 (AUTH.1e.4)*
+
+- **A cut piece can be certified against the right *surface* and still be the wrong *boundary*.**
+  AUTH.1e.4's multi-wall loop reads each ruling's boundary from every wall's crossings, classified by
+  the profile's own fill rule, so the governing wall changes at every profile corner. The obvious
+  design — bisect each governing-wall change, insert a node, certify each piece against the wall its
+  endpoints name — is sound only where the corner search succeeds. Where it misses one (two corners
+  inside a node interval), the emitted chord **stays on wall A the whole way and certifies perfectly**
+  while the true boundary dips onto wall B beneath it: a hole quietly too large, with a green
+  certificate. `pcurve_cut_fit` cannot see it, because distance-to-a-surface is not the claim being
+  made. **Resolution:** every piece is additionally compared at its own σ-midpoint against the
+  boundary the exact fill rule reports there, and the deviation folded into ε — so soundness rests on
+  the fill rule (exact) and the corner search only buys tightness. Worth generalizing: whenever a
+  certificate bounds distance to *one* member of a family, ask what pins the choice of member.
+  *2026-08-15 · finding · `crates/develop/src/cut.rs`, `docs/cutter-extrude-design.md` §10.3 (AUTH.1e.4)*
+
+- **The negative control fired through a different door than expected, which is itself the finding.**
+  To check the square-prism band test was not vacuous, the profile was mutated 1.5× larger. It failed
+  — but on `"the square's loop must certify"`, not on the inscribed/circumscribed bounds: an enlarged
+  profile overruns the bounding-circle window it was handed, and the loop refuses `ShadowUnbounded`
+  rather than emitting a band that reaches the window's edge. The fail-closed path works, and the
+  band-size assertions were left unproven by that mutation. What settled them instead was printing the
+  measurements: band 0.2364/0.2342/0.2323 against inner 0.1615/0.2303/0.1639 — a 1.7% squeeze at the
+  middle ruling, plainly neither disc. A mutation that trips a *different* guard has not exercised the
+  assertion you were testing. *2026-08-15 · finding · `crates/develop/src/cut.rs` tests (AUTH.1e.4)*
+
 ## Deferred (by milestone)
 
 - **DEV / Tier-C — the transcendental ANCHOR backward-error bound (its own milestone, M-E).** D4.3 Stage 1
@@ -1029,7 +2219,12 @@ fine — this is a log, not a schema.
 - **Two open theorems, both tracked in the proof ledger.** Sturm's theorem is cited as an
   axiom (`sturm_root_count`, absent from Mathlib); CAP-OUT ⇒ 2-manifold-with-boundary is
   open. Runtime-checked hypotheses / bounded Kani cover soundness in the interim.
-  *2026-08-04 · watching · `docs/proofs/ledger.md`*
+  *2026-08-15:* revisited with the user while fixing the axiom gate — decision is to **keep
+  Sturm cited** and formalize it opportunistically, not now. The citation is no longer a red
+  CI signal: `scripts/check-axioms.sh` accepts it *on `verify_chain_sound` only*, and fails
+  the moment it appears anywhere else or stops appearing at all. So the assumption is pinned
+  and visible rather than either hidden or noisy.
+  *2026-08-04 · watching · `docs/proofs/ledger.md`, `scripts/check-axioms.sh`*
 
 ## Resolved
 

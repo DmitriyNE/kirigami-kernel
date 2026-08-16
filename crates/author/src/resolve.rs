@@ -18,10 +18,12 @@
 //! compact) and are dropped; if *nothing* bounded remains the recipe faults
 //! [`PartFault::UnboundedRegion`].
 
+use crate::part::Extrusion;
 use crate::part::{BuiltRegions, Cutter, OpKind, OpRole, Part, PartFault, RegionPick};
-use develop::cut::{MuCut, cut_mu_form};
-use export::approx::rat_to_f64;
-use export::trim::surface_disc_roots;
+use certify_core::Verdict;
+use develop::cut::{CutSurface, MuCut, cut_mu_form, tangent_events};
+use develop::pick::{Sheet, Span, ray_crossings, select};
+use export::approx::{f64_to_rat, rat_to_f64};
 use lattice::{Backend, Interval, Rat};
 
 /// Which µ̂-root of an op's pullback a boundary label refers to.
@@ -33,10 +35,22 @@ pub(crate) enum BranchSide {
     Upper,
     /// The single root of an affine (plane) pullback.
     Plane,
+    /// One µ̂-root of one **wall** of an extruded cutter: `(wall index, is the upper root)`. The
+    /// metric cutters have a single wall and use the three variants above, so their labels — and
+    /// every golden that records one — are untouched.
+    Wall(usize, bool),
 }
 
 /// A boundary label: which op's which branch bounds the kept material here.
 pub(crate) type Label = (usize, BranchSide);
+
+/// Which of the op's walls a label names — `0` for the single-walled metric cutters.
+pub(crate) fn wall_of(label: Label) -> usize {
+    match label.1 {
+        BranchSide::Wall(i, _) => i,
+        _ => 0,
+    }
+}
 
 /// A labeled µ̂ endpoint (float position, exact label) — `None` at ±∞.
 type End = Option<(f64, Label)>;
@@ -94,9 +108,21 @@ impl<B: Backend> Clone for Structure<B> {
 /// The resolver's sample-grid density per region (also the realizer's corner pad unit).
 pub(crate) const CELLS: usize = 48;
 
-/// A µ̂-shadow of one op at one σ (float, labels exact).
-enum Shadow {
-    Empty,
+/// How tightly a wall's tangent rulings are bracketed when its σ-windows are derived:
+/// `2⁻⁴⁰ ≈ 9·10⁻¹³`.
+///
+/// A window is read as the **gap between two brackets**, so this is how much of the window's own
+/// ends the derivation gives up — three orders below the `2⁻³⁰` grid every emitted vertex is
+/// snapped to, and so invisible in the artifact, while any looser choice starts to trim a hole's
+/// tangent tips visibly. It is not an accuracy knob in the old sense: [`tangent_events`] isolates
+/// every root first and bisects a bracket it has already proved to contain one, so no window is
+/// *missed* however coarse this is — the sampling that could miss one is what it replaced.
+pub(crate) fn tangent_tol<B: Backend>() -> Rat<B> {
+    Rat::new(1, 1i128 << 40)
+}
+
+/// One connected piece of a µ̂-shadow (float bounds, labels exact).
+enum Patch {
     All,
     /// Inside is `µ̂ ∈ [lo, hi]`.
     Between(f64, f64, Label, Label),
@@ -104,6 +130,39 @@ enum Shadow {
     Below(f64, Label),
     /// Inside is `µ̂ ≥ r`.
     Above(f64, Label),
+}
+
+/// The µ̂-shadow of one op at one σ: the **union** of the [`Patch`]es where that op's cutter covers
+/// the ruling, in µ̂ order and pairwise disjoint.
+///
+/// A union, not one interval, because a general cutter's cross-section along a ruling need not be
+/// connected — an extruded profile that is non-convex, or has holes, shadows the ruling in several
+/// stretches. The two metric cutters are the special case of exactly one patch (a quadric `MuCut`
+/// has two roots), so they cost nothing here: [`comp_intersect`] and [`comp_subtract`] still do the
+/// per-patch work, and the union is a fold over them.
+struct Shadow(Vec<Patch>);
+
+impl Shadow {
+    /// The empty shadow — the cutter misses this ruling entirely.
+    fn empty() -> Self {
+        Shadow(Vec::new())
+    }
+    /// A shadow of one connected piece.
+    fn one(p: Patch) -> Self {
+        Shadow(vec![p])
+    }
+    /// Intersect a component with the whole union: each patch contributes at most one component,
+    /// and the patches are disjoint, so the results are too.
+    fn intersect(&self, k: &Comp) -> Vec<Comp> {
+        self.0.iter().flat_map(|p| comp_intersect(k, p)).collect()
+    }
+    /// Subtract the whole union from a component: remove each patch in turn from what survives the
+    /// previous ones.
+    fn subtract(&self, k: &Comp) -> Vec<Comp> {
+        self.0.iter().fold(vec![*k], |acc, p| {
+            acc.iter().flat_map(|c| comp_subtract(c, p)).collect()
+        })
+    }
 }
 
 /// One kept-material component at one σ: bounds are `None` at ±∞.
@@ -119,13 +178,31 @@ struct Comp {
 /// so a gap crossing it is never an interior hole.
 pub(crate) struct RegionForms<B: Backend> {
     pub band: Interval<B>,
-    pub forms: Vec<MuCut<B>>,
+    /// Per op, one µ̂-pullback **per wall** — a metric cutter contributes exactly one.
+    pub forms: Vec<Vec<MuCut<B>>>,
     pub detj_c: lattice::RatFunc<B>,
     pub detj_m: lattice::RatFunc<B>,
 }
 
-/// The op's µ̂-shadow at σ, from its pullback coefficients (exact eval, float roots).
-fn shadow_at<B: Backend>(form: &MuCut<B>, op: usize, sigma: &Rat<B>) -> Option<Shadow> {
+/// The op's µ̂-shadow at σ.
+///
+/// A single-walled cutter's shadow is read straight off its one µ̂-quadratic, exactly as before. A
+/// multi-walled one cannot be: its cross-section along the ruling is whatever the profile says, so
+/// the crossings are collected from **every** wall and the stretches between them are classified by
+/// the profile's own fill rule — [`Cast::contains`] at each midpoint. That is the same two-view
+/// split `docs/cutter-extrude-design.md` §2.1 keeps: walls give the boundary, the region gives the
+/// inside.
+fn shadow_at<B: Backend>(
+    cutter: &Cutter<B>,
+    forms: &[MuCut<B>],
+    chart: &geom::chart::Chart<B>,
+    op: usize,
+    sigma: &Rat<B>,
+) -> Option<Shadow> {
+    if let Cutter::Extrude(e) = cutter {
+        return extruded_shadow(e, forms, chart, op, sigma);
+    }
+    let form = forms.first()?;
     let a = rat_to_f64(&form.a.eval(sigma)?);
     let b = rat_to_f64(&form.b.eval(sigma)?);
     let c = rat_to_f64(&form.c.eval(sigma)?);
@@ -133,40 +210,140 @@ fn shadow_at<B: Backend>(form: &MuCut<B>, op: usize, sigma: &Rat<B>) -> Option<S
     Some(if a.abs() <= tiny {
         if b.abs() <= tiny {
             // A degenerate section (plane through the ruling): all-or-nothing by sign of c.
-            if c < 0.0 { Shadow::All } else { Shadow::Empty }
+            if c < 0.0 {
+                Shadow::one(Patch::All)
+            } else {
+                Shadow::empty()
+            }
         } else {
             let r = -c / b;
-            if b > 0.0 {
-                Shadow::Below(r, (op, BranchSide::Plane))
+            Shadow::one(if b > 0.0 {
+                Patch::Below(r, (op, BranchSide::Plane))
             } else {
-                Shadow::Above(r, (op, BranchSide::Plane))
-            }
+                Patch::Above(r, (op, BranchSide::Plane))
+            })
         }
     } else {
         // a > 0 structurally (Cauchy–Schwarz); inside = between the roots.
         let disc = b * b - 4.0 * a * c;
         if disc <= 0.0 {
-            Shadow::Empty
+            Shadow::empty()
         } else {
             let sq = disc.sqrt();
-            Shadow::Between(
+            Shadow::one(Patch::Between(
                 (-b - sq) / (2.0 * a),
                 (-b + sq) / (2.0 * a),
                 (op, BranchSide::Lower),
                 (op, BranchSide::Upper),
-            )
+            ))
         }
     })
 }
 
-/// Intersect a component with a shadow (0 or 1 result).
-fn comp_intersect(k: &Comp, sh: &Shadow) -> Vec<Comp> {
+/// The µ̂-shadow of an extruded cutter along one ruling.
+///
+/// Every wall contributes its µ̂-crossings (0, 1 or 2 roots of its quadratic). Sorted, those cut the
+/// ruling into stretches, each wholly inside the profile or wholly outside — so one membership test
+/// per stretch classifies it, and consecutive inside stretches are the shadow's patches. The
+/// endpoints carry the wall and root that produced them, which is what lets the realizer fit the
+/// right rail later.
+///
+/// `None` when a chart field poles or the profile's fill cannot be read at a sample (a row exact
+/// ray-casting excludes) — the caller turns that into a fault rather than a guess.
+fn extruded_shadow<B: Backend>(
+    e: &Extrusion<B>,
+    forms: &[MuCut<B>],
+    chart: &geom::chart::Chart<B>,
+    op: usize,
+    sigma: &Rat<B>,
+) -> Option<Shadow> {
+    use core::cmp::Ordering;
+    let cast = e.cast().ok()?;
+    let zero = Rat::from_i128(0);
+
+    // Every wall's crossings along this ruling, labelled by wall and root.
+    let mut cuts: Vec<(f64, Label)> = Vec::new();
+    for (wi, form) in forms.iter().enumerate() {
+        let a = rat_to_f64(&form.a.eval(sigma)?);
+        let b = rat_to_f64(&form.b.eval(sigma)?);
+        let c = rat_to_f64(&form.c.eval(sigma)?);
+        let tiny = 1e-12 * (1.0 + a.abs().max(b.abs()).max(c.abs()));
+        if a.abs() <= tiny {
+            if b.abs() > tiny {
+                cuts.push((-c / b, (op, BranchSide::Wall(wi, false))));
+            }
+        } else {
+            let disc = b * b - 4.0 * a * c;
+            if disc > 0.0 {
+                let sq = disc.sqrt();
+                cuts.push(((-b - sq) / (2.0 * a), (op, BranchSide::Wall(wi, false))));
+                cuts.push(((-b + sq) / (2.0 * a), (op, BranchSide::Wall(wi, true))));
+            }
+        }
+    }
+    cuts.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(Ordering::Equal));
+
+    // Is the ruling point at this µ̂ inside the profile? Exact once the sample is chosen: the point
+    // is built from the chart's own fields and the fill is the region's own even-odd rule.
+    let inside = |mu: f64| -> Option<bool> {
+        let mu_q = f64_to_rat::<B>(mu, 44);
+        let p = chart.surface(&mu_q, &zero).eval(sigma)?;
+        cast.contains(&p, &e.profile)
+    };
+    // A membership sample that survives the ray-casting genericity precondition: nudge and retry
+    // rather than guess, and give up (fail-closed) if none of the offsets is decidable.
+    // `scale` must be the width of the stretch being classified, never a global one. Membership is
+    // constant *between* consecutive crossings — that is what makes one midpoint sample exact — so
+    // a nudge is only sound while it stays inside that stretch. Scaled globally, a nudge on a thin
+    // lobe lands in its neighbour and reports the neighbour's answer.
+    let inside_near = |mu: f64, scale: f64| -> Option<bool> {
+        for k in 0..4 {
+            let jitter = scale * 1e-3 * (k as f64) * if k % 2 == 0 { 1.0 } else { -1.0 };
+            if let Some(v) = inside(mu + jitter) {
+                return Some(v);
+            }
+        }
+        None
+    };
+
+    if cuts.is_empty() {
+        // No wall meets this ruling: it is wholly inside the profile's sweep or wholly outside.
+        return Some(if inside_near(0.0, 1.0)? {
+            Shadow::one(Patch::All)
+        } else {
+            Shadow::empty()
+        });
+    }
+    let width = (cuts[cuts.len() - 1].0 - cuts[0].0).abs().max(1.0);
+    let mut patches = Vec::new();
+    // The unbounded stretch below the first crossing, then each bounded stretch, then the one above.
+    if inside_near(cuts[0].0 - width, width)? {
+        patches.push(Patch::Below(cuts[0].0, cuts[0].1));
+    }
+    for pair in cuts.windows(2) {
+        let (lo, hi) = (pair[0].0, pair[1].0);
+        if hi - lo <= 0.0 {
+            continue;
+        }
+        if inside_near(0.5 * (lo + hi), hi - lo)? {
+            patches.push(Patch::Between(lo, hi, pair[0].1, pair[1].1));
+        }
+    }
+    let last = cuts[cuts.len() - 1];
+    if inside_near(last.0 + width, width)? {
+        patches.push(Patch::Above(last.0, last.1));
+    }
+    Some(Shadow(patches))
+}
+
+/// Intersect a component with **one patch** of a shadow (0 or 1 result). The union form is
+/// [`Shadow::intersect`], which folds this over the patches.
+fn comp_intersect(k: &Comp, sh: &Patch) -> Vec<Comp> {
     let (slo, shi): (End, End) = match sh {
-        Shadow::Empty => return Vec::new(),
-        Shadow::All => (None, None),
-        Shadow::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
-        Shadow::Below(r, lab) => (None, Some((*r, *lab))),
-        Shadow::Above(r, lab) => (Some((*r, *lab)), None),
+        Patch::All => (None, None),
+        Patch::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
+        Patch::Below(r, lab) => (None, Some((*r, *lab))),
+        Patch::Above(r, lab) => (Some((*r, *lab)), None),
     };
     let lo = match (&k.lo, &slo) {
         (None, s) => *s,
@@ -186,15 +363,15 @@ fn comp_intersect(k: &Comp, sh: &Shadow) -> Vec<Comp> {
     vec![Comp { lo, hi }]
 }
 
-/// Subtract a shadow from a component (0, 1, or 2 results). The shadow's lower end becomes the
-/// upper bound of the piece below it, and vice versa.
-fn comp_subtract(k: &Comp, sh: &Shadow) -> Vec<Comp> {
+/// Subtract **one patch** of a shadow from a component (0, 1, or 2 results). The patch's lower end
+/// becomes the upper bound of the piece below it, and vice versa. The union form is
+/// [`Shadow::subtract`], which folds this over the patches.
+fn comp_subtract(k: &Comp, sh: &Patch) -> Vec<Comp> {
     let (slo, shi): (End, End) = match sh {
-        Shadow::Empty => return vec![*k],
-        Shadow::All => return Vec::new(),
-        Shadow::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
-        Shadow::Below(r, lab) => (None, Some((*r, *lab))),
-        Shadow::Above(r, lab) => (Some((*r, *lab)), None),
+        Patch::All => return Vec::new(),
+        Patch::Between(l, h, ll, hl) => (Some((*l, *ll)), Some((*h, *hl))),
+        Patch::Below(r, lab) => (None, Some((*r, *lab))),
+        Patch::Above(r, lab) => (Some((*r, *lab)), None),
     };
     // No overlap → unchanged.
     let above = |x: &End, y: &End| match (x, y) {
@@ -288,20 +465,29 @@ struct MergedComp {
 
 /// The merged material components at one sample σ within region `ri` (the op-shadow interval
 /// algebra + the singular-rail-guarded hole merge — no pick yet; choosing is the sweep's job).
+#[allow(clippy::too_many_arguments)]
 fn sample_comps<B: Backend>(
     part: &Part<B>,
     forms: &[RegionForms<B>],
+    chart: &geom::chart::Chart<B>,
+    reach: &[Option<Vec<usize>>],
     ri: usize,
     sigma: &Rat<B>,
 ) -> Result<Vec<MergedComp>, PartFault> {
     let mut comps = vec![Comp { lo: None, hi: None }];
-    for (op, (kind, _)) in part.ops.iter().enumerate() {
-        let sh = shadow_at(&forms[ri].forms[op], op, sigma).ok_or(PartFault::Pole)?;
+    for (op, (kind, cutter)) in part.ops.iter().enumerate() {
+        // An op whose span does not reach this region is not applied here at all — the correct
+        // no-op for a `Subtract` (removes nothing) and for an `Intersect` (restricts nothing).
+        if reach[op].as_ref().is_some_and(|rs| !rs.contains(&ri)) {
+            continue;
+        }
+        let sh =
+            shadow_at(cutter, &forms[ri].forms[op], chart, op, sigma).ok_or(PartFault::Pole)?;
         let mut next = Vec::new();
         for k in &comps {
             match kind {
-                OpKind::Intersect => next.extend(comp_intersect(k, &sh)),
-                OpKind::Subtract => next.extend(comp_subtract(k, &sh)),
+                OpKind::Intersect => next.extend(sh.intersect(k)),
+                OpKind::Subtract => next.extend(sh.subtract(k)),
             }
         }
         comps = next;
@@ -478,6 +664,66 @@ fn choose_comps<B: Backend>(
     Ok(chosen)
 }
 
+/// Which regions each op's cut actually reaches, by index — `None` for an op that reaches all of
+/// them, which is every metric cutter and every extrusion spanning `Through`.
+///
+/// The span counts crossings of the part's **neutral surfaces** along the extrusion's own reference
+/// ray, ordered by ray parameter (`develop::pick::ray_crossings`), and `select` takes the ones the
+/// span reaches. An op that does not reach a region is simply **not applied** there, which is the
+/// right no-op for both kinds: a `Subtract` removes nothing, an `Intersect` restricts nothing.
+///
+/// **Known limitation.** The crossing search uses each region's full µ̂ extent, so it counts
+/// crossings of the *surface*, not of the trimmed material — a ray that leaves the material and
+/// re-crosses the surface's untrimmed continuation still counts one. That matches §5's wording
+/// ("neutral surfaces", "chart embeddings"), and deriving the material extent instead is circular:
+/// it depends on the very ops the span restricts.
+fn span_reach<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+) -> Result<Vec<Option<Vec<usize>>>, PartFault> {
+    let mut out = Vec::with_capacity(part.ops.len());
+    for (op, (_, cutter)) in part.ops.iter().enumerate() {
+        let Cutter::Extrude(e) = cutter else {
+            out.push(None);
+            continue;
+        };
+        if matches!(e.span, Span::Through) {
+            out.push(None);
+            continue;
+        }
+        // Every region is a sheet: its own chart (hence its own support) over its authored σ-band.
+        let wide = Interval {
+            lo: Rat::from_i128(-1_000_000),
+            hi: Rat::from_i128(1_000_000),
+        };
+        let sheets: Vec<Sheet<'_, B>> = part
+            .regions
+            .iter()
+            .zip(built.charts.iter())
+            .map(|(r, chart)| Sheet {
+                chart,
+                sigma: r.band.clone(),
+                mu: wide.clone(),
+            })
+            .collect();
+        let crossings = match ray_crossings(
+            &sheets,
+            &Rat::from_i128(0),
+            &e.reference_ray().ok_or(PartFault::CutUnresolved { op })?,
+            &part.clearance,
+            48,
+        ) {
+            Verdict::Verified(c) => c,
+            // An unorderable or ungrounded cast cannot name an ordinal, so the cut is refused
+            // rather than silently applied everywhere.
+            _ => return Err(PartFault::CutUnresolved { op }),
+        };
+        let reached = select(e.span, &crossings).map_err(|_| PartFault::CutUnresolved { op })?;
+        out.push(Some(reached.iter().map(|c| c.sheet).collect()));
+    }
+    Ok(out)
+}
+
 /// The in-domain sweep: pull every op back on every region, resolve the sample grid, and fold
 /// the records into the boundary-run structure + hole classification (see the module docs).
 pub(crate) fn sweep<B: Backend>(
@@ -485,15 +731,21 @@ pub(crate) fn sweep<B: Backend>(
     built: &BuiltRegions<B>,
 ) -> Result<Structure<B>, PartFault> {
     let zero = Rat::from_i128(0);
+    let reach = span_reach(part, built)?;
     // Pull each op back on each region's chart.
     let mut regions: Vec<RegionForms<B>> = Vec::with_capacity(part.regions.len());
     for (r, chart) in part.regions.iter().zip(built.charts.iter()) {
         let mut forms = Vec::with_capacity(part.ops.len());
         for (op, (_, cutter)) in part.ops.iter().enumerate() {
-            forms.push(
-                cut_mu_form(chart, &cutter.surface(), &zero)
-                    .ok_or(PartFault::CutUnresolved { op })?,
-            );
+            let walls = cutter
+                .walls()
+                .map_err(|_| PartFault::CutUnresolved { op })?;
+            let mut per_wall = Vec::with_capacity(walls.len());
+            for wall in &walls {
+                per_wall
+                    .push(cut_mu_form(chart, wall, &zero).ok_or(PartFault::CutUnresolved { op })?);
+            }
+            forms.push(per_wall);
         }
         let dj = chart.det_j();
         regions.push(RegionForms {
@@ -518,29 +770,73 @@ pub(crate) fn sweep<B: Backend>(
             samples.push((ri, rf.band.lo.add(&width.mul(&t))));
         }
         for (op, (kind, cutter)) in part.ops.iter().enumerate() {
-            if !matches!(kind, OpKind::Subtract) || !matches!(cutter, Cutter::Cylinder { .. }) {
+            if !matches!(kind, OpKind::Subtract) {
                 continue;
             }
-            let roots = surface_disc_roots(&built.charts[ri], &cutter.surface(), &rf.band, 256, 60)
-                .unwrap_or_default();
-            for w in roots.windows(2) {
-                let (t1, t2) = (&w[0], &w[1]);
-                let mid = t1.add(t2).mul(&Rat::new(1, 2));
-                // Only windows where the cutter is real (disc > 0 at the midpoint).
-                let real = regions[ri].forms[op]
-                    .disc()
-                    .eval(&mid)
-                    .map(|v| v.sign() > 0)
-                    .unwrap_or(false);
-                if !real {
-                    continue;
+            // Windows belong to WALLS, not to cutter variants. A wall whose pullback is a genuine
+            // quadratic (`a ≢ 0`) is real only between its tangent rulings and needs targeted
+            // stations there; an affine one needs none. That criterion reproduces the old
+            // `Cylinder`-only behaviour exactly — a cylinder's single wall is quadratic, a
+            // half-space's is not — while letting every wall of an extruded cutter be sampled, so
+            // a small feature is not dropped between cells.
+            let walls = cutter
+                .walls()
+                .map_err(|_| PartFault::CutUnresolved { op })?;
+            // The targeted windows have to cover the **whole** profile, and the quadric walls'
+            // tangent windows only cover the quadric part of it. An all-affine profile has no
+            // window at all, so a polygonal slot would be dropped between sample cells (the §6
+            // failure); a *mixed* profile is the same defect one step in — the keyhole's circle
+            // stops where its head does and the stem runs past, so the footprint reached the scan's
+            // own edge and the tracer refused the cut as `ShadowUnbounded`. Either way the profile's
+            // bounding circle supplies one window covering everything, and a superset is the right
+            // error: extra stations sample where the cut is absent and cost nothing, while a
+            // missing one loses the cut silently. A profile whose walls are *all* quadric needs no
+            // proxy — each wall's window covers its own arc, and together they cover the profile.
+            let quadric: Vec<usize> = (0..walls.len())
+                .filter(|wi| !regions[ri].forms[op][*wi].a.is_zero())
+                .collect();
+            let bound = if quadric.len() < walls.len() {
+                match cutter {
+                    Cutter::Extrude(e) => e.bounding_wall(),
+                    _ => None,
                 }
-                let q1 = t1.add(&mid).mul(&Rat::new(1, 2));
-                let q3 = mid.add(t2).mul(&Rat::new(1, 2));
-                samples.push((ri, q1));
-                samples.push((ri, mid));
-                samples.push((ri, q3));
-                windows[op].push((ri, t1.clone(), t2.clone()));
+            } else {
+                None
+            };
+            let probes: Vec<&CutSurface<B>> = match &bound {
+                Some(b) => vec![b],
+                None => quadric.iter().map(|wi| &walls[*wi]).collect(),
+            };
+            for wall in probes {
+                // The probe's **own** pullback decides which of its root brackets are real windows.
+                // Reading a wall-indexed form instead was right only while the proxy appeared for
+                // all-affine profiles alone: with a mixed one it filtered the proxy's brackets by
+                // the circle's reality, which is a different surface.
+                let form = cut_mu_form(&built.charts[ri], wall, &zero)
+                    .ok_or(PartFault::CutUnresolved { op })?;
+                let brackets = tangent_events(&form, &rf.band, &tangent_tol())
+                    .map_err(|_| PartFault::CutUnresolved { op })?;
+                for w in brackets.windows(2) {
+                    // Each bracket **contains** its tangent ruling, so the gap between two of them
+                    // lies inside the true window and the discriminant has one sign across it: a
+                    // single evaluation at the midpoint decides the whole gap.
+                    let (t1, t2) = (&w[0].hi, &w[1].lo);
+                    let mid = t1.add(t2).mul(&Rat::new(1, 2));
+                    let real = form
+                        .disc()
+                        .eval(&mid)
+                        .map(|v| v.sign() > 0)
+                        .unwrap_or(false);
+                    if !real {
+                        continue;
+                    }
+                    let q1 = t1.add(&mid).mul(&Rat::new(1, 2));
+                    let q3 = mid.add(t2).mul(&Rat::new(1, 2));
+                    samples.push((ri, q1));
+                    samples.push((ri, mid));
+                    samples.push((ri, q3));
+                    windows[op].push((ri, t1.clone(), t2.clone()));
+                }
             }
         }
     }
@@ -551,7 +847,7 @@ pub(crate) fn sweep<B: Backend>(
     // continuity-propagated choice (see [`choose_comps`]).
     let mut at: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
     for (ri, sigma) in samples {
-        let comps = sample_comps(part, &regions, ri, &sigma)?;
+        let comps = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
         at.push((ri, sigma, comps));
     }
     let chosen = choose_comps(part, built, &at)?;
@@ -677,4 +973,392 @@ pub(crate) fn sweep<B: Backend>(
         roles,
         mu_negative,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use develop::extrude::{Apex, Frame};
+    use fixtures::devices::cone;
+    use geom::content::Edge;
+    use lattice::Bignum;
+
+    type Q = Rat<Bignum>;
+
+    fn q(n: i128) -> Q {
+        Q::from_i128(n)
+    }
+
+    /// A disc's boundary as the two x-monotone arcs `arrange2d` decomposes it into.
+    fn disc_edges(cx: Q, cy: Q, r: Q) -> Vec<Edge<Bignum>> {
+        arrange2d::profile::Profile::new()
+            .circle(cx, cy, r)
+            .into_edges()
+    }
+
+    /// A cutter extruding `profile` straight down the `z` axis from the `z = 0` plane.
+    fn drilled(profile: Vec<Edge<Bignum>>) -> Cutter<Bignum> {
+        let frame = Frame::new([q(0), q(0), q(0)], [q(1), q(0), q(0)], [q(0), q(1), q(0)])
+            .expect("orthonormal frame");
+        Cutter::extrude(
+            frame,
+            Apex::direction([q(0), q(0), q(1)]).expect("a real direction"),
+            profile,
+        )
+    }
+
+    /// The µ̂-shadow of a cutter on the device cone at one σ.
+    fn shadow_of(cutter: &Cutter<Bignum>, sigma: &Q) -> Shadow {
+        let chart = cone();
+        let walls = cutter.walls().expect("well-formed cutter");
+        let forms: Vec<MuCut<Bignum>> = walls
+            .iter()
+            .map(|w| cut_mu_form(&chart, w, &q(0)).expect("a pullback"))
+            .collect();
+        shadow_at(cutter, &forms, &chart, 0, sigma).expect("a decidable shadow")
+    }
+
+    fn spans(sh: &Shadow) -> Vec<(f64, f64)> {
+        sh.0.iter()
+            .map(|p| match p {
+                Patch::Between(l, h, ..) => (*l, *h),
+                Patch::Below(r, _) => (f64::NEG_INFINITY, *r),
+                Patch::Above(r, _) => (*r, f64::INFINITY),
+                Patch::All => (f64::NEG_INFINITY, f64::INFINITY),
+            })
+            .collect()
+    }
+
+    /// **The shadow the old model could not hold.** A profile of two disjoint discs strung along the
+    /// ruling's own direction shadows it in *two* stretches, so the union `Shadow` of AUTH.1e.1 is
+    /// load-bearing rather than decorative — a single labelled interval cannot express this, and
+    /// before the refactor there was nowhere to put the second patch.
+    #[test]
+    fn a_two_lobed_profile_shadows_the_ruling_twice() {
+        let mut profile = disc_edges(q(0), q(1), Q::new(3, 10));
+        profile.extend(disc_edges(q(0), Q::new(5, 2), Q::new(3, 10)));
+        let sh = shadow_of(&drilled(profile), &q(0));
+        let got = spans(&sh);
+        assert_eq!(got.len(), 2, "two lobes, two patches — got {got:?}");
+        // The σ = 0 ruling runs up +y at ≈0.995 µ̂ per unit, so the discs at y ∈ [0.7, 1.3] and
+        // [2.2, 2.8] shadow µ̂ ≈ [0.70, 1.31] and ≈ [2.21, 2.81].
+        for ((lo, hi), (want_lo, want_hi)) in got.iter().zip([(0.70, 1.31), (2.21, 2.82)]) {
+            assert!(
+                (lo - want_lo).abs() < 0.02 && (hi - want_hi).abs() < 0.02,
+                "patch [{lo:.3}, {hi:.3}] should be ≈[{want_lo}, {want_hi}]"
+            );
+        }
+        // And each end is labelled by the wall that made it, which is what the realizer fits.
+        for p in &sh.0 {
+            if let Patch::Between(_, _, a, b) = p {
+                assert!(matches!(a.1, BranchSide::Wall(..)));
+                assert!(matches!(b.1, BranchSide::Wall(..)));
+            }
+        }
+    }
+
+    /// **Differential against the path it generalizes.** One disc extruded down `z` *is* a vertical
+    /// cylinder, so the new multi-wall shadow and the old single-quadric one must agree on the same
+    /// geometry — computed by entirely different routes (wall crossings + the profile's fill rule,
+    /// versus the roots of one µ̂-quadratic).
+    #[test]
+    fn an_extruded_disc_shadows_like_the_cylinder_it_is() {
+        let (cy, r) = (Q::new(11, 5), Q::new(1, 5));
+        let extruded = shadow_of(&drilled(disc_edges(q(0), cy.clone(), r.clone())), &q(0));
+        let metric = shadow_of(&Cutter::vertical_cylinder(q(0), cy, r.mul(&r)), &q(0));
+        let (a, b) = (spans(&extruded), spans(&metric));
+        assert_eq!(a.len(), 1, "one disc, one patch");
+        assert_eq!(b.len(), 1);
+        assert!(
+            (a[0].0 - b[0].0).abs() < 1e-6 && (a[0].1 - b[0].1).abs() < 1e-6,
+            "extruded {a:?} should match the cylinder {b:?}"
+        );
+    }
+
+    /// **The slice's real claim: an extruded cutter cuts, inside a `Part`.**
+    ///
+    /// The Stage-1 flex panel's interior drill `D4` is a vertical cylinder over a disc. Authored
+    /// instead as that same disc *extruded* down `z`, it is the same solid — so the resolver must
+    /// derive the same structure from it: the same op roles, the same interior hole over the same
+    /// σ-window, the same kept side. That runs the whole new path end to end — `walls()`, the
+    /// per-wall pullbacks, `extruded_shadow`, the `Wall` labels, and the per-wall stations — and
+    /// compares it against the certified device it generalizes rather than against a hand-written
+    /// expectation.
+    #[test]
+    fn an_extruded_drill_resolves_the_same_part_as_the_cylinder_it_replaces() {
+        use crate::construct;
+        use crate::part::SupportFn;
+
+        // The flex panel, with D4 authored either way.
+        let panel = |d4: Cutter<Bignum>| {
+            construct::from_chart::<Bignum>(&cone())
+                .region_sigma(q(-1), q(1), SupportFn::inherit())
+                .intersect(Cutter::half_space([q(0), q(0), q(1)], q(3)))
+                .subtract(Cutter::vertical_cylinder(q(0), Q::new(1, 2), q(2)))
+                .subtract(Cutter::vertical_cylinder(
+                    Q::new(-9, 4),
+                    Q::new(9, 4),
+                    Q::new(9, 16),
+                ))
+                .subtract(d4)
+                .clearance(q(1))
+        };
+        let resolved = |part: Part<Bignum>| {
+            let built = part.build_regions().expect("the regions develop");
+            sweep(&part, &built).expect("the sweep resolves")
+        };
+
+        let metric = resolved(panel(Cutter::vertical_cylinder(
+            q(0),
+            Q::new(11, 5),
+            Q::new(1, 25),
+        )));
+        let extruded = resolved(panel(drilled(disc_edges(
+            q(0),
+            Q::new(11, 5),
+            Q::new(1, 5),
+        ))));
+
+        assert_eq!(
+            extruded.roles.len(),
+            metric.roles.len(),
+            "same ops, so same number of derived roles"
+        );
+        for (i, (a, b)) in extruded.roles.iter().zip(metric.roles.iter()).enumerate() {
+            assert_eq!(
+                core::mem::discriminant(a),
+                core::mem::discriminant(b),
+                "op {i}: the extruded drill must derive the same role"
+            );
+        }
+        assert_eq!(
+            extruded.mu_negative, metric.mu_negative,
+            "the kept side is a property of the solid, not of how it was authored"
+        );
+        assert_eq!(
+            extruded.holes.len(),
+            metric.holes.len(),
+            "the drill is an interior hole either way"
+        );
+        for (a, b) in extruded.holes.iter().zip(metric.holes.iter()) {
+            assert_eq!((a.0, a.1), (b.0, b.1), "same op holing in the same region");
+            let (dlo, dhi) = (
+                rat_to_f64(&a.2.lo) - rat_to_f64(&b.2.lo),
+                rat_to_f64(&a.2.hi) - rat_to_f64(&b.2.hi),
+            );
+            assert!(
+                dlo.abs() < 1e-3 && dhi.abs() < 1e-3,
+                "the hole's σ-window should agree: extruded [{:.5}, {:.5}] vs metric [{:.5}, {:.5}]",
+                rat_to_f64(&a.2.lo),
+                rat_to_f64(&a.2.hi),
+                rat_to_f64(&b.2.lo),
+                rat_to_f64(&b.2.hi)
+            );
+        }
+    }
+
+    /// A **thin** lobe is still resolved, and at its true width. Membership is constant between
+    /// consecutive wall crossings, so one midpoint sample per stretch is exact — but only while the
+    /// sample stays in its own stretch, which is why the genericity nudge is scaled to the stretch
+    /// rather than to the profile. A lobe two orders of magnitude narrower than its neighbour is
+    /// where a globally-scaled nudge would read the neighbour's answer instead.
+    #[test]
+    fn a_thin_lobe_survives_the_membership_sampling() {
+        let mut profile = disc_edges(q(0), q(1), Q::new(1, 500)); // r = 0.002
+        profile.extend(disc_edges(q(0), Q::new(5, 2), Q::new(3, 10))); // r = 0.3, 150x wider
+        let sh = shadow_of(&drilled(profile), &q(0));
+        let got = spans(&sh);
+        assert_eq!(
+            got.len(),
+            2,
+            "the thin lobe must not be swallowed — got {got:?}"
+        );
+        let (thin, fat) = (got[0].1 - got[0].0, got[1].1 - got[1].0);
+        // Widths in µ̂ are the frame widths divided by the ruling's ≈0.995 xy-rate.
+        assert!(
+            (thin - 0.004).abs() < 5e-4,
+            "the thin lobe should measure ≈0.004 in µ̂, got {thin:.6}"
+        );
+        assert!(
+            (fat - 0.603).abs() < 5e-3,
+            "the wide lobe should measure ≈0.603 in µ̂, got {fat:.6}"
+        );
+    }
+
+    /// The axis-aligned square of half-side `h` about `(cx, cy)`.
+    fn square_edges(cx: Q, cy: Q, h: Q) -> Vec<Edge<Bignum>> {
+        arrange2d::profile::Profile::new()
+            .rect(cx, cy, h.clone(), h)
+            .into_edges()
+    }
+
+    /// **A bounding box has two sides, and both must be bracketed the right way round.** `extent`
+    /// is what `bounding_wall` and `reference_point` are built on, and it bracketed segment
+    /// endpoints with `rational_above` on *both* sides — a strict upper bound found by doubling
+    /// from zero. For this square that gave `[0, 1] × [3, 3]`: not a loose box, a **wrong** one,
+    /// with zero height and containing none of the profile. The bounding circle derived from it
+    /// missed the square entirely, so the hole window did too, and the multi-wall loop refused a
+    /// perfectly good cut. Nothing caught it for two slices because until AUTH.1e.4 no geometry
+    /// consumed the box — the polygonal-slot test below only asks that the role is not `Inactive`.
+    #[test]
+    fn a_polygon_extent_brackets_its_own_corners() {
+        let (cx, cy, h) = (q(0), Q::new(11, 5), Q::new(1, 5));
+        let Cutter::Extrude(e) = drilled(square_edges(cx.clone(), cy.clone(), h.clone())) else {
+            panic!("drilled builds an extrusion")
+        };
+        let (lo_a, lo_b, hi_a, hi_b) = e.extent().expect("a square has an extent");
+        // Tight: within the 2^-48 bisection slop of the true corners, not merely containing them.
+        let slack = Q::new(1, 1 << 20);
+        for (got, want) in [
+            (&lo_a, cx.sub(&h)),
+            (&lo_b, cy.sub(&h)),
+            (&hi_a, cx.add(&h)),
+            (&hi_b, cy.add(&h)),
+        ] {
+            let d = got.sub(&want);
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            assert!(
+                d.cmp(&slack) != core::cmp::Ordering::Greater,
+                "extent bound {} should bracket {} tightly",
+                rat_to_f64(got),
+                rat_to_f64(&want)
+            );
+        }
+        // And it really contains the profile — the invariant `bounding_wall` rests on.
+        assert!(lo_a.cmp(&cx.sub(&h)) != core::cmp::Ordering::Greater);
+        assert!(hi_b.cmp(&cy.add(&h)) != core::cmp::Ordering::Less);
+    }
+
+    /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
+    /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
+    /// `Inactive` — a green certificate on a cut that did nothing.
+    ///
+    /// The profile's bounding circle supplies the missing window. A superset is the right error:
+    /// extra stations sample where the cut is absent and cost nothing, a missing one loses the cut.
+    /// **A polygonal slot must be SEEN, however small.** Every wall of a polygon is affine, so it
+    /// has no tangent-ruling window — and station targeting keyed on exactly that. The result was
+    /// the failure `docs/cutter-extrude-design.md` §6 predicted in advance: a square slot subtending
+    /// ≈0.045 in σ against ≈0.146 sample cells fell between them, and the resolver derived
+    /// `Inactive` — a green certificate on a cut that did nothing.
+    ///
+    /// The profile's bounding circle supplies the missing window. A superset is the right error:
+    /// extra stations sample where the cut is absent and cost nothing, a missing one loses the cut.
+    #[test]
+    fn a_polygonal_slot_is_not_dropped_between_sample_cells() {
+        use crate::construct;
+        use crate::part::SupportFn;
+        // A square the same size and place as the disc that already resolves.
+        let square = square_edges(q(0), Q::new(11, 5), Q::new(1, 5));
+
+        let part = construct::from_chart::<Bignum>(&cone())
+            .region_sigma(Q::new(-7, 2), Q::new(7, 2), SupportFn::inherit())
+            .keep_near(
+                cone()
+                    .surface(&q(2), &q(0))
+                    .eval(&q(0))
+                    .expect("regular at σ = 0"),
+            )
+            .intersect(Cutter::half_space([q(0), q(0), q(1)], q(3)))
+            .subtract(Cutter::vertical_cylinder(q(0), Q::new(1, 2), q(2)))
+            .subtract(Cutter::vertical_cylinder(
+                Q::new(-9, 4),
+                Q::new(9, 4),
+                Q::new(9, 16),
+            ))
+            .subtract(drilled(square))
+            .clearance(q(1));
+        let built = part.build_regions().expect("the regions develop");
+        let st = sweep(&part, &built).expect("the sweep resolves");
+        assert!(
+            !matches!(st.roles[3], crate::part::OpRole::Inactive),
+            "the slot must be sampled, not dropped between cells — got {:?}",
+            st.roles[3]
+        );
+    }
+
+    /// **The span reaches only as deep as it says.** A transverse drill swept straight through the
+    /// cone crosses *both* sheets, so `Through` cuts both regions while `ToNext` cuts only the one
+    /// the ray meets first — and the resolver's own hole records show it, not just the reach.
+    ///
+    /// The ordering is by **ray parameter**: the near sheet is region 1 (σ ≈ +1.08, t ≈ 2.3), the
+    /// far one region 0 (σ ≈ −1.08, t ≈ 7.7). Reading depth off σ would pick the wrong sheet.
+    #[test]
+    fn a_span_cuts_only_the_sheets_it_reaches() {
+        use crate::construct;
+        use crate::part::SupportFn;
+        let mk = |span: Span| {
+            construct::from_chart::<Bignum>(&cone())
+                .region_sigma(Q::new(-3, 2), q(0), SupportFn::inherit())
+                .region_sigma(q(0), Q::new(3, 2), SupportFn::inherit())
+                .intersect(Cutter::half_space([q(0), q(0), q(1)], q(3)))
+                .subtract(Cutter::vertical_cylinder(q(0), Q::new(1, 2), q(2)))
+                .subtract(Cutter::extrude_span(
+                    // The sketch plane faces +x at (−5, 0, 3), swept along +x through the cone.
+                    Frame::new([q(-5), q(0), q(3)], [q(0), q(1), q(0)], [q(0), q(0), q(1)])
+                        .expect("independent axes"),
+                    Apex::direction([q(1), q(0), q(0)]).expect("a real direction"),
+                    disc_edges(q(0), q(0), Q::new(1, 5)),
+                    span,
+                ))
+                .clearance(q(1))
+        };
+        let reach_of = |span: Span| {
+            let part = mk(span);
+            let built = part.build_regions().expect("the regions develop");
+            span_reach(&part, &built).expect("the cast resolves")[2].clone()
+        };
+        assert_eq!(reach_of(Span::Through), None, "Through is unrestricted");
+        assert_eq!(
+            reach_of(Span::ToNext),
+            Some(vec![1]),
+            "ToNext reaches the sheet the ray meets first — region 1, at the smaller ray parameter"
+        );
+        let both = reach_of(Span::NextN(2)).expect("restricted");
+        assert_eq!(both.len(), 2, "NextN(2) reaches both sheets");
+        assert!(both.contains(&0) && both.contains(&1));
+
+        // And the restriction is visible in what the resolver *derives*, not only in the reach:
+        // the drill bounds material in the sheets it reaches and in no others. (Which role it takes
+        // — hole or rim notch — depends on where it lands; the span's job is only which sheets.)
+        let cut_in = |span: Span| {
+            let part = mk(span);
+            let built = part.build_regions().expect("the regions develop");
+            let st = sweep(&part, &built).expect("the sweep resolves");
+            let mut rs: Vec<usize> = Vec::new();
+            for run in &st.runs {
+                if run.lower.0 != 2 && run.upper.0 != 2 {
+                    continue;
+                }
+                let mid = run.lo.add(&run.hi).mul(&Rat::new(1, 2));
+                for (ri, r) in part.regions.iter().enumerate() {
+                    if r.band.lo.cmp(&mid) != core::cmp::Ordering::Greater
+                        && mid.cmp(&r.band.hi) != core::cmp::Ordering::Greater
+                        && !rs.contains(&ri)
+                    {
+                        rs.push(ri);
+                    }
+                }
+            }
+            rs.sort_unstable();
+            rs
+        };
+        assert_eq!(
+            cut_in(Span::ToNext),
+            vec![1],
+            "the shallow cut bounds material in the near sheet only"
+        );
+        assert_eq!(
+            cut_in(Span::Through),
+            vec![0, 1],
+            "the deep cut bounds material in both"
+        );
+    }
+
+    /// A ruling that misses the profile entirely is shadowed nowhere — the empty union, which
+    /// `subtract` must leave the material untouched by.
+    #[test]
+    fn a_missed_profile_shadows_nothing() {
+        let sh = shadow_of(&drilled(disc_edges(q(9), q(9), Q::new(1, 5))), &q(0));
+        assert!(sh.0.is_empty(), "got {:?}", spans(&sh));
+    }
 }

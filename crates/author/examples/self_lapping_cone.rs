@@ -22,12 +22,10 @@
 //! `generated-demos/`). This is the old 917-line hand-wired demo collapsed onto the facade —
 //! same device, same certificates, structure no longer hand-picked.
 
-use author::construct;
-use author::part::{Cutter, Part, SupportFn};
+use author::part::Part;
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
 use export::approx::rat_to_f64;
-use export::trim::RailFit;
 use fixtures::devices::cone_wrap;
 use lattice::{Bignum, Rat};
 
@@ -40,39 +38,10 @@ fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
 
-/// The device recipe. Across the wrapping window the four solids keep material on BOTH sheets of
-/// the double cover, so the recipe carries an exact witness — a point on the kept annulus — that
-/// **seeds** the resolver's continuity-propagated choice (a fixed witness alone flips to the
-/// mirror nappe past ~half a turn; continuity is what carries the designation around the lap).
+/// The device at the demo's fidelity, from the one shared definition (see the `acceptance`
+/// crate) — the same recipe the V&V suite pins at a leaner budget.
 fn device(segments: usize) -> Part<Bignum> {
-    let d = q(1, 10); // the lap offset D
-    let rz0 = cone_wrap().ruling().comp(2).eval(&qi(0)).expect("regular");
-    let mu_w = q(-3, 1).div(&rz0); // the σ = 0 ruling's point at z = −3: mid-annulus
-    let witness = cone_wrap()
-        .surface(&mu_w, &qi(0))
-        .eval(&qi(0))
-        .expect("regular");
-    construct::from_chart::<Bignum>(&cone_wrap())
-        .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0))) // body
-        .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone())) // C¹ ramp
-        .region_sigma(qi(1), q(5, 4), SupportFn::constant(d)) // lap plateau
-        .keep_near(witness)
-        .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50))) // outer (derived)
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4))) // inner (derived)
-        .subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40))) // seam drill (derived ×2)
-        .clearance(qi(1))
-        .thickness(q(1, 20))
-        .fit(RailFit {
-            degree: 4,
-            subdiv: 160,
-            bits: 44,
-        })
-        .segments(segments)
-        .support_panels(20)
-        .budget(DevConfig {
-            terms: 14,
-            sqrt_eps: q(1, 1_000_000_000),
-        })
+    acceptance::self_lapping_cone(segments, 20, true)
 }
 
 /// The flat-authored hexagon (rational ECAD coordinates) around the flat image of a mid-annulus
@@ -174,7 +143,13 @@ fn main() {
     let part = device(segments).hole_flat(hexagon());
 
     // — develop: the certified flat pattern —
-    let flat = match part.develop() {
+    let t_develop = std::time::Instant::now();
+    let develop_verdict = part.develop();
+    eprintln!(
+        "[time] develop           {:8.2}s",
+        t_develop.elapsed().as_secs_f64()
+    );
+    let flat = match develop_verdict {
         Verdict::Verified(f) => f,
         Verdict::Refuted(fault) => {
             println!("develop: Refuted({fault:?}) — stopping");
@@ -199,7 +174,13 @@ fn main() {
         flat.region().faces[0].holes.len()
     );
     let svg_path = format!("{out_dir}/self_lapping_cone.svg");
-    std::fs::write(&svg_path, flat.svg(900)).expect("write flat svg");
+    let t_svg = std::time::Instant::now();
+    let svg = flat.svg(900);
+    eprintln!(
+        "[time] flat svg          {:8.2}s",
+        t_svg.elapsed().as_secs_f64()
+    );
+    std::fs::write(&svg_path, svg).expect("write flat svg");
     println!("  wrote {svg_path}");
 
     // — fold: the certified 2-D → 3-D leg, and the folded top-down view —
@@ -219,8 +200,15 @@ fn main() {
         rings.push(subsample(&flat_loop(h), 2));
     }
     rings.push(hexagon());
-    for ring in &rings {
-        match part.fold(ring, &qi(0)) {
+    for (r, ring) in rings.iter().enumerate() {
+        let t_ring = std::time::Instant::now();
+        let verdict = part.fold(ring, &qi(0));
+        eprintln!(
+            "[time] fold ring {r}        {:8.2}s   ({} pts)",
+            t_ring.elapsed().as_secs_f64(),
+            ring.len()
+        );
+        match verdict {
             Verdict::Verified(wire) => {
                 fold_eps = fold_eps.max(rat_to_f64(&wire.eps));
                 folded_rings.push(
@@ -258,10 +246,24 @@ fn main() {
 
     // — solid: the certified watertight STEP shell —
     #[cfg(feature = "step")]
-    match part.solid() {
+    let t_solid = std::time::Instant::now();
+    #[cfg(feature = "step")]
+    let solid_verdict = part.solid();
+    #[cfg(feature = "step")]
+    eprintln!(
+        "[time] solid             {:8.2}s",
+        t_solid.elapsed().as_secs_f64()
+    );
+    #[cfg(feature = "step")]
+    match solid_verdict {
         Verdict::Verified(solid) => {
             let path = format!("{out_dir}/self_lapping_cone.step");
+            let t_step = std::time::Instant::now();
             let report = solid.write_step(&path);
+            eprintln!(
+                "[time] write_step        {:8.2}s",
+                t_step.elapsed().as_secs_f64()
+            );
             println!("  STEP             : {}   → {path}", report.summary());
         }
         Verdict::Refuted(fault) => println!("  STEP             : Refuted({fault:?})"),

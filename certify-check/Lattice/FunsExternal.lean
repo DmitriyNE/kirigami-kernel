@@ -122,3 +122,51 @@ def alloc.vec.Vec.pop {T : Type} (_A : Type) (v : alloc.vec.Vec T) :
     have h := v.property
     rw [List.length_dropLast]
     omega⟩)
+
+/-- The number of trailing zero bits of a `Nat`, by the obvious recursion: strip a factor of two
+    while the value is even.  `0` for `0` (the `u128` wrapper below supplies Rust's `128` in that
+    case, so this auxiliary never has to encode a width). -/
+def natTrailingZeros (n : Nat) : Nat :=
+  if h : n = 0 then 0
+  else if n % 2 = 1 then 0
+  else natTrailingZeros (n / 2) + 1
+decreasing_by omega
+
+/-- `2 ^ natTrailingZeros n ∣ n` — the defining property, and what bounds the result below. -/
+theorem two_pow_natTrailingZeros_dvd (n : Nat) : 2 ^ natTrailingZeros n ∣ n := by
+  induction n using Nat.strong_induction_on with
+  | _ n ih =>
+    rw [natTrailingZeros]
+    split
+    · rename_i h; simp [h]
+    · split
+      · simp
+      · rename_i h hodd
+        obtain ⟨k, hk⟩ := ih (n / 2) (by omega)
+        refine ⟨k, ?_⟩
+        -- Name the recursive count before rewriting, or `rw [hk]` also fires inside it.
+        generalize hm : natTrailingZeros (n / 2) = m at hk ⊢
+        calc n = 2 * (n / 2) := by omega
+          _ = 2 * (2 ^ m * k) := by rw [hk]
+          _ = 2 ^ (m + 1) * k := by ring
+
+/-- `<u128>::trailing_zeros` — the count of trailing zero bits, `128` when the value is `0`.
+    Ref: `core::num::{u128}::trailing_zeros` (`uint_macros.rs`).  The result is `< 128` for a
+    nonzero input, since `2 ^ tz ∣ n` forces `2 ^ tz ≤ n < 2 ^ 128`; so it always fits a `u32`. -/
+@[rust_fun "core::num::{u128}::trailing_zeros"]
+def core.num.U128.trailing_zeros (x : Std.U128) : Result Std.U32 :=
+  ok (Std.U32.ofNatCore (if x.val = 0 then 128 else natTrailingZeros x.val) (by
+    split
+    · decide
+    · rename_i hx
+      have hdvd := two_pow_natTrailingZeros_dvd x.val
+      have hle : 2 ^ natTrailingZeros x.val ≤ x.val :=
+        Nat.le_of_dvd (Nat.pos_of_ne_zero hx) hdvd
+      have hlt : x.val < 2 ^ 128 := by have := x.hBounds; scalar_tac
+      have : natTrailingZeros x.val < 128 := by
+        by_contra hcon
+        push_neg at hcon
+        have : (2:Nat) ^ 128 ≤ 2 ^ natTrailingZeros x.val :=
+          Nat.pow_le_pow_right (by norm_num) hcon
+        omega
+      scalar_tac))

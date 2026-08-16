@@ -21,10 +21,11 @@
 //! *corroborates* it (see `docs/spike-development-report.md`).
 
 use crate::interval::{
-    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on_slope, log, pi,
+    RatIv, abs_on, arctan, arctan_on, cos_on, eval_ratfunc_on, integrate_on_slope_n, log, pi,
     pi_half, sin_on, sqrt, sqrt_on,
 };
 use certify_core::Verdict;
+use core::cell::RefCell;
 use geom::chart::Chart;
 use lattice::{Backend, Bignum, Poly, Rat, RatFunc};
 
@@ -299,6 +300,56 @@ pub struct ConeDevelopment<B: Backend = Bignum> {
     directrix: Option<Directrix<B>>,
     /// Quadrature budget for the flat directrix `γ` (subintervals of `[0, σ]`); unused when `γ ≡ 0`.
     panels: usize,
+    /// Memoized prefix sums of `γ` (OPT.1) — see [`DirectrixPrefix`]. Purely a cache: every value
+    /// it returns is a sum of the same per-panel enclosures the direct quadrature would build, so
+    /// it changes cost, not soundness. Not part of the value's identity, hence skipped by `Clone`
+    /// (a clone starts cold) and by any comparison.
+    tables: RefCell<Vec<DirectrixPrefix<B>>>,
+}
+
+/// How many origins are memoized at once. The development is queried from the region's own `σ`
+/// window (`directrix_between`) *and* from 0 (`directrix_at`), and a fold alternates between them,
+/// so a single-entry cache would thrash — rebuilding on every call and costing more than no cache
+/// at all. Four covers the acceptance device's three regions plus the origin.
+const GAMMA_TABLES: usize = 4;
+
+/// How far past its reach a table may be extended before it is cheaper to re-anchor. Bounds the
+/// pathological case where the first query lands very close to `lo` (making the step tiny) and a
+/// later one lands far away.
+const GAMMA_MAX_CELLS: usize = 8;
+
+/// Prefix sums of the flat directrix over a uniform grid anchored at `lo`.
+///
+/// `γ` is an *integral*, so it is additive: `γ(σ) = Σ_{k<j} ∫_{cell k} γ′ + ∫_{grid_j}^{σ} γ′`.
+/// The direct quadrature recomputed the whole thing from `lo` on every query — `N` queries at
+/// `panels` subintervals each cost `N·panels` integrand evaluations, and since a boundary or a
+/// bisection asks for many `σ` against one `lo`, that product was the dominant cost of the whole
+/// pipeline (OPT.0). Accumulating the grid once turns it into `cells + N`.
+///
+/// **Soundness is unaffected**: summing adjacent panel enclosures *is* the composite rule, so a
+/// prefix lookup plus one partial panel is a valid enclosure of the same integral. **Accuracy is
+/// comparable, not identical** — the partition differs. The grid step is set by the first query as
+/// `(σ₁ − lo)/panels`, which makes the error at `σ₁` exactly the direct rule's; farther queries get
+/// *more* cells than the direct rule would have used (so they are tighter), nearer ones fewer (so
+/// they are looser, but bounded by the error at `σ₁`). Since the reported ε is a maximum over the
+/// queried points, the worst case is preserved — the ε pins on the acceptance parts are what hold
+/// this claim honest.
+struct DirectrixPrefix<B: Backend> {
+    /// The integration origin this table is anchored at.
+    lo: Rat<B>,
+    /// Grid spacing.
+    step: Rat<B>,
+    /// `prefix[j] = ∫_lo^{lo + j·step} γ′`, so `prefix[0] = [0, 0]` and `prefix.len() - 1` cells
+    /// have been accumulated.
+    prefix: Vec<[RatIv<B>; 2]>,
+}
+
+impl<B: Backend> core::fmt::Debug for DirectrixPrefix<B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DirectrixPrefix")
+            .field("cells", &(self.prefix.len() - 1))
+            .finish()
+    }
 }
 
 /// The exact rational data of a curved-support developable's flat directrix `γ` (the `γ ≠ 0` case):
@@ -334,6 +385,7 @@ impl<B: Backend> Clone for ConeDevelopment<B> {
             rho_sq_prime: self.rho_sq_prime.clone(),
             directrix: self.directrix.clone(),
             panels: self.panels,
+            tables: RefCell::new(Vec::new()),
         }
     }
 }
@@ -351,6 +403,7 @@ impl<B: Backend> ConeDevelopment<B> {
             rho_sq_prime,
             directrix: None,
             panels: 0,
+            tables: RefCell::new(Vec::new()),
         })
     }
 
@@ -404,6 +457,7 @@ impl<B: Backend> ConeDevelopment<B> {
             rho_sq_prime,
             directrix,
             panels,
+            tables: RefCell::new(Vec::new()),
         })
     }
 
@@ -438,6 +492,7 @@ impl<B: Backend> ConeDevelopment<B> {
         panel: &RatIv<B>,
         cfg: &DevConfig<B>,
     ) -> Option<[RatIv<B>; 2]> {
+        crate::counters::bump_gamma_velocity();
         let cr = eval_ratfunc_on(&d.cr, panel)?;
         let cn = eval_ratfunc_on(&d.cn, panel)?;
         let rho2 = eval_ratfunc_on(&self.rho_sq, panel)?;
@@ -537,22 +592,7 @@ impl<B: Backend> ConeDevelopment<B> {
             }
             Some(d) => d,
         };
-        let zero = Rat::from_i128(0);
-        let gx = integrate_on_slope(
-            |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
-            |p| self.directrix_accel(d, p, cfg).map(|f| f[0].clone()),
-            &zero,
-            sigma,
-            self.panels,
-        )?;
-        let gy = integrate_on_slope(
-            |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
-            |p| self.directrix_accel(d, p, cfg).map(|f| f[1].clone()),
-            &zero,
-            sigma,
-            self.panels,
-        )?;
-        Some([gx, gy])
+        self.directrix_accumulated(d, &Rat::from_i128(0), sigma, cfg)
     }
 
     /// A certified enclosure of the flat directrix accumulated over a σ-**sub-range**,
@@ -574,21 +614,147 @@ impl<B: Backend> ConeDevelopment<B> {
             }
             Some(d) => d,
         };
-        let gx = integrate_on_slope(
-            |p| self.directrix_velocity(d, p, cfg).map(|f| f[0].clone()),
-            |p| self.directrix_accel(d, p, cfg).map(|f| f[0].clone()),
-            lo,
-            sigma,
-            self.panels,
-        )?;
-        let gy = integrate_on_slope(
-            |p| self.directrix_velocity(d, p, cfg).map(|f| f[1].clone()),
-            |p| self.directrix_accel(d, p, cfg).map(|f| f[1].clone()),
-            lo,
-            sigma,
-            self.panels,
-        )?;
-        Some([gx, gy])
+        self.directrix_accumulated(d, lo, sigma, cfg)
+    }
+
+    /// `∫_lo^σ γ′`, served from the [prefix table](DirectrixPrefix) anchored at `lo`.
+    ///
+    /// The whole point of OPT.1: the direct quadrature spent `panels` integrand evaluations on
+    /// *every* query, and a boundary walk or a fold bisection issues many queries against one
+    /// `lo`. Here the grid is accumulated once and a query costs one partial panel.
+    fn directrix_accumulated(
+        &self,
+        d: &Directrix<B>,
+        lo: &Rat<B>,
+        sigma: &Rat<B>,
+        cfg: &DevConfig<B>,
+    ) -> Option<[RatIv<B>; 2]> {
+        use core::cmp::Ordering;
+        let zero_iv = || RatIv::point(Rat::from_i128(0));
+        match sigma.cmp(lo) {
+            Ordering::Less => return None,
+            Ordering::Equal => return Some([zero_iv(), zero_iv()]),
+            Ordering::Greater => {}
+        }
+        // A zero quadrature budget is refused, as the direct rule refused it — a curved-support
+        // development with no panels has no defined γ, and answering with one coarse cell would
+        // quietly invent an enclosure the caller never asked for.
+        let panels = match self.panels {
+            0 => return None,
+            n => n,
+        };
+        // One cell of the grid, by the same rule the direct quadrature applies to a subinterval.
+        // Both components in ONE pass. Integrating them separately called `directrix_velocity`
+        // (and `directrix_accel`) twice per point — each returns `[x, y]` and each call discarded
+        // half of it — so every γ integrand evaluation happened twice. See
+        // [`integrate_on_slope_n`].
+        let cell = |a: &Rat<B>, b: &Rat<B>| -> Option<[RatIv<B>; 2]> {
+            crate::counters::bump_gamma_cell();
+            integrate_on_slope_n(
+                |p| self.directrix_velocity(d, p, cfg),
+                |p| self.directrix_accel(d, p, cfg),
+                a,
+                b,
+                1,
+            )
+        };
+
+        // Anchor a table at `lo`, sized from this query, unless a usable one is already cached.
+        // "Usable" excludes a table whose step is so fine that reaching σ would cost more cells
+        // than integrating directly — re-anchoring then keeps the worst case at the old cost.
+        let reach = |t: &DirectrixPrefix<B>| {
+            t.lo.add(
+                &t.step
+                    .mul(&Rat::from_i128((panels * GAMMA_MAX_CELLS) as i128)),
+            )
+        };
+        let have = {
+            let tables = self.tables.borrow();
+            tables.iter().position(|t| {
+                t.lo.cmp(lo) == Ordering::Equal && sigma.cmp(&reach(t)) != Ordering::Greater
+            })
+        };
+        let idx = match have {
+            Some(i) => i,
+            None => {
+                let step = sigma.sub(lo).div(&Rat::from_i128(panels as i128));
+                let fresh = DirectrixPrefix {
+                    lo: lo.clone(),
+                    step,
+                    prefix: vec![[zero_iv(), zero_iv()]],
+                };
+                let mut tables = self.tables.borrow_mut();
+                tables.retain(|t| t.lo.cmp(lo) != Ordering::Equal);
+                if tables.len() >= GAMMA_TABLES {
+                    tables.remove(0);
+                }
+                tables.push(fresh);
+                tables.len() - 1
+            }
+        };
+
+        // Extend the grid until the last grid point at or below σ is accumulated.
+        //
+        // The cell borrow is released around each integration, so the table is re-located by `lo`
+        // rather than by a held index: the integrand does not currently compute γ, but if it ever
+        // did, a stale index would silently read someone else's table where a fresh lookup simply
+        // finds the right one. `idx` is only the initial hint.
+        let locate = |tables: &[DirectrixPrefix<B>]| {
+            tables
+                .iter()
+                .position(|t| t.lo.cmp(lo) == Ordering::Equal)
+                .unwrap_or(idx)
+        };
+        loop {
+            let (cells, step, origin) = {
+                let tables = self.tables.borrow();
+                let t = &tables[locate(&tables)];
+                (t.prefix.len() - 1, t.step.clone(), t.lo.clone())
+            };
+            let next_grid = origin.add(&step.mul(&Rat::from_i128((cells + 1) as i128)));
+            if next_grid.cmp(sigma) == Ordering::Greater {
+                break;
+            }
+            let a = origin.add(&step.mul(&Rat::from_i128(cells as i128)));
+            let add = cell(&a, &next_grid)?;
+            let mut tables = self.tables.borrow_mut();
+            let at = locate(&tables);
+            let t = &mut tables[at];
+            let last = t.prefix[t.prefix.len() - 1].clone();
+            t.prefix.push([
+                last[0].add(&add[0]).rounded(),
+                last[1].add(&add[1]).rounded(),
+            ]);
+        }
+
+        // The largest grid point at or below σ. A table built by an earlier, *farther* query
+        // reaches past σ, so this must be searched for — taking the last entry would integrate
+        // backwards from beyond σ.
+        let (base, grid_j) = {
+            let tables = self.tables.borrow();
+            let t = &tables[locate(&tables)];
+            let grid = |j: usize| t.lo.add(&t.step.mul(&Rat::from_i128(j as i128)));
+            let (mut lo_i, mut hi_i) = (0usize, t.prefix.len() - 1);
+            while lo_i < hi_i {
+                let mid = lo_i + (hi_i - lo_i).div_ceil(2);
+                if grid(mid).cmp(sigma) == Ordering::Greater {
+                    hi_i = mid - 1;
+                } else {
+                    lo_i = mid;
+                }
+            }
+            (t.prefix[lo_i].clone(), grid(lo_i))
+        };
+        // The remainder from the last grid point up to σ — at most one cell wide, so a single
+        // panel here carries the same error as any one cell of the grid.
+        if grid_j.cmp(sigma) == Ordering::Equal {
+            return Some(base);
+        }
+        let tail = cell(&grid_j, sigma)?;
+        Some([
+            base[0].add(&tail[0]).rounded(),
+            base[1].add(&tail[1]).rounded(),
+        ])
     }
 
     /// The certified flat point `D = base + ∫_{lo}^{σ} γ′ + µ̂·ρ·e(ψ)` — [`point_signed`] with an

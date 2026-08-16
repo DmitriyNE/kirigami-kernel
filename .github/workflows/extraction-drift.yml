@@ -47,6 +47,17 @@ jobs:
     # Self-hosted Linux/x64; the heavy Charon/Aeneas source build reuses the runner's
     # persistent /nix/store across runs.
     runs-on: [self-hosted, Linux, x64]
+    # Nix resolves `github:` flake INPUTS through api.github.com, and authenticates with
+    # whatever `access-tokens` it finds. On this runner that fetch returned **401 "Bad
+    # credentials"** — not 403, so a credential WAS being sent and rejected — 19 seconds after
+    # the installer had been handed a valid `github-token`, which rules out expiry-during-job.
+    # No `access-tokens` entry was found in /etc/nix/nix.conf or the login user's config, so the
+    # source is not pinned down; a GitHub-hosted runner is a fresh VM each job and never sees it.
+    # `NIX_CONFIG` is applied AFTER every config file, so injecting the current job's token here
+    # wins over whatever is set wherever. If a 401 survives this, the token itself is being
+    # rejected and the staleness reading was wrong (see #241(b)).
+    env:
+      NIX_CONFIG: "access-tokens = github.com=${{ github.token }}"
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main

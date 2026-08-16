@@ -1888,6 +1888,330 @@ SHEAR δ=18/65≈0.28 mm ∧ CLEAR), and the two sheets emit as **two certified 
 each OCCT `audit valid ∧ free_edges==0 ∧ nonmanifold==0`). Both product directions, on the real γ≠0
 self-lapping geometry, bonded — the flex-PCB spine's acceptance.
 
+### AUTH.1 acceptance criteria (the sketch-extrude cutter — frame × profile × apex × span)
+
+Full design in [`cutter-extrude-design.md`](cutter-extrude-design.md). The step-1 blocker: authoring
+a real substrate boundary needs cuts defined by a **2-D arrangement placed in a plane and extruded**,
+with taper and with control over how deep the cut reaches. Cuts here happen **before any stackup
+exists**, so a span counts **neutral surfaces** (chart embeddings), not copper layers and not faces.
+
+**AUTH.1a — the apex and the wall.** One homogeneous `Apex = [a : w]` covers both extrusion modes
+(`w = 0` is today's parallel drill, `w ≠ 0` a finite cast point), so the generatrix and the wall are
+one formula and the cut-fit certificate is derived once. `w == 0` is an exact `Rat` test. A wall is a
+Plane for a segment edge and `CutSurface::Quadric` — the general `XᵀMX + b·X + c = 0` on one nappe —
+for an arc edge, so everything stays degree ≤ 2 over ℚ(σ). The general form is not optional: a cone
+over a circle from an apex off *that circle's* axis is oblique, hence elliptic, and an affine frame
+makes a profile circle an ellipse to begin with. Both §4.1 validity conditions **refuse** rather than
+repair, and they are one runtime check, because the apex sits on the nappe selector's own boundary:
+the cutter is the single nappe on the authored side, and a band that reaches the apex — where
+"inside" inverts — is `Refuted`.
+
+A quadric has **no closed-form distance**, so the certificate uses the first-order gradient-flow
+bound, whose hypotheses (`|∇F| ≥ g > 0` on the working ball, `|F|/g ≤ R`) are discharged per box at
+runtime. Two things must be shown, not assumed: that the general wall really *is* the special
+surface it generalizes (an extruded metric circle must pull back to the metric cylinder's own
+µ̂-form, up to scale), and that the bound tracks a distance that is independently known — against the
+exact cylinder distance, and against exactly-known geometry. Its limit is stated rather than hidden:
+the working ball must avoid the surface's singular locus, so an error comparable to the feature's own
+radius reads `Unresolved`.
+
+**AUTH.1b — frame and profile, on one rule.** The frame is affine — origin plus two independent
+rational spanning vectors — because rational *orthonormal* frames exist only for special normals and
+a picked frame could not otherwise be represented exactly. The frame reports its metric distortion,
+so a caller needing a true metric circle can tell whether it has one. The profile is an `arrange2d`
+region with its existing inside designation: non-convex profiles and holes need **no** decomposition
+and no polygon-CSG layer. The inside predicate is projection-through-the-apex followed by
+point-in-region, both rational hence exact.
+
+The design's §2.3 rule is what has to be demonstrated, not just implemented: a point's frame
+coordinates are a rational quotient, so every wall is a 2-D carrier equation with that quotient
+substituted and the denominator cleared. Three consequences are each a test rather than a claim —
+a wall is read off its edge's **carrier**, so a profile arc's algebraic endpoints never enter; a
+circle needs only **`r²`**, never the irrational `r`, so an arc can come straight from `arrange2d`;
+and each wall **mirrors its own carrier's sign**, leaving the fill rule with the region. The last of
+these is what makes the non-convex-with-holes claim testable: the boundary view and the predicate
+view must agree at every interior and exterior sample of a convex profile, and the predicate view
+alone must decide a non-convex one. Undecidable queries — no projection, or a row exact ray-casting
+excludes — are `None`, never a guess.
+
+**AUTH.1c — ray-pick frames are certified by backward error.** A ray meeting a rational developable
+solves a polynomial, so the hit is algebraic; carrying it as such would push `AlgReal` into every
+downstream cut. The hit-finding is therefore a **search**, and the frame it produces carries a
+certificate rather than trust — the same split MAP.1 installed in `fold`, and testable the same way:
+**the certificate must hold under a deliberately degraded searcher**, which means not a fixed
+threshold but the sharp statement that the DRC tracks the reported ε at *every* damage level (a
+perturbation small enough to stay inside the clearance should still certify, and does).
+
+Two things the criterion has to be stated carefully about. The frame is **exact** — chart fields at a
+rational σ are exact rational vectors, so the origin is *on* the surface and the axes *are* the local
+ruling and normal; only σ is approximate, which is why one residual suffices. And that residual must
+be **point-to-point, not point-to-line**: the distance to the ray's line is blind to the sign of the
+ray parameter `t`, and `t` is what the span orders hits by. A test that only checks the line distance
+certifies a sign-flipped solve.
+
+The pick's ε covers **geometry, not ordinal**. A root scan can step over a double root or two roots
+in one cell, and no backward error detects a miscount — so an ordinal claim needs a root **count**,
+which is AUTH.1d's problem, not this one's.
+
+**AUTH.1d — the span, and the criterion that distinguishes it from a layer index.** `ToNext |
+NextN(k) | Through | Range(start..=end)` over the neutral surfaces the reference ray meets, ordered
+by ray parameter. **The named test:** on the self-lapping cone, a ray through the lap meets the same
+chart twice, so `ToNext` cuts the flap only while `NextN(2)` and `Through` cut flap **and** body. No
+new fixture — the geometry is already certified, so the test measures span semantics rather than
+re-testing the device. A ray that misses, or grazes within tolerance, is `Unresolved`/`Refuted`.
+
+The unit of counting is a **region**, not a chart, and the test has to show why: taken bare, the wrap
+chart sends two σ to the *same* 3-D point at the lap, and only the per-region support separates them.
+The named test must therefore pin three things a weaker one would miss — that both crossings come
+from **one** chart distinguished only by support law; that the ordering is by **ray parameter**, which
+on this device is the *reverse* of the σ order, so an ordinal read off σ inverts the lap; and that the
+far wall the same *line* meets at `t < 0` is not counted.
+
+An ordinal needs a **certified count**, which is what §9.1 left open: roots isolated by a Sturm chain
+whose hypothesis is checked at runtime, tangency refused exactly (`gcd(g, g′)` of positive degree),
+and crossings closer than the clearance refused as unorderable — with the gap reported so a caller
+can see what clearance the geometry would need. The scan-based searcher remains a valid second
+opinion on the *values* and is tested against the Sturm one differentially; it is only the
+*completeness* claim it cannot make.
+
+**AUTH.1e — no special case survives the generalization.** `Cutter::surface() -> CutSurface` cannot
+represent a multi-wall cutter and is replaced; the `Subtract`+`Cutter::Cylinder` station-sampling
+special case in `resolve.rs` becomes "the σ-windows where any wall is active" — otherwise an extruded
+cutter gets no targeted stations and drops small features between cells. Existing `HalfSpace` and
+`Cylinder` cutters keep working, with their pinned ε and chord goldens unchanged.
+
+**Split the refactor from the capability, and gate them differently.** The µ̂-`Shadow` has to become a
+union before an extruded cutter can have one, and that step should land alone with the strongest gate
+available: the whole suite green with every pinned ε, chord golden **and work budget** unchanged. The
+work-budget tests assert counted work, so their passing is evidence nothing *moved*, not merely that
+nothing broke. Only then is the capability safe to layer on.
+
+**The generalization must key off the right property.** Both station sites matched on the *cutter
+variant*; windowing is a property of the **wall** (`a ≢ 0` ⟹ real only between tangent rulings). Test
+that the new criterion reproduces the old behaviour by construction rather than by observation.
+
+**Unit tests of the new function are not enough, and here is the evidence.** The shadow's own tests
+passed before and after a defect that made an extruded disc derive **two** interior holes where the
+cylinder it equals derives one — a duplicated wall, because `arrange2d` edges are decomposed pieces
+and several share one carrier. What found it was an **end-to-end differential**: author the same
+solid two ways, resolve both, compare roles/holes/kept-side. A slice claiming "wired into `Part`"
+needs a test that goes through `Part`.
+
+The membership sampling deserves its own case. Between consecutive wall crossings membership is
+constant, which is what makes one midpoint sample exact — but only while the sample stays inside its
+stretch, so the genericity nudge must be scaled to the **stretch**, not to the profile. The test is a
+lobe two orders of magnitude thinner than its neighbour, measured at its true width.
+
+**AUTH.1f — the demo cuts something real.** A drafted cut authored on a rational frame, taken
+through develop → STEP: per-stage `Verified`, the emitted geometry checked **faithful to the
+authored profile** (not merely certificate-green), and the full gate. vv-matrix rows go ✅ and
+`[AUTH.1]` joins the landed set in `cargo xtask lint`.
+
+**Why "faithful" cannot be an ε assertion here, stated as a criterion.** `ε` is the max over
+pipeline stages, and on this device the panel boundary dominates it — so a drafted hole and an
+undrafted one certify at *the same* `ε`. Any test asserting only `Verified`, or only an ε bound,
+passes on a cutter that ignores its apex entirely. The faithfulness check must therefore measure
+**geometry**: the developed hole's size against the taper law the cast point implies
+(`1 − z/z_apex`), and a parallel sweep against the metric cylinder it reproduces. Measure through the
+quarantined exact→`f64` bridge, never a hand-rolled conversion — that returns NaN on large rationals
+and `min`/`max` swallow it, turning a real measurement into a silent "could not measure".
+
+**The demo is a gate on the composition, and it earns that place.** Two defects reached it through
+six commits of unit and integration tests, both invisible to every layer test because they lived in
+the *composition*: a duplicated wall (edges are not carriers) and a polygonal slot deriving
+`Inactive` — a green certificate on a cut that did nothing, because affine-walled cutters received no
+targeted stations. A milestone whose slices are each tested in isolation still needs the end-to-end
+run before it can be called done.
+
+**AUTH.1e.4 — the multi-wall hole loop.** A profile with several carriers realizes end-to-end, and a
+footprint the band representation cannot express is refused **by name**. The criteria:
+
+*A two-sided differential, not a golden.* A square prism's hole must contain the hole of the
+cylinder inscribed in it and sit inside the one circumscribing it — `disc(h) ⊂ square(h) ⊂ disc(h√2)`
+as solids, hence for the developed holes, hence for their widths. Both bounds come from the metric
+cylinder path, which shares no line of code with the wall-crossing band builder. Asserted twice: on
+the emitted `(σ, µ̂)` loop in `develop` (measured 0.2364 / 0.2342 / 0.2323 against inner 0.1615 /
+0.2303 / 0.1639 and outer 0.2841 / 0.3257 / 0.2800 — a 1.7% squeeze at the middle ruling), and
+end-to-end on the developed pattern in `author`.
+
+*The loop must be seen to use several walls.* AUTH.1e.2's failure mode was following one wall
+silently, so a size check alone is not enough: every emitted vertex is tested against all four
+planes and must sit on one of them, and the vertices between them must use at least three. A loop
+that had quietly stayed on `walls[0]` passes the ε gate and fails this.
+
+*The scope refusal is a test, not a comment.* A ring profile must come back
+`PartFault::ProfileNotSimple`, and the point of asserting it is that it used to fail closed by
+*accident* — on a window search declining a shape it could not read. An accidental refusal is one
+refactor away from becoming an accidental acceptance.
+
+*The end-to-end run is where the derived quantities get read.* AUTH.1e.4 found that
+`Extrusion::extent` — AUTH.1f's own code, feeding both the hole's σ-window and the span's reference
+ray — bracketed segment endpoints with an upper bound on *both* sides, producing a box of zero
+height that contained none of the profile. Two slices of tests passed over it because none read the
+box quantitatively: the disc path never builds one from a `Surd`, and the polygonal-slot test only
+asked that the role was not `Inactive`. The criterion: a derived quantity is unverified until some
+test asserts its **value**, not merely that the pipeline it feeds returns a verdict.
+
+*Soundness may not rest on a search.* The corner bisection is a tightness device; what keeps the
+loop honest is that each piece is also compared, at its own σ-midpoint, against the boundary the
+exact fill rule reports there, with the deviation folded into ε. State it as a criterion because the
+failure it guards is invisible to the per-piece certificate: a chord that stays on wall A across a
+missed corner certifies perfectly while the true boundary dips onto wall B beneath it.
+
+*Nor may a **window derivation** rest on a scan, and the difference is absolute versus relative.* The
+resolver read a cutter's σ-windows from a fixed 256-subdivision sign scan of the whole band, so a
+window narrower than one cell had both its roots in that cell and the op resolved `Inactive` (#268) —
+the same fail-open verdict as above, reached arithmetically rather than structurally: the two discs
+that separate the cases have the **same radius**. Where the window is not known in advance, isolate:
+`tangent_events` brackets every root exactly, and a window read as the *gap between two brackets* is
+proved root-free, so one midpoint evaluation decides it. A scan whose interval is derived from the
+window it seeks (`surface_tangents`, padded by a sixteenth of the window's own width) is a different
+thing and stays. Two criteria come out of this. **Pin such a fix with a differential, not a verdict**
+— development is an isometry, so a disc of a given radius cuts the same *area* wherever it sits, and
+the narrow-window drill must develop to the wide one's hole; asserting only `Hole` would pass on any
+hole at all. And **the deferral's cost is itself a measurement**: this one was deferred for a blast
+radius across every pinned ε, golden and work counter, and re-measuring found all of them
+bit-identical, because the cases a sampling assumption got right are the ones a sound method
+reproduces. Record the comparison rather than the expectation.
+
+### AUTH.2 acceptance criteria (the general non-convex footprint — the tracer)
+
+Lifts 1e.4's band restriction for footprints that are **non-convex but connected** (L-slot, T-slot,
+keyhole, dogbone). Design in `docs/cutter-extrude-design.md` §11. Scoped by measurement rather than
+by assumption, which is the first criterion:
+
+*Scout before sizing, and let a control tell you when you are measuring the wrong thing.* The
+milestone was filed as "holes must become regions end to end, through the flat boolean and into the
+B-rep builder". Authoring a non-convex `(σ, µ̂)` loop directly (`Part::hole_domain`) showed the flat
+path and the within-slice solid path are **already general**, and that the only downstream gap is a
+loop crossing a σ-station. Both measurements are pinned as tests in `author/tests/fold_part.rs` — one
+that must stay green through the milestone, one that is *expected to flip* when 2e lands. Method
+note worth keeping: the first three scout runs refused with `TopologyMismatch`, which looks exactly
+like the thing being tested, and it took a convex control at the same coordinates to show it was
+placement (the slot sat on the panel's own drill, then on its inner boundary).
+
+*The event set is exact, and its arithmetic is checked against an independent computation — at every
+degree, including the degenerate ones.* The tracer's σ-partition comes from three polynomial
+families: `disc_µ̂(f_i)`, `Res_µ̂(f_i,f_j)`, and `a_i(σ)` (§11.2). The resultant is checked two ways,
+because a wrong one produces a *plausible* partition rather than an obvious failure: against a full
+4×4 Sylvester determinant where both forms are genuinely quadratic, and — at every degree — against
+the property that actually matters, vanishing exactly when the two walls cross the ruling at a common
+µ̂.
+
+The second check is not ceremony. The published quadratic-by-quadratic closed form is the Sylvester
+determinant of the two forms *padded to degree 2*, and with **both** walls affine it is identically
+zero, for meeting and non-meeting walls alike. Every wall of a polygonal profile is affine, so
+using it throughout would have silently erased every corner of the L-slot the milestone is for —
+while still passing a differential built only from quadratics. The criterion generalizes: **when a
+formula has degenerate cases, the test set must contain the case the feature is for**, not just the
+generic one.
+
+*The exact events buy tightness, not soundness — demonstrated, not asserted.* The design doc's
+§10.3 discipline carries over unchanged: every piece is compared at its own σ-midpoint against the
+boundary the fill rule reports there. The criterion is a test that **perturbs the event set** and
+shows ε degrading into `Unresolved` while the geometry stays honest. Without it, "the search is not
+load-bearing" is a claim about code that nothing checks.
+
+*A traced loop must be seen to be non-convex.* The 1e.4 lesson, one level up: a size or ε check
+passes on a hole that was silently convexified. The emitted loop must turn **both ways** (a reflex
+corner in the developed pattern), and in the solid it must contribute one wall per edge — the same
+check that catches a loop quietly collapsed to its bounding band. Already asserted, with both
+assertions mutation-verified, on the pinned pre-state. The traced L adds the sharper form: at a
+ruling through the notch its loop is met **four** times, which is precisely what a near/far rail
+pair has no way to carry.
+
+*A differential's tolerance may not be derived from the quantity under test.* The tracer is checked
+against the band builder on the band's own fixture, and the first version of that check compared the
+two loops to within `band.eps + traced.eps` — which grows exactly when the tracer gets worse. It
+passed a mutation that made the tracer's ε **8× worse**, silently. The tolerance is now a fixed
+multiple of the *band's* bound alone, and the mutation fails it. State it as a criterion because the
+vacuous version looks more rigorous than the sound one: it cites both certificates instead of one.
+
+*A fixture must produce the phenomenon, not merely resemble it.* The L-slot fixture went through
+two false negatives that read as tracer failures: an L whose arms lie along this cone's radial
+rulings has a perfectly ordinary **band** footprint, and even once rotated, the reflex corner
+visible in its flat pattern proves nothing (a band can be a non-convex region). The property under
+test is a ruling meeting the cutter twice, and the fixture has to be checked against *that* — here
+by the ruling at the crossed station being cut **four** times in the emitted solid — two intervals,
+which no band makes. A test whose fixture does not exhibit the phenomenon passes for the wrong
+reason and hides the capability it claims to prove.
+
+*Lifting a restriction means auditing what the old special case **supplied**, not only what it
+required.* The trim builder skips the wall on a radial at an interior σ-station, because two slices
+share that cross-ring — true for as long as every hole was a `HoleRail`, whose branches are
+continuous in σ. A polygon hole with a `σ = const` edge on a station breaks it: the two lids keep
+different material there, and skipping the step left four free edges under a `Verified` verdict. The
+criterion has two halves. First, the *shell* property is asserted directly on the emitted B-rep
+(`free_edges == 0`, `nonmanifold_edges == 0`, genus) rather than inferred from a verdict — the
+verdict is about the certificates upstream and says nothing about how the shell was sewn. Second,
+the fixture must put the hole's step **on** a station, because that is where an authored corner
+tends to fall and where the two paths disagree. The mirror-image error is worth stating too: a
+refusal added for a combination one believes unrepresentable encodes a belief about the data, and
+"a rail branch is not a polygon operand" was false for every hole the kernel emits — the band is a
+polyline, so both channels share a slice by conversion rather than by refusal.
+
+*AUTH.2f — the acceptance demo measures the phenomenon, not its consequences.* The milestone's
+claim is that a footprint no band can express goes through the whole pipeline, and the criteria are
+what make that claim checkable on the artifact rather than on the verdicts.
+
+The **ruling-crossing signature is readable off the flat pattern**, and that is the criterion worth
+stating generally: development is an isometry sending each ruling to a ray from the flat apex, so
+"a ruling meets the cutter twice" is "a ray meets the developed hole in two intervals". Four
+crossings. Every band gives two, however non-convex its planar shape — so the metric probes are
+measured alongside and must give two, which is what turns the four into a signature rather than a
+number. Without it the demo asserts only what a within-slice band-shaped hole also satisfies.
+
+*A two-sided differential needs a third clause once the footprint is non-convex.* 1e.4's
+`disc ⊂ square ⊂ disc√2` transfers — the slot contains a disc inscribed in one arm and lies within
+one circumscribing it — but **both containments are satisfied by a slot convexified to its bounding
+band**, which is precisely the failure mode. The third probe sits in the notch the slot does not
+cover and must be **disjoint** from it. State the containment test too: non-crossing plus one
+interior point, never a vertex sample, because a vertex test passes on a ring that pokes out between
+two of its own vertices.
+
+*When the claim is about which branch ran, the artifact is the wrong place to look.* A hole that
+crossed a σ-station and one that sat inside a slice certify alike and build alike; nothing in the
+emitted solid distinguishes them. The criterion is therefore a **counter**, not an assertion:
+`develop::counters::poly_slice_clips` witnesses the general channel running on more than one slice,
+with the un-slotted control asserted at zero so the counter is known to be measuring the slot. A
+milestone slice that cannot be seen in the output has to be made countable or it is on the demo's
+critical path only by assertion.
+
+*The round-trip is checked against the input's own source, not against itself.* Direction ② folds
+the flat pattern's emitted vertices back and measures the distance to the **authored profile's
+boundary** — a quantity neither leg computes. A round-trip compared against its own input is
+satisfied by both legs sharing a mistake.
+
+*The exact tier and the export tier have different minimum feature sizes, and the seam is where the
+demo failed.* Every certificate was `Verified` and the STEP write refused the shell: the tracer
+samples one grid step (`2⁻³⁰`) inside each cell end to keep pinches tight, and those vertices become
+edges whose 3-D span is an order **below** OCCT's `10⁻⁷` vertex tolerance, so the edge's own curve
+reads as closed while its two vertices are distinct. Measured on the L-slot: 220 shell vertices at
+145 distinct positions, 76 sub-tolerance Bézier edges. The criterion has two halves. First, an
+export profile needs a **declared minimum step** enforced where geometry is handed to it
+(`hole_poly`, the station partition), not a hope that the exact tier never emits anything smaller.
+Second — and this is why it belongs in the acceptance criteria rather than the design notes — *the
+verdict does not cover the exporter*: `Verified` is about the rails, and an artifact that no
+downstream consumer can read is a failed demo whatever the certificate says. A demo that does not
+run the exporter cannot discover this.
+
+There is a third half, learned from the four edges that survived the first fix: **a minimum step
+enforced within one structure does not reconcile it with another**. `hole_poly` compares a loop's
+vertices with each other and `thin_stations` compares stations with each other, but the loop and the
+partition are derived independently — the tracer from the cut's own event set, the stations from the
+surface's positive-weight bisection — and their *disagreement* was under nobody's tolerance. Where
+two such structures meet, the criterion is that one of them yields, and which one is not arbitrary:
+the station carries validity the exported patches depend on and is shared by every other hole, while
+the polygon is already declared to be the loop only to within the step, so the **vertex** moves. The
+check that makes this testable is an equality, not a bound — a feature authored a grid step off a
+station must build what the same feature authored **on** it builds, vertex for vertex — and the
+number to report is the **shortest emitted edge**, which is what the consumer actually decides on
+and what no verdict states (`acceptance::measure::shortest_edge`, against `CAD_VERTEX_TOL`).
+
+*The ring stays refused, and for its own reason.* A footprint with its own hole is not a
+representational shortfall — an annular through-cut leaves a disc of material floating, which is two
+parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.8).
+
 ---
 
 ## 9. Sequencing

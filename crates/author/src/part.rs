@@ -38,12 +38,15 @@ use crate::resolve;
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
 use develop::cut::CutSurface;
+use develop::extrude::{Apex, Cast, ExtrudeFault, Frame};
 use develop::fold::{FoldFault, FoldedWire, fold_outline_pw};
 use develop::part::PiecewiseDevelopment;
+use develop::pick::{Ray, Span};
 use develop::unroll::FlatOutline;
 use export::trim::RailFit;
 use geom::chart::Chart;
-use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc};
+use geom::content::{Circle, Edge};
+use lattice::{Backend, Bignum, Interval, Poly, Rat, RatFunc, Surd};
 
 /// The σ-bisection depth of the facade's fold evaluators (`(4/7)⁶⁰ ≈ 3·10⁻¹⁵` of the piece
 /// width — well under any fab-plausible ε floor; the enclosure budget is [`Part::budget`]).
@@ -86,6 +89,214 @@ pub enum Cutter<B: Backend = Bignum> {
         /// The squared radius `R²` (positive).
         r2: Rat<B>,
     },
+    /// A **sketch swept from an apex**: a profile region drawn in a rational frame and extruded,
+    /// parallel or drafted (`docs/cutter-extrude-design.md`). Boxed because it is much the largest
+    /// variant and the two metric cutters are what the existing pipelines pass around.
+    Extrude(Box<Extrusion<B>>),
+}
+
+/// The authored data of an extruded cutter, kept exactly as drawn.
+///
+/// Validation is deliberately **not** here: a `Part` records intent, and the frame/apex pair is
+/// checked when the part is built (an apex in the frame plane becomes a
+/// [`PartFault`](crate::part::PartFault), never a panic at authoring time).
+pub struct Extrusion<B: Backend = Bignum> {
+    /// The plane the profile is drawn in.
+    pub frame: Frame<B>,
+    /// The sweep's apex — a direction (parallel) or a cast point (drafted).
+    pub apex: Apex<B>,
+    /// The profile's boundary in frame coordinates, as `arrange2d` edges: non-convex profiles and
+    /// holes need no decomposition, because the fill rule stays with the region.
+    pub profile: Vec<Edge<B>>,
+    /// How deep the cut reaches, counted in neutral surfaces along the reference ray.
+    pub span: Span,
+}
+
+/// A rational **upper** bound on `√r2`, by three Newton steps from `1`. Newton on `t ↦ (t + r2/t)/2`
+/// approaches the root from above after the first step, so the result brackets the true radius
+/// without ever taking one — which is what lets a profile extent be computed over `r²` alone.
+fn rational_sqrt_above<B: Backend>(r2: &Rat<B>) -> Rat<B> {
+    let two = Rat::from_i128(2);
+    let mut t = Rat::from_i128(1);
+    for _ in 0..3 {
+        if t.sign() <= 0 {
+            return Rat::from_i128(1);
+        }
+        t = t.add(&r2.div(&t)).div(&two);
+    }
+    t
+}
+
+/// The profile's extent in frame coordinates: `(lo_a, lo_b, hi_a, hi_b)`.
+type Extent<B> = (Rat<B>, Rat<B>, Rat<B>, Rat<B>);
+
+/// A **tight** rational bracket `lo ≤ s < hi` around a possibly-algebraic coordinate.
+///
+/// `rational_below`/`rational_above` bracket by *doubling from zero*, so on their own they answer
+/// at integer scale — `1/5` brackets to `[0, 1]` and `2` to `[0, 3]`. That is a correct bracket and
+/// a useless box: for a profile a fraction of a unit across, the derived bounding circle comes out
+/// an order of magnitude too big. Bisecting brings both ends within `2⁻⁴⁸` of the true value while
+/// keeping the containment invariant (`lo` only ever moves to a value `≤ s`, `hi` to one `> s`).
+fn bracket<B: Backend>(s: &Surd<B>) -> (Rat<B>, Rat<B>) {
+    use core::cmp::Ordering;
+    let (mut lo, mut hi) = (
+        arrange2d::locate::rational_below(s),
+        arrange2d::locate::rational_above(s),
+    );
+    for _ in 0..48 {
+        let m = lo.add(&hi).mul(&Rat::new(1, 2));
+        if s.cmp(&Surd::from_rat(m.clone())) == Ordering::Less {
+            hi = m;
+        } else {
+            lo = m;
+        }
+    }
+    (lo, hi)
+}
+
+impl<B: Backend> Extrusion<B> {
+    /// A rectangle containing the whole profile, in frame coordinates.
+    ///
+    /// A segment endpoint may be algebraic (`Surd`, after a boolean), so it is [`bracket`]ed rather
+    /// than used exactly — an extent only has to *contain*. Both ends of the bracket are needed:
+    /// taking `rational_above` for the low side too was AUTH.1f's own bug, and it did not merely
+    /// inflate the box, it **collapsed** it — a square with horizontal edges at `b = 2` and
+    /// `b = 12/5` came out with `lo_b = hi_b = 3`, a box the profile is nowhere inside.
+    pub(crate) fn extent(&self) -> Option<Extent<B>> {
+        let mut bbox: Option<Extent<B>> = None;
+        let mut grow = |lo_x: Rat<B>, lo_y: Rat<B>, hi_x: Rat<B>, hi_y: Rat<B>| {
+            let least = |p: Rat<B>, q: Rat<B>| {
+                if p.cmp(&q) == core::cmp::Ordering::Less {
+                    p
+                } else {
+                    q
+                }
+            };
+            let most = |p: Rat<B>, q: Rat<B>| {
+                if p.cmp(&q) == core::cmp::Ordering::Greater {
+                    p
+                } else {
+                    q
+                }
+            };
+            bbox = Some(match bbox.take() {
+                None => (lo_x, lo_y, hi_x, hi_y),
+                Some((a, b, c, d)) => {
+                    (least(lo_x, a), least(lo_y, b), most(hi_x, c), most(hi_y, d))
+                }
+            });
+        };
+        for e in &self.profile {
+            match e {
+                Edge::Arc(a) => {
+                    let r = rational_sqrt_above(&a.circle.r2);
+                    grow(
+                        a.circle.cx.sub(&r),
+                        a.circle.cy.sub(&r),
+                        a.circle.cx.add(&r),
+                        a.circle.cy.add(&r),
+                    );
+                }
+                Edge::Seg(sg) => {
+                    for p in [&sg.start, &sg.end] {
+                        let (lo_x, hi_x) = bracket(&p.x);
+                        let (lo_y, hi_y) = bracket(&p.y);
+                        grow(lo_x, lo_y, hi_x, hi_y);
+                    }
+                }
+            }
+        }
+        bbox
+    }
+}
+
+impl<B: Backend> Extrusion<B> {
+    /// The projection this extrusion works through, or the fault its authoring carries.
+    pub(crate) fn cast(&self) -> Result<Cast<B>, ExtrudeFault> {
+        Cast::new(self.frame.clone(), self.apex.clone())
+    }
+
+    /// A point **inside the profile**, in frame coordinates — the "designated profile point" the
+    /// span's reference ray runs through (`docs/cutter-extrude-design.md` §5).
+    ///
+    /// Derived rather than authored, and **searched** rather than computed: a grid over the
+    /// profile's own extent, returning the first point its fill rule accepts. `None` if none is
+    /// accepted, which a caller turns into a refusal — a span with no interior point to measure
+    /// from is not a span.
+    ///
+    /// Two candidates that look obvious are deliberately not tried first. The **frame origin** need
+    /// not lie in the profile at all, and on a cone-charted part it is typically the apex, where the
+    /// reference ray runs along a ruling and the cast is rightly refused as ungrounded. A circle's
+    /// **centre** is worse than useless: it sits exactly on the row that exact ray-casting excludes
+    /// (`arrange2d::locate`'s genericity precondition), so the fill rule cannot answer there at all.
+    /// The grid's odd-fraction offsets keep samples off those rows.
+    pub(crate) fn reference_point(&self) -> Option<(Rat<B>, Rat<B>)> {
+        let cast = self.cast().ok()?;
+        let (lo_x, lo_y, hi_x, hi_y) = self.extent()?;
+        // **Even** on purpose. The samples sit at `lo + (2j+1)·w/(2K)`, and with an odd `K` the
+        // middle one lands exactly on the extent's centre — which for a disc is the circle's own
+        // centre row, the one row exact ray-casting excludes. An even `K` can never produce it,
+        // since `2j+1` is odd.
+        const K: i128 = 10;
+        let (wx, wy) = (hi_x.sub(&lo_x), hi_y.sub(&lo_y));
+        for i in 0..K {
+            for j in 0..K {
+                let a = lo_x.add(&wx.mul(&Rat::new(2 * i + 1, 2 * K)));
+                let b = lo_y.add(&wy.mul(&Rat::new(2 * j + 1, 2 * K)));
+                if cast.contains(&self.frame.point(&a, &b), &self.profile) == Some(true) {
+                    return Some((a, b));
+                }
+            }
+        }
+        None
+    }
+
+    /// A single wall whose σ-window **contains** the whole profile's: the wall of the profile's
+    /// bounding circle, cast the same way.
+    ///
+    /// Station targeting needs the σ-range where a cutter is active, and for a quadric wall that is
+    /// its tangent-ruling window. A profile of straight edges has **no** such window — every wall is
+    /// affine — so a polygonal slot would receive no targeted stations and be dropped between sample
+    /// cells, which is exactly the failure `docs/cutter-extrude-design.md` §6 predicted. Bounding the
+    /// profile by a circle restores one window for the whole cutter, and a *superset* is the right
+    /// error: extra stations sample where the cut is absent and cost nothing, whereas a missing one
+    /// loses the feature silently.
+    pub(crate) fn bounding_wall(&self) -> Option<CutSurface<B>> {
+        let cast = self.cast().ok()?;
+        let (lo_a, lo_b, hi_a, hi_b) = self.extent()?;
+        let (cx, cy) = (
+            lo_a.add(&hi_a).mul(&Rat::new(1, 2)),
+            lo_b.add(&hi_b).mul(&Rat::new(1, 2)),
+        );
+        // The circumscribing radius², from the half-diagonal.
+        let (wa, wb) = (
+            hi_a.sub(&lo_a).mul(&Rat::new(1, 2)),
+            hi_b.sub(&lo_b).mul(&Rat::new(1, 2)),
+        );
+        let r2 = wa.mul(&wa).add(&wb.mul(&wb));
+        if r2.sign() <= 0 {
+            return None;
+        }
+        cast.circle_wall(&Circle { cx, cy, r2 }).ok()
+    }
+
+    /// The **reference ray** the span counts along: the generatrix through
+    /// [`reference_point`](Self::reference_point). For a direction apex that point cast along the
+    /// direction; for a cast point, the ray from the apex through it.
+    pub(crate) fn reference_ray(&self) -> Option<Ray<B>> {
+        let (a, b) = self.reference_point()?;
+        let p = self.frame.point(&a, &b);
+        Some(match self.apex.finite() {
+            Some(x) => Ray {
+                origin: [x[0].clone(), x[1].clone(), x[2].clone()],
+                dir: [p[0].sub(&x[0]), p[1].sub(&x[1]), p[2].sub(&x[2])],
+            },
+            None => Ray {
+                origin: p,
+                dir: self.apex.a().clone(),
+            },
+        })
+    }
 }
 
 impl<B: Backend> Cutter<B> {
@@ -103,6 +314,28 @@ impl<B: Backend> Cutter<B> {
         }
     }
 
+    /// A profile drawn in `frame` and swept from `apex`, cutting **every** surface it reaches.
+    ///
+    /// The profile is an `arrange2d` boundary in frame coordinates; its own even-odd fill decides
+    /// what is inside, so a non-convex outline or one with holes needs no decomposition.
+    pub fn extrude(frame: Frame<B>, apex: Apex<B>, profile: Vec<Edge<B>>) -> Self {
+        Self::extrude_span(frame, apex, profile, Span::Through)
+    }
+
+    /// The same, reaching only as deep as `span` counts along the reference ray.
+    ///
+    /// The span counts **neutral surfaces** — chart embeddings — because cuts are authored before
+    /// any stackup exists, so there are no layers or faces to count yet. See
+    /// [`Extrusion::reference_ray`] for the ray it is measured along.
+    pub fn extrude_span(frame: Frame<B>, apex: Apex<B>, profile: Vec<Edge<B>>, span: Span) -> Self {
+        Cutter::Extrude(Box::new(Extrusion {
+            frame,
+            apex,
+            profile,
+            span,
+        }))
+    }
+
     /// The vertical (z-axis-parallel) cylinder over the xy-disk `(cx, cy, r²)` — the flex-PCB
     /// trim idiom (disks drawn in the physical xy-plane).
     pub fn vertical_cylinder(cx: Rat<B>, cy: Rat<B>, r2: Rat<B>) -> Self {
@@ -113,8 +346,25 @@ impl<B: Backend> Cutter<B> {
         }
     }
 
-    /// The cutter's boundary as the engine's [`CutSurface`] (the realization currency).
-    pub(crate) fn surface(&self) -> CutSurface<B> {
+    /// The cutter's boundary as the engine's [`CutSurface`]s — **one per wall**, in a fixed order
+    /// a [`Label`](crate::resolve::Label) can index into.
+    ///
+    /// This replaced a `surface() -> CutSurface`, which could not describe a cutter whose boundary
+    /// is several surfaces. The two metric cutters return exactly one wall, so every existing
+    /// caller reads `walls()[0]` and nothing about them changed.
+    pub(crate) fn walls(&self) -> Result<Vec<CutSurface<B>>, ExtrudeFault> {
+        if let Cutter::Extrude(e) = self {
+            let cast = e.cast()?;
+            // Distinct carriers, not edges: a disc arrives as two arcs of one circle, and a
+            // duplicated wall is counted twice by everything downstream that counts walls.
+            return cast.carrier_walls(&e.profile);
+        }
+        Ok(vec![self.metric_surface()])
+    }
+
+    /// The single boundary surface of a metric cutter. Panics for an extrusion, which has no
+    /// single surface — callers go through [`walls`](Self::walls).
+    fn metric_surface(&self) -> CutSurface<B> {
         match self {
             Cutter::HalfSpace { n, d } => CutSurface::Plane {
                 n: [n[0].clone(), n[1].clone(), n[2].clone()],
@@ -136,6 +386,12 @@ impl<B: Backend> Cutter<B> {
                     axis_dir[2].clone(),
                 ],
                 r2: r2.clone(),
+            },
+            // Unreachable: `walls` routes extrusions before this is called. Typed rather than
+            // panicking, so a future variant cannot silently take a wrong surface.
+            Cutter::Extrude(_) => CutSurface::Plane {
+                n: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(0)],
+                d: Rat::from_i128(0),
             },
         }
     }
@@ -268,6 +524,15 @@ pub enum PartFault {
     /// A hole op's σ-extent crosses a region join (not yet realizable — split the hole or move
     /// the join).
     HoleCrossesRegions {
+        /// The offending op.
+        op: usize,
+    },
+    /// This op's cutter meets some ruling in **more than one stretch** — an extruded profile that
+    /// is non-convex, or that has a hole of its own. An interior hole is realized as a *band* (one
+    /// lower boundary, one upper), which cannot express that footprint, so the cut is refused
+    /// rather than approximated by one of its stretches. Author the feature as several convex
+    /// cuts, or wait for holes to be regions end-to-end (`docs/cutter-extrude-design.md` §10.1).
+    ProfileNotSimple {
         /// The offending op.
         op: usize,
     },
@@ -713,8 +978,8 @@ pub struct ResolveReport<B: Backend = Bignum> {
     /// Per region: the requested azimuth degrees (if authored that way) and the exact snapped
     /// σ-band actually recorded.
     pub regions: Vec<RegionEcho<B>>,
-    /// Per op: the derived role.
-    pub ops: Vec<OpReport>,
+    /// Per op: the derived role, and what its own cut certified to.
+    pub ops: Vec<OpReport<B>>,
 }
 
 /// One region's echo.
@@ -726,11 +991,26 @@ pub struct RegionEcho<B: Backend = Bignum> {
 }
 
 /// One op's derived resolution.
-pub struct OpReport {
+pub struct OpReport<B: Backend = Bignum> {
     /// Whether the op subtracts (else intersects).
     pub subtract: bool,
     /// The derived role.
     pub role: OpRole,
+    /// For a [`Hole`](OpRole::Hole): the certified `sup dist(emitted loop, {F = 0})` of **this
+    /// op's own cut** — the largest over its loops, `None` for every other role.
+    ///
+    /// This is the number the milestone's soundness argument turns on and the one `eps()` hides.
+    /// `eps()` is the max over every stage and the panel boundary usually dominates it, so a cut
+    /// that certified loosely and one that certified perfectly report the same part-level ε. The
+    /// per-piece bound folds in the σ-midpoint comparison against the fill rule's own boundary
+    /// (`docs/cutter-extrude-design.md` §11.5), which is what makes a stepped-over event a loose
+    /// bound rather than a wrong hole — so reading it is how one sees that the search is buying
+    /// tightness and not soundness.
+    pub cut_eps: Option<Rat<B>>,
+    /// For a [`Hole`](OpRole::Hole): the widest µ̂ gap closed at a pinch or saddle of this op's
+    /// loops. Included in [`cut_eps`](Self::cut_eps) — a component of the bound, not a residual
+    /// beside it.
+    pub tangent_gap: Option<Rat<B>>,
 }
 
 /// The derived role of one material op (echoed in the report) — the classification the old

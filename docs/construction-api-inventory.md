@@ -1,5 +1,10 @@
 # Construction-API inventory & design sketch
 
+> **HISTORICAL 2026-08-14.** The scouting pass that preceded
+> [`construction-api-design.md`](construction-api-design.md), itself now superseded by
+> [`atlas-transform-design.md`](atlas-transform-design.md). Kept for the extraction map and the
+> ranked ergonomic seams, which record why the facade took the shape it did.
+
 *Scouting pass (task #217), 2026-08-12. Three read-only surveys — demo→engine candidates, the
 current public authoring surface, and a focused V&V gap scan — synthesized here. This is the basis for
 the `Part`/builder API design (#218); the API sketch below is a **proposal pending sign-off**, not settled.*

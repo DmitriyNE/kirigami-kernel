@@ -78,7 +78,7 @@ structure certify1d.ClipSigmaCert (B : Type) (Clause0_Int : Type) (Clause0_Rat
   m_sigma : lattice.rat.Rat B Clause0_Int Clause0_Rat
 
 /-- [certify_core::verdict::Verdict]
-    Source: 'crates/certify-core/src/verdict.rs', lines 13:0-17:1
+    Source: 'crates/certify-core/src/verdict.rs', lines 13:0-21:1
     Visibility: public -/
 @[discriminant isize]
 inductive verdict.Verdict (E : Type) (W : Type) (M : Type) where

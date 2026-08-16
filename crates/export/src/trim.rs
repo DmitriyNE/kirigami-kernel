@@ -43,66 +43,12 @@ fn ruling_xy<B: Backend>(chart: &Chart<B>) -> (RatFunc<B>, RatFunc<B>) {
     )
 }
 
-/// Bisect `f` for a sign change on `[lo, hi]` (needs `f(lo)·f(hi) < 0`), returning a rational in
-/// the final bracket — exact sign evaluation, rational midpoints. `None` if no sign change or a
-/// pole is hit. (Public for the authoring layer's corner refinement — the same primitive
-/// [`outer_loop`] uses to collapse notch corners to clean joins.)
-pub fn bisect_root<B: Backend>(
-    f: &RatFunc<B>,
-    lo: &Rat<B>,
-    hi: &Rat<B>,
-    iters: usize,
-) -> Option<Rat<B>> {
-    let half = Rat::new(1, 2);
-    let mut a = lo.clone();
-    let mut b = hi.clone();
-    let sa = f.eval(&a)?.sign();
-    if sa == 0 {
-        return Some(a);
-    }
-    if f.eval(&b)?.sign() == sa {
-        return None;
-    }
-    for _ in 0..iters {
-        let m = a.add(&b).mul(&half);
-        let sm = f.eval(&m)?.sign();
-        if sm == 0 {
-            return Some(m);
-        }
-        if sm == sa {
-            a = m; // sign at `a` unchanged
-        } else {
-            b = m;
-        }
-    }
-    Some(a.add(&b).mul(&half))
-}
-
-/// All sign-change roots of `f` on `[lo, hi]`, found by scanning `scan` sub-intervals and
-/// bisecting each bracket. `None` if `f` has a pole at a scan node.
-fn scan_roots<B: Backend>(
-    f: &RatFunc<B>,
-    lo: &Rat<B>,
-    hi: &Rat<B>,
-    scan: usize,
-    iters: usize,
-) -> Option<Vec<Rat<B>>> {
-    let n = scan.max(4);
-    let width = hi.sub(lo).div(&Rat::from_i128(n as i128));
-    let mut prev: Option<(Rat<B>, i8)> = None;
-    let mut roots: Vec<Rat<B>> = Vec::new();
-    for k in 0..=n {
-        let x = lo.add(&width.mul(&Rat::from_i128(k as i128)));
-        let s = f.eval(&x)?.sign();
-        if let Some((px, ps)) = &prev {
-            if *ps != 0 && s != 0 && *ps != s {
-                roots.push(bisect_root(f, px, &x, iters)?);
-            }
-        }
-        prev = Some((x, s));
-    }
-    Some(roots)
-}
+// The rational root primitives live in `develop::pcurve` — below this layer, because the p-curve
+// core needs them to locate σ-turning points and station crossings. Re-exported here (rather than
+// kept as a second copy) so the trim layer and the curve core cannot drift apart: the duplicate
+// here silently skipped a root landing *exactly* on a scan node, which symmetric geometry
+// produces routinely.
+pub use develop::pcurve::{bisect_root, scan_roots};
 
 /// The σ where the (exact) D1 rail point enters/exits a cylinder `(cx, cy, r²)` — the roots of
 /// `h(σ) = (μ̂₁·r_x − cx)² + (μ̂₁·r_y − cy)² − r²`, which is exact-rational in σ. Lets the D1∩D3
@@ -134,6 +80,14 @@ fn rail_cylinder_crossings<B: Backend>(
 /// fields (pedal *with* support), so it is correct on offset tails and under wrapping
 /// parametrizations; the apex-ray shortcut it replaces (the A2 finding) silently assumed a cone
 /// through the origin. `None` unless the cutter subtends exactly one clean two-tangent arc.
+///
+/// **The scan is sound here because `span` is derived from the window it is looking for** — its
+/// caller pads a resolved hole window by a sixteenth of its own width, so the two tangents sit
+/// well inside the scanned interval whatever the window's absolute size. A *fixed* subdivision of
+/// a whole σ-band is a different thing and was a fail-open defect (#268): a window narrower than
+/// one cell puts both roots in it, the scan sees no sign change, and the cut is dropped with no
+/// trace anywhere downstream. Where the window is not known in advance, use
+/// [`develop::cut::tangent_events`], which isolates every root exactly instead.
 pub fn surface_tangents<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
@@ -154,7 +108,11 @@ pub fn surface_tangents<B: Backend>(
 /// cylinder along *two* windows, one per sheet of the ruling line; [`surface_tangents`] is the
 /// single-window special case). Consecutive pairs with a positive discriminant between them are
 /// the cutter's real σ-windows. `None` on a pole at a scan node.
-pub fn surface_disc_roots<B: Backend>(
+///
+/// Private, and staying that way: this is a *scan*, sound only where the caller's `span` is
+/// derived from the window it seeks ([`surface_tangents`]). Deriving windows over a whole σ-band
+/// is [`develop::cut::tangent_events`]' job — see #268 for what the difference cost.
+fn surface_disc_roots<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
     span: &Interval<B>,
@@ -190,6 +148,19 @@ fn clone_surface<B: Backend>(s: &CutSurface<B>) -> CutSurface<B> {
             ],
             r2: r2.clone(),
         },
+        CutSurface::Quadric(q) => CutSurface::Quadric(Box::new(develop::cut::Quadric {
+            m: core::array::from_fn(|i| core::array::from_fn(|j| q.m[i][j].clone())),
+            b: [q.b[0].clone(), q.b[1].clone(), q.b[2].clone()],
+            c: q.c.clone(),
+            nappe: develop::cut::Nappe {
+                n: [
+                    q.nappe.n[0].clone(),
+                    q.nappe.n[1].clone(),
+                    q.nappe.n[2].clone(),
+                ],
+                d: q.nappe.d.clone(),
+            },
+        })),
     }
 }
 
@@ -430,9 +401,10 @@ pub struct HoleLoop<B: Backend = Bignum> {
     pub arcs: Vec<BoundaryArc<B>>,
     /// The larger of the two branch rails' certified distance bounds.
     pub eps: Rat<B>,
-    /// The larger tangent micro-cap length (in μ̂ units) — the residual of snapping the algebraic
-    /// tangent σ to a rational just inside the disk. A diagnostic on the fail-closed treatment.
-    pub max_microcap: Rat<B>,
+    /// The residual µ̂ gap where the two branches meet at a tangent ruling — the loop closes to a
+    /// single vertex there, and this is how far that vertex sits from the true tangent point. It
+    /// is included in `eps`, so it is a bound the caller already honours, not a loose diagnostic.
+    pub tangent_gap: Rat<B>,
 }
 
 /// Build the interior-hole boundary loop for the disk `(cx, cy, r²)`: the vertical-cylinder
@@ -444,10 +416,8 @@ pub fn hole_loop<B: Backend>(
     cy: &Rat<B>,
     r2: &Rat<B>,
     span: &Interval<B>,
-    fit: RailFit,
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
-    margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
     let surface = CutSurface::Cylinder {
@@ -455,103 +425,110 @@ pub fn hole_loop<B: Backend>(
         axis_dir: [Rat::from_i128(0), Rat::from_i128(0), Rat::from_i128(1)],
         r2: r2.clone(),
     };
-    surface_hole_loop(chart, &surface, span, fit, clearance, cfg, margin, segments)
+    surface_hole_loop(chart, &surface, span, clearance, cfg, segments)
 }
 
-/// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: its
-/// **near** (Lower) and **far** (Upper) cut branches over the cutter's σ-extent
-/// ([`surface_tangents`]), joined at each tangent ruling by a **micro-cap** — a radial segment
-/// bridging the small μ̂ gap left by snapping the algebraic tangent σ to a rational `margin`
-/// inside the cutter. The inset keeps the polynomial fit clear of the √-branch point *and* makes
-/// the loop chain exactly in `(σ, μ̂)`. Pedal-general (reads the true surface — correct on offset
-/// supports and wrapped charts). Fail-closed: a loose branch fit is `Unresolved`, a degenerate
-/// cut `Refuted`.
+/// Build the interior-hole boundary loop of a **solid quadric cutter** piercing the sheet: the
+/// closed **p-curve loop** through both of the cutter's tangent rulings
+/// ([`develop::cut::quadric_cut_loop`]).
+///
+/// This used to fit the cut's near and far branches as graphs `µ̂ = f(σ)`. A graph cannot reach a
+/// tangent ruling — the cut turns around in σ there — so each branch stopped an inset short and
+/// the leftover gap was bridged by a straight radial chord, which no fit quality could shrink
+/// below ~30% of the hole's height. The loop now walks the branches to where they meet, so
+/// `fit` and `margin` are vestigial (kept for call-site compatibility until PC.6 removes them)
+/// and `tangent_gap` reports the residual gap where the branches meet, which is *inside* `eps` rather than
+/// unaccounted. Pedal-general as before (reads the true surface, so it is correct on offset
+/// supports and wrapped charts); fail-closed on a coarse loop (`Unresolved`) or a degenerate
+/// window (`Refuted`).
 #[allow(clippy::too_many_arguments)]
 pub fn surface_hole_loop<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
     span: &Interval<B>,
-    fit: RailFit,
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
-    margin: &Rat<B>,
     segments: usize,
 ) -> Verdict<HoleLoop<B>, CutFitFault, Rat<B>> {
     let (t_lo, t_hi) = match surface_tangents(chart, surface, span, 256, 60) {
         Some(t) => t,
         None => return Verdict::Unresolved(clearance.clone()),
     };
-    let inset = t_hi.sub(&t_lo).mul(margin);
-    let s1 = t_lo.add(&inset);
-    let s2 = t_hi.sub(&inset);
-    let sub = Interval {
-        lo: s1.clone(),
-        hi: s2.clone(),
-    };
-    let (mu_far, e_far) =
-        match certified_rail_surface(chart, surface, RootPick::Upper, &sub, fit, clearance, cfg) {
-            Verdict::Verified(x) => x,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-            Verdict::Refuted(f) => return Verdict::Refuted(f),
-        };
-    let (mu_near, e_near) =
-        match certified_rail_surface(chart, surface, RootPick::Lower, &sub, fit, clearance, cfg) {
-            Verdict::Verified(x) => x,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
-            Verdict::Refuted(f) => return Verdict::Refuted(f),
-        };
-    let (f1, n1, f2, n2) = match (
-        mu_far.eval(&s1),
-        mu_near.eval(&s1),
-        mu_far.eval(&s2),
-        mu_near.eval(&s2),
+    match develop::cut::quadric_cut_loop(
+        chart,
+        surface,
+        &Interval { lo: t_lo, hi: t_hi },
+        &Rat::from_i128(0),
+        segments.max(8),
+        clearance,
+        cfg,
     ) {
-        (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
-        _ => return Verdict::Refuted(CutFitFault::PoleInEval),
-    };
-    let max_microcap = {
-        let (lo, hi) = (abs_diff(&f1, &n1), abs_diff(&f2, &n2));
-        if lo.cmp(&hi) == core::cmp::Ordering::Less {
-            hi
-        } else {
-            lo
-        }
-    };
-    // far (s1→s2) · micro-cap @ s2 (far→near) · near (s2→s1) · micro-cap @ s1 (near→far).
-    let arcs = vec![
-        BoundaryArc::Rail {
-            mu: mu_far,
-            sigma_start: s1.clone(),
-            sigma_end: s2.clone(),
-            segments,
-        },
-        BoundaryArc::Cap {
-            sigma: s2.clone(),
-            mu_start: f2,
-            mu_end: n2,
-        },
-        BoundaryArc::Rail {
-            mu: mu_near,
-            sigma_start: s2,
-            sigma_end: s1.clone(),
-            segments,
-        },
-        BoundaryArc::Cap {
-            sigma: s1,
-            mu_start: n1,
-            mu_end: f1,
-        },
-    ];
-    let eps = if e_far.cmp(&e_near) == core::cmp::Ordering::Less {
-        e_near
-    } else {
-        e_far
-    };
-    Verdict::Verified(HoleLoop {
-        arcs,
-        eps,
-        max_microcap,
-    })
+        Verdict::Verified(l) => Verdict::Verified(HoleLoop {
+            arcs: l
+                .pieces
+                .into_iter()
+                .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
+                .collect(),
+            eps: l.eps,
+            tangent_gap: l.tangent_gap,
+        }),
+        Verdict::Unresolved(e) => Verdict::Unresolved(e),
+        Verdict::Refuted(f) => Verdict::Refuted(f),
+    }
+}
+
+/// Build the interior-hole boundary **loops** of a cutter bounded by **several walls** — an
+/// extruded polygon, a rounded slot, an L-slot, any multi-carrier outline: the [`surface_hole_loop`]
+/// idiom over [`develop::cut::shadow_cut_loops`] instead of the single-surface `quadric_cut_loop`.
+///
+/// `walls` are the cutter's boundary surfaces and `inside(σ, µ̂)` its fill rule on this chart — the
+/// two-view split of `docs/cutter-extrude-design.md` §2.1. `span` may be a **superset** of the
+/// hole's own σ-extent (that is what station targeting can offer an all-affine profile); the tracer
+/// finds the extent itself, which is why there is no `surface_tangents` pre-pass here.
+///
+/// **One cutter may yield several loops** — a footprint in two pieces is two holes, and the flat
+/// boolean takes them as readily as one. What it may not yield is a loop *inside* another: that is
+/// the ring, refused as `ShadowNested` (§11.6). Fail-closed otherwise exactly as the single-surface
+/// path: a coarse loop is `Unresolved`.
+#[allow(clippy::too_many_arguments)]
+pub fn shadow_hole_loops<B: Backend, F>(
+    chart: &Chart<B>,
+    walls: &[CutSurface<B>],
+    inside: F,
+    span: &Interval<B>,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+    segments: usize,
+) -> Verdict<Vec<HoleLoop<B>>, CutFitFault, Rat<B>>
+where
+    F: Fn(&Rat<B>, &Rat<B>) -> Option<bool>,
+{
+    match develop::cut::shadow_cut_loops(
+        chart,
+        walls,
+        inside,
+        span,
+        &Rat::from_i128(0),
+        segments.max(8),
+        clearance,
+        cfg,
+    ) {
+        Verdict::Verified(ls) => Verdict::Verified(
+            ls.into_iter()
+                .map(|l| HoleLoop {
+                    arcs: l
+                        .pieces
+                        .into_iter()
+                        .map(|curve| BoundaryArc::Curve { curve, segments: 1 })
+                        .collect(),
+                    eps: l.eps,
+                    tangent_gap: l.tangent_gap,
+                })
+                .collect(),
+        ),
+        Verdict::Unresolved(e) => Verdict::Unresolved(e),
+        Verdict::Refuted(f) => Verdict::Refuted(f),
+    }
 }
 
 /// A developed panel outer boundary: the notched annulus loop, the max rail ε, and the largest
@@ -779,39 +756,199 @@ pub fn trim_rail_chains<B: Backend>(
     Some((inner_ch, outer_ch))
 }
 
-/// Adapt a developed [`HoleLoop`] to a [`HoleRail`](crate::brep_build::HoleRail) for the curved-rail
-/// solid builder: its far (Upper, `s1→s2` forward) and near (Lower, `s2→s1` backward) branch rails,
-/// with the two tangent σ **dyadic-snapped** — exactly like [`trim_rail_chains`]'s notch crossings,
-/// so the exported Bézier control points stay small-denominator and OCCT's `f64` endpoints do not
-/// drift. `None` unless the loop is the canonical far-rail/near-rail pair.
+/// Adapt a developed [`HoleLoop`] to a [`HoleRail`](crate::brep_build::HoleRail) for the
+/// curved-rail solid builder: the loop's **near** and **far** branches as contiguous `(band,
+/// rail)` chains over the hole's σ-extent.
+///
+/// The loop is a closed p-curve through both tangent rulings, traversed left tangent → far branch
+/// → right tangent → near branch. Each piece is straight in `(σ, µ̂)` with distinct endpoint σ, so
+/// it is exactly a linear rail over its own σ-band — the branches *are* functions of σ (that was
+/// never the problem); what they are not is polynomials near the tangents, which is why they
+/// arrive as many short pieces rather than one fitted graph. Splitting the loop at its two σ-
+/// extremes recovers the near/far band the slice builder consumes, so a hole may still span
+/// σ-stations.
+///
+/// σ are dyadic-snapped as before, so exported Bézier control points stay small-denominator.
+/// `None` if the loop is not a single σ-extreme-to-σ-extreme traversal.
 pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
-    use core::cmp::Ordering::{Greater, Less};
-    let mut far: Option<(RatFunc<B>, Rat<B>, Rat<B>)> = None;
-    let mut near: Option<RatFunc<B>> = None;
+    use core::cmp::Ordering::{Equal, Greater, Less};
+    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    // The loop's corners in traversal order.
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
     for arc in &hole.arcs {
-        if let BoundaryArc::Rail {
-            mu,
-            sigma_start,
-            sigma_end,
-            ..
-        } = arc
-        {
-            match sigma_start.cmp(sigma_end) {
-                Less => far = Some((mu.clone(), sigma_start.clone(), sigma_end.clone())),
-                Greater => near = Some(mu.clone()),
-                _ => {}
+        match arc {
+            BoundaryArc::Curve { curve, .. } => {
+                let [sg, m] = curve.eval(&curve.domain.lo)?;
+                pts.push((snap(&sg), m));
             }
+            _ => return None,
         }
     }
-    let (far, s1, s2) = far?;
-    let near = near?;
-    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    if pts.len() < 4 {
+        return None;
+    }
+    // **A band turns around in σ exactly twice**, at its two tangent rulings, and each branch is
+    // then a function of σ. A traced non-convex loop (AUTH.2c) turns around more often — that is
+    // what a rail chain cannot express — and it must be refused here rather than split anyway:
+    // `chain` below would swap the ends of every backward step and sort, quietly producing
+    // overlapping σ-bands that the slice builder reads as a hole of a different shape. Newly
+    // reachable since the tracer replaced the band builder, and silent until this check: the L-slot
+    // part built a certified solid whose hole was not the loop that had been certified.
+    let reversals = {
+        let n = pts.len();
+        let (mut dir, mut first) = (0i8, 0i8);
+        let mut count = 0usize;
+        for k in 0..n {
+            let d = match pts[k].0.cmp(&pts[(k + 1) % n].0) {
+                Less => 1i8,
+                Greater => -1i8,
+                Equal => continue,
+            };
+            if dir == 0 {
+                first = d;
+            } else if d != dir {
+                count += 1;
+            }
+            dir = d;
+        }
+        // The loop is a **cycle**: the step from the last vertex back to the first is a step like
+        // any other, and leaving it out counts a band's two turns as one.
+        if dir != 0 && first != 0 && dir != first {
+            count += 1;
+        }
+        count
+    };
+    if reversals != 2 {
+        return None;
+    }
+    // The two σ-extremes are the tangent rulings; they split the loop into its two branches.
+    let idx_min = (0..pts.len()).min_by(|&a, &b| pts[a].0.cmp(&pts[b].0))?;
+    let idx_max = (0..pts.len()).max_by(|&a, &b| pts[a].0.cmp(&pts[b].0))?;
+    let n = pts.len();
+    let walk = |from: usize, to: usize| -> Vec<(Rat<B>, Rat<B>)> {
+        let mut out = Vec::new();
+        let mut i = from;
+        loop {
+            out.push(pts[i].clone());
+            if i == to {
+                break;
+            }
+            i = (i + 1) % n;
+        }
+        out
+    };
+    // One branch runs min→max in traversal order, the other max→min.
+    let branch_a = walk(idx_min, idx_max);
+    let branch_b = walk(idx_max, idx_min);
+    // Turn a σ-monotone vertex run into a chain of linear rails over its σ-bands.
+    let chain = |run: &[(Rat<B>, Rat<B>)]| -> Option<Vec<(Interval<B>, RatFunc<B>)>> {
+        let mut out = Vec::with_capacity(run.len().saturating_sub(1));
+        for w in run.windows(2) {
+            let ((sa, ma), (sb, mb)) = (&w[0], &w[1]);
+            let (lo, hi, va, vb) = match sa.cmp(sb) {
+                Less => (sa, sb, ma, mb),
+                Greater => (sb, sa, mb, ma),
+                Equal => return None, // a vertical piece is not a rail
+            };
+            let slope = vb.sub(va).div(&hi.sub(lo));
+            let intercept = va.sub(&lo.mul(&slope));
+            out.push((
+                Interval {
+                    lo: lo.clone(),
+                    hi: hi.clone(),
+                },
+                RatFunc::from_poly(Poly::from_coeffs(vec![intercept, slope])),
+            ));
+        }
+        out.sort_by(|x, y| x.0.lo.cmp(&y.0.lo));
+        (!out.is_empty()).then_some(out)
+    };
+    let (chain_a, chain_b) = (chain(&branch_a)?, chain(&branch_b)?);
+    // Which branch is the far (larger µ̂) one? Compare them where both are defined.
+    let probe = pts[idx_min].0.add(&pts[idx_max].0).mul(&Rat::new(1, 2));
+    let va = crate::brep_build::chain_eval(&chain_a, &probe)?;
+    let vb = crate::brep_build::chain_eval(&chain_b, &probe)?;
+    let (near, far) = if va.cmp(&vb) == Less {
+        (chain_a, chain_b)
+    } else {
+        (chain_b, chain_a)
+    };
     Some(crate::brep_build::HoleRail {
         near,
         far,
-        s1: snap(&s1),
-        s2: snap(&s2),
+        s1: pts[idx_min].0.clone(),
+        s2: pts[idx_max].0.clone(),
     })
+}
+
+/// A developed [`HoleLoop`]'s vertices as a `(σ, µ̂)` polygon, dyadic-snapped — the currency the
+/// solid builder's **general** hole channel takes (a lid inner wire plus a wall per edge), as
+/// opposed to [`hole_rail`]'s near/far band.
+///
+/// Every loop is expressible this way, including the ones that turn around in σ and therefore have
+/// no near/far split at all: the pieces are straight in `(σ, µ̂)` and this is simply their vertex
+/// sequence. `None` if a piece is not a straight segment.
+///
+/// **Vertices closer together than the export profile can carry are merged**, and the reason is not
+/// tidiness. The tracer samples one grid step (`2⁻³⁰`) inside each cell end — that is what keeps a
+/// pinch tight, since the two ends identified there are then a grid step from the true event
+/// (`docs/cutter-extrude-design.md` §11.4) — so a traced loop carries a pair of vertices `≈10⁻⁹`
+/// apart at every cell boundary. Those are correct in the domain and *unbuildable* downstream: each
+/// becomes a wall whose curved rails span `≈10⁻⁸` in 3-D, an order below OCCT's `10⁻⁷` vertex
+/// tolerance, so the edge's own curve reads as **closed** while its two vertices are distinct and
+/// `BRepBuilderAPI_MakeEdge` refuses it. Measured on the AUTH.2f L-slot: 220 shell vertices at only
+/// 145 distinct positions, 76 sub-tolerance Bézier edges, and a STEP write that failed while every
+/// certificate was `Verified` — the exact-versus-`f64` seam, at the one place the kernel hands
+/// geometry to a floating-point consumer.
+///
+/// [`MIN_STEP`] is three orders above the snap grid and three below the cut certificate's own ε on
+/// that device, so the merge is invisible to the certified bound and decisive for the exporter.
+pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
+    let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
+    for arc in &hole.arcs {
+        match arc {
+            BoundaryArc::Curve { curve, .. } => {
+                let [sg, m] = curve.eval(&curve.domain.lo)?;
+                let p = (snap(&sg), snap(&m));
+                if pts.last().is_none_or(|q| export_apart(q, &p)) {
+                    pts.push(p);
+                }
+            }
+            _ => return None,
+        }
+    }
+    // The wrap-around pair too — the loop closes on its first vertex, and a last vertex within a
+    // step of it is the same unbuildable edge.
+    while pts.len() > 3 && !export_apart(&pts[pts.len() - 1], &pts[0]) {
+        pts.pop();
+    }
+    (pts.len() >= 3).then_some(pts)
+}
+
+/// The dyadic exponent of [`hole_poly`]'s minimum emitted step, `2⁻²⁰ ≈ 9.5·10⁻⁷`: coarse enough
+/// that every emitted edge clears OCCT's `10⁻⁷` vertex tolerance by an order, fine enough to sit
+/// far below any certified cut bound.
+pub(crate) const MIN_STEP_BITS: u32 = 20;
+
+/// [`MIN_STEP_BITS`] as a rational — the smallest `(σ, µ̂)` step the export profile can carry.
+pub(crate) fn min_export_step<B: Backend>() -> Rat<B> {
+    Rat::<B>::new(1, 1i128 << MIN_STEP_BITS)
+}
+
+/// Are two emitted `(σ, µ̂)` vertices further apart than [`min_export_step`] in either coordinate?
+///
+/// The one definition of "the exporter can tell these two points apart", shared by [`hole_poly`]'s
+/// merge and the solid builder's station reconciliation — a pair that fails it becomes an edge
+/// whose 3-D span sits under OCCT's vertex tolerance, which is refused however it arose.
+pub(crate) fn export_apart<B: Backend>(a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)) -> bool {
+    let min_step = min_export_step::<B>();
+    let far = |x: &Rat<B>, y: &Rat<B>| {
+        let d = x.sub(y);
+        let d = if d.sign() < 0 { d.neg() } else { d };
+        d.cmp(&min_step) == core::cmp::Ordering::Greater
+    };
+    far(&a.0, &b.0) || far(&a.1, &b.1)
 }
 
 /// Snap each interior piece boundary of a contiguous chain to a 2⁻³⁰ dyadic (via `f64`), keeping
@@ -848,29 +985,6 @@ pub fn flat_to_poly<B: Backend>(outline: &FlatOutline<B>) -> Vec<[Rat<B>; 2]> {
     out
 }
 
-/// One closed polygon `pts` as exact [`arrange2d`] segment edges tagged `src` (mirrors
-/// `develop::flat`'s `seg_edge`: the directed line through each consecutive pair).
-fn poly_edges<B: Backend>(pts: &[[Rat<B>; 2]], src: u32) -> Vec<geom::content::Edge<B>> {
-    use geom::content::{CurveId, Edge, Line, Orient, Point2, SegPiece};
-    let n = pts.len();
-    (0..n)
-        .map(|i| {
-            let s = &pts[i];
-            let e = &pts[(i + 1) % n];
-            let a = e[1].sub(&s[1]).neg();
-            let b = e[0].sub(&s[0]);
-            let c = a.mul(&s[0]).add(&b.mul(&s[1])).neg();
-            Edge::Seg(Box::new(SegPiece {
-                line: Line { a, b, c },
-                start: Point2::from_rat(s[0].clone(), s[1].clone()),
-                end: Point2::from_rat(e[0].clone(), e[1].clone()),
-                orient: Orient::Ccw,
-                source: CurveId(src),
-            }))
-        })
-        .collect()
-}
-
 /// Assemble the final flat panel `Region` = `outer − ⋃ holes`, via the `BoolOp::Diff` arrangement
 /// (operand A = the outer polygon, operand B = the union of the interior hole polygons — authored
 /// pairwise-disjoint). Certified by `ledge_dom_certified`. This is [`crate::cut_oracle`]'s
@@ -881,10 +995,13 @@ pub fn assemble_flat<B: Backend>(
 ) -> Verdict<arrange2d::boolean::Region<B>, arrange2d::boolean::CapOutFault, ()> {
     use arrange2d::boolean::{BoolOp, OperandId, ledge_dom_certified};
     use geom::content::CurveId;
-    let mut edges = poly_edges(outer, 0);
-    for (i, h) in holes.iter().enumerate() {
-        edges.extend(poly_edges(h, (i + 1) as u32));
+    // Operand ids come from the order shapes are added: the outer is `CurveId(0)` = operand A,
+    // each hole the next id = operand B (see `operand_of` below).
+    let mut profile = arrange2d::profile::Profile::new().polygon(outer);
+    for h in holes {
+        profile = profile.polygon(h);
     }
+    let edges = profile.into_edges();
     let operand_of = |c: CurveId| {
         if c.0 == 0 { OperandId::A } else { OperandId::B }
     };
@@ -914,6 +1031,7 @@ mod tests {
     /// certified flat outline. Tuned once from `probe_cone_scale`.
     #[test]
     fn eccentric_annulus_unrolls() {
+        let fit = RailFit::default();
         let chart = cone();
         let dev = ConeDevelopment::new(&chart).unwrap();
         let cfg = DevConfig::tight();
@@ -930,7 +1048,6 @@ mod tests {
             lo: Q::from_i128(-1),
             hi: Q::from_i128(1),
         };
-        let fit = RailFit::default();
 
         // Outer D1: concentric parallel {z = 3} — exact plane rail, footprint R ≈ 2.7.
         let d1 = concentric_disk(&chart, &Q::from_i128(3)).unwrap();
@@ -980,6 +1097,74 @@ mod tests {
         }
     }
 
+    /// **The multi-wall loop is readable by the solid builder too.** [`hole_rail`] splits a hole
+    /// loop at its two σ-extremes into near/far chains of linear rails, and it refuses any pair of
+    /// consecutive vertices sharing a σ — which a multi-wall loop deliberately produces, since each
+    /// profile corner is bracketed by two nodes one `2⁻³⁰` grid step apart, and `hole_rail` re-snaps
+    /// through `f64`. So the flat path certifying is not evidence the solid path can consume it.
+    #[test]
+    fn a_multi_wall_hole_loop_splits_into_solid_rails() {
+        use develop::extrude::{Apex, Cast, Frame};
+        let chart = cone();
+        let cfg = DevConfig::tight();
+        let (cx, cy, h) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 5));
+        // The square prism the AUTH.1e.4 acceptance test drills, on the same device.
+        let profile = arrange2d::profile::Profile::new()
+            .rect(cx.clone(), cy.clone(), h.clone(), h.clone())
+            .into_edges();
+        let cast = Cast::new(
+            Frame::new(
+                [Q::from_i128(0), Q::from_i128(0), Q::from_i128(0)],
+                [Q::from_i128(1), Q::from_i128(0), Q::from_i128(0)],
+                [Q::from_i128(0), Q::from_i128(1), Q::from_i128(0)],
+            )
+            .expect("independent axes"),
+            Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+                .expect("a real direction"),
+        )
+        .expect("the apex is off the frame plane");
+        let walls = cast.carrier_walls(&profile).expect("four carriers");
+        let zero = Q::from_i128(0);
+        let span = Interval {
+            lo: Q::new(-1, 4),
+            hi: Q::new(1, 4),
+        };
+        let mut holes = match shadow_hole_loops(
+            &chart,
+            &walls,
+            |sigma: &Q, mu: &Q| {
+                let p = chart.surface(mu, &zero).eval(sigma)?;
+                cast.contains(&p, &profile)
+            },
+            &span,
+            &Q::from_i128(1),
+            &cfg,
+            32,
+        ) {
+            Verdict::Verified(h) => h,
+            other => panic!("the square's hole loop must certify: {}", tag(&other)),
+        };
+        assert_eq!(holes.len(), 1, "a convex profile traces one loop");
+        let hole = holes.remove(0);
+        let rail = hole_rail(&hole).expect("the solid builder must be able to read the loop");
+        assert!(
+            !rail.near.is_empty() && !rail.far.is_empty(),
+            "both branches must produce rails"
+        );
+        // The far branch really is the far one, over the shared σ-band.
+        let probe = rail.near[rail.near.len() / 2].0.lo.clone();
+        let (n, fr) = (
+            crate::brep_build::chain_eval(&rail.near, &probe).expect("near defined"),
+            crate::brep_build::chain_eval(&rail.far, &probe).expect("far defined"),
+        );
+        assert!(
+            n.cmp(&fr) == core::cmp::Ordering::Less,
+            "near {} must sit below far {}",
+            f(&n),
+            f(&fr)
+        );
+    }
+
     /// An interior circular hole (D4) develops to a certified loop: near + far cut branches
     /// joined by small tangent micro-caps, unrolling to a Verified flat wire.
     #[test]
@@ -992,12 +1177,10 @@ mod tests {
             lo: Q::from_i128(-1),
             hi: Q::from_i128(1),
         };
-        let fit = RailFit::default();
         // The gore develops the UPPER half-plane: σ = 0 ⇒ azimuth 90° (+y), σ = ±1 ⇒ 0°/180°.
         // So disks live around +y. D4: a small disk R = 0.2 at (0, 2.2) — inside the annulus (D2
         // exits near r ≈ 1.9, D1 at r ≈ 2.71), apex well outside it.
         let (cx, cy, r2) = (Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
-        let margin = Q::new(1, 200);
 
         let d4_surface = CutSurface::Cylinder {
             axis_point: [cx.clone(), cy.clone(), Q::from_i128(0)],
@@ -1009,23 +1192,21 @@ mod tests {
         println!("D4 tangents: σ ∈ [{:.4}, {:.4}]", f(&tlo), f(&thi));
         assert!(tlo.cmp(&thi) == core::cmp::Ordering::Less);
 
-        let hole = match hole_loop(
-            &chart, &cx, &cy, &r2, &span, fit, &clearance, &cfg, &margin, 32,
-        ) {
+        let hole = match hole_loop(&chart, &cx, &cy, &r2, &span, &clearance, &cfg, 32) {
             Verdict::Verified(h) => h,
             other => panic!("hole_loop not Verified: {}", tag(&other)),
         };
         println!(
             "D4 hole: rail ε = {:.3e}, max micro-cap = {:.3e} (μ̂ units, hole is ≈0.4 tall)",
             f(&hole.eps),
-            f(&hole.max_microcap)
+            f(&hole.tangent_gap)
         );
         // The tangent micro-cap is the √-branch residual (the developed circle's two tangent
         // points are slightly flattened) — an exact Cap, watertight, small vs the hole height.
         assert!(
-            hole.max_microcap.cmp(&Q::new(1, 10)) == core::cmp::Ordering::Less,
+            hole.tangent_gap.cmp(&Q::new(1, 10)) == core::cmp::Ordering::Less,
             "tangent micro-cap should stay small, got {:.4}",
-            f(&hole.max_microcap)
+            f(&hole.tangent_gap)
         );
         match unroll_loop(&dev, &hole.arcs, &cfg, &clearance) {
             Verdict::Verified(o) => println!(
@@ -1117,29 +1298,35 @@ mod tests {
             _ => {} // failing to bracket at all is the bug too
         }
         // End to end: the hole loop over the true extent certifies against the REAL surface.
-        let hole = match hole_loop(
-            &chart,
-            &cx,
-            &cy,
-            &r2,
-            &span,
-            RailFit {
-                degree: 3,
-                subdiv: 160,
-                bits: 44,
-            },
-            &Q::from_i128(1),
-            &cfg,
-            &Q::new(1, 20),
-            16,
-        ) {
+        let hole = match hole_loop(&chart, &cx, &cy, &r2, &span, &Q::from_i128(1), &cfg, 16) {
             Verdict::Verified(h) => h,
             other => panic!("ramp hole_loop not Verified: {}", tag(&other)),
         };
-        assert_eq!(hole.arcs.len(), 4, "far rail · cap · near rail · cap");
+        // The loop is a closed chain of p-curve pieces through both tangent rulings — no
+        // near/far graphs and no straight bridge, so there is no fixed arc count to assert.
+        assert!(hole.arcs.len() >= 8, "a closed loop of p-curve pieces");
+        assert!(
+            hole.arcs
+                .iter()
+                .all(|a| matches!(a, BoundaryArc::Curve { .. })),
+            "every piece is a domain curve"
+        );
+        // What used to be a straight chord across the tangents is now the residual gap where the
+        // two branches meet, and it is small against the hole itself.
+        let mc = develop::cut::cut_mu_form(&chart, &drill, &Q::from_i128(0)).unwrap();
+        let (_, h_mid) = mc
+            .branch_at(&t_lo.add(&t_hi).mul(&Q::new(1, 2)), &cfg.sqrt_eps)
+            .expect("the mid ruling cuts the drill");
+        assert!(
+            hole.tangent_gap.mul(&Q::from_i128(100)) < h_mid.mul(&Q::from_i128(2)),
+            "the tangent gap must be far below the graph model's floor: gap {:.3e} vs height {:.3e}",
+            f(&hole.tangent_gap),
+            f(&h_mid.mul(&Q::from_i128(2)))
+        );
         println!(
-            "ramp hole: ε = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
+            "ramp hole: ε = {:.3e}, tangent gap = {:.3e}, extent σ ∈ [{:.4}, {:.4}]",
             f(&hole.eps),
+            f(&hole.tangent_gap),
             f(&t_lo),
             f(&t_hi)
         );
@@ -1338,6 +1525,7 @@ mod tests {
     /// `Region` — one face, two holes (D4 + the quad).
     #[test]
     fn full_panel_assembles() {
+        let fit = RailFit::default();
         let chart = cone();
         let dev = ConeDevelopment::new(&chart).unwrap();
         let cfg = DevConfig::tight();
@@ -1346,7 +1534,6 @@ mod tests {
             lo: Q::from_i128(-1),
             hi: Q::from_i128(1),
         };
-        let fit = RailFit::default();
         let (d1, d2, d3, d4) = demo_disks(&chart);
 
         let outer = match outer_loop(
@@ -1368,18 +1555,7 @@ mod tests {
             Verdict::Verified(o) => o,
             o => panic!("outer unroll: {}", tag(&o)),
         };
-        let hole = match hole_loop(
-            &chart,
-            &d4[0],
-            &d4[1],
-            &d4[2],
-            &span,
-            fit,
-            &clearance,
-            &cfg,
-            &Q::new(1, 200),
-            32,
-        ) {
+        let hole = match hole_loop(&chart, &d4[0], &d4[1], &d4[2], &span, &clearance, &cfg, 32) {
             Verdict::Verified(h) => h,
             o => panic!("hole: {}", tag(&o)),
         };
@@ -1525,28 +1701,13 @@ mod tests {
             other => panic!("outer_loop: {}", tag(&other)),
         };
         let (inner, outer_ch) = trim_rail_chains(&outer).expect("rail chains");
-        let d4_hole = match hole_loop(
-            &chart,
-            &d4[0],
-            &d4[1],
-            &d4[2],
-            &span,
-            lowfit,
-            &clearance,
-            &cfg,
-            &Q::new(1, 200),
-            4,
-        ) {
+        let d4_hole = match hole_loop(&chart, &d4[0], &d4[1], &d4[2], &span, &clearance, &cfg, 32) {
             Verdict::Verified(h) => hole_rail(&h).expect("D4 hole rail"),
             other => panic!("hole_loop: {}", tag(&other)),
         };
         let konst = |n: i128, dd: i128| RatFunc::<Bignum>::from_poly(Poly::constant(Q::new(n, dd)));
-        let quad = HoleRail {
-            near: konst(43, 20),
-            far: konst(47, 20),
-            s1: Q::new(-9, 20),
-            s2: Q::new(-6, 20),
-        };
+        // The authored quad: each branch is a single rail over the whole σ-extent.
+        let quad = HoleRail::uniform(konst(43, 20), konst(47, 20), Q::new(-9, 20), Q::new(-6, 20));
         let w = Interval {
             lo: Q::from_i128(0),
             hi: Q::new(1, 8),

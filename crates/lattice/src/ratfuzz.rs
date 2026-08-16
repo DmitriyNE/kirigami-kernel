@@ -162,11 +162,14 @@ fn run_int_program_capped(data: &[u8], max_limbs: usize) {
                     rd[d] = Bignum::int_add(&rd[x], &rd[y]);
                 }
             }
-            3 => {
+            // `opcode % 4` is `0..=3`, so this arm *is* case 3. Written as the catch-all rather
+            // than `3 => … , _ => unreachable!()` because the pure tier forbids panic-capable
+            // constructs (`docs/trusted-invariants.md`), and removing the panic path outright is
+            // better than discharging one that can never be taken.
+            _ => {
                 rr[d] = RefBackend::int_neg(&rr[x]);
                 rd[d] = Bignum::int_neg(&rd[x]);
             }
-            _ => unreachable!(),
         }
         assert_eq!(
             RefBackend::int_le_bytes(&rr[d]),

@@ -143,6 +143,21 @@ fn an_overlapping_flat_hole_refuses_the_solid_too() {
     ));
 }
 
+/// A derived hole **spanning σ-stations** still builds a solid. Interior cuts are p-curve loops
+/// that pass through their tangent rulings, so a hole is no longer two fitted graphs; the builder
+/// consumes it as a near/far band of contiguous rail *chains*, and each chain's piece boundaries
+/// join the station partition. This is the case that a single-slice polygon cut cannot express —
+/// the device's holes straddle stations — and it is why the band survived the p-curve rewrite
+/// rather than being replaced by polygons.
+#[test]
+fn a_derived_hole_spanning_stations_still_builds_a_solid() {
+    match panel().solid() {
+        Verdict::Verified(_) => {}
+        Verdict::Refuted(f) => panic!("the hole band must still sew a solid, got {f:?}"),
+        Verdict::Unresolved(e) => panic!("expected Verified, got Unresolved({e:?})"),
+    }
+}
+
 /// A degenerate authored polygon (here: empty) is refused as a typed fault on the solid path —
 /// never handed to the builder's unchecked vertex indexing.
 #[test]
@@ -151,4 +166,140 @@ fn a_degenerate_domain_hole_is_refused_not_built() {
         panel().hole_domain(vec![]).solid(),
         Verdict::Refuted(_)
     ));
+}
+
+/// A verdict's name, for panic messages (the payloads are not `Debug`).
+fn verdict_name<E, W: core::fmt::Debug, M: core::fmt::Debug>(v: &Verdict<E, W, M>) -> String {
+    match v {
+        Verdict::Verified(_) => "Verified".to_string(),
+        Verdict::Unresolved(m) => format!("Unresolved({m:?})"),
+        Verdict::Refuted(f) => format!("Refuted({f:?})"),
+    }
+}
+
+/// An L-shaped — deliberately **non-convex** — `(σ, µ̂)` loop, CCW, as a domain hole.
+fn l_slot(s0: Q, s1: Q, m0: Q, m1: Q) -> Vec<(Q, Q)> {
+    let smid = s0.add(&s1).mul(&q(1, 2));
+    let mmid = m0.add(&m1).mul(&q(1, 2));
+    vec![
+        (s0.clone(), m0.clone()),
+        (s1.clone(), m0),
+        (s1, mmid.clone()),
+        (smid.clone(), mmid),
+        (smid, m1.clone()),
+        (s0, m1),
+    ]
+}
+
+/// **AUTH.2 pre-state, pinned.** A non-convex loop is *already* general on both paths, so long as it
+/// stays inside one σ-station slice: it develops through the exact flat boolean and it builds a
+/// certified solid through the authored-polygon channel (a lid inner wire plus a wall per edge).
+///
+/// This is the measurement that sized AUTH.2 (`docs/cutter-extrude-design.md` §11.1): the band in
+/// `HoleRail` is *not* what stands between the kernel and non-convex profiles. What refuses today is
+/// the loop **tracer** — `develop::cut` cannot yet read a footprint the ruling meets twice — so the
+/// only way to hand the downstream a non-convex loop is to author it, as here. Must stay green
+/// through the milestone: it is the leg AUTH.2 is *not* allowed to regress.
+#[test]
+fn a_non_convex_domain_loop_inside_one_slice_already_builds_a_solid() {
+    // σ ∈ [0.3, 0.45] is clear of the derived drill (which sits at σ ≈ 0), and µ̂ ∈ [2.2, 2.6] is
+    // strictly inside the kept band there — an authored hole that touches either boundary is
+    // dropped by the flat difference and reads as a topology mismatch, not as this claim failing.
+    let part = panel().hole_domain(l_slot(q(3, 10), q(45, 100), q(11, 5), q(13, 5)));
+    let flat = match part.develop() {
+        Verdict::Verified(f) => f,
+        Verdict::Refuted(f) => panic!("the flat path takes a non-convex loop today, got {f:?}"),
+        Verdict::Unresolved(e) => panic!("expected Verified, got Unresolved({e:?})"),
+    };
+    // `Verified` alone would pass just as happily on a hole that had been silently convexified, so
+    // check the reflex corner survived into the emitted geometry: the developed loop must turn both
+    // ways. (The develop map is smooth and orientation-preserving here, so a reflex corner in
+    // (σ, µ̂) is a reflex corner in the flat pattern.)
+    let poly = &flat.domain_hole_polys()[0];
+    let cross = |a: &[Q; 2], b: &[Q; 2], c: &[Q; 2]| {
+        b[0].sub(&a[0])
+            .mul(&c[1].sub(&b[1]))
+            .sub(&b[1].sub(&a[1]).mul(&c[0].sub(&b[0])))
+            .sign()
+    };
+    let n = poly.len();
+    let turns: Vec<i8> = (0..n)
+        .map(|i| cross(&poly[i], &poly[(i + 1) % n], &poly[(i + 2) % n]))
+        .collect();
+    assert!(
+        turns.iter().any(|&t| t > 0) && turns.iter().any(|&t| t < 0),
+        "the developed hole must still be non-convex — turns {turns:?}"
+    );
+
+    match part.solid() {
+        Verdict::Verified(s) => {
+            // The hole is really in the shell: its six edges are swept into six walls, on top of
+            // the same solid the hole-free panel builds.
+            let plain_faces = match panel().solid() {
+                Verdict::Verified(p) => p.brep().faces().len(),
+                v => panic!("the hole-free panel must build: {}", verdict_name(&v)),
+            };
+            assert_eq!(
+                s.brep().faces().len(),
+                plain_faces + poly.len(),
+                "one wall per hole edge, and nothing else moved"
+            );
+        }
+        Verdict::Refuted(f) => {
+            panic!("the solid path takes a non-convex loop within one slice today, got {f:?}")
+        }
+        Verdict::Unresolved(e) => panic!("expected Verified, got Unresolved({e:?})"),
+    }
+}
+
+/// **AUTH.2e — the flip.** The same non-convex loop, moved so it crosses a σ-station, used to be
+/// refused by the solid builder while the flat path took it. Now the builder **clips it per slice**
+/// (`brep_trim_solid_regions` → `slice_poly_footprint`) and both paths take it.
+///
+/// The station is not a neutral place to land: this L's step is a `σ = const` edge sitting *on*
+/// σ = 0, so the two slices keep different material on that ruling. The cross-ring between them is
+/// shared only where both lids reach, and the step itself is a wall — which is what the watertight
+/// assertion here is really checking (skipping it returned a `Verified` shell with four free edges).
+#[test]
+fn a_domain_loop_crossing_a_station_is_clipped_per_slice() {
+    // Without the drill, so the σ = 0 station is clear and what is exercised is unambiguously the
+    // station crossing rather than a collision with a derived hole.
+    let panel = || {
+        construct::from_chart::<Bignum>(&cone())
+            .region_sigma(qi(-1), qi(1), SupportFn::inherit())
+            .intersect(Cutter::half_space([qi(0), qi(0), qi(1)], qi(3)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(2)))
+    };
+    let slot = l_slot(q(-3, 10), q(3, 10), q(23, 10), q(13, 5));
+    let plain = panel().hole_domain(slot.clone());
+    match plain.develop() {
+        Verdict::Verified(_) => {}
+        Verdict::Refuted(f) => panic!("the flat path is indifferent to stations, got {f:?}"),
+        Verdict::Unresolved(e) => panic!("expected Verified, got Unresolved({e:?})"),
+    }
+    let solid = match plain.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a station-crossing loop now clips per slice, got {}",
+            verdict_name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    assert_eq!(brep.free_edges(), 0, "the clipped solid is watertight");
+    assert_eq!(brep.nonmanifold_edges(), 0, "…and manifold");
+
+    // The hole is in the shell, edge for edge: a wall per authored edge (6), plus one more for the
+    // edge σ = 0 cuts in two (the bottom run at µ̂ = 23/10 crosses the station). The step edge — the
+    // authored `σ = 0` one — is a wall too, contributed once by the slice that keeps material there;
+    // twice would show up as a non-manifold edge above. Lid faces are unchanged: the hole opens onto
+    // the station as a notch in each slice rather than splitting either lid.
+    let plain_faces = match panel().solid() {
+        Verdict::Verified(p) => p.brep().faces().len(),
+        v => panic!("the hole-free panel must build: {}", verdict_name(&v)),
+    };
+    assert_eq!(
+        brep.faces().len(),
+        plain_faces + slot.len() + 1,
+        "one wall per hole edge, plus the one the station splits"
+    );
 }
