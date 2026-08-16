@@ -7,6 +7,8 @@ The design for `Cutter::Extrude`, the step-1 blocker named in
 §§1–9 are AUTH.1 as shipped. §10 is the multi-wall hole loop (AUTH.1e.4), which realizes **convex**
 profiles and refuses the rest by name; §11 is AUTH.2, which lifts that refusal for footprints that
 are non-convex but connected — its criteria are "AUTH.2 acceptance criteria" in the same guide.
+§§1–11 are all about cutters that **remove**; §12 is AUTH.3, where one *keeps* what is inside a
+contour, which turns out to be a stock-model question rather than a cutter one.
 
 ## 1. Where this sits in the product flow
 
@@ -336,6 +338,7 @@ however many tests run through it.
 | **AUTH.2d** | the flat path: several loops per hole op |
 | **AUTH.2e** | the solid path: clip a general loop per σ-slice, lifting the station restriction (§11.7) |
 | **AUTH.2f** | acceptance: an L-slot through the device, developed, folded, exported; the ring still refused by name |
+| **AUTH.3.0–3d** | the σ-stock — an intersect that *terminates* the material rather than only trimming it laterally. Ladder and scope in §12.6 |
 
 **Named acceptance criterion (AUTH.1d).** On the self-lapping cone, a cut whose ray passes through
 the lap satisfies: `ToNext` cuts the flap only; `NextN(2)` and `Through` cut flap **and** body. No
@@ -868,3 +871,162 @@ goes from genus 2 to genus **4**, stays watertight and manifold, and writes STEP
 emitted edge of `2.489e-3`. No engine defect surfaced — which is the honest result to report, and is
 worth more than it sounds given that both of AUTH.2f's own defects came out of exactly this kind of
 composition.
+
+## 12. The σ-stock (AUTH.3)
+
+Every cut so far *removes*. `OpKind::Intersect` ships and every fixture carries one, but only in one
+shape: a **lateral trim**, a cutter that bounds µ̂ on one side of every ruling and never terminates
+the material along σ. Ask for the other shape — *keep what is inside this contour* — and the
+evaluation refuses. This section is why, and what has to move.
+
+The refusal is not in the cut layer, the tracer, or the certificate. It is a **stock model**
+asymmetry: µ̂ is a derived extent and σ is an authored one.
+
+> *Stock discipline (`resolve.rs`, shipped).* Material starts as the whole ruling, `µ̂ ∈ (−∞, ∞)`; ops
+> narrow it; an unbounded component is not part material and is dropped; if nothing bounded remains,
+> `UnboundedRegion`.
+
+There is no σ sentence in that paragraph, because σ never needed one: the material's σ-extent is
+*defined* to be the authored `region_sigma` band. So a σ where the ops leave nothing is not "outside
+the part" — it is a contradiction, and `sample_comps` returns `EmptyRegion` for the whole recipe.
+
+### 12.1 What the scout measured
+
+On the doctest cone panel (`intersect(z ≤ 3)`, `subtract(cyl(0, ½, r² = 2))`), band `±3.5`:
+
+| probe | today |
+|---|---|
+| `intersect(<contains the whole panel>)` | Verified, role `Inactive` — the reading that makes the feature look present |
+| `intersect(half_space)` — a lateral trim | Verified, role `UpperBound`: the shipped sense, and it really bounds |
+| `intersect(cylinder)` biting, `r² =` 4, 1, ¼, 1/25 | `Refuted(EmptyRegion)`, every radius |
+| `intersect(extrude(square))` biting | `Refuted(EmptyRegion)` — **not** an extruded-profile problem, so not AUTH.2's |
+
+Narrowing the *declared band* with the cutter fixed isolates it to one variable. A cylinder of
+radius ½ about `(0, 5/2)` subtends `|σ| ≤ 0.101020514` on this cone (its two `Tangent` events):
+
+| band | verdict |
+|---|---|
+| `±1/16` | Verified — roles `[UpperBound, Inactive, LowerBound]`: the contour has taken over as the part's lower bound and pushed the annulus carve out of the structure entirely |
+| `±1/8`, `±¼`, `±1` | `Refuted(EmptyRegion)` |
+
+One part, one cutter, one placement, biting the same way in every row. **The only thing that decides
+is whether the contour's own σ-footprint covers the band the author declared.**
+
+The per-sample algebra is already right, which is what makes this a small milestone rather than a
+large one: read one sample at a time instead of through the sweep, and the material is exactly where
+it should be — 16 of 240 samples on the `r² = 1` contour, `σ ∈ [−0.219, +0.219]`, a clean band
+bounded below by the carve throughout and above by the `z ≤ 3` plane in the middle with the contour
+taking the upper bound over near each end, and empty outside. One empty sample aborts the rest.
+
+### 12.2 The σ-ends are roots the kernel already isolates
+
+Where the material stops, the kept µ̂-interval closes: the wall bounding it from below and the wall
+bounding it from above cross the ruling at a common µ̂. That is
+**`Res_µ̂(f_l, f_u) = 0`** for two different walls and **`disc_µ̂(f) = 0`** for one wall's own two
+roots — the `Meet` and `Tangent` families of AUTH.2a's event set (§11.2), already exact, already
+Sturm-isolated, already bisected to `2⁻⁴⁰` by `structure_events`.
+
+One change, and it is the whole of the derivation: run them over the union of **every op's** walls
+rather than one cutter's. The two walls that close the interval need not belong to the same cutter,
+and on the quadric fixture they do not — measured, both ends, symmetric:
+
+```
+quadric contour, each end — the sample cell holds TWO events
+    σ = ±0.238427501   Meet(1, 2)     the contour's wall against the panel's annulus carve
+    σ = ±0.240408206   Tangent(2)     the contour's own tangent ruling, 2·10⁻³ further out
+polygonal contour, each end — one event
+    σ = ±0.063841301   Meet(2, 3) / Meet(2, 5)     two of the square's own walls: a corner
+```
+
+Two things follow, and both are load-bearing.
+
+**Per-cutter events would put this end at the wrong σ.** The naive reading — "a contour's σ-extent is
+its own tangent rulings" — is what `surface_tangents` and `tangent_events` compute today, and on this
+fixture it is wrong by `2·10⁻³`: the material closes at the `Meet` against the carve, *inside* the
+contour's tangent. Trimming to the tangent would emit a sliver of material the ops do not leave —
+a wrong part, not a refused one.
+
+**Several events can share a sample cell, so which one closes the material is not a grid question.**
+Both quadric ends have two candidates `2·10⁻³` apart against a `2.9·10⁻³` cell. This is #268's shape
+one level out, and it takes #268's answer: the events are *isolating brackets*, so the gap between
+two consecutive brackets is proved free of structural change, and one evaluation of the component
+algebra per gap decides the whole gap. No search, no tolerance.
+
+The third class is small and belongs here for completeness: a wall whose pullback degenerates to a
+constant in µ̂ (`a ≡ b ≡ 0` — a plane containing the ruling) flips `Patch::All` to empty at a root of
+`c_i(σ)`. That is a **jump** rather than a pinch, Sturm-isolable the same way, and it is the only
+termination whose end cap is not degenerate.
+
+### 12.3 The boundary geometry is already built, and already unrollable
+
+Measured, on the same fixtures — the contour's footprint traced by the shipped AUTH.2c tracer, then
+handed to `unroll_trim_loop` as an **outline** rather than as a hole:
+
+| contour | traced loop | unrolled as an outline |
+|---|---|---|
+| cylinder `r² = 1` | 96 arcs, `ε = 7.02e-3`, `tangent_gap = 5.39e-5` | 96 points, `ε = 3.16e-2` |
+| square `h = ¼` | 94 arcs, `ε = 1.58e-2`, `tangent_gap = 7.45e-9` | 94 points, `ε = 1.39e-1` |
+
+So AUTH.3 introduces **no new certificate family and no new arithmetic**. It is a region-model
+milestone: the flat leg is assembly over parts that certify today, and the p-curve arcs PC.3 built to
+kill the tangent caps on *holes* are exactly what a pinch end of an *outer* boundary needs — a
+`BoundaryArc::Curve`, which `unroll_trim_loop` already takes.
+
+### 12.4 Two termination shapes, and why the solid path is the risk
+
+- **Pinch** — the two bounding rails meet. The generic contour bite, either at a wall's tangent
+  ruling or at a profile corner. The cap degenerates to a point and the rails run into
+  `∂s/∂µ̂ → 0`, which is the condition that blows a graph fit's certified bound. A p-curve, then,
+  not two graphs bridged by a micro-cap.
+- **Jump** — §12.2's degenerate wall. The cap is real and spans whatever µ̂-extent the other ops
+  leave there.
+
+`brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
+between them, so a pinch end makes the terminal slices degenerate. Holes met this wall already and
+were answered twice: on the flat path by p-curves (PC.3's quadric-window constructor, PC.4's
+`BoundaryArc::Curve`), and on the solid path by the general polygon channel that clips each slice
+against the whole loop (`poly_holes` → `slice_poly_footprint`, PC.5, generalized by AUTH.2e). Both
+answers are for **interior** loops; the **outer wire** got neither. Either that channel extends one
+level out, or a pinch termination is
+refused in the solid **by name** while the flat pattern — the artifact that is actually manufactured
+— stays general. The choice is AUTH.3c's, on measurement; naming the fallback here is what keeps it
+from being decided by whatever is easiest at the time.
+
+### 12.5 Scope, and what stays refused
+
+- **A footprint the ruling meets in several stretches, intersected.** AUTH.2 reads such a footprint
+  and traces it; keeping what is inside one leaves material in several µ̂-components at one σ, which
+  the boundary model (one lower rail, one upper) cannot express. Refused by name, as AUTH.1e.4's
+  ring is — its own feature, not this one.
+- **A derived extent in more than one piece.** The live samples must form **one** run. Two runs is a
+  disconnected part; the resolver refuses rather than picking one or emitting both.
+- **Station targeting is `Subtract`-only today, and must stop being.** An intersect's footprint gets
+  no targeted samples, and the uniform grid does not find it by luck: the square subtends `≈0.128`
+  in σ, **narrower than the resolver's own sample cell** (`7/48 ≈ 0.146` on a `±3.5` band), and not one of the
+  48 samples lands inside it — at 240 cells four do. Left alone, the derived extent would come back
+  empty for a reason that has nothing to do with the geometry — fail-closed, but for the wrong
+  cause, which is the failure mode #268 was.
+- **Not an exact domain arrangement.** The material in `(σ, µ̂)` is `⋂ intersect-footprints ∖
+  ⋃ subtract-footprints`, and the honest long-run answer is an exact 2-D boolean of the traced loops
+  in the domain — the `authoring-3d` direction. AUTH.3 does **not** do that: it derives one extent
+  for one connected band, which is a strict subset that composes with the arrangement later rather
+  than blocking it. Said plainly so that the incremental step is not mistaken for the destination.
+- **`subtract(complement(P)) ≡ intersect(P)`**, so a "cutter whose inside contains infinity" is not
+  a separate feature and no complement fill rule is added to `arrange2d`. The sense already lives on
+  the op.
+
+### 12.6 Slices
+
+| slice | content |
+|---|---|
+| **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
+| **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations |
+| **AUTH.3b** | the boundary that closes in σ: `certify_boundary` over the derived domain, pinch ends as p-curve arcs (§12.4); the flat path |
+| **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
+| **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
+
+**Named acceptance criterion (AUTH.3).** The pinned pre-state in
+`author/tests/intersect_sigma.rs` flips in exactly one direction: the two `EmptyRegion` refusals
+become certified parts, `an_intersect_that_does_not_bite_leaves_the_part_untouched` stays true
+vertex for vertex, and the derived extent of each contour lands inside the event brackets §12.2
+names — measured against the brackets, not against a golden, so moving the contour moves both.

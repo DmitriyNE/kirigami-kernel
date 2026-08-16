@@ -2269,6 +2269,70 @@ property is that a bridge across the tangent rulings is **structural** and a cho
 control. Where a fixture legitimately scores badly, assert the property that distinguishes it from
 the failure rather than the number.
 
+### AUTH.3 acceptance criteria (the σ-stock — an intersect that terminates the material)
+
+"Keep what is inside this contour" is the one cut sense the kernel does not have, and it is a
+**region-model** gap rather than a cutter one: µ̂ is a derived extent and σ is an authored one, so a
+cutter whose footprint ends inside the declared band leaves the samples past it with no material and
+the sweep refuses. Design in `docs/cutter-extrude-design.md` §12.
+
+*Isolate the gap to one variable before sizing it, and pin the fixture that does.* The reported
+symptom was "every biting lateral intersect returns `EmptyRegion`", which admits several
+explanations — the component pick, the extruded-profile path, the µ̂ stock rule. The fixture that
+settles it holds part, cutter and placement **fixed** and moves only the declared `region_sigma`
+band: `±1/16` certifies with the cut load-bearing (role `LowerBound`, the annulus carve pushed to
+`Inactive`), `±1/8` and wider refuse. One variable, and it is not the cutter. A second fixture rules
+out AUTH.2's path by giving the identical verdict for a metric `vertical_cylinder` and an extruded
+square. Both are pinned in `author/tests/intersect_sigma.rs` and both are expected to flip.
+
+*Pin the sense that already works, and make the equality non-vacuous with its own control.* An
+intersect containing the whole panel has always verified, which is the reading that makes the feature
+look present. The criterion is not "it still verifies" but "the part is **unchanged**, vertex for
+vertex and ε for ε" — an inactive op must be exactly inactive. That equality proves nothing on its
+own, since a test comparing two identical computations passes forever, so the same test carries a
+control: a *biting* lateral intersect must move those very vertices. State it generally — **an
+equality assertion needs a nearby inequality that fails when the comparison stops being sensitive.**
+
+*The end of the material is a root, and the fixture must show which root.* Where material stops, the
+kept µ̂-interval closes, so its two bounding walls cross at a common µ̂ — `Res_µ̂` for different
+walls, `disc_µ̂` for one wall's own two roots, both already exact in `structure_events`. The naive
+reading is that a contour's σ-extent is its own tangent rulings; the criterion is a test that can
+tell the two apart, and on the quadric fixture they **differ**: the material closes at
+`Meet(1, 2)` — the contour's wall against the panel's annulus carve — `2·10⁻³` inside the contour's
+own `Tangent(2)`. Trimming to the tangent would emit a sliver the ops do not leave, which is a wrong
+part rather than a refused one. So the event set has to run over the union of *every op's* walls, and
+the test asserts the located end against the brackets rather than against a golden number.
+
+*A bracket must be sharp, not merely present.* "An event lies between the last live sample and the
+first dead one" is satisfied by an event set that localizes nothing. The assertion is that each
+bracket is five orders below the sample spacing that found the end (`2⁻⁴⁰` against a `2.9·10⁻³`
+cell) — the property that makes the derivation exact rather than a refinement of the grid.
+
+*Report every candidate in the cell, not the first one.* The first version of that test took the
+first event whose bracket fell in the sample cell, and reported `Tangent` at one end and `Meet` at
+the other on a fixture that is mirror-symmetric — an asymmetry that does not exist. Both cells hold
+**two** events `2·10⁻³` apart. Which one closes the material is not a question the grid can answer;
+it is #268's shape one level out and takes #268's answer (the gaps between isolating brackets are
+proved structure-free, so one evaluation per gap decides). The criterion: **when a locator can
+return several candidates, a test that displays one of them is reporting a mechanism the fixture may
+not have.**
+
+*A feature invisible to the sample grid fails closed for the wrong reason.* Targeted stations are
+`Subtract`-only, so an intersect's footprint is never sampled deliberately, and the uniform grid is
+not fine enough to find it by luck: the square subtends `≈0.128` in σ, **narrower than the
+resolver's own cell** (`7/48 ≈ 0.146` on a `±3.5` band), and not one of the 48 samples lands inside
+it — 240 cells find four. Deriving an extent from a grid that cannot see the contour returns "empty"
+for a cause unrelated to the geometry: fail-closed but misattributed, which is exactly what #268 was.
+Lifting the restriction is part of the slice, not polish after it.
+
+*Name the fallback for the risk leg before it is reached.* `brep_trim_solid_regions` consumes
+inner/outer chains as functions of σ with a lid per slice, so a pinch termination makes the terminal
+slices degenerate. This is the wall interior loops hit at PC.3, and it was answered twice for them —
+p-curves on the flat path, the per-slice polygon channel on the solid one — while the **outer wire**
+got neither. Either that channel extends to the outer wire, or a pinch termination is refused in the
+solid **by name** while the flat pattern stays general. Written down at the gate so that the choice
+is made on measurement rather than on whatever is cheapest once the deadline is close.
+
 ---
 
 ## 9. Sequencing

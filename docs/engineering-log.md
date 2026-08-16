@@ -683,6 +683,41 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The vv-matrix gate has been vacuous for every `[AUTH.x]` row, and `LANDED`'s `"AUTH.1"` /
+  `"AUTH.2"` entries had never been read.** `milestone_tag` required a tag to start with `M` and hold
+  alphanumerics only — a tightening that reads as harmless and is not: `AUTH.2` fails *both* halves,
+  so the parser returned `None` and the row was skipped before the landed check ever ran. Six ★ rows
+  were gated by nothing. Found while adding the AUTH.3 row, by asking whether the row I was writing
+  would actually be enforced: strip `rc-hyp ✅` from the AUTH.2 ★ row and the gate still reported
+  **OK**. Fixed to accept an uppercase-initial tag with alphanumerics and dots, which is what the
+  repo's own tag vocabulary has been since AUTH.1; the mutation now fails and both cases are unit
+  tests. Worth recording as a pattern rather than a typo: **this is the second time this gate has
+  passed vacuously** (before slice 3d it split on whitespace and matched a mid-cell word instead of
+  the ★ Item), and both times the shape was the same — the gate ran, printed OK, and was checking a
+  set that had silently become empty. A gate whose *scope* is computed needs a test that the scope is
+  non-empty, not only a test that the check fires on a hand-built row.
+  *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
+
+- **The naive reading of a contour's σ-extent is measurably wrong, and wrong in the unsafe
+  direction.** AUTH.3 has to derive where an intersect stops leaving material. The obvious answer —
+  "a contour's σ-extent is its own two tangent rulings", which is exactly what `surface_tangents` and
+  `tangent_events` compute — is what the shipped code already knows how to do, so it is the answer
+  one reaches for. On the scout's quadric fixture it is off by `2·10⁻³`: the material closes at
+  `Meet(1, 2)` (σ = ±0.238427501), the contour's wall crossing the *panel's own annulus carve*,
+  which lies **inside** the contour's `Tangent(2)` (σ = ±0.240408206). Trimming to the tangent emits
+  a sliver of material the ops do not leave — a wrong part, not a refused one. The correct rule falls
+  out of what "the material stops here" means: the kept µ̂-interval closes, so its two bounding walls
+  cross at a common µ̂, which is `Res_µ̂` for different walls and `disc_µ̂` for one wall's own two
+  roots — AUTH.2a's families, run over the union of **every op's** walls rather than one cutter's.
+  No new arithmetic; a different argument list. Two further notes from the same measurement: both
+  candidates sit inside one sample cell (`2·10⁻³` apart against `2.9·10⁻³`), so which one closes the
+  material is #268's question one level out and takes #268's answer (the gaps between isolating
+  brackets are structure-free, one evaluation each); and the first version of the test reported
+  `Tangent` at one end and `Meet` at the other on a **mirror-symmetric** fixture, because it took the
+  first event in the cell — *a locator that can return several candidates must be displayed in full,
+  or the test reports a mechanism the fixture does not have.*
+  *2026-08-16 · AUTH.3.0, branch `auth-3`*
+
 - **A measurement can stop being valid when the fixture moves, and stay green: `max_ray_crossings` on
   a chart whose support curves.** AUTH.2's headline property — a ruling meets the cutter twice — is
   read off the flat pattern as *four crossings by a ray from the flat apex*, and that reading is
