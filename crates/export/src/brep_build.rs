@@ -452,23 +452,60 @@ fn snap_poly_to_stations<B: Backend>(
 /// rational Bézier (shared denominator `den`) has positive weights — the intrinsic,
 /// parametrization-independent criterion for a valid exact Bézier piece (never keyed to a specific
 /// σ value). Adaptive bisection: a sub-interval failing [`positive_weights`] is split at its
-/// midpoint and each half recursed. Terminates because a strictly-positive polynomial's Bernstein
-/// coefficients converge to its (positive) values under subdivision; `MAX_DEPTH` is a safety cap
-/// (a positive developable denominator reaches positivity in a few levels).
-fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Vec<Rat<B>> {
+/// midpoint and each half recursed.
+///
+/// `None` when no such partition exists, which is a **precondition failure, not a tolerance
+/// miss**: the subdivision converges only where `den` is *strictly positive* on `[a, b]`, because
+/// a Bézier piece's end weights are `den` at its own ends. So a single point with `den ≤ 0` cannot
+/// be covered by any piece, at any depth. That case is caught here in one evaluation per split
+/// rather than pursued — `den(x) ≤ 0` at a candidate point refuses immediately, and `MAX_NODES`
+/// backstops anything the point samples miss.
+///
+/// Both guards are load-bearing and both were once absent (#280). Without the sample test, an
+/// interval where `den` is non-positive over a *region* expands that whole region to `MAX_DEPTH`:
+/// the cap bounds depth, not node count, so the work is `2³²` sub-intervals — a hang, not a
+/// refusal. And exhausting the depth used to `push(b)` and carry on, emitting the very piece this
+/// function exists to exclude; a caller then got an invalid weight (a control point at or through
+/// infinity) with every certificate still green. Refusing is the only sound answer: the partition
+/// is a precondition of the exported geometry, not something to approximate.
+fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Option<Vec<Rat<B>>> {
     const MAX_DEPTH: usize = 32;
-    fn go<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>, depth: usize, out: &mut Vec<Rat<B>>) {
-        if depth == 0 || positive_weights(den, a, b) {
+    // Generous against any real developable (a positive denominator settles in a few levels) and
+    // still instant against the pathological case.
+    const MAX_NODES: usize = 4096;
+    fn go<B: Backend>(
+        den: &Poly<B>,
+        a: &Rat<B>,
+        b: &Rat<B>,
+        depth: usize,
+        budget: &mut usize,
+        out: &mut Vec<Rat<B>>,
+    ) -> Option<()> {
+        if positive_weights(den, a, b) {
             out.push(b.clone());
-            return;
+            return Some(());
+        }
+        *budget = budget.checked_sub(1)?;
+        if depth == 0 {
+            return None;
         }
         let mid = a.add(b).mul(&Rat::new(1, 2));
-        go(den, a, &mid, depth - 1, out);
-        go(den, &mid, b, depth - 1, out);
+        // The split point is an end weight of both halves, so `den(mid) ≤ 0` is unsatisfiable at
+        // every depth below here. Refuse now instead of bisecting toward it.
+        if den.eval(&mid).sign() <= 0 {
+            return None;
+        }
+        go(den, a, &mid, depth - 1, budget, out)?;
+        go(den, &mid, b, depth - 1, budget, out)
+    }
+    // The outer ends are end weights of the first and last pieces, so they get the same test.
+    if den.eval(a).sign() <= 0 || den.eval(b).sign() <= 0 {
+        return None;
     }
     let mut stations = vec![a.clone()];
-    go(den, a, b, MAX_DEPTH, &mut stations);
-    stations
+    let mut budget = MAX_NODES;
+    go(den, a, b, MAX_DEPTH, &mut budget, &mut stations)?;
+    Some(stations)
 }
 
 /// The exact σ-stations `[σ_lo, …, σ_hi]` that [`brep_freeboundary`] subdivides a chart's σ-support
@@ -484,13 +521,54 @@ pub fn sigma_stations<B: Backend>(
     w: &Interval<B>,
     mu_lo: &RatFunc<B>,
     mu_hi: &RatFunc<B>,
-) -> Vec<Rat<B>> {
+) -> Option<Vec<Rat<B>>> {
     let _ = mu_hi; // both μ-bases share the denominator; the μ⁻ rail fixes the partition
     let c = chart.pedal().reduce();
     let r = chart.ruling().reduce();
     let n = chart.normal().reduce();
     let anchor = c.add(&r.scale(mu_lo)).reduce().add(&n.scale_rat(&w.lo));
     sigma_splits(anchor.den(), &sigma.lo, &sigma.hi)
+}
+
+#[cfg(test)]
+mod sigma_splits_guards {
+    use super::*;
+
+    fn q(n: i128, d: i128) -> Rat<Bignum> {
+        Rat::new(n, d)
+    }
+
+    /// A denominator that is **negative over a whole sub-region** is the shape that used to hang:
+    /// no subdivision of that region ever satisfies `positive_weights`, and the depth cap bounds
+    /// depth rather than node count, so the work was `2³²` sub-intervals. It must refuse, and it
+    /// must refuse *fast* — this test would not finish otherwise, which is the point.
+    #[test]
+    fn a_denominator_that_no_subdivision_can_fix_is_refused_not_pursued() {
+        // 1 − 4σ² < 0 on |σ| > ½: strictly positive at 0, negative over two whole sub-regions.
+        let den = Poly::<Bignum>::from_coeffs(vec![q(1, 1), q(0, 1), q(-4, 1)]);
+        assert!(
+            sigma_splits(&den, &q(-1, 1), &q(1, 1)).is_none(),
+            "a σ-range the denominator is non-positive on has no positive-weight partition"
+        );
+        // …and the same denominator still partitions the range where it IS positive, so the
+        // refusal is about the precondition and not a blanket loss of capability.
+        assert!(
+            sigma_splits(&den, &q(-1, 4), &q(1, 4)).is_some(),
+            "inside |σ| < ½ the denominator is strictly positive and must still partition"
+        );
+    }
+
+    /// The end weights of a Bézier piece are `den` at its own ends, so a **root exactly on the
+    /// boundary** is unsatisfiable too — and it is the case a midpoint-only test would miss.
+    #[test]
+    fn a_root_on_the_endpoint_is_refused_by_the_endpoint_test() {
+        // 1 − σ vanishes at σ = 1.
+        let den = Poly::<Bignum>::from_coeffs(vec![q(1, 1), q(-1, 1)]);
+        assert!(
+            sigma_splits(&den, &q(0, 1), &q(1, 1)).is_none(),
+            "den(b) = 0 is a zero end weight — a control point at infinity"
+        );
+    }
 }
 
 impl<B: Backend> Builder<B> {
@@ -1026,7 +1104,7 @@ pub fn brep_freeboundary_holed<B: Backend>(
 ) -> Option<Brep<B>> {
     // A hole-free solid is the N-slice slab (which also handles a curved authored μ-boundary).
     if holes.is_empty() {
-        return Some(brep_freeboundary_slab(chart, sigma, w, mu_lo, mu_hi));
+        return brep_freeboundary_slab(chart, sigma, w, mu_lo, mu_hi);
     }
 
     let wlo = w.lo.clone();
@@ -1060,7 +1138,7 @@ pub fn brep_freeboundary_holed<B: Backend>(
 
     // The positive-weight σ-stations — the intrinsic partition, hole-independent (stations cross
     // holes freely). `N = stations − 1` slices.
-    let stations = sigma_stations(chart, sigma, w, mu_lo, mu_hi);
+    let stations = sigma_stations(chart, sigma, w, mu_lo, mu_hi)?;
     let nst = stations.len();
     if nst < 2 {
         return None;
@@ -1203,7 +1281,7 @@ fn brep_freeboundary_slab<B: Backend>(
     w: &Interval<B>,
     mu_lo: &RatFunc<B>,
     mu_hi: &RatFunc<B>,
-) -> Brep<B> {
+) -> Option<Brep<B>> {
     let mut bld = Builder::new();
     let ws = [w.lo.clone(), w.hi.clone()];
     let c = chart.pedal().reduce();
@@ -1216,7 +1294,7 @@ fn brep_freeboundary_slab<B: Backend>(
     let surf = |j: usize, k: usize| bases[j].add(&n.scale_rat(&ws[k]));
     // The (μ-side, w) cross-section ring: r0=(μ⁻,wlo), r1=(μ⁺,wlo), r2=(μ⁺,whi), r3=(μ⁻,whi).
     let ring = [(0usize, 0usize), (1, 0), (1, 1), (0, 1)];
-    let stations = sigma_stations(chart, sigma, w, mu_lo, mu_hi);
+    let stations = sigma_stations(chart, sigma, w, mu_lo, mu_hi)?;
     let nst = stations.len();
 
     // Corner vertices v[k][m]: ring corner m at station s_k (deduped by coordinate).
@@ -1280,7 +1358,7 @@ fn brep_freeboundary_slab<B: Backend>(
             bld.brep.add_face(surface, wire);
         }
     }
-    bld.into_brep()
+    Some(bld.into_brep())
 }
 
 /// One corner of a trim-solid `(σ, μ̂)` footprint loop: a σ-coordinate paired with the **rail**
@@ -1573,7 +1651,7 @@ pub fn brep_trim_solid<B: Backend>(
         lo: sigma_lo,
         hi: sigma_hi,
     };
-    let mut stations = sigma_stations(chart, &sigma, w, &inner[0].1, &outer[0].1);
+    let mut stations = sigma_stations(chart, &sigma, w, &inner[0].1, &outer[0].1)?;
     for (iv, _) in inner.iter().chain(outer.iter()) {
         stations.push(iv.lo.clone());
         stations.push(iv.hi.clone());
@@ -1952,7 +2030,7 @@ pub fn brep_trim_solid_regions<B: Backend>(
         let rmid = iv.lo.add(&iv.hi).mul(&Rat::new(1, 2));
         let in_p = piece_at(inner, &rmid)?.clone();
         let out_p = piece_at(outer, &rmid)?.clone();
-        stations.extend(sigma_stations(ch, iv, w, &in_p, &out_p));
+        stations.extend(sigma_stations(ch, iv, w, &in_p, &out_p)?);
         stations.push(iv.lo.clone());
         stations.push(iv.hi.clone());
     }
@@ -3527,7 +3605,8 @@ mod tests {
             !super::positive_weights(&den, &a, &b),
             "the wide σ=0-crossing span has a non-positive Bézier weight"
         );
-        let stations = super::sigma_splits(&den, &a, &b);
+        let stations = super::sigma_splits(&den, &a, &b)
+            .expect("1 + σ² is strictly positive, so it partitions");
         assert!(stations.len() > 2, "the wide gore subdivides: {stations:?}");
         assert_eq!(stations.first(), Some(&a));
         assert_eq!(stations.last(), Some(&b));
@@ -3824,6 +3903,7 @@ mod tests {
         let (chart, sigma, w, mu_lo, mu_hi) = cone_gore();
         assert!(
             sigma_stations(&chart, &sigma, &w, &mu_lo, &mu_hi)
+                .expect("the cone gore's denominator is strictly positive")
                 .iter()
                 .any(|s| s.cmp(lo) == Greater && s.cmp(hi) == Less),
             "the fixture must straddle a σ-station"

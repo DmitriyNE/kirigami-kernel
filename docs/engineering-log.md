@@ -19,6 +19,69 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **Certification runtime is product-blocking, and it is no longer a constant-factor problem
+  (#279).** Raised by the user while an AUTH.3c probe ran: *"These running times are not acceptable
+  for the real-world use."* The numbers that make it a scope item rather than a grumble: after
+  OPT.0–OPT.3 — which removed the 128-bit software division, **60%** of runtime — a **small**
+  fixture still costs tens of seconds per pipeline run. Small input, that much work, obvious
+  constant factors already gone: the pattern points at coefficient growth rather than a hot loop.
+
+  **What the honest numbers are, and are not.** The figures to hand are *post*-opt (this session's
+  `test`-profile run) but they are **test wall-clock**, not per-call: `the_same_footprint…` is `93s`
+  for **3 develops + 1 fold**, `only_the_declared_band…` is `258s` for **2 develops + 1 fold**, and
+  both ran under nextest across 298 tests on 10 cores, so contention inflates them. Per `develop()`
+  that is tens of seconds, not minutes. The first thing #279's triage owes is a **clean single-run
+  measurement** — one call, no contention, stated profile. Recorded because the user caught me
+  quoting a test timing as a call timing: *a suite number and a call number differ by both the call
+  count and the parallel load, and neither correction is small.*
+
+  ⚠️ **Correction to this entry as first written.** It also cited a `solid()` probe that had not
+  returned after 14 minutes. That number is **not** evidence of coefficient growth and must not be
+  cited as such — `sample`-ing the process at 30 min put **100%** of stacks in `sigma_splits::go`,
+  i.e. it was the unbounded-subdivision hang (#280), a different defect. The runtime concern stands
+  on the 93s/258s figures alone. Recorded because the mistake is the instructive part: *a slow
+  number and a hung number are indistinguishable without observability, and I generalized from one
+  to a cost model before sampling the process.* Sampling took ten seconds and settled it.
+
+  **⚠️ The triage ran early (2026-08-17) and refuted this entry's own hypothesis.** Per-stage,
+  release, single run, no contention (`author/examples/auth3c_probe.rs`):
+
+  | fixture | develop | outline pts | solid | fold |
+  |---|---|---|---|---|
+  | square, polygon corner | `1.20s` | 196 | `0.06s` | `1.22s` (6.2 ms/pt) |
+  | cylinder, sole-bound | `3.21s` | 192 | `0.08s` | `1.15s` (6.0 ms/pt) |
+  | **cylinder, whole-side** | **`175.68s`** | **6386** | `2.30s` | — |
+  | lateral trim (control) | `0.48s` | 98 | `0.04s` | Verified, 6 faces |
+
+  **The driver is emitted vertex count, not arithmetic.** Per-point cost is 6–27 ms and roughly
+  flat; the *count* is 33× on one shape (#281). Two explanations were tested and both died: the
+  **build profile** costs ~8% (same binary with `debug-assertions` + `overflow-checks` on: 1.28s vs
+  1.20s, 3.47s vs 3.21s — so keeping them on in `[profile.test]` is nearly free, and the earlier
+  "20–35× profile gap" reasoning was wrong), and **coefficient growth** would show as *rising*
+  per-point cost, which it does not. The one slow fixture explains test 2's `258s` almost exactly.
+
+  So the coefficient-histogram plan below is **not** where to start; it stays as a later check if a
+  per-point trend ever appears. The lever that measurement actually points at is *how many vertices
+  a boundary shape emits*, which is #281. Kept in full because the reasoning was plausible and
+  wrong, and the correction cost one afternoon of measurement rather than a rewrite of the
+  arithmetic tier: **a cost model asserted before a per-stage measurement is a guess with a table
+  around it.**
+
+  The original suspects, now demoted to "check only if per-point cost rises": `reduce()`'s
+  polynomial gcd over degree-24 denominators, Sturm chain construction, resultant/discriminant
+  formation in `develop::cut`, the tracer's per-segment rail fits.
+
+  Three candidate answers, to be chosen on that measurement and not before: bounded-precision
+  dyadic arithmetic with outward rounding pushed further up the pipeline (the enclosure tier
+  already does this with `RatIv` + `ROUND_BITS`); modular / evaluation-interpolation for the
+  resultant and gcd work; or an explicitly **uncertified float preview tier** with certification run
+  once at the end — which is the split an interactive ECAD user actually needs, since authoring and
+  the final certificate have different budgets. #257 folds in as a subset. The standing constraints
+  do not move: the float quarantine (lattice + certify-core only, exact-stays-exact, approx opt-in
+  under the five-part contract) and `no_repr_leak`. A preview tier has to be a *differently typed
+  path*, never a quiet precision drop inside a certified one.
+  *2026-08-16 · open · #279, sequenced after AUTH.3 at the user's "afterwards"*
+
 - **AUTH.1 deferrals — scope decisions, taken with the user, not oversights.** Recorded so the
   narrower first slice reads as a choice: **(a) per-edge draft slope** — a single cast point forces
   one projective taper and cannot give edge A 5° and edge B 0°, which is real fab practice; wanted
@@ -697,6 +760,37 @@ fine — this is a log, not a schema.
   set that had silently become empty. A gate whose *scope* is computed needs a test that the scope is
   non-empty, not only a test that the check fires on a hand-built row.
   *2026-08-16 · resolved · AUTH.3.0, branch `auth-3`*
+
+- **A 30-minute "slow" run was a hang, and ten seconds of `sample` said so (#280).** Probing
+  AUTH.3c with `solid_brep`'s guard bypassed, the first fixture had not returned after 30 minutes,
+  and there was no way to tell 3 more minutes from 3000. macOS `sample <pid> 10` put **100%** of
+  stacks in `export::brep_build::sigma_splits::go`, recursing dozens of levels — an unbounded
+  subdivision, not arithmetic cost. **Two defects, both in code shipped since G9.2:**
+
+  - **The hang.** `sigma_splits` bisects until every sub-interval's rational Bézier has all-positive
+    weights, and its own doc carries the termination argument: *"a strictly-positive polynomial's
+    Bernstein coefficients converge to its (positive) values under subdivision"*. That argument
+    needs `den > 0` on `[a,b]`. Where `den` is non-positive over a *region*, nothing converges and
+    the whole region expands to `MAX_DEPTH` — and the cap bounds **depth, not node count**, so the
+    work is `2³²` sub-intervals. The precondition was stated correctly and never checked.
+  - **The fail-open underneath it.** On depth exhaustion `go` did `out.push(b); return` — emitting
+    the very piece the function exists to exclude. A caller got an invalid Bézier weight (a control
+    point at or through infinity) with every certificate still green.
+
+  Fix: the end weights of a piece **are** `den` at its ends, so one evaluation per split point
+  decides it — `den(x) ≤ 0` refuses immediately instead of bisecting toward it — plus a `MAX_NODES`
+  backstop, and `Option` returns so exhaustion refuses rather than emits. The pathological case went
+  from **30+ min to 16 ms**, and all 73 export/acceptance tests stayed green, so it is not
+  over-refusing.
+
+  Three things worth keeping. **A documented precondition with no check is a hang waiting for a
+  caller** — this one survived because `solid_brep`'s AUTH.3c guard happened to keep every shipped
+  fixture inside the valid range, so the bug was reachable only by the slice that had to remove the
+  guard. **A depth cap is not a work cap**; `2³²` leaves is indistinguishable from a hang, and the
+  cap read as a safety net while providing none. And **a slow number and a hung number are identical
+  without observability** — I had already generalized this 30 minutes into a cost model for #279
+  before sampling, which was wrong; the runtime concern stands on other numbers.
+  *2026-08-17 · resolved · #280, branch `auth-3`*
 
 - **Two guesses that read as facts, and both failed as `None` rather than as bad geometry.** The
   last boundary shape AUTH.3b owed (#278) is a contour bounding one **whole side**: its chain there
