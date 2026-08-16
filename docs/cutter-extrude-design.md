@@ -1048,18 +1048,43 @@ that turns — and the second capped the walk at one lap, which silently made th
 unreachable rather than wrong-looking. Neither showed up as bad geometry; both showed up as `None`.
 
 `brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
-between them **over the region bands**, so a derived extent narrower than them would sweep a solid
-across σ the ops left empty. It refuses (`SolidRefused`) until this slice lands, while the flat
-pattern — the artifact that is actually manufactured — is already general for polygonal contours.
-A pinch end also makes the terminal slices degenerate. Holes met this wall already and
+between them **over the region bands**, so a derived extent narrower than them sweeps a solid across
+σ the ops left empty. Clipping each band to `structure.domain` before the builder sees it is the
+whole of the mechanical part, and it is the right place: that one input feeds both the σ-station
+partition and the per-slice rail lookup, so nothing downstream has to learn what a derived extent is.
+A region the extent excludes clips to an empty interval — kept in the list so the *region index*
+`span_pieces` returns still matches the rail pieces', dropped only from the chart list, since that is
+what actually places geometry.
+
+**The clip alone did not do it, and the second half is worth recording.** With the extent right, the
+polygonal contour still refused, in `sigma_splits`: the anchor's denominator came out **uniformly
+negative** over the derived extent. `(N, D)` and `(−N, −D)` are the same rational curve, so which one
+arrives is a *convention* — a cutter's wall facing the other way flips its µ̂-pullback's denominator,
+and `reduce()` may flip it again on the way to `c + µ̂·r + w·n` — and demanding the positive sign
+refused a part every emitted patch is perfectly well-conditioned over. What is genuinely unbuildable
+is a **crossing**: a weight through zero is a pole in the span, and that is what subdividing is for.
+So the gate became sign-*definiteness* (`positive_weights`) and the Bernstein constructors pick the
+positive representative (`bezier::positive_representative`). Exact, so no emitted point and no
+certified bound moves — and it applies to every rational patch in the crate, which is why the shipped
+lateral trim is pinned unchanged beside the new case rather than merely re-run.
+
+A **pinch** end is the shape the clip cannot reach, and for a different reason each way round: where
+the contour bounds the part alone the boundary never becomes a rail band at all (`certify_boundary`
+refuses with `RailSpanShort` before the builder is called), and where it bounds a whole side the
+splice leaves one chain empty. Both are the same missing capability. Holes met this wall already and
 were answered twice: on the flat path by p-curves (PC.3's quadric-window constructor, PC.4's
 `BoundaryArc::Curve`), and on the solid path by the general polygon channel that clips each slice
 against the whole loop (`poly_holes` → `slice_poly_footprint`, PC.5, generalized by AUTH.2e). Both
 answers are for **interior** loops; the **outer wire** got neither. Either that channel extends one
-level out, or a pinch termination is
-refused in the solid **by name** while the flat pattern — the artifact that is actually manufactured
-— stays general. The choice is AUTH.3c's, on measurement; naming the fallback here is what keeps it
+level out, or a pinch termination is refused in the solid **by name** while the flat pattern — the
+artifact that is actually manufactured — stays general. Naming the fallback here is what keeps it
 from being decided by whatever is easiest at the time.
+
+Worth being precise about what a pinch does to the solid, because "degenerate terminal slices" reads
+worse than it is: the footprint in `(σ, µ̂)` is a closed **oval**, and an oval swept through the
+thickness is an ordinary prism with an ordinary wall. Nothing is degenerate. What fails is only the
+*representation* — two graphs over σ cannot describe a curve that turns around in σ — which is
+exactly what the polygon channel does not care about.
 
 ### 12.5 Scope, and what stays refused
 
@@ -1091,7 +1116,7 @@ from being decided by whatever is easiest at the time.
 | **AUTH.3.0** | this section + `vv-guide` criteria + `vv-matrix` rows + the pre-state pinned as tests (the GO-gate) |
 | **AUTH.3a** | the derived σ-extent: `sample_comps` may be empty; one run or refuse; ends located in the union event set (§12.2); intersect ops get targeted stations — **done** (`resolve::{SigmaEnd, locate_end}`, `Structure::{domain, ends}`, `PartFault::{DisconnectedRegion, SigmaEndUnattributed}`, `develop::cut::coverage_events`) |
 | **AUTH.3b** | the boundary that closes in σ; the flat path — **done**, in all three shapes: polygonal contours (exact affine rails through the corner); quadric contours bounding the part **alone** (the traced loop as an outline — `sole_pinched_contour`); and quadric contours **sharing** the boundary, spliced from `develop::cut::tangent_turn_arc` — one arc per end where the contour takes over near each, or a single two-turn arc where it bounds a whole side |
-| **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named |
+| **AUTH.3c** | the solid path over a derived extent — the risk slice, with §12.4's fallback named. **Polygonal contours done**: the region bands clip to `structure.domain`, and the Bernstein weights normalize to their positive representative (`bezier::positive_representative`, `positive_weights` now sign-definite) — a σ-terminating square contour is a watertight genus-0 solid, the shipped lateral trim unmoved. The two **pinch** shapes still refuse by name (`RailSpanShort` where the contour bounds alone, `SolidRefused` where it bounds a whole side), pending the outer-wire polygon channel §12.4 names |
 | **AUTH.3d** | acceptance: a contour kept on the device, developed, folded, exported; §12.5 refused by name |
 
 **Named acceptance criterion (AUTH.3).** The pinned pre-state in

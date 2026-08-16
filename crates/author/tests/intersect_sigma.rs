@@ -17,6 +17,9 @@
 //!   the arc is spliced into the graph chain at the junctions the corner refinement locates — one
 //!   arc per end where it takes over near each, and a single arc wrapping **both** tangents where it
 //!   bounds one whole side;
+//! - the **solid** follows the flat pattern where the boundary is still a rail band (AUTH.3c): the
+//!   region bands clip to the derived extent, and the Bézier weights normalize to their positive
+//!   representative — a σ-terminating polygonal contour is a watertight genus-0 solid;
 //! - the shipped lateral trim is unmoved, vertex for vertex.
 
 use author::construct;
@@ -303,6 +306,72 @@ fn the_same_footprint_is_a_certified_hole_and_a_kept_part() {
         roles[0] != OpRole::Inactive && roles[2] != OpRole::Inactive,
         "this is the MIXED boundary: the panel's plane and the contour must BOTH bound, else the \
          fixture is the sole-contour case and proves nothing about the splice. roles {roles:?}"
+    );
+}
+
+/// **The solid over a derived σ-extent (AUTH.3c).**
+///
+/// AUTH.3b taught the *flat pattern* to close in σ; the solid builder still swept the authored
+/// region **band**, so a part whose extent is narrower than its band asked the builder to place
+/// geometry over σ the boundary chains do not cover — and it refused, correctly, by failing to find
+/// a rail piece there. Clipping each band to `structure.domain` is the whole of the mechanical part.
+///
+/// It was not the whole of the fix, and the second half is the interesting one: with the extent
+/// right, `sigma_splits` still refused this part, because the anchor's denominator came out
+/// **uniformly negative** over it. `(N, D)` and `(−N, −D)` are the same curve — which one arrives is
+/// a convention of the cutter's wall orientation, flipped again by `reduce()` — so demanding the
+/// positive sign refused a part every emitted patch is perfectly well-conditioned over. The gate is
+/// now sign-*definiteness* (a weight passing through zero is a genuine pole, and that is what
+/// subdividing is for) and the Bernstein constructors pick the positive representative.
+///
+/// A watertight genus-0 shell is the claim, not merely `Verified`: a solid built over the wrong
+/// σ-range would still report a bound.
+#[test]
+fn the_solid_closes_at_the_derived_extent_too() {
+    let kept = panel(qi(-1), qi(1)).intersect(drilled(square(qi(0), q(11, 5), q(1, 4))));
+    let solid = match kept.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "a contour that terminates the material in σ must build a solid, got {}",
+            name(&v)
+        ),
+    };
+    let brep = solid.brep();
+    let (v, e, f) = (
+        brep.verts().len() as i64,
+        brep.edges().len() as i64,
+        brep.faces().len() as i64,
+    );
+    let l: i64 = brep
+        .faces()
+        .iter()
+        .map(|fc| 1 + fc.holes.len() as i64)
+        .sum();
+    let genus = (2 - (v - e + (2 * f - l))) / 2;
+    assert_eq!(brep.free_edges(), 0, "watertight: {f} faces");
+    assert_eq!(
+        genus, 0,
+        "a solid square contour is a plain slab: {f} faces"
+    );
+
+    // The control that keeps the above from being vacuous *and* pins the no-regression half: the
+    // shipped lateral trim, whose extent IS its band, must build exactly as before — the sign
+    // normalization above touches every rational patch in the crate, so "the σ-stock case now
+    // works" is only half the claim.
+    let lateral =
+        panel(qi(-1), qi(1)).intersect(Cutter::half_space([qi(0), qi(0), qi(1)], q(5, 2)));
+    let plain = match lateral.solid() {
+        Verdict::Verified(s) => s,
+        v => panic!(
+            "the shipped lateral trim must still build, got {}",
+            name(&v)
+        ),
+    };
+    assert_eq!(plain.brep().free_edges(), 0, "watertight");
+    assert!(
+        plain.brep().faces().len() < brep.faces().len(),
+        "and the contour's solid must be the richer one — a σ-terminating boundary carries more \
+         faces than a band-wide trim, so equal counts would mean one of them is not what it says"
     );
 }
 

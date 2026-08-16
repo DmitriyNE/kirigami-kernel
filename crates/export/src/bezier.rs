@@ -120,6 +120,37 @@ pub fn poly_to_bernstein<B: Backend>(p: &Poly<B>, a: &Rat<B>, b: &Rat<B>, n: usi
         .collect()
 }
 
+/// The **positive representative** of a homogeneous Bernstein split: `(N, D)` and `(−N, −D)` are the
+/// same rational curve, but only one of them has positive weights, and a CAD kernel rejects a
+/// non-positive weight (a control point at or through infinity). Negate when every weight is
+/// non-positive and at least one is nonzero.
+///
+/// Which representative arrives is a **convention**, not a geometry: a cutter's wall facing the
+/// other way flips the sign of its µ̂-pullback's denominator, and `reduce()` may flip it again on the
+/// way to the anchor `c + µ̂·r + w·n`. Normalizing here, where the Bernstein form is made, is what
+/// lets a part whose rails happen to arrive negated build at all (AUTH.3c) — and it is exact, so
+/// nothing about the emitted geometry or its certified bound moves.
+///
+/// Mixed-sign weights are left alone: neither representative is valid then, and that is the caller's
+/// gate to refuse (`brep_build::positive_weights` subdivides until the sign is definite).
+fn positive_representative<B: Backend>(
+    wpoles: Vec<[Rat<B>; 3]>,
+    weights: Vec<Rat<B>>,
+) -> (Vec<[Rat<B>; 3]>, Vec<Rat<B>>) {
+    let all_nonpos = weights.iter().all(|w| w.sign() <= 0);
+    let any_neg = weights.iter().any(|w| w.sign() < 0);
+    if !(all_nonpos && any_neg) {
+        return (wpoles, weights);
+    }
+    (
+        wpoles
+            .into_iter()
+            .map(|p| [p[0].neg(), p[1].neg(), p[2].neg()])
+            .collect(),
+        weights.into_iter().map(|w| w.neg()).collect(),
+    )
+}
+
 /// An exact **rational Bézier** curve in the homogeneous (weighted-pole) form: a list of
 /// weighted poles `wᵢ·bᵢ ∈ ℚ³` and matching weights `wᵢ ∈ ℚ`, of common length `n + 1`
 /// (degree `n`). The curve is
@@ -169,6 +200,7 @@ impl<B: Backend> RatBezier<B> {
         let wpoles = (0..=n)
             .map(|i| [bx[i].clone(), by[i].clone(), bz[i].clone()])
             .collect();
+        let (wpoles, weights) = positive_representative(wpoles, weights);
         RatBezier { wpoles, weights }
     }
 
@@ -320,6 +352,7 @@ impl<B: Backend> RatBezierSurface<B> {
             wpoles.push([r1[0][i].clone(), r1[1][i].clone(), r1[2][i].clone()]);
             weights.push(w0[i].clone());
         }
+        let (wpoles, weights) = positive_representative(wpoles, weights);
         RatBezierSurface {
             wpoles,
             weights,
@@ -488,6 +521,52 @@ mod tests {
                 "curve reproduced at t = {tn}/{td}"
             );
         }
+    }
+
+    /// **The negated representative is the same curve, and comes out with positive weights.**
+    ///
+    /// `(N, D)` and `(−N, −D)` denote one rational curve; which one arrives is a sign convention of
+    /// whatever built it (a cutter's wall facing the other way, or a `reduce()` on the way to the
+    /// anchor). A CAD kernel rejects a non-positive weight, so the constructor must pick the
+    /// positive one — and picking it may not move a single point of the curve. Both halves are
+    /// asserted here, because either alone would pass a wrong implementation: negating nothing
+    /// preserves the curve, and negating only the weights would flip it.
+    #[test]
+    fn the_negated_representative_is_the_same_curve_with_positive_weights() {
+        let v = Vec3Rat::new([p(&[0, 1]), p(&[1]), p(&[0])], p(&[1, 0, 1])); // (σ,1,0)/(σ²+1)
+        let neg = Vec3Rat::new([p(&[0, -1]), p(&[-1]), p(&[0])], p(&[-1, 0, -1]));
+        let (a, b) = (Q::from_i128(0), Q::from_i128(2));
+        let (pos_bez, neg_bez) = (
+            RatBezier::from_vec3rat(&v, &a, &b),
+            RatBezier::from_vec3rat(&neg, &a, &b),
+        );
+        assert!(
+            neg_bez.weights().iter().all(|w| w.sign() > 0),
+            "a negated source must still yield positive weights: {:?}",
+            neg_bez.weights()
+        );
+        assert_eq!(
+            pos_bez.weights(),
+            neg_bez.weights(),
+            "and the same ones the positive source gives"
+        );
+        for (tn, td) in [(0, 1), (1, 3), (1, 2), (1, 1)] {
+            let t = Q::new(tn, td);
+            let sigma = a.add(&t.mul(&b.sub(&a)));
+            assert_eq!(
+                neg_bez.eval(&t),
+                v.eval(&sigma),
+                "and it is the SAME curve at t = {tn}/{td}, not its reflection"
+            );
+        }
+        // The ruled surface takes the same normalization, off the same shared denominator.
+        let n0 = Vec3Rat::new([p(&[0, -1]), p(&[-1]), p(&[0])], p(&[-1, 0, -1]));
+        let n1 = Vec3Rat::new([p(&[0, -1]), p(&[-1]), p(&[-1])], p(&[-1, 0, -1]));
+        let surf = RatBezierSurface::ruled_from_rails(&n0, &n1, &a, &b);
+        assert!(
+            surf.weights().iter().all(|w| w.sign() > 0),
+            "a negated ruled patch must carry positive weights too"
+        );
     }
 
     /// The ruled surface between two σ-rails sharing a denominator reproduces the affine

@@ -1062,26 +1062,31 @@ pub(crate) fn solid_brep<B: Backend>(
     built: &BuiltRegions<B>,
     structure: Structure<B>,
 ) -> Verdict<SolidParts<B>, PartFault, Rat<B>> {
-    let bands: Vec<Interval<B>> = part.regions.iter().map(|r| r.band.clone()).collect();
+    // **The region bands, clipped to the derived σ-extent (AUTH.3c).** The authored band is where
+    // the blank was declared; `structure.domain` is where the ops actually left material, and the
+    // two differ exactly when a cutter terminates the stock in σ. Every consumer below wants the
+    // second: `brep_trim_solid_regions` sweeps these bands to place its σ-stations and to pick the
+    // rail piece covering each slice, so handing it the authored band asks it to build over σ the
+    // boundary chains do not cover — which it refuses, correctly, by failing to find a piece.
+    //
+    // Clipping in place rather than dropping keeps the region *index* meaningful: `span_pieces`
+    // returns it and `find_piece` matches it against the rail pieces' own `region`. A region the
+    // extent excludes clips to an empty interval, which `span_pieces` already skips; only the chart
+    // list below drops it, because the builder does place geometry per chart.
+    let bands: Vec<Interval<B>> = part
+        .regions
+        .iter()
+        .map(|r| Interval {
+            lo: rmax(&r.band.lo, &structure.domain.lo),
+            hi: rmin(&r.band.hi, &structure.domain.hi),
+        })
+        .collect();
     // The STEP re-fit: a curved rail exported to OCCT must stay a handful of Bézier control
     // points (the G7 finding) — internal, not a facade knob (seam #8).
     let fit = RailFit {
         subdiv: part.fit.subdiv.max(RailFit::occt_low().subdiv),
         ..RailFit::occt_low()
     };
-    // **AUTH.3c** is what teaches the solid builder a derived extent. `brep_trim_solid_regions`
-    // sweeps the region *bands*, so an extent narrower than them would build a solid over σ the ops
-    // left empty — while the flat pattern, which AUTH.3b did teach, is correct. Refused by name
-    // rather than mis-built; §12.4 names the choice the slice has to make (extend the general
-    // polygon channel to the outer wire, or refuse a pinch end here and keep the flat path general).
-    for (band, end) in [
-        (&bands[0].lo, &structure.domain.lo),
-        (&bands[bands.len() - 1].hi, &structure.domain.hi),
-    ] {
-        if band.cmp(end) != core::cmp::Ordering::Equal {
-            return Verdict::Refuted(PartFault::SolidRefused);
-        }
-    }
     let boundary = bail!(certify_boundary(part, built, &structure, fit, true));
     let mut eps_all = boundary.eps.clone();
 
@@ -1188,8 +1193,17 @@ pub(crate) fn solid_brep<B: Backend>(
         }
     }
 
-    let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> =
-        bands.iter().cloned().zip(built.charts.iter()).collect();
+    // Only the regions the extent actually reaches carry geometry. A region clipped to nothing is
+    // not a degenerate slab to be built at zero width — it is outside the part.
+    let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> = bands
+        .iter()
+        .cloned()
+        .zip(built.charts.iter())
+        .filter(|(iv, _)| iv.lo.cmp(&iv.hi) == core::cmp::Ordering::Less)
+        .collect();
+    if charts.is_empty() {
+        return Verdict::Refuted(PartFault::EmptyRegion);
+    }
     let w = Interval {
         lo: Rat::from_i128(0),
         hi: part.thickness.clone(),

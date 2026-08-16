@@ -701,6 +701,20 @@ fine — this is a log, not a schema.
 
 ## Tech debt / sketchy
 
+- **The σ-station partition is derived from one representative rail and never re-checked against the
+  patches it is supposed to serve.** `sigma_stations` builds its anchor from the slice's **lower**
+  rail only — documented as sound because "all four σ-rails share one denominator (the `µ⁻` base
+  fixes it)" — but `trim_surf` calls `reduce()`, whose gcd division depends on the numerator, so two
+  rails over the same chart can reduce to *different* denominators. It is already loose for the
+  general polygon channel (AUTH.2e), where a slice's lid rails are per-edge affine functions the
+  partition never saw. Nothing has produced a bad weight, and `sigma_splits` is deliberately
+  conservative, so this is a latent fail-open rather than a bug: **the emitted patch's weights are
+  not verified, only a proxy's.** The cheap close is a check in the builder's second pass —
+  `positive_weights(anchor.den(), sk, sk1)` per emitted rail, refusing rather than emitting — which
+  would also turn the outer-wire polygon channel (§12.4) from "consistent with the existing
+  looseness" into something actually gated. Noticed while sign-normalizing the weights for AUTH.3c;
+  deliberately not folded into that slice. *2026-08-17 · open · `export::brep_build`*
+
 - **A local `xtask gate --full` failed three OCCT/CGAL legs once and passed them on a clean re-run —
   cause unidentified, so it is recorded rather than dismissed.** The run reported `FAIL` for *OCCT
   STEP export*, *OCCT STEP doctests* and *CGAL differential*, while its own compile legs
@@ -753,6 +767,39 @@ fine — this is a log, not a schema.
   *2026-08-04 · open · `certify-check/CertifyCore/FunsExternal.lean`, `CertifyCheck/ClipSigma.lean`*
 
 ## Findings
+
+- **A part refused because its denominator had the wrong sign — and the sign meant nothing
+  (AUTH.3c).** The σ-stock's solid path was expected to be a one-line fix: `brep_trim_solid_regions`
+  sweeps the *authored* region bands, so clip them to the derived `structure.domain` first. That
+  clip is correct and necessary, and it did **not** make the polygonal contour build. It moved the
+  refusal from `piece_at` to `sigma_splits`, which reported that the anchor `c + µ̂·r + w·n` had a
+  denominator **negative at every one of nine samples across the extent** — uniformly negative, not
+  crossing.
+
+  `(N, D)` and `(−N, −D)` are the same rational curve. Which one arrives is a convention: an
+  extruded profile's wall facing the other way flips the sign of its µ̂-pullback's denominator, and
+  `reduce()` — a polynomial gcd division — may flip it again on the way to the anchor. So
+  `positive_weights`, which demanded strictly positive Bernstein coefficients, was refusing parts
+  every emitted patch is perfectly well-conditioned over. What is genuinely unbuildable is a
+  **crossing**: a weight through zero is a pole inside the span, and that is what subdividing is
+  for. The gate is now sign-*definiteness*, `sigma_splits` carries the run's sign down its
+  recursion, and `RatBezier::from_vec3rat` / `RatBezierSurface::ruled_from_rails` pick the positive
+  representative (`bezier::positive_representative`) where the Bernstein form is actually made —
+  which is the only place that can, since `reduce()` sits between the rail and the patch.
+
+  Result: the σ-terminating square contour builds a **watertight genus-0 solid, 14 faces**, against
+  the lateral-trim control's unmoved **10**. The normalization is exact, so no emitted point and no
+  certified bound moves — verified the strong way, `693/693` workspace tests green including every
+  golden and acceptance fixture, because a change touching every rational patch in the crate is not
+  something a targeted test can clear.
+
+  **Two things worth carrying forward.** First, the diagnosis only existed because the probe was a
+  *comparison* — four fixtures with a working control — so "the control builds and this does not"
+  was a fact from the first run rather than a hypothesis. Second, the false lead cost two attempts:
+  I twice sign-normalized the **rail** (`poly_rail`) and twice the probe was unmoved, because
+  `reduce()` re-introduces the sign downstream of it. *Normalize where the representation is
+  consumed, not where it is produced* — anything in between may re-derive it.
+  *2026-08-17 · resolved · AUTH.3c, branch `auth-3c`*
 
 - **The vv-matrix gate has been vacuous for every `[AUTH.x]` row, and `LANDED`'s `"AUTH.1"` /
   `"AUTH.2"` entries had never been read.** `milestone_tag` required a tag to start with `M` and hold

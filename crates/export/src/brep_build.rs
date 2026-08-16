@@ -352,17 +352,23 @@ fn stitched_poly_chain<B: Backend>(
     v
 }
 
-/// Whether the rational Bézier over `[a, b]` with denominator `den` has **all-positive weights** —
+/// Whether the rational Bézier over `[a, b]` with denominator `den` has **sign-definite weights** —
 /// the exact validity condition for a rational Bézier patch/edge (a CAD kernel rejects a
 /// non-positive weight: a control point at/through infinity). The weights are the Bernstein
 /// coefficients of `den` over `[a, b]`; checked at `deg(den)` (degree elevation preserves Bernstein
-/// positivity, so this never *under*-reports — it may only subdivide slightly more than strictly
-/// needed). A strictly-positive polynomial always passes on a small enough interval.
+/// sign-definiteness, so this never *under*-reports — it may only subdivide slightly more than
+/// strictly needed). A sign-definite polynomial always passes on a small enough interval.
+///
+/// All-**negative** counts, because `(N, D)` and `(−N, −D)` are the same curve and
+/// [`positive_representative`](crate::bezier) picks the positive one when the Bernstein form is
+/// made. Which one arrives is a convention — a cutter's wall facing the other way flips its
+/// µ̂-pullback's denominator — so demanding the positive sign *here* refused parts that build
+/// perfectly (AUTH.3c). What is genuinely unbuildable is a **mixed** sign: a weight passing through
+/// zero is a pole in the span, and that is what subdividing is for.
 fn positive_weights<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> bool {
     let deg = den.degree().unwrap_or(0);
-    poly_to_bernstein(den, a, b, deg)
-        .iter()
-        .all(|w| w.sign() > 0)
+    let w = poly_to_bernstein(den, a, b, deg);
+    w.iter().all(|x| x.sign() > 0) || w.iter().all(|x| x.sign() < 0)
 }
 
 /// Drop stations closer together than the export profile can carry, keeping the domain's two ends.
@@ -455,11 +461,14 @@ fn snap_poly_to_stations<B: Backend>(
 /// midpoint and each half recursed.
 ///
 /// `None` when no such partition exists, which is a **precondition failure, not a tolerance
-/// miss**: the subdivision converges only where `den` is *strictly positive* on `[a, b]`, because
-/// a Bézier piece's end weights are `den` at its own ends. So a single point with `den ≤ 0` cannot
-/// be covered by any piece, at any depth. That case is caught here in one evaluation per split
-/// rather than pursued — `den(x) ≤ 0` at a candidate point refuses immediately, and `MAX_NODES`
-/// backstops anything the point samples miss.
+/// miss**: the subdivision converges only where `den` holds one strict sign on `[a, b]`, because a
+/// Bézier piece's end weights are `den` at its own ends. So a single point where `den` vanishes or
+/// crosses cannot be covered by any piece, at any depth. That case is caught here in one evaluation
+/// per split rather than pursued — a candidate point off the run's sign refuses immediately, and
+/// `MAX_NODES` backstops anything the point samples miss.
+///
+/// One *sign*, not the positive one: `(N, D)` and `(−N, −D)` are the same curve, and the Bernstein
+/// constructors pick the positive representative (see [`positive_weights`]).
 ///
 /// Both guards are load-bearing and both were once absent (#280). Without the sample test, an
 /// interval where `den` is non-positive over a *region* expands that whole region to `MAX_DEPTH`:
@@ -477,6 +486,7 @@ fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Option<Vec
         den: &Poly<B>,
         a: &Rat<B>,
         b: &Rat<B>,
+        sign: i8,
         depth: usize,
         budget: &mut usize,
         out: &mut Vec<Rat<B>>,
@@ -490,21 +500,23 @@ fn sigma_splits<B: Backend>(den: &Poly<B>, a: &Rat<B>, b: &Rat<B>) -> Option<Vec
             return None;
         }
         let mid = a.add(b).mul(&Rat::new(1, 2));
-        // The split point is an end weight of both halves, so `den(mid) ≤ 0` is unsatisfiable at
-        // every depth below here. Refuse now instead of bisecting toward it.
-        if den.eval(&mid).sign() <= 0 {
+        // The split point is an end weight of both halves, so a `den(mid)` off the run's sign is
+        // unsatisfiable at every depth below here. Refuse now instead of bisecting toward it.
+        if den.eval(&mid).sign() != sign {
             return None;
         }
-        go(den, a, &mid, depth - 1, budget, out)?;
-        go(den, &mid, b, depth - 1, budget, out)
+        go(den, a, &mid, sign, depth - 1, budget, out)?;
+        go(den, &mid, b, sign, depth - 1, budget, out)
     }
-    // The outer ends are end weights of the first and last pieces, so they get the same test.
-    if den.eval(a).sign() <= 0 || den.eval(b).sign() <= 0 {
+    // The outer ends are end weights of the first and last pieces, so they get the same test: both
+    // nonzero and agreeing, which is the sign every interior split point must then hold too.
+    let sign = den.eval(a).sign();
+    if sign == 0 || den.eval(b).sign() != sign {
         return None;
     }
     let mut stations = vec![a.clone()];
     let mut budget = MAX_NODES;
-    go(den, a, b, MAX_DEPTH, &mut budget, &mut stations)?;
+    go(den, a, b, sign, MAX_DEPTH, &mut budget, &mut stations)?;
     Some(stations)
 }
 
@@ -538,23 +550,34 @@ mod sigma_splits_guards {
         Rat::new(n, d)
     }
 
-    /// A denominator that is **negative over a whole sub-region** is the shape that used to hang:
-    /// no subdivision of that region ever satisfies `positive_weights`, and the depth cap bounds
-    /// depth rather than node count, so the work was `2³²` sub-intervals. It must refuse, and it
-    /// must refuse *fast* — this test would not finish otherwise, which is the point.
+    /// A denominator that **changes sign inside the range** is the shape that used to hang: no
+    /// subdivision of the crossing ever satisfies `positive_weights`, and the depth cap bounds depth
+    /// rather than node count, so the work was `2³²` sub-intervals. It must refuse, and it must
+    /// refuse *fast* — this test would not finish otherwise, which is the point.
+    ///
+    /// Note what is being refused: a **crossing**, not a negative sign. `−den` is the same curve, so
+    /// a uniformly negative denominator is a convention and builds fine (AUTH.3c) — the two ranges
+    /// below are chosen either side of that distinction.
     #[test]
     fn a_denominator_that_no_subdivision_can_fix_is_refused_not_pursued() {
-        // 1 − 4σ² < 0 on |σ| > ½: strictly positive at 0, negative over two whole sub-regions.
+        // 1 − 4σ² < 0 on |σ| > ½: strictly positive at 0, negative outside — so it crosses twice.
         let den = Poly::<Bignum>::from_coeffs(vec![q(1, 1), q(0, 1), q(-4, 1)]);
         assert!(
             sigma_splits(&den, &q(-1, 1), &q(1, 1)).is_none(),
-            "a σ-range the denominator is non-positive on has no positive-weight partition"
+            "a σ-range the denominator changes sign on has no sign-definite partition"
         );
-        // …and the same denominator still partitions the range where it IS positive, so the
+        // …and the same denominator still partitions the range where it holds one sign, so the
         // refusal is about the precondition and not a blanket loss of capability.
         assert!(
             sigma_splits(&den, &q(-1, 4), &q(1, 4)).is_some(),
             "inside |σ| < ½ the denominator is strictly positive and must still partition"
+        );
+        // The mirror case, and the one AUTH.3c turned on: outside |σ| > ½ the denominator is
+        // strictly *negative*, which is the same geometry with the other sign convention. It must
+        // partition too — refusing it is what made a square contour's solid unbuildable.
+        assert!(
+            sigma_splits(&den, &q(3, 4), &q(1, 1)).is_some(),
+            "a uniformly negative denominator is a sign convention, not an obstruction"
         );
     }
 
@@ -2001,6 +2024,17 @@ pub fn brep_trim_solid_regions<B: Backend>(
         hi: inner.last()?.0.hi.clone(),
     };
     let ws = [w.lo.clone(), w.hi.clone()];
+    // Normalize the rails **before** the σ-partition is derived from them, not after. The partition
+    // exists to make the emitted patches' Bézier weights positive, and the emitted patches carry the
+    // *stitched polynomial* rails — so deriving it from the raw ones asks the question about a
+    // denominator no patch will ever have. It is not academic: a wall whose µ̂-pullback carries a
+    // **negative constant** denominator (an inward-facing profile edge — a sign convention, not a
+    // geometry) makes the raw anchor's denominator negative throughout, so `sigma_splits` refuses a
+    // range every emitted patch is perfectly well-conditioned over. `poly_rail` divides that
+    // constant out, which is what the patches see.
+    let inner = stitched_poly_chain(inner);
+    let outer = stitched_poly_chain(outer);
+    let (inner, outer) = (&inner[..], &outer[..]);
 
     // The piece of a piecewise boundary covering a σ.
     // The region chart covering σ (by containment).
@@ -2099,16 +2133,13 @@ pub fn brep_trim_solid_regions<B: Backend>(
         }
     }
 
-    let inner = stitched_poly_chain(inner);
-    let outer = stitched_poly_chain(outer);
-
     // …and strictly interior in µ̂ at every vertex. The per-slice boolean models a hole clear of
     // both rails (`slice_poly_footprint`'s proxy), so a vertex outside the band would make the
     // footprint's *combinatorics* wrong — a silently mis-built solid rather than a loose fit.
     let inside_band = |p: &[SigMu<B>]| -> Option<bool> {
         for (s, m) in p {
-            let lo = piece_at(&inner, s)?.eval(s)?;
-            let hi = piece_at(&outer, s)?.eval(s)?;
+            let lo = piece_at(inner, s)?.eval(s)?;
+            let hi = piece_at(outer, s)?.eval(s)?;
             if !(lo.cmp(m) == Ordering::Less && m.cmp(&hi) == Ordering::Less) {
                 return Some(false);
             }
@@ -2152,8 +2183,8 @@ pub fn brep_trim_solid_regions<B: Backend>(
     for k in 0..nst - 1 {
         let (sk, sk1) = (&stations[k], &stations[k + 1]);
         let smid = sk.add(sk1).mul(&Rat::new(1, 2));
-        let mu_in = piece_at(&inner, &smid)?.clone();
-        let mu_out = piece_at(&outer, &smid)?.clone();
+        let mu_in = piece_at(inner, &smid)?.clone();
+        let mu_out = piece_at(outer, &smid)?.clone();
         // The polygon holes reaching this slice. They take the whole footprint with them — every
         // rail hole reaching it converts to a polygon and joins the same boolean.
         let mut slice_polys: Vec<&[SigMu<B>]> = poly_holes
