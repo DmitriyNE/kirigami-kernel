@@ -397,6 +397,57 @@ fn thin_stations<B: Backend>(sorted: Vec<Rat<B>>, sigma_hi: &Rat<B>) -> Vec<Rat<
     out
 }
 
+/// Snap a polygon hole's vertices onto any σ-station they sit within one export step of, then
+/// re-merge the vertices that collision makes indistinguishable.
+///
+/// A traced loop and a panel partition are derived independently — the tracer samples one grid step
+/// (`2⁻³⁰`) inside each cell end to keep a pinch tight (`docs/cutter-extrude-design.md` §11.4), the
+/// stations come from the surface's own positive-weight bisection — so nothing stops a loop vertex
+/// from landing a grid step away from a station. Where it does, the slice boolean clips the loop
+/// *at* the station and the emitted lid runs from that clip to the vertex beside it: an edge
+/// `10⁻⁹` long, an order under OCCT's `10⁻⁷` vertex tolerance, which `BRepBuilderAPI_MakeEdge`
+/// refuses as a closed curve with distinct ends. Measured on the AUTH.2f L-slot, whose authored
+/// corner lands on `σ = 0` — the gore's own midpoint station: four such edges, every certificate
+/// `Verified`, and no `.step` file written.
+///
+/// The **vertex** moves rather than the station, for two reasons: the station is shared by every
+/// rail and every other hole, and it carries the positive-weight validity the exported Bézier
+/// patches depend on, while [`hole_poly`](crate::trim::hole_poly) already declares this polygon to
+/// be the loop only to within [`min_export_step`](crate::trim::min_export_step) — so a vertex moved
+/// by less than that is the same statement about the same curve, and the clip now lands on the
+/// vertex exactly.
+///
+/// `None` if the merge leaves fewer than three vertices (a loop that small is entirely below the
+/// export profile, and refusing beats emitting a sliver).
+fn snap_poly_to_stations<B: Backend>(
+    poly: &[SigMu<B>],
+    stations: &[Rat<B>],
+) -> Option<Vec<SigMu<B>>> {
+    let min_step = crate::trim::min_export_step::<B>();
+    let gap = |st: &Rat<B>, s: &Rat<B>| {
+        let d = st.sub(s);
+        if d.sign() < 0 { d.neg() } else { d }
+    };
+    // The **nearest** station within a step, so a vertex between two of them moves the shorter way.
+    let near = |s: &Rat<B>| {
+        stations
+            .iter()
+            .filter(|st| gap(st, s).cmp(&min_step) != core::cmp::Ordering::Greater)
+            .min_by(|a, b| gap(a, s).cmp(&gap(b, s)))
+    };
+    let mut out: Vec<SigMu<B>> = Vec::with_capacity(poly.len());
+    for (s, m) in poly {
+        let p = (near(s).cloned().unwrap_or_else(|| s.clone()), m.clone());
+        if out.last().is_none_or(|q| crate::trim::export_apart(q, &p)) {
+            out.push(p);
+        }
+    }
+    while out.len() > 3 && !crate::trim::export_apart(&out[out.len() - 1], &out[0]) {
+        out.pop();
+    }
+    (out.len() >= 3).then_some(out)
+}
+
 /// The ordered σ-stations `[a = s₀, …, s_N = b]` subdividing `[a, b]` so **every** sub-interval's
 /// rational Bézier (shared denominator `den`) has positive weights — the intrinsic,
 /// parametrization-independent criterion for a valid exact Bézier piece (never keyed to a specific
@@ -1938,7 +1989,13 @@ pub fn brep_trim_solid_regions<B: Backend>(
 
     // Polygon holes: general `(σ,µ̂)` loops, strictly interior to the panel in σ — they may cross
     // σ-stations freely, each slice taking the exact boolean of its strip against them
-    // ([`slice_poly_footprint`]).
+    // ([`slice_poly_footprint`]) — but not by less than the export profile can carry
+    // ([`snap_poly_to_stations`]).
+    let poly_holes: Vec<Vec<SigMu<B>>> = poly_holes
+        .iter()
+        .map(|p| snap_poly_to_stations(p, &stations))
+        .collect::<Option<_>>()?;
+    let poly_holes = &poly_holes[..];
     let poly_bounds: Vec<(Rat<B>, Rat<B>)> = poly_holes
         .iter()
         .map(|p| {
@@ -3904,6 +3961,98 @@ mod tests {
         assert_crosses_a_station(&q(-1, 2), &q(1, 2));
         let solid = gore_solid(&[], &[step]).expect("the stepped hole builds");
         assert_certified(&solid, 1, "the station-stepping hole");
+    }
+
+    /// The stepped hole again, with its step a **grid step** (`2⁻³⁰`) off the station instead of on
+    /// it — and the solid it builds is the same one, vertex for vertex.
+    ///
+    /// This is where a traced loop actually lands. The tracer samples one grid step inside each cell
+    /// end to keep a pinch tight (`docs/cutter-extrude-design.md` §11.4), so an authored corner on a
+    /// station arrives beside it, not on it; the slice boolean then clips the loop *at* the station
+    /// and the lid runs from that clip to the vertex `10⁻⁹` away. Every certificate says `Verified`
+    /// of that shell — it is watertight, manifold, genus-1, and the rails are within ε — and OCCT
+    /// refuses to write it, because an edge shorter than its `10⁻⁷` vertex tolerance is a closed
+    /// curve with distinct ends. [`snap_poly_to_stations`] moves the vertex the last `10⁻⁹` onto the
+    /// station, which is inside what [`hole_poly`](crate::trim::hole_poly) already declares about
+    /// this polygon.
+    ///
+    /// The equality with the on-station build is the assertion with teeth: a merge that dropped the
+    /// vertex, or kept it and shortened the edge, would still be watertight and still certify.
+    #[test]
+    fn a_hole_vertex_a_grid_step_off_a_station_builds_what_one_on_it_builds() {
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let stepped = |at: Rat<lattice::Bignum>| {
+            vec![
+                (q(-1, 2), q(-7, 4)),
+                (q(1, 2), q(-7, 4)),
+                (q(1, 2), q(-3, 2)),
+                (at.clone(), q(-3, 2)),
+                (at, q(-5, 4)),
+                (q(-1, 2), q(-5, 4)),
+            ]
+        };
+        assert_crosses_a_station(&q(-1, 2), &q(1, 2));
+        let beside = gore_solid(&[], &[stepped(q(-1, 1 << 30))]).expect("the near-station hole");
+        let on = gore_solid(&[], &[stepped(q(0, 1))]).expect("the on-station hole");
+        assert_certified(&beside, 1, "the hole stepping beside a station");
+        assert_eq!(
+            rational_verts(&beside),
+            rational_verts(&on),
+            "a vertex a grid step off a station builds what one on it builds"
+        );
+        assert_eq!(
+            (beside.edges().len(), beside.faces().len()),
+            (on.edges().len(), on.faces().len()),
+            "…with the same edges and faces, not merely the same points"
+        );
+        // …and the shell it emits is one a CAD kernel can represent: OCCT reads two vertices closer
+        // than `Precision::Confusion` (10⁻⁷) as one point, so an edge shorter than that is refused.
+        let p = |i: usize| {
+            let v: [Rat<lattice::Bignum>; 3] =
+                core::array::from_fn(|k| surd_rat(&beside.verts()[i][k]));
+            crate::approx::vec3_to_f64(&v)
+        };
+        let shortest = beside
+            .edges()
+            .iter()
+            .map(|e| {
+                let (a, b) = (p(e.start), p(e.end));
+                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            shortest > 1e-7,
+            "the shortest emitted edge is {shortest:.3e} — under OCCT's vertex tolerance, so the \
+             write fails while every certificate passes"
+        );
+    }
+
+    /// The same near-station fixture through OCCT, which is the consumer the whole finding is about:
+    /// a shell whose certificates all pass and whose `.step` file is never written is not exported.
+    #[cfg(feature = "step")]
+    #[test]
+    fn a_hole_vertex_beside_a_station_exports_via_occt() {
+        use crate::step::write_brep;
+        let q = |n: i128, d: i128| Rat::<lattice::Bignum>::new(n, d);
+        let off = q(-1, 1 << 30);
+        let solid = gore_solid(
+            &[],
+            &[vec![
+                (q(-1, 2), q(-7, 4)),
+                (q(1, 2), q(-7, 4)),
+                (q(1, 2), q(-3, 2)),
+                (off.clone(), q(-3, 2)),
+                (off, q(-5, 4)),
+                (q(-1, 2), q(-5, 4)),
+            ]],
+        )
+        .expect("the near-station hole builds");
+        let path = format!("{}/trim_near_station.step", std::env::temp_dir().display());
+        assert_eq!(
+            write_brep(&path, &solid),
+            "ok",
+            "a hole vertex beside a station → OCCT"
+        );
     }
 
     /// **AUTH.2e.** The two channels **share** a slice: a rail hole and a polygon hole reaching the

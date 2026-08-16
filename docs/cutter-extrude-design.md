@@ -781,3 +781,20 @@ narrower than one cell of `surface_disc_roots`' fixed 256-subdivision seed resol
 green certificate on a cut that does nothing. The first is fixed here (the bounding proxy is used
 whenever *any* wall is affine, not only when all of them are); the second is a pre-existing AUTH.1
 sampling gap and is filed.
+
+**And a third, on the far side of the certificates: the shell OCCT would not write.** Every verdict
+on the L-slot solid passed — watertight, manifold, genus-1, rails inside ε — and
+`BRepBuilderAPI_MakeEdge` refused it. The cause is that the traced loop and the panel's σ-partition
+are derived independently and reconciled nowhere: the tracer samples one grid step (`2⁻³⁰`) inside
+each cell end to keep a pinch tight (§11.4), the L's authored corner lands on `σ = 0` — the gore's
+own midpoint station — and so the loop's vertex arrives `10⁻⁹` beside it. The slice boolean clips the
+loop at the station, the lid runs from that clip to the vertex, and an edge shorter than OCCT's
+`10⁻⁷` vertex tolerance is a curve whose ends coincide while its two vertices do not. The builder now
+snaps such a vertex onto the station (`snap_poly_to_stations`): the **vertex** moves rather than the
+station, because the station is shared by every rail and every other hole and carries the exported
+patches' positive-weight validity, while `hole_poly` already declares the emitted polygon to be the
+loop only to within that same step. Measured after: `occt=ok` for both fixtures, shortest emitted
+edge `1.6·10⁻³` on the L-slot, and the demo now prints that number beside the face count — the one
+quantity that decides whether a CAD consumer can represent the shell, and the one no verdict reports.
+Its regression test is a fixture, not the device: a hole stepped `2⁻³⁰` off a station must build what
+the same hole stepped *on* it builds, vertex for vertex.

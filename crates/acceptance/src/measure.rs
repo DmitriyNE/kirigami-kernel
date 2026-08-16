@@ -11,8 +11,40 @@
 //! number and a test that asserts a similarly-named other one looks green while guarding nothing.
 
 use arrange2d::boolean::Region;
+use export::approx::surd_to_f64;
+use export::brep::Brep;
 use export::svg::region_to_polys;
 use lattice::Backend;
+
+/// The vertex tolerance a CAD kernel reads the emitted shell with — OCCT's `Precision::Confusion`,
+/// `10⁻⁷`.
+///
+/// Two points closer than this are the *same* point to the consumer, whatever the exact tier says.
+/// An edge shorter than it is therefore a curve whose ends coincide while its two vertices do not,
+/// and `BRepBuilderAPI_MakeEdge` refuses it (`DifferentPointsOnClosedCurve`) — with every
+/// certificate still `Verified`, since the certificates are about the rails and say nothing about
+/// what a floating-point consumer can represent.
+pub const CAD_VERTEX_TOL: f64 = 1e-7;
+
+/// The shortest emitted edge's 3-D chord — the number that decides whether a CAD kernel can
+/// represent the shell at all, and the one no verdict reports.
+///
+/// Measured endpoint-to-endpoint because that is the comparison the consumer makes: it asks whether
+/// an edge's two vertices are distinct, not how long the curve between them is. `+∞` for a shell
+/// with no edges.
+pub fn shortest_edge<B: Backend>(brep: &Brep<B>) -> f64 {
+    let p = |i: usize| {
+        let v = &brep.verts()[i];
+        [surd_to_f64(&v[0]), surd_to_f64(&v[1]), surd_to_f64(&v[2])]
+    };
+    brep.edges()
+        .iter()
+        .map(|e| {
+            let (a, b) = (p(e.start), p(e.end));
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        })
+        .fold(f64::INFINITY, f64::min)
+}
 
 /// The **hole** rings the SVG actually draws, per face: `rings[face][hole]`.
 ///

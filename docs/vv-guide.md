@@ -2179,6 +2179,19 @@ verdict does not cover the exporter*: `Verified` is about the rails, and an arti
 downstream consumer can read is a failed demo whatever the certificate says. A demo that does not
 run the exporter cannot discover this.
 
+There is a third half, learned from the four edges that survived the first fix: **a minimum step
+enforced within one structure does not reconcile it with another**. `hole_poly` compares a loop's
+vertices with each other and `thin_stations` compares stations with each other, but the loop and the
+partition are derived independently — the tracer from the cut's own event set, the stations from the
+surface's positive-weight bisection — and their *disagreement* was under nobody's tolerance. Where
+two such structures meet, the criterion is that one of them yields, and which one is not arbitrary:
+the station carries validity the exported patches depend on and is shared by every other hole, while
+the polygon is already declared to be the loop only to within the step, so the **vertex** moves. The
+check that makes this testable is an equality, not a bound — a feature authored a grid step off a
+station must build what the same feature authored **on** it builds, vertex for vertex — and the
+number to report is the **shortest emitted edge**, which is what the consumer actually decides on
+and what no verdict states (`acceptance::measure::shortest_edge`, against `CAD_VERTEX_TOL`).
+
 *The ring stays refused, and for its own reason.* A footprint with its own hole is not a
 representational shortfall — an annular through-cut leaves a disc of material floating, which is two
 parts. It must come back as a typed refusal on the *nested loop*, tested by name (§11.8).

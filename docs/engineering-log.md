@@ -701,14 +701,40 @@ fine — this is a log, not a schema.
   sub-tolerance edges) and the L-slot's residue fell 76 → 4, **still enough for OCCT to refuse**.
   The four survivors sit at `σ = 0`, where this L's authored corner lands exactly on the panel's own
   station, and they are not polygon vertices or stations — coarsening `MIN_STEP` by 16× does not
-  move them — so they come from a third source (a boundary rail-piece pair, most likely two
-  independent rational fits evaluated at their shared join). Left open, with a task. Two general
-  points are worth keeping. **The verdict does not cover the exporter**: `Verified` is a statement
+  move them — so they come from a third source, found and closed the next day (next entry). Two
+  general points are worth keeping. **The verdict does not cover the exporter**: `Verified` is a statement
   about the rails, and says nothing about whether a floating-point consumer can represent what was
   built — a demo that does not actually run the exporter cannot discover that. And **an export
   profile needs a declared minimum feature size, enforced where geometry crosses into it**, rather
   than an assumption that the exact tier never emits anything smaller.
   *2026-08-16 · `crates/export/src/trim.rs::hole_poly`, `crates/export/src/brep_build.rs::thin_stations`*
+
+- **The last four were the loop and the partition disagreeing by less than either could carry —
+  neither wrong, and the pair unbuildable.** The residue above was neither a rail-piece join (the
+  builder already stitches those to agree *exactly*, `stitched_poly_chain`) nor a station pair (they
+  are thinned). Instrumenting every emitted rail edge with its σ-interval named it in one run: the
+  four edges run from `σ = 0` to `σ = ∓2⁻³⁰`, spans `5.8·10⁻⁹` and `9.7·10⁻⁹`. `σ = 0` is the gore's
+  own midpoint station and the L's authored corner lands there, so the tracer — sampling one grid
+  step inside each cell end (§11.4) — puts the loop's vertex `2⁻³⁰` from it; the slice boolean then
+  clips the loop *at* the station and the lid runs from that clip to the vertex beside it.
+  `hole_poly`'s merge could not see it, because it compares a loop's vertices with **each other**,
+  and this pair is a vertex against a partition point derived independently of the loop. Fixed by
+  reconciling them where both are known — the builder snaps a polygon-hole vertex within
+  `min_export_step` of a station onto it (`snap_poly_to_stations`) — and the **vertex** moves, not
+  the station: the station is shared by every rail and every other hole and carries the exported
+  patches' positive-weight validity, while `hole_poly` already declares this polygon to be the loop
+  only to within that same step. The L-slot now writes its `.step` (`occt=ok`, 80 faces, shortest
+  emitted edge `1.6·10⁻³`), and the regression is a fixture rather than a device: a stepped hole
+  authored `2⁻³⁰` off the station must build **what the same hole authored on it builds, vertex for
+  vertex** — with the snap disabled that assertion fails, and OCCT returns the original
+  `MakeEdge(bezier) failed`. Two things worth keeping. The measurement that ends a hunt like this is
+  the **emission site with its domain coordinates**, not the artifact: three plausible sources were
+  eliminated by argument and the fourth arrived with its σ printed. And the general shape of the
+  defect — *two independently derived structures reconciled nowhere, disagreeing by less than the
+  consumer's resolution* — is where to look first the next time everything certifies and the
+  exporter still says no. Deliberately **not** extended to the band channel's own piece boundaries:
+  no such disagreement has been measured there, and `HoleRail` is itself up for retirement (#266).
+  *2026-08-16 · `crates/export/src/brep_build.rs::snap_poly_to_stations`, `crates/export/src/trim.rs::export_apart`*
 
 - **A σ-window derived from the quadric walls does not cover a profile that also has affine ones —
   and the tracer refuses the cut rather than mis-building it.** Station targeting needs the σ-range

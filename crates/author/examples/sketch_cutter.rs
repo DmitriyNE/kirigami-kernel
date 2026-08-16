@@ -119,13 +119,14 @@ fn write_step(out_dir: &str, name: &str, part: &Part<Bignum>) {
             let report = solid.write_step(&path);
             let b = solid.brep();
             println!(
-                "{name:<9} solid     {}   {} faces · free {} · non-manifold {} · {} slice clips \
-                 → {path}",
+                "{name:<9} solid     {}   {} faces · free {} · non-manifold {} · {} slice clips · \
+                 shortest edge {:.2e} → {path}",
                 report.summary(),
                 b.faces().len(),
                 b.free_edges(),
                 b.nonmanifold_edges(),
-                counters::poly_slice_clips()
+                counters::poly_slice_clips(),
+                measure::shortest_edge(b)
             );
         }
         Verdict::Refuted(fault) => println!("{name:<9} solid     Refuted({fault:?})"),
@@ -144,12 +145,14 @@ fn write_step(_out_dir: &str, name: &str, part: &Part<Bignum>) {
             let b = solid.brep();
             println!(
                 "{name:<9} solid     Verified   ε {:.3e}   {} faces · free {} · non-manifold {} · \
-                 {} slice clips   (STEP skipped — build under `nix develop --features step`)",
+                 {} slice clips · shortest edge {:.2e}   (STEP skipped — build under \
+                 `nix develop --features step`)",
                 rat_to_f64(solid.eps()),
                 b.faces().len(),
                 b.free_edges(),
                 b.nonmanifold_edges(),
-                counters::poly_slice_clips()
+                counters::poly_slice_clips(),
+                measure::shortest_edge(b)
             );
         }
         Verdict::Refuted(fault) => println!("{name:<9} solid     Refuted({fault:?})"),

@@ -401,6 +401,20 @@ fn a_traced_non_convex_loop_builds_a_certified_solid_across_a_station() {
          single σ-slice — AUTH.2e/2 is then not exercised and the demo proves less than it claims"
     );
 
+    // …and the shell is one a CAD kernel can carry. The slot's corner lands on `σ = 0`, the gore's
+    // own midpoint station, and the tracer places the loop's vertex a grid step (`2⁻³⁰`) away from
+    // it — so the emitted lid used to run from the slice's clip to that vertex, an edge `10⁻⁹` long
+    // that OCCT refuses as a closed curve with distinct ends. Nothing above sees it: that shell is
+    // watertight, manifold, genus-1 and inside ε (#267).
+    let shortest = measure::shortest_edge(brep);
+    println!("[work] L-slot solid: shortest emitted edge {shortest:.3e}");
+    assert!(
+        shortest > measure::CAD_VERTEX_TOL,
+        "the shortest emitted edge is {shortest:.3e}, under the {:.0e} vertex tolerance a CAD \
+         kernel reads the shell with — every certificate passes and no `.step` is written",
+        measure::CAD_VERTEX_TOL
+    );
+
     counters::reset();
     let plain = solid_or_panic(acceptance::sketch_panel(None), "the un-slotted panel");
     assert_eq!(

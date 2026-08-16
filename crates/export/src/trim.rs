@@ -893,22 +893,13 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
 /// that device, so the merge is invisible to the certified bound and decisive for the exporter.
 pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
     let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
-    let min_step = Rat::<B>::new(1, 1i128 << MIN_STEP_BITS);
-    let apart = |a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)| {
-        let far = |x: &Rat<B>, y: &Rat<B>| {
-            let d = x.sub(y);
-            let d = if d.sign() < 0 { d.neg() } else { d };
-            d.cmp(&min_step) == core::cmp::Ordering::Greater
-        };
-        far(&a.0, &b.0) || far(&a.1, &b.1)
-    };
     let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
     for arc in &hole.arcs {
         match arc {
             BoundaryArc::Curve { curve, .. } => {
                 let [sg, m] = curve.eval(&curve.domain.lo)?;
                 let p = (snap(&sg), snap(&m));
-                if pts.last().is_none_or(|q| apart(q, &p)) {
+                if pts.last().is_none_or(|q| export_apart(q, &p)) {
                     pts.push(p);
                 }
             }
@@ -917,7 +908,7 @@ pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>
     }
     // The wrap-around pair too — the loop closes on its first vertex, and a last vertex within a
     // step of it is the same unbuildable edge.
-    while pts.len() > 3 && !apart(&pts[pts.len() - 1], &pts[0]) {
+    while pts.len() > 3 && !export_apart(&pts[pts.len() - 1], &pts[0]) {
         pts.pop();
     }
     (pts.len() >= 3).then_some(pts)
@@ -927,6 +918,26 @@ pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>
 /// that every emitted edge clears OCCT's `10⁻⁷` vertex tolerance by an order, fine enough to sit
 /// far below any certified cut bound.
 pub(crate) const MIN_STEP_BITS: u32 = 20;
+
+/// [`MIN_STEP_BITS`] as a rational — the smallest `(σ, µ̂)` step the export profile can carry.
+pub(crate) fn min_export_step<B: Backend>() -> Rat<B> {
+    Rat::<B>::new(1, 1i128 << MIN_STEP_BITS)
+}
+
+/// Are two emitted `(σ, µ̂)` vertices further apart than [`min_export_step`] in either coordinate?
+///
+/// The one definition of "the exporter can tell these two points apart", shared by [`hole_poly`]'s
+/// merge and the solid builder's station reconciliation — a pair that fails it becomes an edge
+/// whose 3-D span sits under OCCT's vertex tolerance, which is refused however it arose.
+pub(crate) fn export_apart<B: Backend>(a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)) -> bool {
+    let min_step = min_export_step::<B>();
+    let far = |x: &Rat<B>, y: &Rat<B>| {
+        let d = x.sub(y);
+        let d = if d.sign() < 0 { d.neg() } else { d };
+        d.cmp(&min_step) == core::cmp::Ordering::Greater
+    };
+    far(&a.0, &b.0) || far(&a.1, &b.1)
+}
 
 /// Snap each interior piece boundary of a contiguous chain to a 2⁻³⁰ dyadic (via `f64`), keeping
 /// adjacent pieces adjacent; the outer σ-ends are authored and left untouched.
