@@ -144,8 +144,11 @@ impl<B: Backend> RevCone<B> {
     ///
     /// Each step is checked, not assumed: the rank-one identity, the apex solve and the constant
     /// are exact rational equalities, and `cos²α ∈ (0, 1)` rejects the degenerate ends (a line at
-    /// `α = 0`, a plane pair at `α = 90°`). An elliptic cone fails step 2, a cylinder fails step 1
-    /// (`r = 0`, so `S` is singular), a hyperboloid fails step 3.
+    /// `α = 0`, a plane pair at `α = 90°`). An elliptic cone fails step 2; a hyperboloid fails
+    /// step 3; a **cylinder** of revolution passes steps 1 and 2 — its eigenvalues are `λ, λ, 0`, so
+    /// the double root is `λ`, not `0` — and fails at `cos²α = 1`, which is the right place for it:
+    /// a cylinder is the `α → 0` limit with the apex gone to infinity. [`RevCylinder`] is its
+    /// recognizer, and the two are exhaustive over surfaces of revolution a sketch can sweep.
     pub fn recognize(q: &Quadric<B>) -> Option<Self> {
         let half = Rat::new(1, 2);
         let s: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
@@ -258,6 +261,135 @@ impl<B: Backend> RevCone<B> {
             .sub(&sin_scaled.mul(ta))
             .rounded();
         abs_on(&perp).hi().clone()
+    }
+}
+
+/// A [`Quadric`] recognized as a **cylinder of revolution** — the same move [`RevCone`] makes, for
+/// the apex that went to infinity.
+///
+/// A sketch swept from a *direction* rather than a point (`Apex::direction`, the straight drill) is
+/// how a plan-view outline lands where it was drawn, so it is the sweep every imported cut file
+/// wants. But a circle in that sweep clears to a [`CutSurface::Quadric`], and the general quadric
+/// arm bounds distance by inflating a box — which measured **ε 5.56 against 1.53** for the same Ø 8
+/// bore on the acceptance device, purely as a change of instrument. `CutSurface::Cylinder` has had
+/// the closed form all along; all that was missing was noticing that the quadric *is* one.
+///
+/// Like [`RevCone`], recognition is a verified proposal: every step below is an exact rational
+/// equality, and anything that fails falls back to the general arm.
+#[derive(Clone)]
+pub struct RevCylinder<B: Backend = Bignum> {
+    /// A point on the axis — any one; the axis is a line, and the certificate only needs it as a
+    /// line.
+    pub axis_point: [Rat<B>; 3],
+    /// The axis direction, **not** unit.
+    pub axis_dir: [Rat<B>; 3],
+    /// The squared radius.
+    pub r2: Rat<B>,
+}
+
+impl<B: Backend> RevCylinder<B> {
+    /// Recognize `q` as a cylinder of revolution, or `None`.
+    ///
+    /// A cylinder's symmetric part is `S = λ·(I − ââᵀ/|â|²)` — eigenvalues `λ, λ, 0` — so:
+    ///
+    /// 1. `det S = 0`, and the double root of the characteristic cubic is `λ ≠ 0` (the same closed
+    ///    form [`RevCone::recognize`] uses, with `e₃ = 0`);
+    /// 2. `N := λI − S` must be exactly **rank one**, which pins the axis direction as any nonzero
+    ///    column `a`, and `|a|² = λ·N_jj` pins the scale — together those two say `S` is a multiple
+    ///    of the projector orthogonal to `a`, and nothing else;
+    /// 3. `S` is singular, so the axis is a *line* of solutions of `S·p = −b/2` rather than a point.
+    ///    `p = −b/(2λ)` is the one on the plane through the origin normal to the axis, and checking
+    ///    `b + 2S·p = 0` is what rejects a parabolic cylinder, whose `b` has a component along `a`
+    ///    that no `p` can absorb;
+    /// 4. `R² = −(b·p/2 + c)/λ` must come out strictly positive — an imaginary or degenerate
+    ///    cylinder is not a surface a cut can lie on.
+    ///
+    /// **The selector must be vacuous.** A quadric carrying a live [`Nappe`] describes *half* a
+    /// surface, and the distance to a whole cylinder is not an upper bound for the distance to half
+    /// of one — it is a lower bound, which is the unsound direction. A direction apex sets
+    /// `τ = −w·N = 0`, so `nappe.n = 0` is exactly the case with no second sheet to choose, and it
+    /// is the only case accepted here.
+    pub fn recognize(q: &Quadric<B>) -> Option<Self> {
+        if q.nappe.n.iter().any(|c| !c.is_zero()) {
+            return None;
+        }
+        let half = Rat::new(1, 2);
+        let s: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
+            core::array::from_fn(|j| q.m[i][j].add(&q.m[j][i]).mul(&half))
+        });
+
+        if !det3(&s).is_zero() {
+            return None; // no zero eigenvalue: not a cylinder
+        }
+        let e1 = s[0][0].add(&s[1][1]).add(&s[2][2]);
+        let minor = |i: usize, j: usize| s[i][i].mul(&s[j][j]).sub(&s[i][j].mul(&s[j][i]));
+        let e2 = minor(0, 1).add(&minor(0, 2)).add(&minor(1, 2));
+        let den = e1.mul(&e1).sub(&e2.mul(&Rat::from_i128(3)));
+        if den.is_zero() {
+            return None; // a triple root, i.e. `S = 0`: a plane or nothing
+        }
+        let lam = e1.mul(&e2).div(&den.mul(&Rat::from_i128(2)));
+        if lam.is_zero() {
+            return None;
+        }
+
+        // `N = λI − S` is `λ·a aᵀ/|a|²`: rank one, and of that one scale.
+        let n: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
+            core::array::from_fn(|j| {
+                if i == j {
+                    lam.sub(&s[i][j])
+                } else {
+                    s[i][j].neg()
+                }
+            })
+        });
+        let j = (0..3).find(|&j| !n[j][j].is_zero())?;
+        let w = n[j][j].clone();
+        let a: [Rat<B>; 3] = core::array::from_fn(|i| n[i][j].clone());
+        for (i, row) in n.iter().enumerate() {
+            for (l, entry) in row.iter().enumerate() {
+                if !entry.mul(&w).sub(&a[i].mul(&a[l])).is_zero() {
+                    return None;
+                }
+            }
+        }
+        if !dot3(&a, &a).sub(&lam.mul(&w)).is_zero() {
+            return None;
+        }
+
+        // The axis point, and the check that the linear term is one an axis can absorb.
+        let p: [Rat<B>; 3] =
+            core::array::from_fn(|i| q.b[i].neg().div(&lam.mul(&Rat::from_i128(2))));
+        for (row, bi) in s.iter().zip(&q.b) {
+            let sp = row
+                .iter()
+                .zip(&p)
+                .fold(Rat::from_i128(0), |acc, (m, pk)| acc.add(&m.mul(pk)));
+            if !bi.add(&sp.mul(&Rat::from_i128(2))).is_zero() {
+                return None;
+            }
+        }
+
+        // `F(p) = −λR²`, and `pᵀSp = −b·p/2` because `S·p = −b/2`.
+        let r2 = dot3(&q.b, &p).mul(&half).add(&q.c).neg().div(&lam);
+        if r2.sign() <= 0 {
+            return None;
+        }
+        Some(RevCylinder {
+            axis_point: p,
+            axis_dir: a,
+            r2,
+        })
+    }
+
+    /// The equivalent [`CutSurface::Cylinder`] — the same point set, in the representation whose
+    /// distance is a symbolic residual in σ.
+    pub fn as_cut_surface(&self) -> CutSurface<B> {
+        CutSurface::Cylinder {
+            axis_point: self.axis_point.clone(),
+            axis_dir: self.axis_dir.clone(),
+            r2: self.r2.clone(),
+        }
     }
 }
 
@@ -2409,6 +2541,17 @@ fn traced_cut_fit<B: Backend>(
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
     let half = clearance.mul(&Rat::new(1, 2));
 
+    // A quadric that *is* a cylinder of revolution is measured as one. Recognition sits here, where
+    // the certificate is computed, rather than where the wall is built — so a hand-authored
+    // `Cylinder` and a swept profile circle take the same arm without the builders having to agree
+    // on a normal form. [`RevCone`] does the same one arm down; between them they cover both apex
+    // kinds a sketch can be swept from.
+    let recognized = match surface {
+        CutSurface::Quadric(q) => RevCylinder::recognize(q).map(|c| c.as_cut_surface()),
+        _ => None,
+    };
+    let surface = recognized.as_ref().unwrap_or(surface);
+
     let eps = match surface {
         // A cone of revolution *does* have a closed-form distance, so it joins the two arms below
         // rather than paying the general quadric's box price — same certificate, one recognition
@@ -2585,6 +2728,10 @@ mod tests {
     /// *elliptic* cone (the rank-one step fails), a cast from infinity gives a cylinder (the double
     /// eigenvalue is zero), and shifting the constant gives a hyperboloid of one sheet, which has
     /// the same `M` and `b` as the cone it is asymptotic to and differs only in the last check.
+    ///
+    /// The cylinder declines at `cos²α = 1`, not at the double root — its eigenvalues are `λ, λ, 0`,
+    /// so the closed form returns `λ`, and what gives it away is the *half-angle* going to zero with
+    /// the apex at infinity. [`RevCylinder`] picks it up from there.
     #[test]
     fn a_cone_of_revolution_is_recognized_exactly_and_its_look_alikes_are_not() {
         let q = Q::from_i128;
@@ -2632,6 +2779,85 @@ mod tests {
         assert!(
             RevCone::recognize(&hyperboloid).is_none(),
             "the same asymptotic cone, and not a cone"
+        );
+    }
+
+    /// **A cylinder of revolution is recovered too, and it is the sweep an imported outline uses.**
+    ///
+    /// A plan-view drawing has to be swept *straight down* to land where it was drawn, so the
+    /// straight drill is not an exotic apex kind — it is the default for a cut file. Its circle
+    /// clears to a quadric all the same, and without this the certificate falls to the box bound:
+    /// measured **ε 5.56 against 1.53** for the same Ø 8 bore on the acceptance device, the whole
+    /// difference being which arm ran.
+    ///
+    /// The negatives are the three ways the extraction can fail, and each fails at a different
+    /// step: a *cone* has no zero eigenvalue at all; a **half**-cylinder (a live nappe selector) is
+    /// declined outright, because the distance to a whole cylinder is a *lower* bound for the
+    /// distance to half of one and a certificate may not be optimistic; and an **elliptic**
+    /// cylinder — a circle in a frame whose axes are not orthonormal — fails the rank-one identity.
+    #[test]
+    fn a_cylinder_of_revolution_is_recognized_exactly_and_carries_the_closed_form() {
+        let q = Q::from_i128;
+        let quadric_of = |wall: CutSurface<Bignum>| match wall {
+            CutSurface::Quadric(b) => *b,
+            _ => panic!("expected a quadric wall"),
+        };
+        let straight = quadric_of(
+            crate::extrude::ellipse_wall(
+                &[q(0), q(0), q(4)],
+                &[q(3), q(0), q(0)],
+                &[q(0), q(3), q(0)],
+                &crate::extrude::Apex::direction([q(0), q(0), q(1)]).expect("a direction"),
+            )
+            .expect("a real cylinder"),
+        );
+        let cyl = RevCylinder::recognize(&straight).expect("a cylinder of revolution");
+        assert!(cyl.r2.sub(&q(9)).is_zero(), "r² = 3²");
+        assert!(
+            cyl.axis_dir[0].is_zero() && cyl.axis_dir[1].is_zero() && !cyl.axis_dir[2].is_zero(),
+            "the axis is ±z"
+        );
+        // Any point of the axis will do, and this one is on the plane through the origin normal to
+        // it — but what matters is that it *is* on the axis, which the residual is the test of.
+        assert!(cyl.axis_point[0].is_zero() && cyl.axis_point[1].is_zero());
+
+        // The recognized surface is the same point set: on it, off it, and by how much.
+        let surface = cyl.as_cut_surface();
+        for (x, y, z, want) in [(3, 0, 0, 0), (0, 3, 7, 0), (5, 0, 0, 16), (0, 0, 2, -9)] {
+            let p = [q(x), q(y), q(z)];
+            assert_eq!(
+                surface.residual(&p).expect("a real axis"),
+                q(want),
+                "at ({x}, {y}, {z})"
+            );
+            assert_eq!(straight.nappe.n.iter().filter(|c| !c.is_zero()).count(), 0);
+        }
+
+        assert!(
+            RevCylinder::recognize(&cone345()).is_none(),
+            "a cone has no zero eigenvalue"
+        );
+        let mut half = straight.clone();
+        half.nappe = Nappe {
+            n: [q(0), q(0), q(1)],
+            d: q(0),
+        };
+        assert!(
+            RevCylinder::recognize(&half).is_none(),
+            "half a cylinder is not a cylinder — the whole one's distance would be optimistic"
+        );
+        let elliptic = quadric_of(
+            crate::extrude::ellipse_wall(
+                &[q(0), q(0), q(4)],
+                &[q(3), q(0), q(0)],
+                &[q(0), q(5), q(0)], // a longer v axis: the profile circle is an ellipse
+                &crate::extrude::Apex::direction([q(0), q(0), q(1)]).expect("a direction"),
+            )
+            .expect("a real cylinder"),
+        );
+        assert!(
+            RevCylinder::recognize(&elliptic).is_none(),
+            "an elliptic cylinder has no single radius"
         );
     }
 

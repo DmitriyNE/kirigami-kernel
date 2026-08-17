@@ -70,6 +70,10 @@ fn spec() -> LappedCone {
         // The device's annulus: inner Ø 8 mm, outer Ø 21.5 mm, cut normal to the sheet.
         outer_r: q(43, 4),
         inner_r: Some(qi(4)),
+        // A plain bore. `acceptance::inner_cut_profile()` is the device's real one — read straight
+        // out of `acceptance/data/inner-cut.dxf` — but its tab's flanks point at the cone's axis,
+        // which the resolver cannot yet place (task #291).
+        inner_profile: None,
         // The physical edge, and the pinned device's: both bounds are cones cut normal to the
         // sheet. They cost what a cylinder costs — a cone of revolution has a closed-form distance,
         // so `develop::cut::RevCone` puts them on the same certificate arm.

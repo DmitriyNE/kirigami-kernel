@@ -182,6 +182,12 @@ pub fn read_svg<B: Backend>(text: &str, opts: &SvgOptions<B>) -> Result<Imported
     let entities = ctx.entities;
     let (delta, transport) = (ctx.delta.clone(), ctx.transport.mul(&scale));
     let assembled = assemble(ctx.elements, &opts.weld)?;
+    // A junction re-gauge raises an arc's `δ` after every per-entity check has run, so the budget
+    // is honoured once more against the assembled figure.
+    let delta = opts
+        .arc
+        .check(crate::max_of(delta, assembled.delta))
+        .map_err(|f| arc_fault("arc junction", &f))?;
     Ok(Imported {
         report: ImportReport {
             source_unit: source,

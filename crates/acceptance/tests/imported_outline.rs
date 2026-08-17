@@ -1,10 +1,14 @@
-//! **IO.1 acceptance (the part that does not need a customer file).**
+//! **IO.1 acceptance — the file boundary, against a real drawing.**
 //!
-//! The milestone's real gate is a device outline from the user cutting a part end to end. Until
-//! that file exists, this is the strongest statement available: the outline a **file** produces and
-//! the outline the acceptance device is **already cut with** are the same profile — same edges,
-//! same arcs, same `r²`, same fill — so everything already proved about `acceptance::contour_panel`
-//! transfers to the imported route without re-running it.
+//! The milestone's gate was always a device outline from the user. `data/inner-cut.dxf` is that
+//! file — the Ø 8 bore with a 10° tab reaching in to Ø 4, eight `ARC`/`LINE` entities out of a real
+//! CAD tool — and [`a_real_device_drawing_reads_as_one_exact_loop`] is what it earns. What it cost
+//! is a construction the module had specified and left unbuilt: four of its junctions are **arc to
+//! arc**, where neither endpoint is free to move.
+//!
+//! Alongside it, the statement that stood in for a customer file and is still worth making: the
+//! outline a file produces and the outline the acceptance device is **already cut with** are the
+//! same profile — same edges, same arcs, same `r²`, same fill.
 //!
 //! It also pins the distinction the two formats draw, which is easy to state backwards: **both
 //! import at `δ = 0`, and they mean different things by it.**
@@ -208,4 +212,95 @@ fn the_unit_is_a_factor_and_not_an_approximation() {
         assert_eq!(q[0], p[0].mul(&Q::new(127, 5)), "x scaled exactly");
         assert_eq!(q[1], p[1].mul(&Q::new(127, 5)), "y scaled exactly");
     }
+}
+
+/// **The device's own cut file, read end to end.**
+///
+/// `data/inner-cut.dxf` is what a CAD tool actually emits: eight entities, no `$INSUNITS`, and
+/// coordinates carrying the tool's own float noise (its Ø 8 bore is stated as `r = 3.999999907`,
+/// 93 pm short — which the importer carries rather than tidies, because a decimal literal *is* a
+/// rational and rounding it to `4` would be the translator inventing geometry).
+///
+/// Three things it pins, each of which was a real edge of the design:
+///
+/// * **the unit is supplied, never inferred.** The file has `$MEASUREMENT 1`, which says *metric*
+///   and not *millimetre* — those are different claims, and the reader refuses the difference
+///   rather than guessing a 10× part.
+/// * **four arc-to-arc junctions assemble.** Both sides of such a junction own their endpoints, so
+///   neither may be moved; the follower is re-gauged onto the shared vertex instead
+///   (`interchange::arc::ExactArc::regauged`), keeping its centre and its own sweep and paying the
+///   move into `δ`. This is the construction `interchange::element` wrote down and left unbuilt
+///   until a real file needed it.
+/// * **the two error numbers stay apart.** `δ = 2.6e-14` is *ours* — how far the emitted arcs are
+///   from the ones the file states. The closure gap `2.3e-10` is the *file's*, and it lands
+///   entirely on the two `LINE` endpoints, where moving costs nothing. Reporting one number would
+///   have averaged a translator's fidelity with a drawing's sloppiness.
+#[test]
+fn a_real_device_drawing_reads_as_one_exact_loop() {
+    use interchange::dxf::{DxfOptions, read_dxf};
+    use interchange::report::ImportFault;
+
+    // Without a unit the read is a refusal, not a guess.
+    assert!(matches!(
+        read_dxf::<Bignum>(acceptance::INNER_CUT_DXF, &DxfOptions::default()),
+        Err(ImportFault::UnknownUnit { .. })
+    ));
+
+    let opts = DxfOptions::<Bignum> {
+        assume_unit: Some(acceptance::INNER_CUT_UNIT),
+        ..Default::default()
+    };
+    let read = read_dxf::<Bignum>(acceptance::INNER_CUT_DXF, &opts).expect("the device's bore");
+    assert_eq!(read.report.entities, 8);
+    assert_eq!(read.report.loops, 1, "{}", read.report.summary());
+    assert_eq!(read.loops[0].len(), 8, "every entity is in the loop");
+
+    // The junctions really were arc-to-arc: a re-gauge is the only thing that can put δ above the
+    // per-entity floor, and the two numbers differ by four orders.
+    let (delta, gap) = (&read.report.delta, &read.report.closure_gap);
+    assert!(
+        delta.sign() > 0 && *delta < Q::new(1, 1_000_000_000_000i128),
+        "δ {}",
+        decimal(delta, 18)
+    );
+    assert!(
+        *gap > *delta,
+        "the file's gap {} exceeds ours {}",
+        decimal(gap, 18),
+        decimal(delta, 18)
+    );
+    assert!(
+        *gap < Q::new(1, 1_000_000_000i128),
+        "gap {}",
+        decimal(gap, 18)
+    );
+
+    // Every arc came out exactly on its own circle — the runtime-checked hypothesis, after the
+    // re-gauge moved two of the circles.
+    for e in &read.loops[0] {
+        if let interchange::element::Element::Arc(a) = e {
+            assert!(a.is_consistent(), "an assembled arc left its circle");
+        }
+    }
+
+    // The shape: a bore of radius ≈ 4 with a tab reaching in to ≈ 2, and nothing between 2 and 4
+    // except the flanks. `winding_parity` is inside the *removed* region.
+    let edges = read.profile().into_edges();
+    let on_axis = |r: f64, deg: f64| -> bool {
+        let (x, y) = (r * deg.to_radians().cos(), r * deg.to_radians().sin());
+        let f = |v: f64| Q::new((v * 1_000_000.0) as i128, 1_000_000);
+        winding_parity(&f(x), &f(y), &edges)
+    };
+    assert!(on_axis(3.5, 0.0), "the bore is removed away from the tab");
+    assert!(on_axis(3.5, 180.0), "…on the far side too");
+    assert!(
+        !on_axis(3.5, 90.0),
+        "the tab is material, at 3.5 up the middle"
+    );
+    assert!(!on_axis(2.5, 90.0), "…and still material at 2.5");
+    assert!(
+        on_axis(1.5, 90.0),
+        "…but past its Ø 4 tip the bore is removed again"
+    );
+    assert!(on_axis(3.5, 75.0), "the tab is only ~10° wide");
 }

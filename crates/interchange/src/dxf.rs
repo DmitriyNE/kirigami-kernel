@@ -201,6 +201,12 @@ pub fn read_dxf<B: Backend>(text: &str, opts: &DxfOptions<B>) -> Result<Imported
         return Err(ImportFault::Empty);
     }
     let assembled = assemble(elements, &opts.weld)?;
+    // A junction re-gauge raises an arc's `δ` after every per-entity check has run, so the budget
+    // is honoured once more against the assembled figure.
+    let delta = opts
+        .arc
+        .check(max_of(delta, assembled.delta))
+        .map_err(|f| arc_fault("ARC junction", &f))?;
     Ok(Imported {
         report: ImportReport {
             source_unit: source,

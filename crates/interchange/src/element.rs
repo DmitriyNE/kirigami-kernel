@@ -15,16 +15,33 @@
 //! already had.
 //!
 //! Two arcs meeting is the case where neither side is free: their exact endpoints sit on *different*
-//! circles, and neither may move without leaving its own. That refuses by name
-//! ([`ImportFault::ArcJunctionGap`]) rather than being repaired.
+//! circles, and neither may move without leaving its own. What **is** free is an arc's radius, so
+//! the follower is re-gauged onto the shared vertex instead — [`ExactArc::regauged`], §4.3's rule
+//! applied at a junction rather than at an endpoint. Unlike a moved segment this is not free: the
+//! emitted arc is a different arc from the one the file stated, so it is charged to `δ`, while the
+//! gap it absorbed is still reported as the file's own closure gap. The two answer different
+//! questions — *how sloppy was the file* and *how far is our geometry from what it said* — and a
+//! junction that a real drawing has always produces both.
 //!
 //! **This does not bite where it would matter.** A DXF `LWPOLYLINE` of bulge arcs shares every
 //! vertex *exactly* by construction ([`crate::arc::from_bulge`]), so a bulge polyline — the common
-//! outline form — has no junction problem at all. Only chained `ARC` entities can hit it. The lift,
-//! written down before it is needed: give the second arc's **radius**, keeping its centre and
-//! pinning its start to the shared vertex, then carry its end round by the file's own `Δθ` as a
-//! rational rotation — which keeps it exactly on the adjusted circle. That is §4.3's rule applied
-//! at a junction rather than at an endpoint, and it is not built until a real file needs it.
+//! outline form — has no junction problem at all. Only chained `ARC` entities can hit it, and a real
+//! device drawing does: `acceptance/data/inner-cut.dxf` is eight `ARC`/`LINE` entities with four
+//! arc-to-arc junctions.
+//!
+//! # Where the free junction is spent
+//!
+//! A loop closes on itself, so one junction has no follower left to move — the walk's last element
+//! must meet the vertex the *first* one already owns. A re-gauge cannot repair that one, because
+//! moving the head's start would break the head's own far end. So the walk **seeds at a segment**
+//! whenever the loop has one: a segment is the endpoint that costs nothing to move, and spending it
+//! on the closure leaves every arc-to-arc junction in the interior, where the lift applies.
+//!
+//! A loop of nothing but arcs has to be lucky instead, and *concentric* arcs are: re-gauging the
+//! follower puts it on the leader's own circle, so its sweep carries it exactly back to the anchor
+//! and the lens closes at gap zero. Arcs about different centres come round at their own radius and
+//! land beside the anchor — [`ImportFault::ArcJunctionGap`], and the cascade that would repair it is
+//! not built until a real file needs it.
 
 use crate::arc::ExactArc;
 use crate::num::sqrt_rational;
@@ -137,6 +154,9 @@ pub struct Loops<B: Backend> {
     /// The largest distance between adjacent entities that had to be absorbed — **the file's**
     /// number, never mixed into `δ`.
     pub closure_gap: Rat<B>,
+    /// The largest certified backward error over the *assembled* elements — which is not the
+    /// largest over the elements that went in, because a junction re-gauge raises an arc's `δ`.
+    pub delta: Rat<B>,
 }
 
 /// `|p − q|²`, exactly.
@@ -150,8 +170,10 @@ fn dist2<B: Backend>(p: &[Rat<B>; 2], q: &[Rat<B>; 2]) -> Rat<B> {
 ///
 /// Whole circles become single-element loops. The rest are chained greedily: from each unused
 /// element, the walk takes any unused element with an endpoint within `weld` of the running end,
-/// orients it to continue, and snaps the junction per the module's rule. A chain that runs out
-/// before returning to its start is [`ImportFault::OpenLoop`] with the shortfall reported.
+/// orients it to continue, and snaps the junction per the module's rule. Segments are tried as
+/// seeds first, so the one junction that cannot be re-gauged — the closure — falls on the endpoint
+/// that is free to move. A chain that runs out before returning to its start is
+/// [`ImportFault::OpenLoop`] with the shortfall reported.
 pub fn assemble<B: Backend>(
     elements: Vec<Element<B>>,
     weld: &Rat<B>,
@@ -168,8 +190,14 @@ pub fn assemble<B: Backend>(
         }
     }
 
+    // Segments first: see "Where the free junction is spent".
+    let seeds: Vec<usize> = (0..open.len())
+        .filter(|&i| !open[i].is_arc())
+        .chain((0..open.len()).filter(|&i| open[i].is_arc()))
+        .collect();
+
     let mut used = vec![false; open.len()];
-    for seed in 0..open.len() {
+    for seed in seeds {
         if used[seed] {
             continue;
         }
@@ -233,8 +261,12 @@ pub fn assemble<B: Backend>(
                     if let Some(Element::Segment { end, .. }) = chain.last_mut() {
                         *end = head.clone(); // the arc pins, the previous segment follows
                     }
-                } else {
-                    return Err(ImportFault::ArcJunctionGap { gap: gap_text(&d) });
+                } else if let Element::Arc(a) = &e {
+                    // Two arcs: neither endpoint may move, so the follower's *radius* does.
+                    let Ok(fixed) = a.regauged(tail.clone()) else {
+                        return Err(ImportFault::ArcJunctionGap { gap: gap_text(&d) });
+                    };
+                    e = Element::Arc(fixed);
                 }
                 if d > gap2 {
                     gap2 = d;
@@ -248,9 +280,16 @@ pub fn assemble<B: Backend>(
     if loops.is_empty() {
         return Err(ImportFault::Empty);
     }
+    let mut delta = Rat::from_i128(0);
+    for chain in &loops {
+        for e in chain {
+            delta = crate::max_of(delta, e.delta());
+        }
+    }
     Ok(Loops {
         loops,
         closure_gap: sqrt_rational(&gap2, 32),
+        delta,
     })
 }
 
@@ -411,16 +450,77 @@ mod tests {
         assert_eq!(out.closure_gap, Q::from_i128(0));
     }
 
-    /// Two arcs that must weld refuse by name: neither endpoint may move without leaving its own
-    /// circle, and repairing it silently would be a part whose boundary is not what was drawn.
+    /// **A loop of nothing but arcs still refuses** — the one case the junction lift cannot reach.
+    ///
+    /// A closed chain has one junction with no follower left to re-gauge: the last element must meet
+    /// the vertex the first already owns, and moving the head's start would break the head's own far
+    /// end. The walk spends its free junction there by seeding at a segment, so any loop with a
+    /// segment in it is fine — and a loop of nothing but arcs has to be lucky.
+    ///
+    /// **Concentric arcs are lucky.** Re-gauging the follower onto the leader's endpoint puts it on
+    /// the leader's own circle, and its own sweep then carries it exactly back to where the leader
+    /// began — so a lens of two arcs about one centre closes at gap zero, with a `δ` for the radius
+    /// that moved. Arcs about *different* centres are not: the re-gauged follower comes round at its
+    /// own radius about its own centre, and lands beside the anchor rather than on it. That one is
+    /// refused by name, and the cascade it would need waits for a file that has one.
     #[test]
-    fn an_arc_to_arc_gap_refuses_rather_than_repairing() {
+    fn an_all_arc_loop_closes_only_when_the_re_gauge_lands_on_the_anchor() {
         let tol = ArcTolerance::report_only();
-        // Both junction angles are off the quarter-turn grid, so both endpoints are *snapped*; the
-        // two arcs sit on different circles, so those snapped points differ by a hair that neither
-        // may absorb without leaving its own circle. (A 0°/90° endpoint is exact and would weld
+        // Both junction angles are off the quarter-turn grid, so both endpoints are *snapped* and
+        // the two arcs sit on different circles. (A 0°/90° endpoint is exact and would weld
         // cleanly — which is why this test names 30°/150° explicitly.)
-        let first = from_centre_angles::<Bignum>(
+        let upper = |cy: Q, r: Q| {
+            from_centre_angles::<Bignum>(
+                [Q::from_i128(0), cy],
+                &r,
+                &Q::from_i128(30),
+                &Q::from_i128(150),
+                &tol,
+            )
+            .expect("certified")
+        };
+        let lower = |cy: Q, r: Q| {
+            from_centre_angles::<Bignum>(
+                [Q::from_i128(0), cy],
+                &r,
+                &Q::from_i128(150),
+                &Q::from_i128(30),
+                &tol,
+            )
+            .expect("certified")
+        };
+
+        // Concentric: the follower joins the leader's circle and the sweep closes it exactly.
+        let a = upper(Q::from_i128(0), Q::from_i128(1));
+        let b = lower(Q::from_i128(0), Q::new(1_000_001, 1_000_000));
+        let (da, db) = (a.delta.clone(), b.delta.clone());
+        assert!(da.sign() > 0 && db.sign() > 0);
+        let out = assemble::<Bignum>(vec![Element::Arc(a), Element::Arc(b)], &Q::new(1, 10))
+            .expect("the re-gauge closes a concentric lens");
+        assert_eq!(out.loops.len(), 1);
+        assert!(out.delta > db, "the radius that moved is charged");
+
+        // Off-centre by a thousandth: the follower comes round about its *own* centre and misses.
+        let a = upper(Q::from_i128(0), Q::from_i128(1));
+        let b = lower(Q::new(-1, 1000), Q::from_i128(1));
+        let out = assemble::<Bignum>(vec![Element::Arc(a), Element::Arc(b)], &Q::new(1, 10));
+        assert!(
+            matches!(out, Err(ImportFault::ArcJunctionGap { .. })),
+            "expected a named refusal, got {out:?}"
+        );
+    }
+
+    /// **The junction lift, in the shape a real drawing has it**: two arcs meeting, with a segment
+    /// somewhere in the loop to absorb the closure.
+    ///
+    /// The follower's radius is what moves — its centre and its sweep are untouched — so the two
+    /// arcs share a vertex exactly, both stay exactly on their own circles, and the move is charged
+    /// to the follower's `δ` rather than being absorbed silently. The gap the file had is still
+    /// reported separately, which is the distinction the module exists to keep.
+    #[test]
+    fn two_arcs_meeting_are_re_gauged_and_the_move_is_charged() {
+        let tol = ArcTolerance::report_only();
+        let one = from_centre_angles::<Bignum>(
             p(0, 0),
             &Q::from_i128(1),
             &Q::from_i128(150),
@@ -428,24 +528,42 @@ mod tests {
             &tol,
         )
         .expect("certified");
-        // A concentric arc one micron larger, coming back the other way: its 30°/150° endpoints sit
-        // a micron off `first`'s — near enough to weld, and on a different circle.
-        let second = from_centre_angles::<Bignum>(
+        let two = from_centre_angles::<Bignum>(
             p(0, 0),
             &Q::new(1_000_001, 1_000_000),
             &Q::from_i128(30),
-            &Q::from_i128(150),
+            &Q::from_i128(-30),
             &tol,
         )
         .expect("certified");
-        assert!(first.delta.sign() > 0 && second.delta.sign() > 0);
+        let before = two.delta.clone();
+        // A segment closes the figure, so the walk seeds there and both arc junctions are interior.
+        let tail = two.end.clone();
+        let head = one.start.clone();
         let out = assemble::<Bignum>(
-            vec![Element::Arc(first), Element::Arc(second)],
+            vec![Element::Arc(one), Element::Arc(two), seg(tail, head)],
             &Q::new(1, 10),
+        )
+        .expect("the junction lift closes it");
+        assert_eq!(out.loops.len(), 1);
+        assert_eq!(out.loops[0].len(), 3);
+        for w in out.loops[0].windows(2) {
+            assert_eq!(w[0].end(), w[1].start(), "exactly head to tail");
+        }
+        for e in &out.loops[0] {
+            if let Element::Arc(a) = e {
+                assert!(a.is_consistent(), "a re-gauged arc is still on its circle");
+            }
+        }
+        assert!(
+            out.delta > before,
+            "the re-gauge is charged: {} against the entity's own {}",
+            crate::num::to_decimal(&out.delta, 12),
+            crate::num::to_decimal(&before, 12)
         );
         assert!(
-            matches!(out, Err(ImportFault::ArcJunctionGap { .. })),
-            "expected a named refusal, got {out:?}"
+            out.closure_gap.sign() > 0,
+            "and the file's gap is still reported"
         );
     }
 

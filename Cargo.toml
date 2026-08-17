@@ -37,6 +37,7 @@ export = { path = "crates/export" }
 fixtures = { path = "crates/fixtures" }
 difftest = { path = "crates/difftest" }
 author = { path = "crates/author" }
+interchange = { path = "crates/interchange" }
 acceptance = { path = "crates/acceptance" }
 
 # Tests run exact rational arithmetic in bulk; at the default `opt-level = 0` the suite spends most

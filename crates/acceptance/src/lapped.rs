@@ -82,6 +82,7 @@ use develop::extrude::{Apex, Frame};
 use export::approx::{f64_to_rat, rat_to_f64};
 use fixtures::devices::wrap_cone;
 use geom::chart::Chart;
+use geom::content::Edge;
 use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
 
 type Q = Rat<Bignum>;
@@ -276,7 +277,20 @@ pub struct LappedCone {
     pub outer_r: Q,
     /// The inner trim radius, if the blank is an annulus. `None` leaves the inner bound to the
     /// caller's own authoring ops.
+    ///
+    /// With [`inner_profile`](Self::inner_profile) set this is no longer *the* boundary, but it is
+    /// still load-bearing: it is the radius the drafted cast is gauged to (see [`normal_cut`]), and
+    /// the radius the component witness and the µ̂ band edges are derived from.
     pub inner_r: Option<Q>,
+    /// **The inner bound's outline**, in the plan (top) view, replacing the disc of
+    /// [`inner_r`](Self::inner_r) — one closed loop or several, drawn in the recipe's own
+    /// millimetres. `None` keeps the disc.
+    ///
+    /// This is where a cut file enters the device: `interchange` turns a DXF or SVG into exactly
+    /// these edges, and nothing downstream can tell the difference between an imported outline and
+    /// an authored one. [`TrimStyle`] still decides how the outline meets the sheet, and for an
+    /// outline that spans radii the two styles no longer agree — see [`draft_image`].
+    pub inner_profile: Option<Vec<Edge<Bignum>>>,
     /// **How the trim meets the sheet** — see [`TrimStyle`].
     pub trim: TrimStyle,
     /// **Where the stack sits relative to the developed surface** — the fraction of the thickness
@@ -392,29 +406,71 @@ fn apex_generator(c: &Q, s: &Q) -> Option<(Q, Q)> {
     (b.sign() > 0 && a > b).then_some((a, b))
 }
 
-/// The **normal-cut** boundary cone through the neutral surface's circle of radius `r`.
+/// `Edge` has no derived `Clone` on a slice, and a recipe is used more than once.
+fn clone_edges(edges: &[Edge<Bignum>]) -> Vec<Edge<Bignum>> {
+    edges.to_vec()
+}
+
+/// A frame in the horizontal plane `z`, with the drawing's own `x`/`y` as its axes — so a profile
+/// coordinate *is* a plan coordinate, and an imported outline needs no transform.
+fn plan_frame(z: Q) -> Frame<Bignum> {
+    Frame::new(
+        [qi(0), qi(0), z],
+        [qi(1), qi(0), qi(0)],
+        [qi(0), qi(1), qi(0)],
+    )
+    .expect("the xy axes are independent")
+}
+
+/// The **normal-cut** boundary cone through the neutral surface's circle of radius `r`, sweeping
+/// `profile` rather than assuming a disc.
 ///
 /// `apex` is the base cone's `(cos β, sin β)`, only as a ratio — the same pair
 /// [`LappedCone::apex`] carries, and [`apex_generator`] has already refused the degenerate ends,
 /// so neither component is zero here.
 ///
-/// The disc sits at `z = −r·cot β`, where the neutral surface `cos β·ρ + sin β·z = 0` has exactly
-/// radius `r`; the apex sits `r·tan β` further down the axis, which puts the generatrix through
-/// the rim along the cone's own normal `(cos β, sin β)`. Both are exact rational divisions.
-fn normal_cut(apex: &(Q, Q), r: &Q) -> Cutter<Bignum> {
+/// The profile plane sits at `z = −r·cot β`, where the neutral surface `cos β·ρ + sin β·z = 0` has
+/// exactly radius `r`; the apex sits `r·tan β` further down the axis, which puts the generatrix
+/// through the circle of radius `r` along the cone's own normal `(cos β, sin β)`. Both are exact
+/// rational divisions.
+///
+/// **What `r` means for a profile that is not that circle** — see [`TrimStyle`]: the draft is
+/// exactly normal on anything concentric with the axis at radius `r`, and exactly normal on any
+/// radial element at any radius; everywhere else the sweep moves the drawing radially by the
+/// [`draft_image`] map, which is the identity only at `r`.
+fn normal_cut(apex: &(Q, Q), r: &Q, profile: Vec<Edge<Bignum>>) -> Cutter<Bignum> {
     let (c, s) = (&apex.0, &apex.1);
     let z_r = r.mul(c).div(s).neg();
     let z_apex = z_r.sub(&r.mul(s).div(c));
     Cutter::extrude(
-        Frame::new(
-            [qi(0), qi(0), z_r],
-            [qi(1), qi(0), qi(0)],
-            [qi(0), qi(1), qi(0)],
-        )
-        .expect("the xy axes are independent"),
+        plan_frame(z_r),
         Apex::point([qi(0), qi(0), z_apex]),
-        Profile::new().circle(qi(0), qi(0), r.clone()).into_edges(),
+        profile,
     )
+}
+
+/// **Where a drafted sweep actually puts a profile point** — the radial map a [`normal_cut`] at
+/// reference radius `r` applies to plan radius `rho`.
+///
+/// The cast is from a point on the axis, so it preserves azimuth exactly and moves radius by a
+/// Möbius map with `r` as its non-zero fixed point:
+///
+/// ```text
+/// ρ ↦ (|z_a|·ρ) / ((z_r − z_a) + cot β·ρ)      z_r = −r·cot β,  z_a = z_r − r·tan β
+/// ```
+///
+/// Concentric arcs stay concentric arcs and radial lines stay radial lines — the two element kinds
+/// whose *walls* a drafted cast reproduces exactly — but they land at a different radius unless
+/// `ρ = r`. Everything else (a fillet, an off-axis circle) is deformed as well as moved, which is
+/// why an outline drawn in plan and drafted from one apex is not the outline that comes out.
+/// [`TrimStyle`] is where the choice between the two is made, and the number here is what it costs.
+pub fn draft_image(apex: &(Q, Q), r: &Q, rho: &Q) -> Q {
+    let (c, s) = (&apex.0, &apex.1);
+    let z_r = r.mul(c).div(s).neg();
+    let z_a = z_r.sub(&r.mul(s).div(c));
+    z_a.neg()
+        .mul(rho)
+        .div(&z_r.sub(&z_a).add(&c.div(s).mul(rho)))
 }
 
 /// Validate a recipe and build its blank.
@@ -611,15 +667,33 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
         .clone()
         .unwrap_or_else(|| witness(&chart, &spec.outer_r, spec.inner_r.as_ref()));
     part = part.keep_near(pick);
-    let bound = |r: &Q| -> Cutter<Bignum> {
+    // A disc bound: the cheap closed forms, since a circle is what both styles agree on exactly.
+    let disc = |r: &Q| -> Cutter<Bignum> {
         match spec.trim {
             TrimStyle::Cylindrical => Cutter::vertical_cylinder(qi(0), qi(0), r.mul(r)),
-            TrimStyle::NormalCut => normal_cut(&spec.apex, r),
+            TrimStyle::NormalCut => normal_cut(
+                &spec.apex,
+                r,
+                Profile::new().circle(qi(0), qi(0), r.clone()).into_edges(),
+            ),
         }
     };
-    part = part.intersect(bound(&spec.outer_r));
+    part = part.intersect(disc(&spec.outer_r));
     if let Some(ri) = &spec.inner_r {
-        part = part.subtract(bound(ri));
+        part = part.subtract(match &spec.inner_profile {
+            None => disc(ri),
+            // A drawn outline is swept as drawn: straight down, so every point lands at its own
+            // plan coordinate, or drafted from `ri`'s cast point, which is normal to the sheet but
+            // moves anything off that radius by `draft_image`.
+            Some(edges) => match spec.trim {
+                TrimStyle::Cylindrical => Cutter::extrude(
+                    plan_frame(qi(0)),
+                    Apex::direction([qi(0), qi(0), qi(1)]).expect("+z is a direction"),
+                    clone_edges(edges),
+                ),
+                TrimStyle::NormalCut => normal_cut(&spec.apex, ri, clone_edges(edges)),
+            },
+        });
     }
     part = part.thickness(t.clone()).neutral(spec.neutral.clone());
 

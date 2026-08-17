@@ -768,6 +768,59 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The first real cut file: what it cost, and the three walls it hit (2026-08-17).** The user
+  supplied `crates/acceptance/data/inner-cut.dxf` — the device's Ø 8 bore with a 10° tab reaching in
+  to Ø 4, root fillets R 0.25, tip fillets R 0.15 — to replace the plain disc. Four separate things
+  came out of trying to cut it, and only two of them are now fixed.
+
+  **The import: the deferred junction lift was exactly what a real file needed.** `element.rs` had
+  written down, and not built, the arc-to-arc junction rule: where two `ARC` entities meet, neither
+  endpoint may move without leaving its own circle. A `LWPOLYLINE` of bulges never hits it — and the
+  first real drawing is eight chained `ARC`/`LINE` entities with **four** such junctions. Built as
+  specified (`ExactArc::regauged`): hold the centre, take the shared vertex as the new start, and
+  carry the far end round by the arc's **own** sweep, applied as the rotation its two endpoints
+  already encode — `cos = (u·w)/r²`, `sin = (u×w)/r²`, both rational, and `cos² + sin² = 1`
+  *exactly* because `is_consistent` has already put both on one circle. So the arc is re-gauged,
+  never bent, and its radius is what moved. Read: one loop, **δ = 2.6e-14**, closure gap **2.3e-10**.
+  Two details worth keeping: the file declares `$MEASUREMENT 1` (metric) but no `$INSUNITS`, and
+  those are different claims — the reader refuses rather than guess a 10× part; and the drawing's
+  Ø 8 is stated as `r = 3.999999907`, which the importer carries rather than tidies.
+
+  Also learned by a failing test I had written to assert the opposite: **a lens of two concentric
+  arcs now closes**, because re-gauging the follower puts it on the leader's own circle and its sweep
+  carries it exactly back to the anchor. Only arcs about *different* centres still refuse.
+
+  **`RevCylinder`: the same conditioning hole as last session's `RevCone`, one apex kind over.** A
+  plan-view drawing has to be swept *straight down* to land where it was drawn, so the straight
+  drill is the default sweep for a cut file — and its profile circle clears to a `Quadric` that
+  `RevCone` cannot recognize (a cylinder's eigenvalues are `λ, λ, 0`, so it passes the double-root
+  step and declines at `cos²α = 1`, not where that function's doc claimed). Measured on the device's
+  own bore: **ε 5.5585e0 → 1.5266e0**, now digit-identical to the closed-form cylinder *and* to the
+  drafted cone. Recognition is the same verified-proposal shape: rank one, `|a|² = λ·N_jj`,
+  `b + 2Sp = 0`, `R² > 0`, every step an exact ℚ equality. One asymmetry with `RevCone` is
+  load-bearing: a **live nappe selector is declined outright**, because the distance to a whole
+  cylinder is a *lower* bound for the distance to half of one, and a certificate may not be
+  optimistic.
+
+  **What still refuses, and it is not what I first thought (→ #291).** A rim notch is not expensive:
+  a wedge whose flanks clear the axis certifies at **ε 1.5266e0**, the plain bore's own figure. Three
+  distinct refusals sit between that and this drawing — an exactly-radial flank gives `Pole` (the
+  wall contains a whole ruling, so the µ̂-pullback degenerates, and the drawing's flanks are radial
+  to **8.8e-16 mm**); a near-radial one gives `AmbiguousRegion` down to about 1/32 mm of miss; and an
+  all-straight notch gives `AmbiguousRegion` at **every** width from half-width 0.347 to 2.400 mm,
+  which rules out sampling density as the cause of that one.
+
+  **And the negative result worth more than the fix I attempted.** `resolve.rs` substitutes a mixed
+  profile's bounding-circle proxy for the per-wall tangent windows, and the comment beside it says a
+  superset is the right error. Making it a union *did* localize the imported tab — its fault moved
+  `AmbiguousRegion` → `DisconnectedRegion` — and **regressed three green acceptance tests**. So
+  extra stations are not free: `choose_comps` refuses at any sample it cannot attribute, and a
+  station near a wall's tangent ruling is exactly such a sample. Reverted; the comment's claim is
+  wrong and #291 carries it.
+
+  *2026-08-17 · open(#290, #291) · `crates/interchange/src/{arc,element}.rs`,
+  `crates/develop/src/cut.rs`, `crates/acceptance/{data,src,tests}`*
+
 - **A cone of revolution has a closed-form distance, and using it made the drafted trim free
   (2026-08-17).** The pinned device now cuts **normal to the sheet** at both radii — the physical
   edge — instead of with a vertical cylinder, and the trim style costs nothing: same ε, same

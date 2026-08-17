@@ -130,7 +130,11 @@ impl<B: Backend> ArcTolerance<B> {
     }
 
     /// Refuse when `delta` is over budget; pass it through otherwise.
-    fn check(&self, delta: Rat<B>) -> Result<Rat<B>, ArcFault<B>> {
+    ///
+    /// Public because the budget has to be honoured **after** assembly too: a junction re-gauge
+    /// ([`ExactArc::regauged`]) raises an arc's `δ` once its neighbours are known, which is past
+    /// every per-entity check.
+    pub fn check(&self, delta: Rat<B>) -> Result<Rat<B>, ArcFault<B>> {
         match &self.budget {
             Some(b) if delta > *b => Err(ArcFault::ToleranceExceeded {
                 delta,
@@ -216,6 +220,73 @@ impl<B: Backend> ExactArc<B> {
             end,
             ccw,
             delta: Rat::from_i128(0),
+        }
+        .sealed()
+    }
+
+    /// **The junction lift** — re-gauge the arc onto a vertex a neighbour already owns, keeping its
+    /// centre and its own sweep, and paying for it in `δ`.
+    ///
+    /// Where two `ARC` entities meet, neither side is free: their reconstructed endpoints sit on
+    /// *different* circles and neither may simply be moved, because an arc's endpoints belong to
+    /// its circle. What *is* free is the radius. So this holds the centre, takes `start` as given —
+    /// which fixes `r² := |start − c|²` — and carries the far end round by the arc's **own** sweep,
+    /// applied as the exact rational rotation that the file's two endpoints already encode:
+    ///
+    /// ```text
+    /// cos Δθ = (u·w)/r²      sin Δθ = (u×w)/r²      u = start − c,  w = end − c
+    /// ```
+    ///
+    /// Both are rational, and `cos² + sin² = |u|²|w|²/r⁴ = 1` **exactly**, because
+    /// [`is_consistent`](Self::is_consistent) has already put `u` and `w` on the same circle. A
+    /// rotation preserves length, so the new end lands on the new circle exactly — the arc is
+    /// re-gauged, never bent.
+    ///
+    /// `δ` grows by the distance the start moved (bounded `|Δx| + |Δy|`, no square root needed):
+    /// the rotation is an isometry, so the far end moves by exactly that much too, and both
+    /// endpoints stay within `δ_old + |Δ|` of the ones the file stated.
+    ///
+    /// ```
+    /// use interchange::arc::from_centre_angles;
+    /// use lattice::{Bignum, Rat};
+    /// type Q = Rat<Bignum>;
+    ///
+    /// let tol = Default::default();
+    /// // A quarter turn of the unit circle, then re-gauged onto a vertex a hair further out.
+    /// let arc = from_centre_angles::<Bignum>(
+    ///     [Q::from_i128(0), Q::from_i128(0)], &Q::from_i128(1),
+    ///     &Q::from_i128(0), &Q::from_i128(90), &tol,
+    /// ).expect("a quarter arc");
+    /// let moved = arc.regauged([Q::new(1001, 1000), Q::from_i128(0)]).expect("re-gauged");
+    ///
+    /// assert!(moved.is_consistent());                       // still exactly on its own circle
+    /// assert_eq!(moved.r2, Q::new(1_002_001, 1_000_000));   // the radius is what moved
+    /// assert_eq!(moved.end, [Q::from_i128(0), Q::new(1001, 1000)]); // the sweep is unchanged
+    /// ```
+    pub fn regauged(&self, start: [Rat<B>; 2]) -> Result<Self, ArcFault<B>> {
+        if self.r2.sign() <= 0 {
+            return Err(ArcFault::NonPositiveRadius);
+        }
+        let u = [self.start[0].sub(&self.cx), self.start[1].sub(&self.cy)];
+        let w = [self.end[0].sub(&self.cx), self.end[1].sub(&self.cy)];
+        let cos = u[0].mul(&w[0]).add(&u[1].mul(&w[1])).div(&self.r2);
+        let sin = u[0].mul(&w[1]).sub(&u[1].mul(&w[0])).div(&self.r2);
+
+        let v = [start[0].sub(&self.cx), start[1].sub(&self.cy)];
+        let end = [
+            self.cx.add(&cos.mul(&v[0]).sub(&sin.mul(&v[1]))),
+            self.cy.add(&sin.mul(&v[0]).add(&cos.mul(&v[1]))),
+        ];
+        let moved = abs(&start[0].sub(&self.start[0])).add(&abs(&start[1].sub(&self.start[1])));
+
+        ExactArc {
+            cx: self.cx.clone(),
+            cy: self.cy.clone(),
+            r2: norm2(&v),
+            start,
+            end,
+            ccw: self.ccw,
+            delta: self.delta.add(&moved),
         }
         .sealed()
     }

@@ -178,6 +178,14 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
         outer_r: q(43, 4),
         inner_r: Some(qi(4)),
+        // **Not yet the drawing.** `inner_cut_profile()` is the bore this device is meant to have —
+        // the file reads exactly, the recipe carries it, and a rim notch costs nothing to certify
+        // (measured ε 1.5266e0, the plain bore's own figure, on a wedge whose flanks clear the
+        // axis). What the resolver cannot yet place is *this* notch: its flanks are aimed at the
+        // cone's axis to 8.8e-16 mm, and a wall containing a whole ruling has no µ̂-pullback. Task
+        // #291 carries the measurements and the three distinct refusals. Left `None` so the pinned
+        // device stays the object every V&V number was taken on, rather than a refusal.
+        inner_profile: None,
         // The physical edge: cut **normal to the sheet**, not vertically. Both bounds are cones,
         // and both are recognized as cones of revolution (`develop::cut::RevCone`), so they carry
         // the same closed-form distance a cylinder does and cost the same split.
@@ -192,6 +200,47 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         policy: lapped::GapPolicy::MinDistance,
         pick: None,
     }
+}
+
+/// **The device's inner cut, as the drawing states it** — `data/inner-cut.dxf`, verbatim.
+///
+/// Embedded rather than read from disk so the device is the same object wherever it is built, and
+/// kept as *text* so that the file, not a transcription of it, is the definition. Everything that
+/// consumes the device — the demos, the V&V pins, the benchmark, `tests/imported_outline.rs` —
+/// reads this one string.
+pub const INNER_CUT_DXF: &str = include_str!("../data/inner-cut.dxf");
+
+/// The unit [`INNER_CUT_DXF`] is read in.
+///
+/// The file carries `$MEASUREMENT 1` (metric) but no `$INSUNITS`, and those are different claims:
+/// `$MEASUREMENT` picks a linetype table, it does not say millimetre rather than centimetre. So the
+/// reader refuses to infer — an inferred unit is a 10× or 25.4× part — and the unit is supplied
+/// here, where it is a statement about *this* drawing rather than a default.
+pub const INNER_CUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// The inner cut's outline, read out of [`INNER_CUT_DXF`].
+///
+/// Eight `ARC`/`LINE` entities on layer `VISIBLE` forming one closed loop: the Ø 8 hole with a 10°
+/// tab reaching in to Ø 4, filleted R 0.25 at the root and R 0.15 at the tip. Four of its junctions
+/// are **arc to arc**, which is the case `interchange::element` had written down and left unbuilt
+/// until a real file needed it.
+///
+/// The read is exact to `δ = 2.6e-14` — the drawing's own `ARC` entities over-determine their
+/// endpoints, and the junction re-gauge charges what it moves — over a closure gap of `2.3e-10`,
+/// which is the file's own sloppiness and lands entirely on the two `LINE` endpoints, where moving
+/// costs nothing.
+///
+/// Panics only on a file this repository ships, so a failure is a broken commit rather than a
+/// runtime condition; `tests/imported_outline.rs` is what names it.
+pub fn inner_cut_profile() -> Vec<Edge<Bignum>> {
+    let opts = interchange::dxf::DxfOptions::<Bignum> {
+        assume_unit: Some(INNER_CUT_UNIT),
+        ..Default::default()
+    };
+    interchange::dxf::read_dxf::<Bignum>(INNER_CUT_DXF, &opts)
+        .expect("data/inner-cut.dxf is a readable outline")
+        .profile()
+        .into_edges()
 }
 
 /// The centre of the self-lapping device's seam drill, `(x, y, r²)` — the 3-D cylinder both
