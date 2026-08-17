@@ -174,6 +174,127 @@ pub fn transport_bound<B: Backend>(x: f64) -> Rat<B> {
     pow2(exponent)
 }
 
+/// `√k` for `k > 0` — **exactly** when `k` is a rational square, and a rational upper bound
+/// otherwise.
+///
+/// Newton on `t ↦ (t + k/t)/2` overshoots on the first step and then descends, so every iterate
+/// after the first is `≥ √k` and the bound is one-sided by construction. But Newton *roughly
+/// squares the denominator every step*, so an uncapped loop is not slow, it is unusable — 40 steps
+/// build a number with ~2⁴⁰ bits. (`author::part::rational_sqrt_above` takes three steps for this
+/// exact reason; here the refinement knob has to go further, so the growth is bounded instead of
+/// avoided.) Each iterate is therefore rounded **up** onto a `2⁻ᵇⁱᵗˢ` grid, which preserves the
+/// one-sidedness and keeps the digits flat.
+///
+/// The rounding costs the exact answer even when there is one — `√(1/4)` would come back as
+/// `1/2 + 2⁻ᵇⁱᵗˢ`, so an arc that is exactly representable would report a nonzero backward error
+/// and read as lossy. That is repaired by asking for the **simplest rational in the final bracket**
+/// ([`simplest_in`]) and checking whether it squares to `k`: it does exactly when the data admits
+/// an exact answer, which is the case worth getting right.
+pub fn sqrt_rational<B: Backend>(k: &Rat<B>, iters: usize) -> Rat<B> {
+    let two = Rat::from_i128(2);
+    let one = Rat::from_i128(1);
+    let bits = (8 + 4 * iters.min(58)) as i32;
+    let grid = pow2::<B>(bits);
+    let step = grid.recip();
+
+    let mut t = if *k > one { k.clone() } else { one };
+    for _ in 0..iters.clamp(1, 60) {
+        t = t.add(&k.div(&t)).div(&two);
+        // Ceil onto the grid: still ≥ √k, and the denominator stays 2^bits.
+        t = t.mul(&grid).ceil().div(&grid);
+    }
+
+    // Walk down to a grid point at or below the root, so the bracket really contains it.
+    let mut lo = t.sub(&step);
+    for _ in 0..4 {
+        if lo.sign() <= 0 || lo.mul(&lo) <= *k {
+            break;
+        }
+        lo = lo.sub(&step);
+    }
+    if lo.sign() < 0 || lo.mul(&lo) > *k {
+        lo = Rat::from_i128(0);
+    }
+
+    // If the data admits an exact root it is the simplest rational in the bracket.
+    let candidate = simplest_in(&lo, &t);
+    if candidate.mul(&candidate) == *k {
+        return candidate;
+    }
+    t
+}
+
+/// The rational of least denominator in `[lo, hi]`, for `0 ≤ lo ≤ hi` — the Stern–Brocot descent.
+///
+/// This is how an exact rational is recovered from a bracket that merely contains it: the simplest
+/// rational in a narrow interval around `p/q` *is* `p/q` once the interval is narrower than
+/// `1/q²`, which is what makes the exactness probe in [`sqrt_rational`] decisive rather than
+/// lucky. Depth is bounded so a pathological bracket cannot recurse without end.
+pub fn simplest_in<B: Backend>(lo: &Rat<B>, hi: &Rat<B>) -> Rat<B> {
+    fn go<B: Backend>(lo: &Rat<B>, hi: &Rat<B>, depth: usize) -> Rat<B> {
+        if lo.sign() <= 0 {
+            return Rat::from_i128(0);
+        }
+        let ceil_lo = lo.ceil();
+        if ceil_lo <= *hi {
+            return ceil_lo; // an integer is in range, and no rational is simpler
+        }
+        if depth == 0 {
+            return lo.clone();
+        }
+        // No integer between them, so both share a floor; recurse on the reciprocal tails.
+        let n = lo.floor();
+        let (a, b) = (hi.sub(&n), lo.sub(&n));
+        if a.sign() <= 0 || b.sign() <= 0 {
+            return lo.clone();
+        }
+        n.add(&go(&a.recip(), &b.recip(), depth - 1).recip())
+    }
+    go(lo, hi, 64)
+}
+
+/// A fixed-point decimal rendering of an exact rational, rounded half-up to `places` digits.
+///
+/// The one place a rational becomes text. Writers need it (a DXF group value, an SVG coordinate)
+/// and so do refusal messages, which name the numbers rather than only the reason. Exact
+/// throughout — the rounding is a single `floor` on `q·10^places + 1/2`, not a float cast.
+///
+/// ```
+/// use interchange::num::{rat_from_decimal, to_decimal};
+/// use lattice::{Bignum, Rat};
+///
+/// assert_eq!(to_decimal(&Rat::<Bignum>::new(1, 3), 6), "0.333333");
+/// assert_eq!(to_decimal(&Rat::<Bignum>::new(-1, 2), 3), "-0.500");
+/// assert_eq!(to_decimal(&Rat::<Bignum>::from_i128(7), 0), "7");
+/// // …and it is the left inverse of the reader on anything it can represent.
+/// let q = rat_from_decimal::<Bignum>("12.345").expect("decimal");
+/// assert_eq!(to_decimal(&q, 3), "12.345");
+/// ```
+pub fn to_decimal<B: Backend>(q: &Rat<B>, places: usize) -> String {
+    let negative = q.sign() < 0;
+    let magnitude = if negative { q.neg() } else { q.clone() };
+    let scale = pow10::<B>(places as i64);
+    let scaled = magnitude.mul(&scale).add(&Rat::new(1, 2)).floor();
+    let (digits, _) = scaled.numer_denom_decimal();
+    let digits = if digits.len() <= places {
+        "0".repeat(places + 1 - digits.len()) + &digits
+    } else {
+        digits
+    };
+    let (whole, frac) = digits.split_at(digits.len() - places);
+    let sign = if negative && (whole.bytes().any(|b| b != b'0') || frac.bytes().any(|b| b != b'0'))
+    {
+        "-"
+    } else {
+        ""
+    };
+    if places == 0 {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{frac}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,6 +24,37 @@
 #![deny(missing_docs)]
 
 pub mod arc;
+pub mod dxf;
+pub mod element;
 pub mod num;
 pub mod report;
 pub mod unit;
+
+use arrange2d::profile::Profile;
+use element::Element;
+use lattice::{Backend, Rat};
+use report::ImportReport;
+
+/// What a read produced: closed loops of exact geometry, and the numbers describing how it got
+/// there.
+#[derive(Debug)]
+pub struct Imported<B: Backend> {
+    /// One entry per closed loop, elements head-to-tail. Nesting needs no ordering — the profile's
+    /// fill rule is even-odd, so a loop drawn inside another is a hole.
+    pub loops: Vec<Vec<Element<B>>>,
+    /// What the read did, in numbers.
+    pub report: ImportReport<B>,
+}
+
+impl<B: Backend> Imported<B> {
+    /// The arrangement edges a `Cutter::extrude` profile consumes — arcs kept as arcs.
+    pub fn profile(&self) -> Profile<B> {
+        element::to_profile(&self.loops)
+    }
+}
+
+/// The larger of two exact rationals (`Rat` has no `max`, and a `max` written three ways would
+/// drift).
+pub(crate) fn max_of<B: Backend>(a: Rat<B>, b: Rat<B>) -> Rat<B> {
+    if a > b { a } else { b }
+}

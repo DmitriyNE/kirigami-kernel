@@ -46,6 +46,19 @@ pub enum ArcFault<B: Backend> {
     NotOnCircle,
 }
 
+impl<B: Backend> ArcFault<B> {
+    /// The variant's name, for a refusal message that must not carry the backend type parameter.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ArcFault::DegenerateChord => "DegenerateChord",
+            ArcFault::StraightBulge => "StraightBulge",
+            ArcFault::NonPositiveRadius => "NonPositiveRadius",
+            ArcFault::ToleranceExceeded { .. } => "ToleranceExceeded",
+            ArcFault::NotOnCircle => "NotOnCircle",
+        }
+    }
+}
+
 /// How hard to work, and how much backward error to accept.
 ///
 /// The [five-part contract](../../../docs/construction-api-design.md) in one type: approximation is
@@ -309,7 +322,7 @@ pub fn from_endpoints_radius<B: Backend>(
     let t = if k.sign() <= 0 {
         Rat::from_i128(0)
     } else {
-        sqrt_rational(&k, tol.iters)
+        crate::num::sqrt_rational(&k, tol.iters)
     };
 
     // SVG F.6.5: the centre sits on the `+perp` side exactly when the two flags differ.
@@ -331,85 +344,6 @@ pub fn from_endpoints_radius<B: Backend>(
         delta,
     }
     .sealed()
-}
-
-/// `√k` for `k > 0` — **exactly** when `k` is a rational square, and a rational upper bound
-/// otherwise.
-///
-/// Newton on `t ↦ (t + k/t)/2` overshoots on the first step and then descends, so every iterate
-/// after the first is `≥ √k` and the bound is one-sided by construction. But Newton *roughly
-/// squares the denominator every step*, so an uncapped loop is not slow, it is unusable — 40 steps
-/// build a number with ~2⁴⁰ bits. (`author::part::rational_sqrt_above` takes three steps for this
-/// exact reason; here the refinement knob has to go further, so the growth is bounded instead of
-/// avoided.) Each iterate is therefore rounded **up** onto a `2⁻ᵇⁱᵗˢ` grid, which preserves the
-/// one-sidedness and keeps the digits flat.
-///
-/// The rounding costs the exact answer even when there is one — `√(1/4)` would come back as
-/// `1/2 + 2⁻ᵇⁱᵗˢ`, so an arc that is exactly representable would report a nonzero backward error
-/// and read as lossy. That is repaired by asking for the **simplest rational in the final bracket**
-/// ([`simplest_in`]) and checking whether it squares to `k`: it does exactly when the data admits
-/// an exact answer, which is the case worth getting right.
-fn sqrt_rational<B: Backend>(k: &Rat<B>, iters: usize) -> Rat<B> {
-    let two = Rat::from_i128(2);
-    let one = Rat::from_i128(1);
-    let bits = (8 + 4 * iters.min(58)) as i32;
-    let grid = crate::num::pow2::<B>(bits);
-    let step = grid.recip();
-
-    let mut t = if *k > one { k.clone() } else { one };
-    for _ in 0..iters.clamp(1, 60) {
-        t = t.add(&k.div(&t)).div(&two);
-        // Ceil onto the grid: still ≥ √k, and the denominator stays 2^bits.
-        t = t.mul(&grid).ceil().div(&grid);
-    }
-
-    // Walk down to a grid point at or below the root, so the bracket really contains it.
-    let mut lo = t.sub(&step);
-    for _ in 0..4 {
-        if lo.sign() <= 0 || lo.mul(&lo) <= *k {
-            break;
-        }
-        lo = lo.sub(&step);
-    }
-    if lo.sign() < 0 || lo.mul(&lo) > *k {
-        lo = Rat::from_i128(0);
-    }
-
-    // If the data admits an exact root it is the simplest rational in the bracket.
-    let candidate = simplest_in(&lo, &t);
-    if candidate.mul(&candidate) == *k {
-        return candidate;
-    }
-    t
-}
-
-/// The rational of least denominator in `[lo, hi]`, for `0 ≤ lo ≤ hi` — the Stern–Brocot descent.
-///
-/// This is how an exact rational is recovered from a bracket that merely contains it: the simplest
-/// rational in a narrow interval around `p/q` *is* `p/q` once the interval is narrower than
-/// `1/q²`, which is what makes the exactness probe in [`sqrt_rational`] decisive rather than
-/// lucky. Depth is bounded so a pathological bracket cannot recurse without end.
-fn simplest_in<B: Backend>(lo: &Rat<B>, hi: &Rat<B>) -> Rat<B> {
-    fn go<B: Backend>(lo: &Rat<B>, hi: &Rat<B>, depth: usize) -> Rat<B> {
-        if lo.sign() <= 0 {
-            return Rat::from_i128(0);
-        }
-        let ceil_lo = lo.ceil();
-        if ceil_lo <= *hi {
-            return ceil_lo; // an integer is in range, and no rational is simpler
-        }
-        if depth == 0 {
-            return lo.clone();
-        }
-        // No integer between them, so both share a floor; recurse on the reciprocal tails.
-        let n = lo.floor();
-        let (a, b) = (hi.sub(&n), lo.sub(&n));
-        if a.sign() <= 0 || b.sign() <= 0 {
-            return lo.clone();
-        }
-        n.add(&go(&a.recip(), &b.recip(), depth - 1).recip())
-    }
-    go(lo, hi, 64)
 }
 
 // --- (3) the certified one: a DXF ARC ------------------------------------------------------
