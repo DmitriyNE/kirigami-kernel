@@ -338,3 +338,84 @@ fn the_stack_straddles_the_developed_surface_by_default() {
         Verdict::Refuted(PartFault::NeutralOutsideStack)
     ));
 }
+
+/// **An even ramp buys ramp angle, and that is the whole point of the knob.**
+///
+/// The support enters the geometry through `R₁ + w = det J / |n′|²`, so material at `µ̂` has
+/// `R₁ ∝ (µ̂ − µ̂_fold)` and its bending strain goes as `w/(µ̂ − µ̂_fold)`. Peak strain and the
+/// largest usable ramp angle are therefore *one* quantity: how far the fold line swings while the
+/// support climbs. The cubic `3u² − 2u³` spends that swing badly — `h″` is linear, so the bend
+/// piles up at the two joins and the middle of the ramp does no work — while two parabolic halves
+/// hold `|h″|` constant, the smallest peak available at `h′ = 0` on both ends.
+///
+/// Measured on the acceptance ramp, peak `|µ̂_fold|` is 2.474 against 1.641 — **1.507×**, versus
+/// the 1.500 the two peaks predict. This test pins the *consequence* rather than that ratio, which
+/// no public API exposes: at `Δσ = 11/32` the cubic's ε has already run past the part's DRC gate
+/// while the even profile still certifies, on a recipe differing in nothing else.
+#[test]
+fn an_even_ramp_certifies_a_ramp_the_cubic_cannot() {
+    use acceptance::RampProfile;
+    use certify_core::Verdict;
+
+    let narrowed = |p: RampProfile| {
+        let mut spec = device_spec();
+        spec.ramp_profile = p;
+        spec.ccw.ramp_start = sigma(21, 32); // Δσ = 11/32, where the two part ways
+        acceptance::self_lapping_cone_from(&spec, 16, 8, false, None).develop()
+    };
+
+    assert!(
+        !matches!(narrowed(RampProfile::Smoothstep), Verdict::Verified(_)),
+        "the cubic cannot hold this ramp — that is the limit the even profile lifts"
+    );
+    let Verdict::Verified(flat) = narrowed(RampProfile::EvenCurvature) else {
+        panic!("the even ramp certifies the same seam at the same width");
+    };
+    assert!(
+        flat.eps().cmp(&q(5, 6)) == core::cmp::Ordering::Less,
+        "…and under the device's own DRC gate, not merely somewhere: ε {:.3e}",
+        rat_to_f64(flat.eps())
+    );
+}
+
+/// **The profile changes how the ramp climbs, not what the seam is.**
+///
+/// Same supports, same lap windows, same azimuths — only the band count differs, because
+/// `EvenCurvature` needs two of them per ramp to hold `|h″|` constant.
+#[test]
+fn the_ramp_profile_leaves_the_seam_alone() {
+    use acceptance::RampProfile;
+
+    let build = |p: RampProfile| {
+        let mut spec = device_spec();
+        spec.ramp_profile = p;
+        lapped_cone(&spec).expect("valid either way")
+    };
+    let (cubic, even) = (
+        build(RampProfile::Smoothstep),
+        build(RampProfile::EvenCurvature),
+    );
+
+    assert_eq!(
+        cubic.h_ccw, even.h_ccw,
+        "the sheet offsets are the recipe's"
+    );
+    assert_eq!(cubic.h_cw, even.h_cw);
+    assert_eq!(cubic.lap_ccw.lo, even.lap_ccw.lo, "and so is the lap");
+    assert_eq!(cubic.lap_ccw.hi, even.lap_ccw.hi);
+    assert_eq!(
+        (cubic.regions.len(), even.regions.len()),
+        (3, 4),
+        "one ramp, split in two: three bands become four"
+    );
+    // The ramp's two halves meet at its midpoint and cover exactly the band the cubic spanned.
+    let cubic_ramp = &cubic.regions[1].0;
+    assert_eq!(even.regions[1].0.lo, cubic_ramp.lo);
+    assert_eq!(even.regions[2].0.hi, cubic_ramp.hi);
+    assert_eq!(
+        even.regions[1].0.hi,
+        cubic_ramp.lo.add(&cubic_ramp.hi).div(&qi(2)),
+        "split at the midpoint, which is where |h″| flips sign"
+    );
+    assert_eq!(even.regions[1].0.hi, even.regions[2].0.lo, "and they join");
+}

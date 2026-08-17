@@ -768,6 +768,44 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The seam ramp's cubic spends its bend at the joins, and an even one buys 1.5× of ramp angle
+  (2026-08-17).** `SupportFn::Smoothstep` is `3u² − 2u³`, so `h″ = (6 − 12u)·Δ/L²` — *linear*,
+  peaking at `±6Δ/L²` at **both ends** and passing through zero mid-ramp. All the bending is
+  crammed into the two joins with the constant neighbours and the middle of the ramp does no work.
+  That is the uneven distribution, exactly.
+
+  **The two symptoms are one number.** `R₁ + w = det J / |n′|²` (`develop::bonded`), so material
+  at `µ̂` has `R₁ ∝ (µ̂ − µ̂_fold)` and bending strain goes as `w/(µ̂ − µ̂_fold)` — where `µ̂_fold`
+  is the `det J = 0` rail, the same fold line whose excursion caps the ramp angle. Peak strain and
+  the angle limit are not two constraints to trade off; they are one quantity seen twice.
+
+  **What is achievable, and it is a closed-form optimum.** Subject to `h′ = 0` at both ends and a
+  rise `Δ` over width `L`, the profile minimising peak `|h″|` is the bang-bang pair of parabolas,
+  `h″ = ±4Δ/L²` — constant in magnitude, which is what "even" means. `4` against `6`: 1.5×.
+  Measured peak `|µ̂_fold|` on the acceptance ramp, **2.474 → 1.641 = 1.507×**, against the 1.500
+  the peaks predict, at an *identical* certified ε. Swept for where it bites: both profiles hold
+  at `Δσ = 3/8`; at `Δσ = 11/32` the cubic's ε has run past the part's own DRC gate (9.6e-1
+  against 5/6) while the even profile certifies at 7.60e-1; by `5/16` neither holds.
+
+  Landed as `RampProfile::{Smoothstep, EvenCurvature}` — `Smoothstep` the default, since every
+  pinned measurement was taken on it. No engine change was needed: `SupportFn::InU` already takes
+  an arbitrary rational function of `u`, and the recipe already emits multiple bands, so the
+  optimum is two polynomial half-bands over ℚ and stays exact.
+
+  Two things deliberately *not* taken. `EvenCurvature` is C¹ but its `h″` **steps** at the ends
+  and midpoint — no crease, but a curvature step is its own stress concentrator, and a trapezoidal
+  `h″` would round it off for some of the 1.5×. And there is a second ~1.3× in the
+  *parametrization*: `u` is affine in σ, but curvature lives in the turning angle
+  `ψ = (260/97)·arctan σ`, whose `dψ/dσ` varies 1.35× across this ramp, so even an even-in-`u`
+  profile is skewed in the parameter that governs `R₁`. Correcting that needs a rational
+  approximant (arctan is not rational), which is sound here precisely because `h` is *authored*
+  rather than approximated — the certificate bounds whatever profile it is given.
+
+  Generalizable: **"C¹ and gap-free" is a smoothness claim, not a distribution claim.** The cubic
+  was chosen for the joins it makes and was never asked what it does *between* them; the answer is
+  "nothing in the middle, everything at the edges". Worth asking of any interpolant whose second
+  derivative is what the physics reads.
+
 - **The acceptance device's dimensions were arbitrary, and scaling it to the real ones is what
   found out which of its pins were physics (2026-08-17).** `thickness: 1/20` traced back to
   `839ff53` (2026-08-11), where `brep_trim_solid` first needed a `w` window and got a round

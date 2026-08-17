@@ -80,7 +80,7 @@ use develop::bonded::{ClearFault, LapRail, clear_boxes};
 use export::approx::{f64_to_rat, rat_to_f64};
 use fixtures::devices::wrap_cone;
 use geom::chart::Chart;
-use lattice::{Bignum, Interval, Rat};
+use lattice::{Bignum, Interval, Poly, Rat, RatFunc};
 
 type Q = Rat<Bignum>;
 
@@ -110,6 +110,51 @@ pub enum GapPolicy {
     /// Allow a ramp to descend inside the lap. Nothing is refused for it; the gap simply varies
     /// there, and [`Lapped::seam_clearance`] reports what it actually reaches.
     MinDistance,
+}
+
+/// **How a ramp spends its bend** — the profile the support climbs by.
+///
+/// The support enters the geometry through the principal radius `R₁ + w = det J / |n′|²`
+/// ([`develop::bonded`]), so a point of material at `µ̂` has `R₁ ∝ (µ̂ − µ̂_fold)` and its bending
+/// strain goes as `w/(µ̂ − µ̂_fold)`, where `µ̂_fold` is the ruling's centre of curvature — the
+/// `det J = 0` rail. **Peak strain and the largest usable ramp angle are therefore the same
+/// number**: how far the fold line swings toward the sheet. It swings by `≈ 0.9·Δ/L²` for a rise
+/// `Δ` over a σ-width `L`, so what a profile can do is redistribute that swing, not remove it.
+///
+/// | profile | `h″` | peak `\|h″\|` | measured peak `\|µ̂_fold\|` |
+/// |---|---|---|---|
+/// | [`Smoothstep`](Self::Smoothstep) | `(6 − 12u)·Δ/L²` | `6Δ/L²` | 2.474 |
+/// | [`EvenCurvature`](Self::EvenCurvature) | `±4Δ/L²` | `4Δ/L²` | 1.641 |
+///
+/// Measured on the acceptance ramp (`σ ∈ [4/7, 1]`, `Δ = 1/4`): **1.507×**, against the 1.500
+/// the two peaks predict, at an identical certified ε. Since the swing goes as `Δ/L²`, that
+/// converts either way — `√1.5 ≈ 1.22×` narrower at the same curvature, or `1.5×` more rise at
+/// the same width.
+///
+/// Where it actually bites, swept on that device at `Δ = 1/4`: both hold at `Δσ = 3/8`; at
+/// `Δσ = 11/32` the cubic's ε has run past the part's own DRC gate (`9.6e-1` against `5/6`) while
+/// the even profile still certifies at `7.60e-1`; by `Δσ = 5/16` neither holds and the fold line
+/// is into the sheet. `an_even_ramp_certifies_a_ramp_the_cubic_cannot` pins the middle row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RampProfile {
+    /// The cubic `3u² − 2u³`. `h″` is *linear*, so it peaks at **both ends** and passes through
+    /// zero mid-ramp: the bend is crammed into the two joins and the middle does no work. C¹ with
+    /// `h′ = 0` at both ends, and C² nowhere in particular.
+    ///
+    /// The default, because it is what every pinned measurement was taken on.
+    #[default]
+    Smoothstep,
+    /// Two parabolic half-bands with `h″ = ±4Δ/L²` — **constant in magnitude**, which is what
+    /// "evenly distributed" means, and the smallest peak any profile can achieve subject to
+    /// `h′ = 0` at both ends and a total rise of `Δ`.
+    ///
+    /// The cost is that `h″` *steps* at the two ends and at the midpoint: still C¹, so the joins
+    /// stay gap-free and the surface has no crease, but a curvature step is its own stress
+    /// concentrator in a laminate. A trapezoidal `h″` would round those off and land between the
+    /// two peaks; this variant takes the extreme.
+    ///
+    /// Emitted as **two** bands per ramp, so a one-ramp seam has five regions rather than three.
+    EvenCurvature,
 }
 
 /// An azimuth on the wrapping chart.
@@ -204,6 +249,11 @@ pub struct LappedCone {
     /// stops meaning what its documentation says. The seam **gap** is `g` either way — that one is
     /// `f`-independent, since both sheets shift together.
     pub neutral: Q,
+    /// How each ramp distributes its bend — see [`RampProfile`]. Does not change the seam: the
+    /// two supports, the lap windows and the azimuths are all untouched by it. What it changes is
+    /// how far the fold line swings while climbing, which is peak bending strain and the largest
+    /// ramp angle that still clears the sheet.
+    pub ramp_profile: RampProfile,
     /// How the gap is checked.
     pub policy: GapPolicy,
     /// The component pick, when the derived one will not do.
@@ -395,11 +445,14 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
     //   contributes neither a ramp nor a plateau distinct from the base, so its two empty bands
     //   simply do not appear and a one-ramp seam really is three regions, not five.
     //
-    //   `Smoothstep` and not `Ramp` for the two climbing bands: it is C¹ with `h′ = 0` at both
-    //   ends, so the joins to the constant neighbours are gap-free and the γ-quadrature meets no
-    //   kink. A linear ramp would put a crease at each end of the seam.
-    let mut bands: Vec<(Interval<Bignum>, SupportFn<Bignum>, Q)> = Vec::with_capacity(5);
-    let mut push = |lo: &Q, hi: &Q, s: SupportFn<Bignum>, h: &Q| {
+    //   Never `Ramp` for a climbing band: both profiles below are C¹ with `h′ = 0` at each end, so
+    //   the joins to the constant neighbours are gap-free and the γ-quadrature meets no kink. A
+    //   linear ramp would put a crease at each end of the seam. Which of the two, and what it
+    //   costs, is [`RampProfile`].
+    type Bands = Vec<(Interval<Bignum>, SupportFn<Bignum>, Q)>;
+
+    /// One band, dropped if it is empty (a side with no offset contributes none).
+    fn push(bands: &mut Bands, lo: &Q, hi: &Q, s: SupportFn<Bignum>, h: &Q) {
         if lo < hi {
             bands.push((
                 Interval {
@@ -410,22 +463,70 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
                 h.clone(),
             ));
         }
-    };
-    push(&cw_end, &cw_re, SupportFn::constant(h_cw.clone()), &h_cw);
+    }
+
+    /// A climbing band `h0 → h1` over `[lo, hi]`, laid down by the chosen profile.
+    ///
+    /// `EvenCurvature` is two parabolic halves about the midpoint — with `D = h1 − h0` and `u`
+    /// local to each half, `h = h0 + (D/2)u²` then `h = h0 + D/2 + D·u − (D/2)u²`. Both are
+    /// polynomials over ℚ, so the support stays exact; matching `h = h0 + D/2` and `dh/du = D` at
+    /// the midpoint is what makes the pair C¹ across the join, and `h′ = 0` at `u = 0` of the
+    /// first and `u = 1` of the second is what keeps both outer joins gap-free.
+    ///
+    /// `report` is the *sheet's* offset rather than a band endpoint — which end of the ramp
+    /// carries it depends on the side, and both halves belong to the same sheet.
+    fn ramp(bands: &mut Bands, p: RampProfile, lo: &Q, hi: &Q, h0: &Q, h1: &Q, report: &Q) {
+        match p {
+            RampProfile::Smoothstep => push(
+                bands,
+                lo,
+                hi,
+                SupportFn::smoothstep(h0.clone(), h1.clone()),
+                report,
+            ),
+            RampProfile::EvenCurvature => {
+                let mid = lo.add(hi).div(&qi(2));
+                let d = h1.sub(h0);
+                let half = d.div(&qi(2));
+                let poly = |cs: Vec<Q>| SupportFn::InU(RatFunc::from_poly(Poly::from_coeffs(cs)));
+                push(
+                    bands,
+                    lo,
+                    &mid,
+                    poly(vec![h0.clone(), qi(0), half.clone()]),
+                    report,
+                );
+                push(
+                    bands,
+                    &mid,
+                    hi,
+                    poly(vec![h0.add(&half), d, half.neg()]),
+                    report,
+                );
+            }
+        }
+    }
+
+    let mut bands: Bands = Vec::with_capacity(7);
+    let p = spec.ramp_profile;
     push(
+        &mut bands,
+        &cw_end,
         &cw_re,
-        &cw_rs,
-        SupportFn::smoothstep(h_cw.clone(), qi(0)),
+        SupportFn::constant(h_cw.clone()),
         &h_cw,
     );
-    push(&cw_rs, &ccw_rs, SupportFn::constant(qi(0)), &qi(0));
+    ramp(&mut bands, p, &cw_re, &cw_rs, &h_cw, &qi(0), &h_cw);
     push(
+        &mut bands,
+        &cw_rs,
         &ccw_rs,
-        &ccw_re,
-        SupportFn::smoothstep(qi(0), h_ccw.clone()),
-        &h_ccw,
+        SupportFn::constant(qi(0)),
+        &qi(0),
     );
+    ramp(&mut bands, p, &ccw_rs, &ccw_re, &qi(0), &h_ccw, &h_ccw);
     push(
+        &mut bands,
         &ccw_re,
         &ccw_end,
         SupportFn::constant(h_ccw.clone()),

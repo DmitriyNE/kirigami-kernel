@@ -20,7 +20,7 @@ pub mod lapped;
 pub mod measure;
 
 pub use lapped::{
-    Azimuth, GapPolicy, LapFault, Lapped, LappedCone, OnTop, SideAngles, lapped_cone,
+    Azimuth, GapPolicy, LapFault, Lapped, LappedCone, OnTop, RampProfile, SideAngles, lapped_cone,
 };
 
 use arrange2d::profile::Profile;
@@ -78,7 +78,29 @@ pub fn self_lapping_cone_with(
     with_drill: bool,
     feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
 ) -> Part<Bignum> {
-    let mut part = lapped::lapped_cone(&self_lapping_spec())
+    self_lapping_cone_from(
+        &self_lapping_spec(),
+        segments,
+        support_panels,
+        with_drill,
+        feature,
+    )
+}
+
+/// The device's **ops and resolution knobs over a caller's own recipe**.
+///
+/// [`self_lapping_cone_with`] is this at [`self_lapping_spec`]. It exists so that a test varying
+/// one recipe parameter — a ramp profile, a ramp width — does not have to restate the off-axis
+/// inner bound, the clearance, the fit and the budget alongside it. A restated op chain is how a
+/// test quietly stops measuring the device.
+pub fn self_lapping_cone_from(
+    spec: &lapped::LappedCone,
+    segments: usize,
+    support_panels: usize,
+    with_drill: bool,
+    feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
+) -> Part<Bignum> {
+    let mut part = lapped::lapped_cone(spec)
         .expect("the device recipe is valid")
         .part
         // The inner annulus bound is **off-axis**, which `LappedCone`'s concentric radii do not
@@ -169,6 +191,9 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         inner_r2: None,
         // The bending-neutral mid-plane: what `seam_offset` is measured against.
         neutral: q(1, 2),
+        // The cubic, because every pinned measurement on this device was taken on it.
+        // `EvenCurvature` halves nothing here but the fold-line swing; see `RampProfile`.
+        ramp_profile: lapped::RampProfile::Smoothstep,
         // The ramp deliberately descends *inside* the lap here, so the gap closes over part of the
         // seam and `Constant` would refuse it. What it actually reaches is BONDED's to report.
         policy: lapped::GapPolicy::MinDistance,

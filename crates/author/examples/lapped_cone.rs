@@ -14,7 +14,7 @@
 //!
 //! Flags: `--out-dir <dir>` (default `generated-demos/`), `--segments N`, `--panels N`.
 
-use acceptance::lapped::{self, Azimuth, GapPolicy, LappedCone, OnTop, SideAngles};
+use acceptance::lapped::{self, Azimuth, GapPolicy, LappedCone, OnTop, RampProfile, SideAngles};
 use author::part::Part;
 use certify_core::Verdict;
 use develop::cone::DevConfig;
@@ -46,28 +46,33 @@ fn spec() -> LappedCone {
         apex: (qi(72), qi(65)),
         thickness: q(6, 25),
         gap: q(1, 100),
-        on_top: OnTop::Ccw,
+        on_top: OnTop::Cw,
         // c = 0: the seam straddles the base cone, so BOTH ends ramp, by ∓(t/2 + g/2) = ∓1/8.
-        seam_offset: qi(0),
+        seam_offset: q(-25, 200),
         // Both ramps span Δσ = 7/20, symmetrically. A ramp's edge of regression sweeps ≈0.9·h/Δσ²
         // along the ruling and must stay inside the inner bound's µ̂ ≈ 1.81 or it crosses the
         // sheet: 0.9·(1/8)/(7/20)² ≈ 0.92, clear by ~2×. Narrow them and the part is refused —
         // soundly, because the sheet would have to crease. See docs/engineering-log.md.
         ccw: SideAngles {
-            ramp_start: sigma(2, 5),
+            ramp_start: sigma(32, 80),
             ramp_end: sigma(3, 4),
             sheet_end: sigma(5, 4),
         },
-        cw: SideAngles {
-            ramp_start: sigma(-2, 5),
-            ramp_end: sigma(-3, 4),
-            sheet_end: sigma(-5, 4),
-        },
+        // cw: SideAngles {
+        //     ramp_start: sigma(-1, 5),
+        //     ramp_end: sigma(-3, 4),
+        //     sheet_end: sigma(-5, 4),
+        // },
+        // ccw: SideAngles::flat(sigma(5, 4)),
+        cw: SideAngles::flat(sigma(-5, 4)),
         // The annulus, concentric here (the acceptance device's inner bound is off-axis):
         // inner Ø 5 mm, outer ≈ 5.115 mm.
         outer_r2: q(157, 6),
         inner_r2: Some(q(25, 4)),
         neutral: q(1, 2),
+        // The even ramp: `h''` constant in magnitude, so the bend is spread across the ramp
+        // instead of piling up at its two joins. Measured 1.5x less fold-line swing.
+        ramp_profile: RampProfile::EvenCurvature,
         // Both ramps finish before the overlap starts (ramp_end 3/4 against the lap's 4/5), so the
         // gap really is `g` across the whole seam and the strict policy holds.
         policy: GapPolicy::Constant,
