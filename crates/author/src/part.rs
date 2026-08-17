@@ -631,6 +631,17 @@ pub struct Part<B: Backend = Bignum> {
 }
 
 impl<B: Backend> Part<B> {
+    /// The part's material ops, in authoring order — each an [`OpKind`] and the [`Cutter`] it
+    /// applies.
+    ///
+    /// A read-only window on the recipe, for anything that has to reason about *what was asked
+    /// for* rather than what came out: the diagnostic sketch dump ([`crate::dump`]) walks it to
+    /// place each cutter's frame in 3-D. Deliberately an accessor over the general list rather
+    /// than a dump-shaped `extrusions()` — a second consumer should not need a second method.
+    pub fn cutters(&self) -> impl Iterator<Item = (OpKind, &Cutter<B>)> {
+        self.ops.iter().map(|(k, c)| (*k, c))
+    }
+
     /// The bare recipe over a chart frame (the [`construct`](crate::construct) entry points call
     /// this; not part of the public surface).
     pub(crate) fn from_frame(q: [Poly<B>; 4], base_support: RatFunc<B>) -> Self {
