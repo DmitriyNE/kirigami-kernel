@@ -768,6 +768,39 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A normal-cut annulus bound is exactly constructible and the kernel cannot yet resolve it
+  (2026-08-17).** Today's annulus is bounded by vertical cylinders, which meet the 42° cone at a
+  bevel; a real trim is cut perpendicular to the sheet. The construction the user specified turns
+  out to need **no new cutter kind and no approximation**: put a disc of radius `r` in the plane
+  where the base cone's *neutral* surface has that radius (`z = −(72/65)r` on `72ρ + 65z = 0`),
+  and put the sweep apex on the axis so the generatrix through the rim runs along the cone's own
+  normal `(72, 65)/97` — i.e. `z_apex = −(97²/(65·72))·r`. Both cutters then come out with
+  generatrix ratio `Δρ/Δz = 72/65` **exactly**, half-angle `arctan(72/65) = 90° − β`,
+  complementary to the base cone as a normal cut must be. `Cutter::extrude` of a
+  `Profile::circle` from an `Apex::point` *is* that cone, and every number is rational.
+
+  **It does not resolve.** `develop()` and `solid()` both return `Unresolved(ε = clearance)` —
+  and that exact value is the signature of `realize.rs:1149`, `assemble_flat` coming back
+  Unresolved. So the failure is in the **2-D flat boolean**, not in a cut certificate: ε tracks
+  the clearance exactly and ignores `segments`, so nothing ever refined.
+
+  Isolated to a narrow cause, which is the useful part:
+
+  | varied | result |
+  |---|---|
+  | radii 4 → 21.5 vs the original 2.5 → 5 | same failure — **not scale** |
+  | full seam recipe vs one region at `h ≡ 0` | same failure — **not the ramp or the wrap** |
+  | the same machinery as a *hole* (`lap_slot`) | certifies today — **not extruded cutters** |
+
+  So the gap is precisely **an extruded cutter serving as a µ̂ bound rather than a hole**. The role
+  derivation in `resolve.rs` is generic over op kind, so this is not obviously a missing feature so
+  much as an untested path. Task #288 carries the exact apexes and the next probe.
+
+  Worth noting for the roadmap conversation this came out of: the *authoring* side of the product
+  question was already answered — the kernel's existing vocabulary expresses a manufacturing-real
+  normal cut exactly, in ℚ, with the orthogonality holding by construction rather than by fit.
+  What is missing is one resolver path, not a representation.
+
 - **The ψ-correction to the ramp split: measured, and rejected on the metric that matters
   (2026-08-17).** `u` is affine in σ, but curvature turns with `ψ ∝ arctan σ`, whose speed
   `dψ/dσ ∝ 1/(1+σ²)` varies **1.508×** across the acceptance ramp — so `EvenCurvature`'s
