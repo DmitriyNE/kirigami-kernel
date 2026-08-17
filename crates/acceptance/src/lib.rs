@@ -45,8 +45,8 @@ fn qi(n: i128) -> Q {
 /// The **self-lapping cone**: the driving-demo geometry.
 ///
 /// The wrapping chart `ψ = (260/97)·arctan σ` sweeps more than one full 3-D turn in a finite
-/// window, and three piecewise-support regions ride it — body `[−5/4, 1/2]` at `h ≡ 0`, a
-/// smoothstep ramp `[1/2, 1]` climbing `0 → D = 1/10`, and a tail plateau `[1, 5/4]` at `h ≡ D`.
+/// window, and three piecewise-support regions ride it — body `[−5/4, 4/7]` at `h ≡ 0`, a
+/// smoothstep ramp `[4/7, 1]` climbing `0 → Δ = 1/4`, and a tail plateau `[1, 5/4]` at `h ≡ Δ`.
 /// The excess sweep *is* the lap: the tail passes over the head. Two solid cutters bound the
 /// annulus (concentric outer, apex-containing inner) and, with `with_drill`, one seam-drill
 /// cylinder pierces the sheet **twice** — once in the head, once in the lapping tail flap — so a
@@ -82,9 +82,14 @@ pub fn self_lapping_cone_with(
         .expect("the device recipe is valid")
         .part
         // The inner annulus bound is **off-axis**, which `LappedCone`'s concentric radii do not
-        // express — so it stays an authoring op, exactly as a caller's own trim would.
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
-        .clearance(qi(1))
+        // express — so it stays an authoring op, exactly as a caller's own trim would. Radius
+        // `10/3` centred `5/6` off the axis, so its closest approach is `10/3 − 5/6 = 5/2`: the
+        // finished part's inner Ø 5 mm.
+        .subtract(Cutter::vertical_cylinder(qi(0), q(5, 6), q(100, 9)))
+        // The DRC keep-out is a length in the part's own unit, so it rides the same 5/3 as every
+        // other length here. Left at 1 it would be a *relatively* tighter budget on a larger part
+        // — a silent re-tightening of the acceptance bar disguised as a scale change.
+        .clearance(q(5, 3))
         .fit(RailFit {
             degree: 4,
             subdiv: 160,
@@ -97,7 +102,7 @@ pub fn self_lapping_cone_with(
             sqrt_eps: q(1, 1_000_000_000),
         });
     if with_drill {
-        part = part.subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)));
+        part = part.subtract(Cutter::vertical_cylinder(q(-5, 6), q(9, 2), q(5, 72)));
     }
     if let Some((apex, profile)) = feature {
         part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
@@ -109,44 +114,58 @@ pub fn self_lapping_cone_with(
 /// of.
 ///
 /// Every number here used to be written down; all that survives is the ones a product engineer
-/// would state. The stack is `1/20` thick with a `1/20` seam gap, and the seam centreline sits
-/// `t/2 + g/2` off the base sheet's mid-surface — the value at which one ramp vanishes exactly, so
-/// the clockwise end never leaves the base cone and the device has a single ramp. The supports
-/// `0`, `0 → 1/10`, `1/10` are *derived* from those three numbers rather than authored.
+/// would state — **and since 2026-08-17 they are the physical device's**, in the kernel's unit,
+/// the millimetre (`interchange::unit`).
+///
+/// | quantity | value | where it comes from |
+/// |---|---|---|
+/// | half-angle β | `sin β = 65/97` → 42.07° | the Pythagorean `(72, 65, 97)`, exact |
+/// | stack `t` | `6/25` mm = 240 µm | 4-layer flex, `w ∈ ±120 µm` about the midplane |
+/// | ramp step `Δ` | `1/4` mm | **pinned**: certified SHEAR `δ = Δ·cot β = Δ·72/65 = 18/65` |
+/// | seam gap `g` | `1/100` mm = 10 µm | `Δ − t`; the ACF bondline, since `SEP ≡ ACF gap` |
+/// | inner Ø | 5 mm | at the off-axis inner bound's closest approach to the axis |
+/// | ramp width | ≈ 61° of azimuth | the ≈60° degree-1 seam ramp |
+///
+/// The seam centreline sits `t/2 + g/2 = 1/8` off the base sheet's mid-surface — the value at
+/// which one ramp vanishes exactly, so the clockwise end never leaves the base cone and the device
+/// has a single ramp. The supports `0`, `0 → 1/4`, `1/4` are *derived* from those three numbers
+/// rather than authored, and the ramp's height is `Δ` by construction.
 ///
 /// The azimuths are given in σ because they must be: on the wrapping chart `σ = tan(φ/4)`, so no
 /// rational direction names `±5/4`, and this is the spelling that keeps the re-expression exact —
-/// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on.
+/// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on. `ramp_start = 4/7` is
+/// `φ = 118.98°`, so the ramp spans `61.02°` — the nearest small rational to the authored 60°.
 ///
 /// The pick is named rather than derived: the annulus's inner bound is an **off-axis** cylinder
 /// applied by [`self_lapping_cone_with`] afterwards, so the mid-annulus point `lapped_cone` would
 /// derive could land in material that op removes.
 pub fn self_lapping_spec() -> lapped::LappedCone {
     let sigma = |n: i128, d: i128| lapped::Azimuth::Sigma(q(n, d));
-    // The σ = 0 ruling's point at z = −3, the device's own historical witness.
+    // The σ = 0 ruling's point at z = −5, the device's own witness (the historical −3, carried
+    // through the 5/3 scale that puts the inner bound at the real Ø 5 mm).
     let rz0 = cone_wrap()
         .ruling()
         .comp(2)
         .eval(&qi(0))
         .expect("the wrap chart's ruling is regular at σ = 0");
     let pick = cone_wrap()
-        .surface(&q(-3, 1).div(&rz0), &qi(0))
+        .surface(&q(-5, 1).div(&rz0), &qi(0))
         .eval(&qi(0))
         .expect("the mid-annulus witness point is regular");
     lapped::LappedCone {
         // The Pythagorean (72, 65, 97): sin β = 65/97, the 42° device, exact.
         apex: (qi(72), qi(65)),
-        thickness: q(1, 20),
-        gap: q(1, 20),
+        thickness: q(6, 25),
+        gap: q(1, 100),
         on_top: lapped::OnTop::Ccw,
-        seam_offset: q(1, 20),
+        seam_offset: q(1, 8),
         ccw: lapped::SideAngles {
-            ramp_start: sigma(1, 2),
+            ramp_start: sigma(4, 7),
             ramp_end: sigma(1, 1),
             sheet_end: sigma(5, 4),
         },
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
-        outer_r2: q(471, 50),
+        outer_r2: q(157, 6),
         inner_r2: None,
         // The bending-neutral mid-plane: what `seam_offset` is measured against.
         neutral: q(1, 2),
@@ -161,7 +180,7 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
 /// derived holes must fold back onto. Exposed so a round-trip check tests the *same* cylinder the
 /// part was cut with instead of restating its numbers.
 pub fn seam_drill_axis() -> (Q, Q, Q) {
-    (q(-1, 2), q(27, 10), q(1, 40))
+    (q(-5, 6), q(9, 2), q(5, 72))
 }
 
 /// The **lap slot**: the L-shaped feature [`self_lapping_cone_with`] is stressed with — arm `1/4`,
@@ -177,23 +196,24 @@ pub fn seam_drill_axis() -> (Q, Q, Q) {
 ///   one cutter pierces **both sheets**: a ruling meets its footprint on the near sheet and again on
 ///   the far one. That is the wrap chart's own version of the multi-stretch problem, and no gore can
 ///   pose it.
-/// * **On the ramp.** The far sheet lands at `σ ∈ [0.857, 0.914]` — strictly inside the smoothstep
-///   band `[1/2, 1]` — so that hole is traced over a **nonzero flat directrix**, while its twin on
-///   the body is traced at `γ ≡ 0`. One cutter, both development tiers, and the difference between
-///   the two holes is attributable to `γ` and to nothing else.
-/// * **Clear of the joins.** The near sheet lands at `σ ∈ [−1.168, −1.094]`, ~0.08 from the body's
-///   far end; neither footprint crosses a region boundary, which is refused
+/// * **On the ramp.** The far sheet lands strictly inside the smoothstep band `[4/7, 1]` — the
+///   test probes it at `σ = 7/8`, where `|γ| = 0.477` — so that hole is traced over a **nonzero
+///   flat directrix**, while its twin on the body is traced at `γ ≡ 0` (probed at `σ = −1/2`). One
+///   cutter, both development tiers, and the difference between the two holes is attributable to
+///   `γ` and to nothing else. `self_lapping_slot.rs` pins the far hole's normal offset to
+///   `0.6 Δ … 0.98 Δ`, i.e. on the ramp and hugging neither end of it.
+/// * **Clear of the joins.** Neither footprint crosses a region boundary, which is refused
 ///   ([`PartFault::HoleCrossesRegions`](author::part::PartFault::HoleCrossesRegions)) rather than
 ///   realized.
-/// * **Inside the annulus.** Its radii `[2.61, 2.96]` sit between the eccentric inner cut (`≈2.47`
-///   there) and the outer cylinder (`≈3.07`), so it is an interior hole and not a rim bite.
+/// * **Inside the annulus.** Its radii sit between the eccentric inner cut (`≈4.12` there) and the
+///   outer cylinder (`≈5.12`), so it is an interior hole and not a rim bite.
 ///
 /// The axes are turned for the same reason [`ell_slot`]'s are: the rulings project to radial rays,
 /// so an L whose arms lie along the radius is met once and its footprint is an ordinary band. Here
 /// the local radial direction resolves to `(−0.63, +0.78)` in `(u, v)` — opposite signs, so a ray
 /// leaves one arm, crosses the notch and re-enters the other. `(3, 4, 5)` keeps every vertex exact.
 pub fn lap_slot() -> Vec<Edge<Bignum>> {
-    let (cx, cy, a, t) = (q(1, 2), q(109, 40), q(1, 4), q(1, 8));
+    let (cx, cy, a, t) = (q(5, 6), q(109, 24), q(5, 12), q(5, 24));
     let (ux, uy) = (q(3, 5), q(-4, 5));
     let (vx, vy) = (q(4, 5), q(3, 5));
     let p = |su: &Q, sv: &Q| {

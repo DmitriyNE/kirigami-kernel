@@ -41,12 +41,12 @@ fn spec() -> LappedCone {
         // The Pythagorean (72, 65, 97) — sin β = 65/97, exact.
         apex: (qi(72), qi(65)),
         thickness: q(1, 20),
-        gap: q(1, 20),
+        gap: q(1, 40),
         on_top: OnTop::Ccw,
         // c = 0: the seam straddles the base cone, so BOTH ends ramp, by ∓(t/2 + g/2) = ∓1/20.
-        seam_offset: qi(0),
+        seam_offset: q(0, 40),
         ccw: SideAngles {
-            ramp_start: sigma(1, 2),
+            ramp_start: sigma(9, 16),
             ramp_end: sigma(3, 4),
             sheet_end: sigma(5, 4),
         },

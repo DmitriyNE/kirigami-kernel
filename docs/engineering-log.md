@@ -768,6 +768,111 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The acceptance device's dimensions were arbitrary, and scaling it to the real ones is what
+  found out which of its pins were physics (2026-08-17).** `thickness: 1/20` traced back to
+  `839ff53` (2026-08-11), where `brep_trim_solid` first needed a `w` window and got a round
+  rational; the 917-line demo carried it, the facade rewrite carried it, `LappedCone` inherited it
+  as a *parameter*. No comment, doc or commit message ever justified it. The half-angle was real
+  all along (`sin β = 65/97` via the Pythagorean `(72, 65, 97)`); the lengths were not.
+
+  **The derivation chain, so the numbers are auditable rather than asserted.** `t = 6/25` mm
+  (240 µm) from `paper.md` §338's `w ∈ ±120 µm` — which independently confirms `neutral = 1/2`.
+  `Δ = 1/4` mm is *pinned, not rounded*: the certified SHEAR is `δ = Δ·cot β = Δ·(72/65) = 18/65`,
+  so `Δ` can only be `1/4`. Then `g = Δ − t = 1/100` mm — a 10 µm ACF bondline, consistent with
+  `SEP ≡ ACF gap` — and `c = t/2 + g/2 = 1/8` keeps the one-ramp device with a ramp height of
+  exactly `Δ`. Every length scales `5/3` to put the off-axis inner bound's closest approach at the
+  stated inner Ø 5 mm.
+
+  **The device certifies on the real numbers**: 771/771, `develop` ε 7.264e-1, `fold` 3.345e-1,
+  `refold` 3.745e-2, `solid` 1.278e-1, genus 2, watertight, and the full demo emits 5 derived holes
+  with a 2.7e-3 slot residual.
+
+  **What the scaling exposed, which is the actual value of the exercise.** Every constant that had
+  to be edited by hand was a *restated* one — a number that should have been read from the recipe
+  and was copied instead:
+
+  * `self_lapping_part.rs` measured the refold residual against a hard-coded `(-0.5, 2.7, 1/40)`
+    copy of the drill axis — the exact thing `seam_drill_axis()`'s doc comment says it exists to
+    prevent ("so a round-trip check tests the *same* cylinder the part was cut with instead of
+    restating its numbers"). It reported 4.62 against a 1e-2 budget; read from the recipe it is
+    3.7e-2. A 460× phantom failure that would have been "read" as the scale change.
+  * The drafted-slot apex `(27/40, 27/10, 12)` did not scale, so the sweep missed the sheets and
+    the taper test failed by finding *no* slot holes rather than by measuring a wrong taper.
+  * The flat-authored hexagon's centre and radius, the slot's `far.offset` window (pinned to the
+    old `Δ = 1/10`), and the DRC gate `1/2` (half a `clearance` that itself did not scale) were all
+    absolutes standing in for relationships. Each is now derived — the offset window as a fraction
+    of `Δ`, the budgets as the spec's own `t + g`.
+
+  Re-pinned VV.2 with the two effects separated: `develop 0.45 → 3/4` and `solid 0.1 → 1/6` are the
+  pure `5/3`; `fold 1/3 → 7/20` and `refold 25/900 → 1/20` carry a surcharge because the ramp now
+  climbs `Δ = 1/4` over `Δσ = 3/7` where it climbed `1/10` over `1/2` — 2.5× the step in 6/7 of the
+  azimuth. That surcharge is the ramp, and it is the number to watch if the ramp is tightened.
+
+  Generalizable: **an arbitrary fixture dimension is not neutral — it hides which pins are physics
+  and which are bookkeeping.** Nothing was *wrong* while every length was 1; the restated constants
+  and the derived ones were indistinguishable because they never had to disagree. Changing the
+  scale made them disagree, and the ones that broke were exactly the ones that should never have
+  been written down. A cheap audit for any fixture: multiply it by a constant and see what fails.
+
+  Open, not resolved here: `docs/agent-glossary.md` says the device wraps "~1.49 turns", but the
+  demo measures a 275.2° developed sector against 240.9° per turn — 1.14 turns. `paper.md` §338
+  warns that an earlier ledger conflated the developed-sector and spatial-azimuth frames, so this
+  is probably the same conflation surviving in the glossary. Not touched without a decision.
+
+- **A seam ramp has a fold line, it sweeps across the ruling, and a too-abrupt ramp drags it
+  through the part (2026-08-17).** Steepening the lapped cone's CCW ramp (`ramp_start` 1/2 → 11/16,
+  so `Δσ` 0.25 → 0.0625) or raising its seam offset (`c` 0 → 1/10) each independently turns
+  `develop`/`solid` into `Refuted(AmbiguousRegion { op: 1 })`, op 1 being the inner-radius
+  `subtract`. Raising `segments` 16 → 64 does not help. **This is a real geometric limit, not a
+  bookkeeping artifact** — the finding was initially mis-read as the latter and the correction is
+  the point of the entry.
+
+  **What the refusal actually detects.** A region's support ramp bends the sheet in σ, and the
+  ruled surface that realizes the bend has an edge of regression — the fold line where the rulings
+  converge, `det J = 0`. At `h ≡ 0` it is the cone's apex ray, `µ̂ = 0`. Under a ramp it slides
+  monotonically along the ruling, and the excursion scales with `max|h| / Δσ²`. Traced across the
+  CCW ramp band:
+
+  | recipe | `max|h|/Δσ²` | fold line sweeps | vs. kept material |
+  |---|---|---|---|
+  | `c = 0`, `Δσ = 0.25` (baseline) | 0.8 | `+0.39 → −0.72` | stays in the `|µ̂| ≲ 1.26` hole ✓ |
+  | `c = 1/10`, `Δσ = 0.25` | 2.4 | `+1.18 → −2.17` | **inside** `(−2.32, −1.44)` for `σ ≥ 0.7214` ✗ |
+  | `c = 0`, `Δσ = 0.0625` | 12.8 | `+10.2 → −∞` | **inside** `(−2.29, −1.44)` at `σ ≈ 0.7233` ✗ |
+
+  Directly measured, not inferred: at `σ = 0.7233` and `0.7246` the steep recipe's fold line sits
+  at `µ̂ = −1.49` and `−1.98`, inside the kept lower nappe. The sheet would have to crease across
+  itself. The measured law is `|µ̂_fold|max ≈ 0.9 · max|h|/Δσ²` (baseline 0.72 vs 0.72 predicted;
+  `c = 1/10` 2.17 vs 2.16) and the part is buildable iff that excursion clears the inner hole,
+  `r_in / ρ_r`, with `ρ_r ≈ 1.3815` the ruling's radial speed on this cone.
+
+  **The resolver detects it correctly and reports it wrongly.** `sample_comps` merges two
+  µ̂-intervals separated by one subtract op into a face-with-hole unless the gap contains the
+  `det J = 0` rail. On this part topology that test *is* "is the fold line clear of the material",
+  checked at every sample — sound, and it fires before the fold reaches the sheet (the rail must
+  leave the hole before it can enter the material). But the *fault* it raises is
+  `AmbiguousRegion { op }`, which names an op-role conflict and points at the inner trim. The
+  cause is the ramp. The op named is innocent.
+
+  **The envelope, measured on the 42° device (`r ∈ [2, 3.069]`, `t = g = 1/20`).** Passing
+  `max|h|/Δσ²`: 0.15, 0.25, 0.27, 0.60, 0.80, 1.20, 1.42, 1.44. Refusing: 2.40, 2.52, 3.20, 12.8,
+  38. Frontier in `(1.44, 2.40)`, consistent with `0.9·x < 1.26`. **The ramp's slope, not its
+  height, is the constraint** — any offset is reachable given enough azimuth. Confirmed by
+  prediction: `c = 1/5` (five times the acceptance device's offset) refuses with a narrow CW ramp
+  and verifies once that ramp alone is widened `Δσ` 0.25 → 0.5; `c = 1/10` with
+  `ccw.ramp_start = 2/5` verifies through `solid` (22 faces, 0 free edges, ε 4.5e-2). A *failed*
+  prediction was as informative: widening the inner radius 2 → 2.5 to let the fold line pass
+  through the hole does **not** rescue `c = 1/10, Δσ = 0.25`, because the excursion runs to −2.17
+  and would need `r_in > 3.0` — past the outer radius. At that ramp no annulus exists.
+
+  Generalizable, and the correction is the lesson: **"the checker's reasoning is a proxy" does not
+  imply "the refusal is spurious."** The merge test is stated in terms of a parametrization rail
+  and reads like bookkeeping, so the first diagnosis was "sound but over-conservative, let it
+  through". Tracing the rail against the material showed the opposite — relaxing it would have
+  shipped a self-folding sheet. What is actually wrong is the *diagnostic*: a fault named for the
+  bookkeeping instead of for the geometry sends the user to tune the wrong parameter. Worth
+  checking the reverse direction too: a validation that measures the fold-line excursion up front
+  would refuse by name, with numbers, before any certification runs.
+
 - **The developed surface was the stack's bottom face, and that is a flat-pattern error, not a
   cosmetic one (2026-08-17).** The solid's thickness window was hard-coded `[0, t]`, so the chart —
   the surface `develop` unrolls **isometrically** — sat on a *face* of the material rather than

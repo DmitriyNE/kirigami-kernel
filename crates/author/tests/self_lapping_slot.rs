@@ -80,7 +80,7 @@ fn folded(part: &Part<Bignum>, p: [Q; 2]) -> [f64; 3] {
 /// `72·√(x² + y²) + 65·z = 0`, along that cone's own unit normal `(72/97 radial, 65/97 axial)`.
 ///
 /// The device's three regions ride one cone: the body sits **on** it (`h ≡ 0`), the ramp climbs
-/// `0 → 1/10` across the lap and the tail plateau stays there. So this reads off the artifact which
+/// `0 → Δ = 1/4` across the lap and the tail plateau stays there. So this reads off the artifact which
 /// region a hole was cut in, without asking the recipe.
 fn sheet_offset(p: [f64; 3]) -> f64 {
     (72.0 * p[0].hypot(p[1]) + 65.0 * p[2]) / 97.0
@@ -165,7 +165,7 @@ fn derived_holes(part: &Part<Bignum>, flat: &author::part::FlatPattern<Bignum>) 
 ///
 /// The taper varies across a footprint, so the ratio of two holes' areas reflects a mean rather than
 /// any one point — and on this device a single vertex is off by enough to matter (the body sheet's
-/// vertices span `z ∈ [−3.09, −2.98]`).
+/// vertices span `z ∈ [−5.15, −4.97]`).
 fn mean_sheet_z(part: &Part<Bignum>, hole: &develop::unroll::FlatOutline<Bignum>) -> f64 {
     let v = &hole.vertices;
     let step = v.len().div_ceil(8).max(1);
@@ -269,10 +269,18 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         "the slot's near hole is cut in the body, on the base cone: offset {:+.5}",
         near.offset
     );
+    // Stated as a fraction of the ramp's own height, not as an absolute window: the claim is
+    // "strictly between the body and the plateau, and not hugging either", which is a property of
+    // where the slot sits in the seam — not of what Δ happens to be this week.
+    let plateau = rat_to_f64(
+        &acceptance::self_lapping_spec()
+            .thickness
+            .add(&acceptance::self_lapping_spec().gap),
+    );
     assert!(
-        far.offset > 0.06 && far.offset < 0.098,
-        "the slot's far hole must land on the *ramp*, between the body (0) and the plateau (1/10): \
-         offset {:+.5}",
+        far.offset > 0.6 * plateau && far.offset < 0.98 * plateau,
+        "the slot's far hole must land on the *ramp*, between the body (0) and the plateau \
+         (Δ = {plateau:.5}): offset {:+.5}",
         far.offset
     );
 
@@ -323,9 +331,11 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         "…and have the same perimeter: {pn:.6} vs {pf:.6}"
     );
 
-    // **VV.2** — measured 4.1481e-1 develop (identical to the featureless device: the panel
+    // **VV.2** — measured 7.2640e-1 develop (identical to the featureless device: the panel
     // boundary dominates ε, which is exactly why the checks above are shape measurements and not
-    // verdicts) and a slot cut bound of 4.1712e-3 (2026-08-16).
+    // verdicts). The DRC gate is half the part's `clearance`, and both moved by 5/3 with every
+    // other length when the device took its physical dimensions (2026-08-17; was 4.1481e-1 against
+    // a 1/2 gate).
     let cut = flat.report().ops[3]
         .cut_eps
         .clone()
@@ -335,10 +345,12 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         rat_to_f64(flat.eps()),
         rat_to_f64(&cut)
     );
+    let gate = q(5, 6); // half the device's `clearance` of 5/3
     assert!(
-        flat.eps().cmp(&q(1, 2)) == core::cmp::Ordering::Less,
-        "develop ε {:.4e} is not under the DRC gate 5.0000e-1",
-        rat_to_f64(flat.eps())
+        flat.eps().cmp(&gate) == core::cmp::Ordering::Less,
+        "develop ε {:.4e} is not under the DRC gate {:.4e}",
+        rat_to_f64(flat.eps()),
+        rat_to_f64(&gate)
     );
     assert!(
         cut.cmp(&q(1, 100)) == core::cmp::Ordering::Less,
@@ -463,17 +475,18 @@ fn a_ruling_meets_the_traced_footprint_twice_on_each_sheet() {
 /// the whole part, passes every certificate and fails this by 1.6%.
 #[test]
 fn the_taper_tells_the_two_sheets_apart() {
-    let z_apex = 12.0;
+    // The apex is a point in the device's own coordinates, so it rides the same scale the device
+    // does — `(27/40, 27/10, 12)` became `(9/8, 9/2, 20)` when the part grew by 5/3 to put its
+    // inner bound at the real Ø 5 mm. Left unscaled the sweep simply misses the sheets, and the
+    // test fails by finding no slot holes at all rather than by measuring a wrong taper.
+    let z_apex = 20.0;
     let run = |apex: Apex<Bignum>, name: &str| {
         let part = slotted(16, apex);
         let flat = develop_or_panic(&part, name);
         (part, flat)
     };
     let (part_p, flat_p) = run(parallel(), "the parallel slot");
-    let (part_d, flat_d) = run(
-        Apex::point([q(27, 40), q(27, 10), qi(12)]),
-        "the drafted slot",
-    );
+    let (part_d, flat_d) = run(Apex::point([q(9, 8), q(9, 2), qi(20)]), "the drafted slot");
     let (hp, hd) = (
         derived_holes(&part_p, &flat_p),
         derived_holes(&part_d, &flat_d),

@@ -213,10 +213,23 @@ fn the_chord_golden_rejects_a_bridged_hole() {
 #[test]
 fn the_certified_bounds_stay_within_budget() {
     // Pinned bounds. Raise ONLY with a recorded reason; lower freely when a change earns it.
-    let develop_max = q(45, 100);
-    let solid_max = q(1, 10);
-    let fold_max = q(1, 5);
-    let refold_max = q(1, 100);
+    //
+    // Re-pinned 2026-08-17, when the device became the *physical* one: 240 µm stack, Δ = 1/4 mm
+    // ramp step, inner Ø 5 mm. Two effects, and separating them is what makes these numbers
+    // auditable rather than "whatever it measured".
+    //
+    //   * **Scale.** Every length grew by `5/3` (the inner bound moved from 1.5 to 2.5 mm), so an
+    //     ε quoted as a *length* grows by `5/3` and `refold` — a squared distance — by `25/9`.
+    //     `develop 0.45 → 3/4` and `solid 0.1 → 1/6` are exactly that, nothing more.
+    //   * **A harder device.** The ramp climbs `Δ = 1/4` over `Δσ = 3/7` where it used to climb
+    //     `1/10` over `1/2` — 2.5× the step in 6/7 of the azimuth. The fold inverts on that
+    //     steeper support, so `fold` and `refold` cost a little above their pure scalings
+    //     (`1/3 → 7/20`, `25/900 → 1/20`). That surcharge is the ramp, and it is the number to
+    //     watch if the ramp is ever tightened again.
+    let develop_max = q(3, 4);
+    let solid_max = q(1, 6);
+    let fold_max = q(7, 20);
+    let refold_max = q(1, 20);
 
     let part = device(true);
     let flat = match part.develop() {
@@ -247,7 +260,12 @@ fn the_certified_bounds_stay_within_budget() {
 
     // The round trip that actually matters to the device: the two flat drill holes, far apart in
     // the pattern, must fold back onto the ONE drill cylinder they were cut from.
-    let (dcx, dcy, dr2) = (-0.5f64, 2.7f64, 1.0 / 40.0);
+    // Read from the part's own recipe, never restated: a copied constant here silently measures
+    // the round trip against a cylinder the device is no longer cut with.
+    let (dcx, dcy, dr2) = {
+        let (x, y, r2) = acceptance::seam_drill_axis();
+        (rat_to_f64(&x), rat_to_f64(&y), rat_to_f64(&r2))
+    };
     let mut refold = 0.0f64;
     for hole in flat.holes() {
         let hv = &hole.vertices;

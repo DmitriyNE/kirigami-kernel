@@ -40,21 +40,22 @@ fn device_spec() -> LappedCone {
 ///
 /// Three regions and not five: the CW end's offset is exactly zero, so it has neither a ramp nor a
 /// plateau distinct from the base, and its two empty bands never appear. The supports are the
-/// device's own `0`, `0 → 1/10`, `1/10` — derived here from `t`, `g` and `c` rather than written
-/// down, which is the whole point.
+/// device's own `0`, `0 → Δ`, `Δ` — derived here from `t`, `g` and `c` rather than written down,
+/// which is the whole point, so the ramp's height is `t + g` and nothing else.
 #[test]
 fn the_parametrized_recipe_is_the_hand_written_device() {
-    let lap = lapped_cone(&device_spec()).expect("the device is a valid recipe");
+    let spec = device_spec();
+    let lap = lapped_cone(&spec).expect("the device is a valid recipe");
 
     assert_eq!(
         lap.h_cw,
         qi(0),
         "c = t/2 + g/2 puts the CW end on the base cone"
     );
+    let step = spec.thickness.add(&spec.gap);
     assert_eq!(
-        lap.h_ccw,
-        q(1, 10),
-        "…and the CCW end at the device's D = 1/10"
+        lap.h_ccw, step,
+        "…and the CCW end at the device's ramp step Δ = t + g"
     );
 
     let bands: Vec<(Q, Q, Q)> = lap
@@ -65,9 +66,9 @@ fn the_parametrized_recipe_is_the_hand_written_device() {
     assert_eq!(
         bands,
         vec![
-            (q(-5, 4), q(1, 2), qi(0)),
-            (q(1, 2), qi(1), q(1, 10)),
-            (qi(1), q(5, 4), q(1, 10)),
+            (q(-5, 4), q(4, 7), qi(0)),
+            (q(4, 7), qi(1), step.clone()),
+            (qi(1), q(5, 4), step.clone()),
         ],
         "the device's own three bands"
     );
@@ -122,7 +123,7 @@ fn a_centred_seam_gives_a_ramp_on_each_side() {
     };
     let lap = lapped_cone(&spec).expect("a symmetric two-ramp seam");
 
-    let step = q(1, 40).add(&q(1, 40)); // t/2 + g/2
+    let step = spec.thickness.add(&spec.gap).div(&qi(2)); // t/2 + g/2
     assert_eq!(lap.h_ccw, step);
     assert_eq!(
         lap.h_cw,
@@ -229,33 +230,35 @@ fn every_precondition_refuses_by_name() {
 
 /// **What BONDED says the seam actually clears.**
 ///
-/// The device's ramp descends inside the lap, so the gap is *not* the authored `1/20` everywhere:
-/// at the tight end of the overlap the tail is still climbing. Where the tail is at `σ = 4/5` the
-/// smoothstep has reached `h ≈ 0.0648`, and the head beneath it is a `1/20`-thick sheet on the base
-/// cone, so the normal gap there is only `≈ 0.0148` — against `0.05` at the loose end.
+/// The device's ramp descends inside the lap, so the gap is *not* the authored `g` everywhere: at
+/// the tight end of the overlap the tail is still climbing, while the head beneath it is a
+/// `t`-thick sheet on the base cone.
 ///
 /// `seam_clearance` proves `≥ keep_out`; it does not measure. So the useful shape is a bracket: a
 /// keep-out under the true minimum certifies, one above it does not, and bisecting between them
-/// tightens the number as far as a caller cares to pay for.
+/// tightens the number as far as a caller cares to pay for. Both ends are taken from the spec, so
+/// the bracket follows the device instead of pinning a stale pair of constants.
 #[test]
 fn bonded_reports_what_the_seam_actually_clears() {
     use certify_core::Verdict;
 
-    let lap = lapped_cone(&device_spec()).expect("valid");
+    let spec = device_spec();
+    let lap = lapped_cone(&spec).expect("valid");
     let nodes = 4_000;
 
     // Below the true minimum: certified clear, and the witness is at least the keep-out.
-    match lap.seam_clearance(&q(1, 100), nodes) {
+    let under = spec.gap.div(&qi(2));
+    match lap.seam_clearance(&under, nodes) {
         Verdict::Verified(c) => {
             assert!(
-                c.min_dist() >= 0.01,
+                c.min_dist() >= rat_to_f64(&under),
                 "the certified bound must be at least the keep-out: {}",
                 c.min_dist()
             );
             assert!(c.rails >= 1, "at least one rail pair was certified");
         }
         other => panic!(
-            "the seam clears 1/100: {}",
+            "the seam clears g/2: {}",
             match other {
                 Verdict::Unresolved(d2) => format!("unresolved at d² ≈ {}", rat_to_f64(&d2)),
                 _ => "refuted".into(),
@@ -263,12 +266,12 @@ fn bonded_reports_what_the_seam_actually_clears() {
         ),
     }
 
-    // At the *authored* gap the ramp's intrusion shows: the sheets come closer than 1/20 somewhere
+    // At the *authored* gap the ramp's intrusion shows: the sheets come closer than `g` somewhere
     // in the overlap, so the same certificate cannot establish it. That is the feedback — the
     // nominal gap is not what the seam achieves once a ramp runs into it.
     assert!(
-        !matches!(lap.seam_clearance(&q(1, 20), nodes), Verdict::Verified(_)),
-        "the authored gap 1/20 is NOT cleared everywhere — the ramp descends inside the lap"
+        !matches!(lap.seam_clearance(&spec.gap, nodes), Verdict::Verified(_)),
+        "the authored gap g is NOT cleared everywhere — the ramp descends inside the lap"
     );
 }
 

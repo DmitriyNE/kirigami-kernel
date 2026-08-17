@@ -97,11 +97,11 @@ fn hexagon() -> Vec<[Q; 2]> {
         .comp(2)
         .eval(&q(-1, 4))
         .expect("regular");
-    let mu = q(-29, 10).div(&rz); // z = −29/10: mid-annulus at σ = −1/4
+    let mu = q(-29, 6).div(&rz); // z = −29/6: mid-annulus at σ = −1/4 (the old −29/10, scaled 5/3)
     let (cx, cy) = body
         .point_signed(&q(-1, 4), &mu, &DevConfig::tight())
         .center();
-    let r = q(2, 5);
+    let r = q(2, 3); // the old 2/5, on the same 5/3 as the rest of the device
     [
         (qi(1), qi(0)),
         (q(1, 2), q(7, 8)),
