@@ -768,6 +768,37 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A circle 2.3e-14 mm off-axis is not a cone of revolution, and that is enough to refuse the cut
+  (2026-08-18, → #292).** The user checked the entry below against *their* test device — the two-ramp
+  recipe in `crates/author/examples/lapped_cone.rs` — where the drawing's tab lands on conical sheet
+  in **both** passes, and reported that it is refused anyway. It is, and for an unrelated reason:
+  `Refuted(CutUnresolved { op: 1 })`, from `rail (1, Wall(2, false)) region 0 span [−1.125, 0.4625]
+  → NappeCrossed`. Wall 2 is the Ø 8 rim — the plainest wall in the file. **No section splits
+  anywhere in that run**, so this is a second, independent blocker, and the entry below overreached
+  in saying the drawing certifies on a cone: absence of a split was measured, "it certifies" was
+  not.
+
+  **The cause is a knife-edge exact predicate meeting a real file.** `RevCone::recognize` is a chain
+  of exact rational equalities. The drawing's rim circle is `cx = −1.7e-15`, `cy = +2.26e-14`,
+  `r² = 15.999999256…` (`r = 3.9999999070`). The cutter's apex is on the axis, so a circle whose
+  centre misses the axis by `2.3e-14 mm` sweeps an **oblique** cone; recognition declines, correctly,
+  and the wall falls to the general-quadric arm — whose nappe test inflates the traced box by
+  `clearance/2 = 3.5 mm` and needs the whole ball on one side of the selector. It is not, so
+  `NappeCrossed`: precisely the fault #288/#289 added `RevCone` to remove. Measured side by side on
+  the same device — plain bore **8/8 walls recognized, Verified in 5.7 s**; the drawing **4
+  recognized, the rim declined, refused in 24.7 s**.
+
+  **The lesson, and it generalizes past this file.** Exact recognition is the right doctrine for
+  *authored* geometry and the wrong one for *imported* geometry: no drawing will ever land on the
+  knife edge, and every near-miss silently costs the closed form — a seven-orders-of-magnitude ε
+  cliff (#289) or, as here, an outright refusal. Recognition has to be a *verified proposal with a
+  backward error*, which is what its own docs already claim it is — and the cheap place to do that
+  is the **builder**, not the quadric: `Cast::circle_wall` knows the circle and the apex, so "is
+  this a cone of revolution" is "is the apex on the circle's axis", and the near-miss is a length
+  rather than an optimization problem. #292 carries it.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`, `crates/develop/src/extrude.rs`*
+
 - **The drawing's tab is refused by the ramp, not by its own flanks — and the same fault name covers
   a second open bug (2026-08-18).** #291 was filed as "the resolver cannot place an imported
   outline's tab", with `choose_comps` named as the suspect and an exactly-radial flank named as the
@@ -819,8 +850,13 @@ fine — this is a log, not a schema.
 
   **What this hands on.** Not a patch: the region's boundary has to be *traced as a loop* over the
   event partition — which AUTH.2c already does for a cutter's footprint — instead of fitted as one
-  lower rail and one upper rail. Until then the drawing cuts a cone but not a ramp, which is a real
-  product constraint and worth stating that way: the device's tab sits under its seam ramp.
+  lower rail and one upper rail.
+
+  ⚠️ **Correction (2026-08-18, same day).** This entry closed by saying "the drawing cuts a cone but
+  not a ramp". Only half of that was measured: the *absence of a split* on conical sheet was, "it
+  cuts" was not. On the two-ramp device, where both tab passes are conical, the drawing is still
+  refused — for the unrelated reason in the entry above (#292). Two independent blockers, and both
+  must land.
 
   *2026-08-18 · open(#287, #290, #291) · `crates/author/src/{resolve,part}.rs`,
   `crates/author/tests/rim_notch.rs`, `docs/cutter-extrude-design.md` §12.5*
