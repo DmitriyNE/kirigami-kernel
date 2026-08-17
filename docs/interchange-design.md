@@ -263,9 +263,9 @@ the escalation if the eyeball check turns out to need it. Not first.
 the surface the cut actually reached, back toward the sketch:
 
 - **far cap** — the traced footprint loop (`HoleLoop` in `(σ, µ̂)`) lifted to 3-D by the chart, at
-  `w = 0`: the sheet's **neutral** surface, so a viewer shows it buried mid-thickness rather than on
-  a lid. That is the honest place for it — the footprint is a fact about the chart, and the chart
-  *is* the neutral surface;
+  `w = 0`. The solid's thickness window is `[0, t]`, so that is the sheet's **lower face**, not its
+  mid-surface, and a viewer shows the far cap lying on it. The footprint is a fact about the chart,
+  and `w = 0` is where the chart is;
 - **near cap** — each far-cap vertex cast *back* along its own generatrix onto the sketch plane, an
   exact bijection between the caps (matching traced vertices against profile corners would not be).
   It therefore inherits the tracer's sampling and is **not** the authored data of (a);

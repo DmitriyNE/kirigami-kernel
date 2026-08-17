@@ -32,10 +32,10 @@
 //!
 //! The two caps are the same loop under two maps, which is what makes the pair worth emitting:
 //!
-//! - the **far cap** is `chart.surface(µ̂, 0)` evaluated at each footprint σ — on the sheet's
-//!   **neutral** surface, `w = 0`. A viewer therefore shows it buried mid-thickness rather than
-//!   lying on a lid, and that is the honest place for it: the footprint is a fact about the chart,
-//!   which is the neutral surface, not about whichever face of the stackup you happen to see first;
+//! - the **far cap** is `chart.surface(µ̂, 0)` evaluated at each footprint σ — the chart embedding,
+//!   `w = 0`. Note that the solid's thickness window is `[0, t]`, so `w = 0` is the sheet's **lower
+//!   face**, not its mid-surface: a viewer shows the far cap lying on that face. The footprint is a
+//!   fact about the chart, and the chart is where `w = 0` is, whatever the stackup does above it;
 //! - the **near cap** is each of those points cast *back* along its own generatrix,
 //!   [`Cast::coords`](develop::extrude::Cast::coords) then
 //!   [`Frame::point`](develop::extrude::Frame::point) — in the sketch plane, exactly, by the same

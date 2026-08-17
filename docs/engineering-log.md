@@ -768,6 +768,55 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **LAP: the lapped cone becomes a parameter set, and three of its checks turn out to be exact
+  (2026-08-17).** The self-lapping device was a hand-written recipe; it is now one point in
+  `acceptance::LappedCone` — apex direction, stack thickness, seam gap, which end laps on top, the
+  seam offset, three azimuths per side, trim radii. `self_lapping_cone` is re-expressed through it,
+  and the 277-test author/acceptance/develop/fixtures run — VV.1 work budgets, VV.2 ε bounds, VV.3
+  chord goldens included — passes unchanged, which is what makes the re-expression a *refactor*
+  rather than a new device wearing the old pins.
+
+  **The datum, which is where the design nearly went wrong.** The seam offset is stated
+  mid-surface to mid-surface, not to the chart. The solid's thickness window is `[0, t]`, so the
+  chart surface `w = 0` is a *face* of the sheet; measuring the seam centreline against it puts a
+  spurious `t/2` in the placement law and the "one ramp vanishes" condition stops closing. The
+  correct law is `h_upper = c + t/2 + g/2`, `h_lower = c − t/2 − g/2`, whose vanishing condition is
+  `c = ±(t/2 + g/2)` — which is what the user stated in the first place and what I got wrong when I
+  first wrote it out. Generalizable: **when a kernel's natural datum is a face and the product's is a
+  mid-plane, the parameter belongs in product language and the conversion belongs in one place.**
+  (The same slip produced a "buried mid-thickness" claim in the IO.3 docs, corrected with this.)
+
+  **Three checks that look like they need `arctan` and do not.** On the wrapping chart
+  `φ = 4·arctan σ`, so two azimuths differ by exactly `2π` iff `1 + σ₁σ₀ = 0`. Therefore: the `2π`
+  shift **is** the Möbius `σ ↦ −1/σ` — the same involution Stage 2 re-centred the seam with, arrived
+  at from the opposite direction; a lap exists iff `1 + σ_ccw·σ_cw < 0`, a sign over ℚ; and the two
+  overlap windows are exactly `[−1/σ_cw, σ_ccw]` and `[σ_cw, −1/σ_ccw]`. No transcendental, no
+  tolerance, in any precondition.
+
+  **What a rational direction buys, per parameter.** For the **apex** it is exact whenever the
+  direction is Pythagorean, and the reason is structural: `wrap_cone(a, b)` has
+  `sin β = (a² − b²)/(a² + b²)`, the Pythagorean *generator*, so `b/a = tan(45° − β/2)` and two
+  half-angle steps rationalize any Pythagorean `(cos β, sin β)`. The 42° device is literally
+  `(65, 72, 97)`. For the **azimuths** it buys nothing: `σ = tan(φ/4)` is a *quarter*-angle, needing
+  the direction and its half-direction both Pythagorean, so those snap and echo, and a `σ` escape
+  hatch is what makes an existing σ-authored device reproducible at δ = 0.
+
+  **The generator's scale is gauge.** `wrap_cone(234, 104)` and `wrap_cone(9, 4)` store different
+  `q` and have *identical* `normal`, `ruling` and `pedal` — the Hopf map is invariant under
+  `q ↦ λq`. Measured rather than assumed, and it is what lets an apex direction be converted with no
+  gcd bookkeeping.
+
+  **The minimum gap is BONDED's to report, not the fixture's to compute.** Where a ramp descends
+  inside the lap the gap is not the authored one, and the honest number is `bonded::clear`'s
+  certified lower bound on the true 3-D distance — sound despite the tangential shift, which is the
+  whole reason CLEAR exists. It needed one widening: a lap pairs the head's σ-window with the tail's,
+  two disjoint intervals, where `clear` seeded both boxes the same. Its search was always pairwise
+  over `I_A × I_B`, so `clear_boxes` is the general entry and `clear` the equal-box sugar. Two limits
+  stated rather than implied: it certifies **rails** (fixed `µ, w`), so sampling the band edges is a
+  check on the sheets and not a proof about the band; and it **proves `≥ keep_out` rather than
+  measuring**, so reading the gap off it means bracketing. On the device: `1/100` certifies, the
+  authored `1/20` does not — the ramp's intrusion, visible in the number.
+
 - **IO.3b: two routes to the same curve, and the sharpest number is not the certified one
   (2026-08-17).** `author::dump::cutter_bodies` completes the dump: each hole op's certified `(σ, µ̂)`
   footprint lifted to the sheet, cast **back** down its own generatrices to the sketch plane, ruled

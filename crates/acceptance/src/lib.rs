@@ -16,7 +16,12 @@
 //! assert!(matches!(part.develop(), certify_core::Verdict::Verified(_)));
 //! ```
 
+pub mod lapped;
 pub mod measure;
+
+pub use lapped::{
+    Azimuth, GapPolicy, LapFault, Lapped, LappedCone, OnTop, SideAngles, lapped_cone,
+};
 
 use arrange2d::profile::Profile;
 use author::construct;
@@ -73,29 +78,13 @@ pub fn self_lapping_cone_with(
     with_drill: bool,
     feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
 ) -> Part<Bignum> {
-    let d = q(1, 10);
-    // A witness on the kept sheet: the σ = 0 ruling's point at z = −3 (mid-annulus). The wrap
-    // chart keeps material on both sheets of the double cover — the antipodal ray crosses the
-    // disks too — so the recipe must designate the component rather than leave it to a rule.
-    let rz0 = cone_wrap()
-        .ruling()
-        .comp(2)
-        .eval(&qi(0))
-        .expect("the wrap chart's ruling is regular at σ = 0");
-    let mu_w = q(-3, 1).div(&rz0);
-    let witness = cone_wrap()
-        .surface(&mu_w, &qi(0))
-        .eval(&qi(0))
-        .expect("the mid-annulus witness point is regular");
-    let mut part = construct::from_chart::<Bignum>(&cone_wrap())
-        .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
-        .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
-        .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
-        .keep_near(witness)
-        .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
+    let mut part = lapped::lapped_cone(&self_lapping_spec())
+        .expect("the device recipe is valid")
+        .part
+        // The inner annulus bound is **off-axis**, which `LappedCone`'s concentric radii do not
+        // express — so it stays an authoring op, exactly as a caller's own trim would.
         .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
         .clearance(qi(1))
-        .thickness(q(1, 20))
         .fit(RailFit {
             degree: 4,
             subdiv: 160,
@@ -114,6 +103,56 @@ pub fn self_lapping_cone_with(
         part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
     }
     part
+}
+
+/// The self-lapping device **as parameters** — the recipe [`self_lapping_cone_with`] is one point
+/// of.
+///
+/// Every number here used to be written down; all that survives is the ones a product engineer
+/// would state. The stack is `1/20` thick with a `1/20` seam gap, and the seam centreline sits
+/// `t/2 + g/2` off the base sheet's mid-surface — the value at which one ramp vanishes exactly, so
+/// the clockwise end never leaves the base cone and the device has a single ramp. The supports
+/// `0`, `0 → 1/10`, `1/10` are *derived* from those three numbers rather than authored.
+///
+/// The azimuths are given in σ because they must be: on the wrapping chart `σ = tan(φ/4)`, so no
+/// rational direction names `±5/4`, and this is the spelling that keeps the re-expression exact —
+/// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on.
+///
+/// The pick is named rather than derived: the annulus's inner bound is an **off-axis** cylinder
+/// applied by [`self_lapping_cone_with`] afterwards, so the mid-annulus point `lapped_cone` would
+/// derive could land in material that op removes.
+pub fn self_lapping_spec() -> lapped::LappedCone {
+    let sigma = |n: i128, d: i128| lapped::Azimuth::Sigma(q(n, d));
+    // The σ = 0 ruling's point at z = −3, the device's own historical witness.
+    let rz0 = cone_wrap()
+        .ruling()
+        .comp(2)
+        .eval(&qi(0))
+        .expect("the wrap chart's ruling is regular at σ = 0");
+    let pick = cone_wrap()
+        .surface(&q(-3, 1).div(&rz0), &qi(0))
+        .eval(&qi(0))
+        .expect("the mid-annulus witness point is regular");
+    lapped::LappedCone {
+        // The Pythagorean (72, 65, 97): sin β = 65/97, the 42° device, exact.
+        apex: (qi(72), qi(65)),
+        thickness: q(1, 20),
+        gap: q(1, 20),
+        on_top: lapped::OnTop::Ccw,
+        seam_offset: q(1, 20),
+        ccw: lapped::SideAngles {
+            ramp_start: sigma(1, 2),
+            ramp_end: sigma(1, 1),
+            sheet_end: sigma(5, 4),
+        },
+        cw: lapped::SideAngles::flat(sigma(-5, 4)),
+        outer_r2: q(471, 50),
+        inner_r2: None,
+        // The ramp deliberately descends *inside* the lap here, so the gap closes over part of the
+        // seam and `Constant` would refuse it. What it actually reaches is BONDED's to report.
+        policy: lapped::GapPolicy::MinDistance,
+        pick: Some(pick),
+    }
 }
 
 /// The centre of the self-lapping device's seam drill, `(x, y, r²)` — the 3-D cylinder both

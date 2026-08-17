@@ -122,15 +122,47 @@ pub fn cone_seam_ramp() -> Chart<Bignum> {
 /// assert_eq!(classify(&cone_wrap()), Some(Tag::Cone { apex }));
 /// ```
 pub fn cone_wrap() -> Chart<Bignum> {
-    let poly = |cs: &[i128]| Poly::from_coeffs(cs.iter().map(|&c| Rat::from_i128(c)).collect());
-    // q = (1−σ²)·q_a + 2σ·q_b, q_a = (9,4,0,0), q_b = (0,0,4,9).
-    let q = [
-        poly(&[9, 0, -9]),
-        poly(&[4, 0, -4]),
-        poly(&[0, 8]),
-        poly(&[0, 18]),
-    ];
-    Chart::new(q, RatFunc::zero())
+    wrap_cone(&Rat::from_i128(9), &Rat::from_i128(4))
+}
+
+/// The **wrapping cone of any rational half-angle** — [`cone_wrap`] with its generator exposed.
+///
+/// `q(σ) = (1 − σ²)·(a, b, 0, 0) + 2σ·(0, 0, b, a)`, so `|q_a|² = |q_b|² = a² + b²` and
+/// `q_a · q_b = 0` for *any* `(a, b)`: the degree-2 wrap and the closed-form angle law survive the
+/// generalization untouched, and only the half-angle moves. The exact invariant is
+///
+/// > `sin β = n·ẑ = (a² − b²)/(a² + b²)`,
+///
+/// which is the **Pythagorean generator**, and that is why a rational half-angle is not a lucky
+/// special case: writing `t = b/a`, `sin β = (1 − t²)/(1 + t²)`, so `t = tan(45° − β/2)` and a
+/// rational `t` gives an exact cone. Conversely a rational *direction* `(cos β, sin β)` — that is,
+/// a Pythagorean pair — always yields a rational `t` by two half-angle steps, so **a Pythagorean
+/// apex direction costs exactly zero**. [`cone_wrap`]'s `(9, 4)` is the 42° device:
+/// `sin β = 65/97`, `tan(β/2) = 5/13`, `t = 4/9`.
+///
+/// Requires `a > b > 0` (a genuine cone, `0 < β < 90°`); other inputs are the caller's to reject —
+/// this is the bare chart constructor, and [`acceptance`](https://docs.rs/acceptance) validates.
+///
+/// ```
+/// use fixtures::devices::{cone_wrap, wrap_cone};
+/// use lattice::{Bignum, Poly, Rat, RatFunc};
+///
+/// // The device chart is this one at (9, 4) — same q, coefficient for coefficient.
+/// let g = wrap_cone::<Bignum>(&Rat::from_i128(9), &Rat::from_i128(4));
+/// assert_eq!(g.quaternion(), cone_wrap().quaternion());
+/// assert_eq!(g.support(), cone_wrap().support());
+///
+/// // A different half-angle: (2, 1) → sin β = 3/5, the `cone_alt` angle, wrapped.
+/// let nz = wrap_cone::<Bignum>(&Rat::from_i128(2), &Rat::from_i128(1)).normal().comp(2);
+/// assert_eq!(nz, RatFunc::from_poly(Poly::constant(Rat::new(3, 5))));
+/// ```
+pub fn wrap_cone<B: lattice::Backend>(a: &Rat<B>, b: &Rat<B>) -> Chart<B> {
+    let zero = Rat::from_i128(0);
+    // (1 − σ²)·a and (1 − σ²)·b — the q_a half, quadratic in σ.
+    let scaled = |c: &Rat<B>| Poly::from_coeffs(vec![c.clone(), zero.clone(), c.neg()]);
+    // 2σ·b and 2σ·a — the q_b half, linear in σ.
+    let twice = |c: &Rat<B>| Poly::from_coeffs(vec![zero.clone(), c.mul(&Rat::from_i128(2))]);
+    Chart::new([scaled(a), scaled(b), twice(b), twice(a)], RatFunc::zero())
 }
 
 /// A **second-angle** rational cone (apex at the origin, `h ≡ 0`, `n·ẑ ≡ 3/5 ≈ sin 36.87°`) —

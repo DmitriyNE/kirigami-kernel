@@ -88,12 +88,45 @@ pub fn clear<B: Backend>(
     keep_out: &Rat<B>,
     max_nodes: usize,
 ) -> Verdict<ClearWitness<B>, ClearFault, Rat<B>> {
-    if sbox.hi <= sbox.lo {
+    clear_boxes(a, sbox, b, sbox, keep_out, max_nodes)
+}
+
+/// The same certificate over **a box per rail** — for a lap whose two sheets do not share a
+/// σ-window.
+///
+/// A seam re-centred on `σ' = 0` puts both lapping arcs on one box, which is what [`clear`]
+/// assumes. A **self-lapping** sheet does not: the tail overlaps the head at a 2π-shifted azimuth,
+/// so the pair to certify is the head's σ-window against the tail's, two disjoint intervals of the
+/// same chart. Nothing in the search needed changing to allow it — it was always a *pairwise*
+/// subdivision over the product `I_A × I_B`, only seeded with `I_A = I_B`. This is the general
+/// entry and [`clear`] is the equal-box sugar.
+///
+/// Both boxes are subdivided together: on a pair the rails' 3-D boxes are enclosed and a lower
+/// bound on their distance taken; a pair whose box-distance ≥ `keep_out` is **pruned** (sound, since
+/// each arc lies inside its box), an inconclusive pair splits at the wider interval, and the search
+/// stops when every pair is pruned (`Verified`, carrying the min pruned distance²) or the node
+/// budget is spent (`Unresolved`, carrying the offending distance² so a caller can report *how
+/// close* rather than only that it failed).
+///
+/// **Scope, unchanged:** this certifies two *rails* (fixed `(µ, w)` each). A whole-band surface
+/// clearance is the same scheme with `µ` subdivided too — the module's deferred scaling step — so a
+/// rail bound is a check on the sheets, not a proof about the band between them.
+pub fn clear_boxes<B: Backend>(
+    a: &LapRail<B>,
+    a_box: &Interval<B>,
+    b: &LapRail<B>,
+    b_box: &Interval<B>,
+    keep_out: &Rat<B>,
+    max_nodes: usize,
+) -> Verdict<ClearWitness<B>, ClearFault, Rat<B>> {
+    if a_box.hi <= a_box.lo || b_box.hi <= b_box.lo {
         return Verdict::Refuted(ClearFault::DegenerateBox);
     }
     let k2 = keep_out.mul(keep_out);
-    let whole = RatIv::new(sbox.lo.clone(), sbox.hi.clone());
-    let mut stack = vec![(whole.clone(), whole)];
+    let mut stack = vec![(
+        RatIv::new(a_box.lo.clone(), a_box.hi.clone()),
+        RatIv::new(b_box.lo.clone(), b_box.hi.clone()),
+    )];
     let mut min_pruned: Option<Rat<B>> = None;
     let mut nodes = 0usize;
     while let Some((ia, ib)) = stack.pop() {
