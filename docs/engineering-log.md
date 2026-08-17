@@ -768,6 +768,63 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The drawing's tab is refused by the ramp, not by its own flanks — and the same fault name covers
+  a second open bug (2026-08-18).** #291 was filed as "the resolver cannot place an imported
+  outline's tab", with `choose_comps` named as the suspect and an exactly-radial flank named as the
+  cause. Instrumented, both are wrong, and the way they are wrong is the lesson: **a fault name that
+  points at the wrong subsystem costs a whole session.** `AmbiguousRegion { op: 1 }` says "the
+  resolver could not decide"; what actually happens is the resolver deciding correctly and hitting
+  the limit of what its *model* can hold.
+
+  **The mechanism.** A region is modelled as **one µ̂-interval per σ** — a lower rail and an upper
+  rail, both graphs over σ — plus interior holes carved by a single subtract op. A **tab** left in
+  the bore is material reaching inward. A ruling that runs *across* the tab instead of along it
+  enters the tab, leaves it, crosses a sliver of cut, and re-enters the sheet: the kept material is
+  **two µ̂-intervals at one σ**. `sample_comps` merges them and records the gap as a hole of op 1;
+  the role derivation then finds op 1 both holing and bounding and refuses. The refusal is *right* —
+  the gap opens into the exterior at the low-σ end of its band, so shipping it as a hole would emit
+  a closed island where the part has an open bay — but its name was not.
+
+  **The controlled measurement, inside one run.** The drawing's tab passes the 410.7° chart twice at
+  the same plan azimuth, and the two passes land on different sheet:
+
+  | pass | region | `h` | ruling's plan miss | section |
+  |---|---|---|---|---|
+  | σ ∈ −1.079…−0.927 | 0 | `0` | **exactly 0.000000000** | one interval ✓ |
+  | σ ∈ +0.888…+1.049 | 1 (the ramp) | `0 → 1/4` | up to **0.481 mm** | **split** at σ = 0.897, 0.906, 0.915 ✗ |
+
+  Same cut, same walls traversed in the same order (`Wall 2→3→5→6→7→1→2`, the r = 4 rim, the root
+  fillets, the flanks, the tip). Only the sheet differs, and the number that separates them is
+  geometric and blunt: on a cone (`h′ = 0`) a ruling's plan projection passes exactly through the
+  axis, so a **radially** flanked tab is entered once and left once; across the ramp it misses the
+  axis by 0.481 mm, against a tab **0.35 mm** half-wide at its root. *On the ramp the ruling is
+  further off-axis than the tab is wide.* Corroborated by moving the ramp off the tab (`ramp` σ
+  ∈ (0.1, 0.5)): every gap disappears and the refusal moves on to an unrelated rail fit.
+
+  The split gap runs from the tab's **root fillet** (`Wall 3`) to its **flank** (`Wall 4`), born at
+  the flank∩tip-fillet corner and pinched shut at the flank∩root-fillet corner — the tab's own two
+  corners, 3.8° of azimuth apart, which is why exactly three of the 48-per-region samples see it.
+
+  **The straight-sided tab is the other half of the same statement.** Vertical flanks are not radial,
+  so a radial ruling crosses them sideways too — that fixture splits the section on the *base cone*,
+  and at **every** width tried (half-width 0.347 → 2.400 mm), because the two-interval band lives
+  between the tab's corner azimuth and its flank azimuth and every width has one. The earlier
+  reading ("not sampling density, therefore `choose_comps`") had the first half right.
+
+  **One model limit, two open bugs.** #287 — a too-steep seam ramp whose edge of regression sweeps
+  `≈0.9·max|h|/Δσ²` into the kept material — reaches the *same site* by separating the material into
+  two stretches at one σ, and the entry below already noted its fault "names an op-role conflict and
+  points at the inner trim; the op named is innocent". Both now raise
+  `PartFault::SectionNotSimple { op }`, whose docs carry the mechanism and both routes to it.
+
+  **What this hands on.** Not a patch: the region's boundary has to be *traced as a loop* over the
+  event partition — which AUTH.2c already does for a cutter's footprint — instead of fitted as one
+  lower rail and one upper rail. Until then the drawing cuts a cone but not a ramp, which is a real
+  product constraint and worth stating that way: the device's tab sits under its seam ramp.
+
+  *2026-08-18 · open(#287, #290, #291) · `crates/author/src/{resolve,part}.rs`,
+  `crates/author/tests/rim_notch.rs`, `docs/cutter-extrude-design.md` §12.5*
+
 - **The first real cut file: what it cost, and the three walls it hit (2026-08-17).** The user
   supplied `crates/acceptance/data/inner-cut.dxf` — the device's Ø 8 bore with a 10° tab reaching in
   to Ø 4, root fillets R 0.25, tip fillets R 0.15 — to replace the plain disc. Four separate things
@@ -817,6 +874,12 @@ fine — this is a log, not a schema.
   extra stations are not free: `choose_comps` refuses at any sample it cannot attribute, and a
   station near a wall's tangent ruling is exactly such a sample. Reverted; the comment's claim is
   wrong and #291 carries it.
+
+  ⚠️ **Correction to this entry as first written (2026-08-18).** "Three distinct refusals" reads as
+  three causes; the drawing has **one**, and `choose_comps` is not it — instrumented, the drawing
+  never reaches `choose_comps` with an unattributable sample. See the next entry: the refusal is the
+  role derivation, and the "near-radial flank" and "all-straight notch" figures are two symptoms of
+  the same split section rather than a degenerate-wall ladder.
 
   *2026-08-17 · open(#290, #291) · `crates/interchange/src/{arc,element}.rs`,
   `crates/develop/src/cut.rs`, `crates/acceptance/{data,src,tests}`*

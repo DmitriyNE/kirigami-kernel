@@ -179,12 +179,15 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         outer_r: q(43, 4),
         inner_r: Some(qi(4)),
         // **Not yet the drawing.** `inner_cut_profile()` is the bore this device is meant to have —
-        // the file reads exactly, the recipe carries it, and a rim notch costs nothing to certify
-        // (measured ε 1.5266e0, the plain bore's own figure, on a wedge whose flanks clear the
-        // axis). What the resolver cannot yet place is *this* notch: its flanks are aimed at the
-        // cone's axis to 8.8e-16 mm, and a wall containing a whole ruling has no µ̂-pullback. Task
-        // #291 carries the measurements and the three distinct refusals. Left `None` so the pinned
-        // device stays the object every V&V number was taken on, rather than a refusal.
+        // the file reads exactly and the recipe carries it. What the resolver cannot yet place is
+        // the tab, and only where it crosses the **ramp**: there the ruling's plan projection
+        // misses the axis by up to 0.481 mm against a tab 0.35 mm half-wide, so one ruling runs
+        // across the tab instead of along it and the kept material becomes two µ̂-intervals at one
+        // σ — `PartFault::SectionNotSimple`, the one-interval boundary model's own frontier. On the
+        // base cone (`h′ = 0`, plan miss exactly 0) the same tab certifies, which is the controlled
+        // half of the measurement: the drawing's tab passes the chart twice and only the ramp pass
+        // splits. Task #291 carries it; `author/tests/rim_notch.rs` pins it. Left `None` so the
+        // pinned device stays the object every V&V number was taken on, rather than a refusal.
         inner_profile: None,
         // The physical edge: cut **normal to the sheet**, not vertically. Both bounds are cones,
         // and both are recognized as cones of revolution (`develop::cut::RevCone`), so they carry
@@ -473,7 +476,7 @@ pub fn ring_slot() -> Vec<Edge<Bignum>> {
 /// doctest cone, `r = w/5` needs 384 segments to certify at all, while `r = 2w/5` certifies at 48
 /// and converges `5.4e-2 → 4.0e-2 → 1.7e-2` over `48 → 96 → 192`. Too *large* fails the other way —
 /// at `r = 3w/5` the corners consume the sides and the footprint stops being one µ̂-interval per
-/// ruling (`AmbiguousRegion`, §12.5).
+/// ruling (`SectionNotSimple`, §12.5).
 pub fn rounded_outline(cx: Q, cy: Q, w: Q, h: Q, r: Q) -> Vec<Edge<Bignum>> {
     let (wi, hi) = (w.sub(&r), h.sub(&r));
     let r2 = r.mul(&r);

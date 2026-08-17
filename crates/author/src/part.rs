@@ -568,6 +568,41 @@ pub enum PartFault {
         /// The offending op.
         op: usize,
     },
+    /// The **kept material** meets some ruling in more than one stretch, and the op that separates
+    /// them is the same op that bounds it. The resolver models a region as one µ̂-interval per σ —
+    /// a lower rail and an upper rail, both graphs over σ — plus interior holes; two stretches
+    /// separated by their own bound is a *bay in the boundary*, which that model cannot express.
+    ///
+    /// It is not an ambiguity, and merging the stretches would not be conservative: the gap opens
+    /// into the exterior at one end of its σ-band, so emitting it as a hole would ship a flat
+    /// pattern with a closed island where the part has an open bay. The refusal is the right answer
+    /// until the boundary is traced as a loop rather than fitted as two rails.
+    ///
+    /// **The two ways an author reaches it**, both measured on the self-lapping device:
+    ///
+    /// - *A cut that bays into the material.* A tab reaching in from a bore is entered and left by
+    ///   one ruling wherever the ruling runs **across** the tab instead of along it — the tab's own
+    ///   material and the sheet beyond it are then two stretches with a sliver of cut between them.
+    ///   Whether that happens is a statement about the ruling and the flank together, and the
+    ///   device shows both halves of it: where `h′ = 0` the ruling's plan projection passes exactly
+    ///   through the axis, so a *radially* flanked tab is entered once and left once and certifies;
+    ///   across a **ramp** the same ruling misses the axis by up to 0.48 mm — against a tab 0.35 mm
+    ///   half-wide at its root — and the same tab is crossed sideways. A tab whose flanks are not
+    ///   radial (a straight-sided slot) splits the section on either sheet. Placing the feature
+    ///   clear of the ramp is what was measured to remove it.
+    /// - *A ramp steep enough to drag its fold line through the sheet.* The edge of regression
+    ///   sweeps `≈0.9·max|h|/Δσ²` along the ruling; once it enters the kept material it separates
+    ///   the material into two stretches at the same σ. Widen the ramp (its **slope** is the
+    ///   constraint, not its height) — `docs/engineering-log.md`.
+    ///
+    /// Companion to [`ProfileNotSimple`](PartFault::ProfileNotSimple), which is the same sentence
+    /// about a *cutter's* footprint rather than about the material.
+    SectionNotSimple {
+        /// The op whose gap splits the material — the cut that bays in, or the trim the ramp's
+        /// fold line crossed. It is the op the *structure* names, which need not be the op an
+        /// author has to change: a ramp's fold line is reported against the trim it crossed.
+        op: usize,
+    },
     /// The exact flat boolean disagreed with the resolved structure (faces/holes counts) — the
     /// realization is refused rather than shipped inconsistent.
     TopologyMismatch {

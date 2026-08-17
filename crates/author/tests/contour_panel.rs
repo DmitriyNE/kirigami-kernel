@@ -240,7 +240,7 @@ fn the_wrapping_device_refuses_a_kept_contour_by_name() {
         .develop();
     match bitten {
         Verdict::Refuted(PartFault::DisconnectedRegion)
-        | Verdict::Refuted(PartFault::AmbiguousRegion { .. }) => {}
+        | Verdict::Refuted(PartFault::SectionNotSimple { .. }) => {}
         v => panic!(
             "a kept contour on a 410.7° sweep must refuse by name (§12.5), got {}",
             name(&v)

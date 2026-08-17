@@ -1163,14 +1163,45 @@ certificate green.
   azimuth **and its antipode** are both swept. Narrow bands (the doctest cone, σ ∈ [−1, 1]) satisfy
   that and certify; the Stage-1 gore at 296° and the self-lapping device at 410.7° do not, and every
   biting placement on them refuses — `DisconnectedRegion` where the extent comes back in pieces,
-  `AmbiguousRegion { op }` where one op ends up both holing and bounding. Both are this exclusion
-  reaching the resolver by two different routes, and both are the right answer.
+  `SectionNotSimple { op }` where one op ends up both carving a gap and bounding. Both are this
+  exclusion reaching the resolver by two different routes, and both are the right answer.
 
   Stated positively, because it is what an author needs to know: **"keep what is inside this
   contour" is a statement about a solid, and a prism is not bounded along the ruling.** The fix is
   not in the resolver — it is to bound the cutter, or to author on a chart whose sweep is narrow
   enough that the far nappe is out of range. Recorded here rather than in a task because it is a
   property of the operation, not a gap in the implementation.
+
+- **A *subtract* that bays into the material — the same exclusion, and this one IS a gap (#291).**
+  The paragraph above reads as though several µ̂-components were an artifact of intersecting an
+  unbounded prism. They are not: a plain `Subtract` reaches the same place with no antipode and no
+  unboundedness in sight. A **tab** left in a bore — material reaching inward, as
+  `acceptance/data/inner-cut.dxf` draws it — is entered and left by a single ruling wherever that
+  ruling runs *across* the tab instead of along it, and the tab's material and the sheet beyond it
+  are then two stretches with a sliver of cut between them.
+
+  Whether a ruling runs across a tab is a statement about the ruling and the flank *together*, and
+  the self-lapping device measures both halves of it. The drawing's tab passes the 410.7° chart
+  twice at the same plan azimuth: on the base cone (`h′ = 0`) the ruling's plan projection passes
+  **exactly** through the axis, so a radially-flanked tab is entered once and left once and the
+  section stays one interval; across the **ramp** the same ruling misses the axis by up to
+  `0.481 mm` — against a tab `0.35 mm` half-wide at its root — and the section splits at three
+  consecutive samples. Same cut, same walls in the same order, only the sheet differs. A tab whose
+  flanks are *not* radial (a straight-sided slot) splits the section on either sheet, at every
+  width tried from `0.347` to `2.400 mm` half-width, because the two-interval band lives between
+  the tab's corner azimuth and its flank azimuth and every width has one.
+
+  `sample_comps` merges the two stretches and records the gap as a hole of the carving op, and the
+  role derivation then finds that op both holing and bounding — `SectionNotSimple { op }`. Merging
+  is **not** the conservative choice: the gap opens into the exterior at the low-σ end of its band,
+  so emitting it as a hole would ship a flat pattern with a closed island where the part has an
+  open bay. Refusing is right, and it stays right until the region's boundary is *traced as a loop*
+  over the event partition (what AUTH.2c already does for a cutter's footprint) instead of fitted
+  as one lower rail and one upper rail. That is the milestone #291 hands on.
+
+  The **same site** is where a too-steep ramp lands (#287): the edge of regression sweeps
+  `≈0.9·max|h|/Δσ²` along the ruling, and once it enters the kept material it separates that
+  material into two stretches at one σ. Two different geometries, one model limit, one fault name.
 - **A derived extent in more than one piece.** The live samples must form **one** run. Two runs is a
   disconnected part; the resolver refuses rather than picking one or emitting both.
 - **Station targeting is `Subtract`-only today, and must stop being.** An intersect's footprint gets
