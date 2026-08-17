@@ -30,3 +30,4 @@ svgtypes = "0.16"
 # The end-to-end check reads a file and compares the profile against the one the acceptance device
 # already cuts with. Dev-only: no certified crate gains a dependency on the file boundary.
 acceptance.workspace = true
+certify-core.workspace = true

@@ -116,6 +116,18 @@ between two rational endpoints has bulge `tan(Δθ/4)` — irrational. So the fo
 perfectly exports approximately. The round-trip test therefore composes two different errors and
 must report them separately.
 
+**Outbound, both formats derive everything from one written scalar — but not the same one**, and
+that makes them exact on different arcs. DXF writes `tan(Δθ/4)`; SVG writes `√r²`. A quarter turn of
+radius 5 costs SVG nothing and DXF a rounding; a semicircle of radius `√2` costs DXF nothing and SVG
+a rounding. Two-sided, so neither format dominates and a caller can pick by the arc. (Corrected from
+an earlier reading of this design that had *inbound*'s "which datum moves" table applying outbound
+too — outbound, the centre and radius are derived from the written scalar in both formats.)
+
+One exactness that does survive outbound: for an arc with rational centre and endpoints, `cos Δθ`
+and `sin Δθ` are **exact rationals** (`u·v/r²` and `u×v/r²`). The turn is exact — only its
+quarter-tangent is not — so `large-arc` and the bulge's major/minor branch are decided by an exact
+sign test rather than by a comparison against a tolerance.
+
 **The same parse feeds two consumers with different rules.** sketch-in and flat-in read the same
 files with the same parser; they differ only in that `Part::hole_flat` takes a polygon, so flat-in
 must chord any arc and report the chord deviation as a *second*, separately-named δ. One parser, two

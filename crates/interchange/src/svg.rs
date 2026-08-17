@@ -24,9 +24,12 @@
 
 use crate::arc::{ArcFault, ArcTolerance, ExactArc, from_endpoints_radius};
 use crate::element::{Element, assemble};
-use crate::num::{rat_from_f64, sqrt_rational, to_decimal, transport_bound};
+use crate::num::{
+    rat_from_f64, round_decimal, sqrt_rational, to_decimal, to_decimal_trimmed, transport_bound,
+};
 use crate::report::{ImportFault, ImportReport};
 use crate::unit::Unit;
+use crate::write::{Cost, Drawing, ExportReport, WriteOptions, is_major, radius};
 use crate::{Imported, max_of};
 use lattice::{Backend, Rat};
 use svgtypes::{
@@ -206,9 +209,13 @@ fn resolve_frame<B: Backend>(
         .attribute("width")
         .and_then(|v| v.parse::<Length>().ok());
 
-    // The flip axis: the viewBox's own bottom edge, so the drawing keeps its place.
+    // The flip axis. `y ↦ (top + bottom) − y` reflects the viewBox **onto itself**, which is what
+    // keeps the drawing in its own frame; `top + bottom` is `2·vb.y + vb.h`, not `vb.y + vb.h`.
+    // The two agree exactly when `vb.y == 0` — which every hand-written fixture here happened to
+    // have, so the difference stayed invisible until the writer's own output (a viewBox centred on
+    // the geometry, `vb.y = −5`) round-tripped five millimetres off.
     let flip_about = match &view_box {
-        Some(vb) => exact(vb.y)?.add(&exact(vb.h)?),
+        Some(vb) => exact(vb.y)?.mul(&Rat::from_i128(2)).add(&exact(vb.h)?),
         None => Rat::from_i128(0),
     };
 
@@ -731,6 +738,152 @@ fn poly_element<B: Backend>(
         .collect())
 }
 
+// --- writing --------------------------------------------------------------------------------
+
+/// Write a [`Drawing`] as a **1:1 physical SVG** — a drawing, not a viewer.
+///
+/// [`crate::svg`]'s companion in `export::svg` pads its frame by 8% and sizes in pixels: that is a
+/// diagnostic and should stay one. This is the artifact a fab house opens — the `width`/`height`
+/// carry real units, the `viewBox` matches them one-for-one so nothing is scaled, there is no
+/// margin, and each layer is its own `<g>` so an outline and its holes stay separable.
+///
+/// **Where an SVG loses an arc** is the radius: `√r²` is irrational for almost every arc a kernel
+/// produces, while both endpoints write exactly. That is the opposite datum from the DXF bulge
+/// route ([`crate::dxf::write_dxf`]), and it is measured rather than bounded.
+///
+/// SVG's y-axis points down, so the writer flips about the drawing's own extent — exactly, and
+/// reversing orientation, which is why every arc's `sweep-flag` is the negation of its model sweep.
+///
+/// ```
+/// use interchange::element::Element;
+/// use interchange::svg::write_svg;
+/// use interchange::write::{Drawing, WriteOptions};
+/// use lattice::{Bignum, Rat};
+/// type Q = Rat<Bignum>;
+///
+/// let tri = vec![
+///     Element::Segment { start: [Q::from_i128(0), Q::from_i128(0)], end: [Q::from_i128(4), Q::from_i128(0)] },
+///     Element::Segment { start: [Q::from_i128(4), Q::from_i128(0)], end: [Q::from_i128(0), Q::from_i128(3)] },
+///     Element::Segment { start: [Q::from_i128(0), Q::from_i128(3)], end: [Q::from_i128(0), Q::from_i128(0)] },
+/// ];
+/// let (text, report) = write_svg(&Drawing::<Bignum>::new().layer("outline", vec![tri]), &WriteOptions::default());
+/// assert!(report.is_exact());
+/// assert!(text.contains(r#"width="4mm""#), "1:1 physical size, no margin");
+/// assert!(text.contains(r#"viewBox="0 0 4 3""#));
+/// ```
+pub fn write_svg<B: Backend>(
+    drawing: &Drawing<B>,
+    opts: &WriteOptions,
+) -> (String, ExportReport<B>) {
+    let mut cost = Cost::<B>::new(opts.places);
+    let Some([lx, ly, hx, hy]) = drawing.bounds() else {
+        return (
+            String::from("<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            cost.into_report(opts.unit),
+        );
+    };
+    // **The frame is rounded first, and the flip is derived from the rounded frame.**
+    //
+    // The reader reconstructs the flip axis from the `viewBox` it finds — `2·y + h`, the reflection
+    // of the box onto itself. If the writer flipped about the *exact* extent and then printed a
+    // rounded `viewBox`, the two constants would differ by the frame's rounding and every `y` would
+    // come back shifted by it. Rounding the frame up front makes the reader's reconstruction exact,
+    // so the round trip carries the coordinate rounding and nothing else. (Printing the frame at a
+    // coarser precision than the coordinates — which reads more nicely — is exactly the bug: the
+    // demo's 0.6 mm panel came back a micron off in y.)
+    let (vx, vy) = (
+        round_decimal(&lx, opts.places),
+        round_decimal(&ly, opts.places),
+    );
+    let (w, h) = (
+        round_decimal(&hx.sub(&lx), opts.places),
+        round_decimal(&hy.sub(&ly), opts.places),
+    );
+    let flip = vy.mul(&Rat::from_i128(2)).add(&h);
+    let d = |q: &Rat<B>| to_decimal_trimmed(q, opts.places);
+    let frame = d;
+
+    let mut body = String::new();
+    for layer in &drawing.layers {
+        body.push_str(&format!(
+            "<g id=\"{}\" class=\"{}\">",
+            layer.name, layer.name
+        ));
+        for chain in &layer.loops {
+            match chain.as_slice() {
+                [Element::Circle { cx, cy, r2 }] => {
+                    let r = sqrt_rational(r2, 32);
+                    let written = cost.coord(&r);
+                    cost.curve(crate::write::abs(&written.sub(&r)));
+                    body.push_str(&format!(
+                        "<circle cx=\"{}\" cy=\"{}\" r=\"{}\"/>",
+                        cost.text(cx),
+                        d(&cost.coord(&flip.sub(cy))),
+                        d(&written),
+                    ));
+                    cost.entities += 1;
+                }
+                elements => {
+                    let Some(first) = elements.first().and_then(|e| e.start()) else {
+                        continue;
+                    };
+                    let mut path = format!(
+                        "M {} {}",
+                        cost.text(&first[0]),
+                        d(&cost.coord(&flip.sub(&first[1])))
+                    );
+                    for e in elements {
+                        let Some(end) = e.end() else { continue };
+                        let (ex, ey) = (cost.text(&end[0]), d(&cost.coord(&flip.sub(&end[1]))));
+                        match e {
+                            Element::Arc(a) => {
+                                let r = radius(a);
+                                let written = cost.coord(&r);
+                                cost.curve(crate::write::abs(&written.sub(&r)));
+                                // The flip reverses orientation, so SVG's sweep flag is the
+                                // negation of the model's own sweep. `large-arc` survives it.
+                                let large = u8::from(is_major(a));
+                                let sweep = u8::from(!a.ccw);
+                                path.push_str(&format!(
+                                    " A {r} {r} 0 {large} {sweep} {ex} {ey}",
+                                    r = d(&written)
+                                ));
+                            }
+                            _ => path.push_str(&format!(" L {ex} {ey}")),
+                        }
+                    }
+                    path.push_str(" Z");
+                    body.push_str(&format!("<path d=\"{path}\"/>"));
+                    cost.entities += 1;
+                }
+            }
+        }
+        body.push_str("</g>");
+    }
+
+    // A hairline that stays a hairline: proportional to the drawing, so the same style reads at
+    // any board size.
+    let stroke = w.add(&h).div(&Rat::from_i128(4000));
+    let note = match &opts.note {
+        Some(n) => format!("<!-- {} -->", n.replace("--", "—")),
+        None => String::new(),
+    };
+    let text = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" \
+         width=\"{w}{u}\" height=\"{h}{u}\" viewBox=\"{x} {y} {w} {h}\">{note}\
+         <g fill=\"none\" stroke=\"black\" stroke-width=\"{sw}\" stroke-linejoin=\"round\">\
+         {body}</g></svg>\n",
+        u = opts.unit.name(),
+        w = frame(&w),
+        h = frame(&h),
+        x = frame(&vx),
+        y = frame(&vy),
+        sw = frame(&stroke),
+    );
+    (text, cost.into_report(opts.unit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +919,29 @@ mod tests {
         assert!(ys.contains(&Q::from_i128(20)), "{ys:?}");
         assert!(ys.contains(&Q::from_i128(16)), "{ys:?}");
         assert!(!ys.contains(&Q::from_i128(0)), "the flip did not happen");
+    }
+
+    /// **The flip reflects the viewBox onto itself, for any y-origin.** A `viewBox` whose y starts
+    /// at zero makes `2·vb.y + vb.h` and `vb.y + vb.h` agree, so every hand-written fixture here
+    /// passed under the wrong formula; a frame centred on its geometry does not. Caught by
+    /// round-tripping the writer's own output, which is the only source of a non-zero y-origin in
+    /// the suite.
+    #[test]
+    fn the_flip_holds_for_a_view_box_that_does_not_start_at_zero() {
+        // A 10 × 10 frame centred on the origin, with a 2-tall rect at its very top (svg y = −5).
+        let doc = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm"
+                          viewBox="-5 -5 10 10">
+                       <rect x="-5" y="-5" width="10" height="2"/>
+                     </svg>"#;
+        let read = read_svg::<Bignum>(doc, &opts()).expect("a top strip");
+        let ys: Vec<Q> = read.loops[0]
+            .iter()
+            .filter_map(|e| e.start().map(|p| p[1].clone()))
+            .collect();
+        // The top of the frame is model y = +5, and the strip runs down to +3. Under the old
+        // formula it landed at 10 and 8 — inside no frame at all.
+        assert!(ys.contains(&Q::from_i128(5)), "{ys:?}");
+        assert!(ys.contains(&Q::from_i128(3)), "{ys:?}");
     }
 
     /// A rounded rectangle — the flex outline shape — imports with `δ = 0`: its corner arcs meet

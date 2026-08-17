@@ -448,6 +448,7 @@ version = "0.0.0"
 dependencies = [
  "acceptance",
  "arrange2d",
+ "certify-core",
  "develop",
  "geom",
  "lattice",

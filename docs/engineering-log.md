@@ -768,6 +768,40 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **IO.2: three defects, and only one of them came from a test (2026-08-17).** The writers landed
+  with a round-trip suite, and what it caught is more interesting than what it asserted.
+
+  *From the round trip.* (a) An R12 `POLYLINE` carries a **dummy** `10/20/30` of its own — the
+  format requires it, and the real vertices live one entity deeper in the `VERTEX` records. The
+  reader was collecting every `10/20` in the span, so it picked up a phantom vertex at the origin
+  and split every written loop in two. Nothing but the writer's own output exercises the R12
+  spelling, so no hand-written fixture could have found it. (b) The reader's y-flip used
+  `vb.y + vb.h`; reflecting a `viewBox` **onto itself** is `2·vb.y + vb.h`. The two are identical
+  whenever `vb.y = 0`, which every hand-written fixture happened to have — the writer's own frame,
+  centred on its geometry at `vb.y = −5`, was the first non-zero one and came back five millimetres
+  off.
+
+  *From reading the demo's output, not from a test.* The `viewBox` was printed at six places while
+  coordinates went to nine, because a frame at twelve places is unreadable. But the reader
+  reconstructs the flip axis **from the printed frame**, so the writer's exact flip constant and
+  the reader's rounded one differed by the frame's rounding and shifted the whole drawing by a
+  micron in `y`. Fixed by rounding the frame *first* and deriving the flip from the rounded values;
+  pinned by a fixture with deliberately untidy bounds, since every earlier fixture had integer
+  extents and printed exactly. **Generalizable: when a reader reconstructs a constant from data the
+  writer also rounds, the writer must use the rounded value, not the exact one.**
+
+  *A claim of my own the implementation refuted.* The IO.0 gate's table had inbound's "which datum
+  moves" applying outbound as well. It does not: outbound, **both** formats derive centre and radius
+  from one written scalar, and the asymmetry is *which* scalar — DXF writes `tan(Δθ/4)`, SVG writes
+  `√r²`. That makes them exact on different arcs, which is a sharper and more useful fact: a quarter
+  turn of radius 5 is free in SVG and costs DXF a rounding; a semicircle of radius `√2` is free in
+  DXF and costs SVG one. Two-sided, so neither format dominates.
+
+  Worth keeping: for an arc with rational centre and endpoints, `cos Δθ` and `sin Δθ` are **exact
+  rationals** (`u·v/r²` and `u×v/r²`). The *turn* of an exact arc is exact — only its quarter-tangent
+  is not — so `large-arc` and the bulge's major/minor branch are decided by an exact sign test
+  rather than by a comparison against a tolerance.
+
 - **IO.0: most of an import is exact, and "files are floats" is wrong twice over (2026-08-17).**
   The reflex design for a CAD reader is "snap to a tolerance". Two facts kill it. First, a decimal
   literal **is** a rational — `12.345` is `12345/1000` — so the only loss in reading a coordinate is

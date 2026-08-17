@@ -30,6 +30,7 @@ pub mod num;
 pub mod report;
 pub mod svg;
 pub mod unit;
+pub mod write;
 
 use arrange2d::profile::Profile;
 use element::Element;

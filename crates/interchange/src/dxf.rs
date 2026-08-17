@@ -17,8 +17,10 @@
 use crate::arc::{ArcFault, ArcTolerance, from_bulge, from_centre_angles};
 use crate::element::{Element, assemble};
 use crate::num::rat_from_decimal;
+use crate::num::{sqrt_rational, to_decimal};
 use crate::report::{ImportFault, ImportReport};
 use crate::unit::Unit;
+use crate::write::{Cost, Drawing, ExportReport, WriteOptions, abs, bulge};
 use crate::{Imported, max_of};
 use lattice::{Backend, Rat};
 
@@ -310,7 +312,20 @@ fn polyline_entity<B: Backend>(
 
     let mut verts: Vec<([Rat<B>; 2], Rat<B>)> = Vec::new();
     let mut pending_x: Option<Rat<B>> = None;
+    // An `LWPOLYLINE` carries its vertices directly. The older `POLYLINE` carries a **dummy**
+    // `10/20/30` of its own (the format requires it) and the real vertices one entity deeper, in
+    // the `VERTEX` records — so reading every `10/20` in the span picks up a phantom vertex at the
+    // origin and splits the loop. Found by round-tripping the writer's own output, which is the
+    // only thing that exercises the R12 spelling.
+    let mut in_vertex = kind == "LWPOLYLINE";
     for p in span {
+        if p.code == 0 {
+            in_vertex = kind == "LWPOLYLINE" || p.value == "VERTEX";
+            continue;
+        }
+        if !in_vertex {
+            continue;
+        }
         match p.code {
             10 => {
                 pending_x = Some(
@@ -384,6 +399,156 @@ fn arc_fault<B: Backend>(entity: &str, f: &ArcFault<B>) -> ImportFault {
             reason: other.name().to_string(),
         },
     }
+}
+
+// --- writing --------------------------------------------------------------------------------
+
+/// Write a [`Drawing`] as an **R12 (AC1009) ASCII DXF**, and report what that cost.
+///
+/// R12 because it is the dialect every tool still reads: no handles, no classes, no object
+/// section. Loops become one `POLYLINE` each — closed, with a `VERTEX` per element and a bulge
+/// (group `42`) wherever that element is an arc — so a loop's closure is a property of the entity
+/// rather than something the reader on the other end has to weld back together. A loop that is a
+/// whole circle becomes a `CIRCLE`.
+///
+/// **The bulge is where a DXF loses an arc.** `tan(Δθ/4)` is irrational for almost every arc a
+/// kernel produces, so the written decimal moves the arc's *centre and radius* while leaving its
+/// two vertices exactly where they are — the mirror image of what reading a DXF `ARC` does. That
+/// error is not bounded from the format, it is **measured**: the writer re-reads its own decimals
+/// through [`from_bulge`] and reports how far the arc came back
+/// ([`ExportReport::curve`](crate::write::ExportReport::curve)).
+///
+/// ```
+/// use interchange::dxf::{DxfOptions, read_dxf, write_dxf};
+/// use interchange::element::Element;
+/// use interchange::write::{Drawing, WriteOptions};
+/// use lattice::{Bignum, Rat};
+/// type Q = Rat<Bignum>;
+///
+/// let square: Vec<Element<Bignum>> = (0..4)
+///     .map(|i| {
+///         let c = |k: i128| [Q::from_i128(k & 1), Q::from_i128((k >> 1) & 1)];
+///         let order = [0, 1, 3, 2];
+///         Element::Segment { start: c(order[i]), end: c(order[(i + 1) % 4]) }
+///     })
+///     .collect();
+/// let drawing = Drawing::<Bignum>::new().layer("outline", vec![square]);
+/// let (text, report) = write_dxf(&drawing, &WriteOptions::default());
+/// assert!(report.is_exact(), "a square costs a DXF nothing");
+///
+/// // …and it reads back as itself.
+/// let back = read_dxf::<Bignum>(&text, &DxfOptions::default()).expect("round trip");
+/// assert_eq!(back.report.loops, 1);
+/// assert!(back.report.is_exact());
+/// ```
+pub fn write_dxf<B: Backend>(
+    drawing: &Drawing<B>,
+    opts: &WriteOptions,
+) -> (String, ExportReport<B>) {
+    let mut cost = Cost::<B>::new(opts.places);
+    let mut out = String::new();
+    let pair = |code: i64, value: &str, out: &mut String| {
+        out.push_str(&format!("{code}\n{value}\n"));
+    };
+
+    // — HEADER —
+    pair(0, "SECTION", &mut out);
+    pair(2, "HEADER", &mut out);
+    pair(9, "$ACADVER", &mut out);
+    pair(1, "AC1009", &mut out);
+    pair(9, "$INSUNITS", &mut out);
+    pair(70, &opts.unit.dxf_insunits().to_string(), &mut out);
+    if let Some([lx, ly, hx, hy]) = drawing.bounds() {
+        // The extents are a *frame*, so they are widened rather than rounded — a tool that zooms
+        // to them must not crop the geometry by half a decimal place.
+        for (name, x, y) in [("$EXTMIN", &lx, &ly), ("$EXTMAX", &hx, &hy)] {
+            pair(9, name, &mut out);
+            pair(10, &to_decimal(x, opts.places), &mut out);
+            pair(20, &to_decimal(y, opts.places), &mut out);
+            pair(30, "0.0", &mut out);
+        }
+    }
+    pair(0, "ENDSEC", &mut out);
+
+    // — TABLES: declare the layers, so a strict reader does not invent them —
+    pair(0, "SECTION", &mut out);
+    pair(2, "TABLES", &mut out);
+    pair(0, "TABLE", &mut out);
+    pair(2, "LAYER", &mut out);
+    pair(70, &drawing.layers.len().to_string(), &mut out);
+    for l in &drawing.layers {
+        pair(0, "LAYER", &mut out);
+        pair(2, &l.name, &mut out);
+        pair(70, "0", &mut out);
+        pair(62, "7", &mut out);
+        pair(6, "CONTINUOUS", &mut out);
+    }
+    pair(0, "ENDTAB", &mut out);
+    pair(0, "ENDSEC", &mut out);
+
+    // — ENTITIES —
+    pair(0, "SECTION", &mut out);
+    pair(2, "ENTITIES", &mut out);
+    for layer in &drawing.layers {
+        for chain in &layer.loops {
+            match chain.as_slice() {
+                [Element::Circle { cx, cy, r2 }] => {
+                    pair(0, "CIRCLE", &mut out);
+                    pair(8, &layer.name, &mut out);
+                    pair(10, &cost.text(cx), &mut out);
+                    pair(20, &cost.text(cy), &mut out);
+                    pair(30, "0.0", &mut out);
+                    let r = sqrt_rational(r2, 32);
+                    let written = cost.coord(&r);
+                    cost.curve(abs(&written.sub(&r)));
+                    pair(40, &to_decimal(&written, opts.places), &mut out);
+                    cost.entities += 1;
+                }
+                elements => {
+                    pair(0, "POLYLINE", &mut out);
+                    pair(8, &layer.name, &mut out);
+                    pair(66, "1", &mut out); // vertices follow (R12 requires it)
+                    pair(70, "1", &mut out); // closed
+                    pair(10, "0.0", &mut out);
+                    pair(20, "0.0", &mut out);
+                    pair(30, "0.0", &mut out);
+                    for e in elements {
+                        let Some(start) = e.start() else { continue };
+                        pair(0, "VERTEX", &mut out);
+                        pair(8, &layer.name, &mut out);
+                        let vx = cost.coord(&start[0]);
+                        let vy = cost.coord(&start[1]);
+                        pair(10, &to_decimal(&vx, opts.places), &mut out);
+                        pair(20, &to_decimal(&vy, opts.places), &mut out);
+                        pair(30, "0.0", &mut out);
+                        if let Element::Arc(a) = e {
+                            let b = cost.coord(&bulge(a));
+                            pair(42, &to_decimal(&b, opts.places), &mut out);
+                            // Measure, do not bound: read the decimals actually written and see
+                            // where the arc came back.
+                            let end = e.end().expect("an arc has an end");
+                            let ex = [cost.coord(&end[0]), cost.coord(&end[1])];
+                            if let Ok(back) = from_bulge::<B>([vx, vy], ex, &b) {
+                                let moved_c =
+                                    abs(&back.cx.sub(&a.cx)).add(&abs(&back.cy.sub(&a.cy)));
+                                let moved_r = abs(
+                                    &sqrt_rational(&back.r2, 32).sub(&sqrt_rational(&a.r2, 32))
+                                );
+                                cost.curve(moved_c.add(&moved_r));
+                            }
+                        }
+                    }
+                    pair(0, "SEQEND", &mut out);
+                    pair(8, &layer.name, &mut out);
+                    cost.entities += 1;
+                }
+            }
+        }
+    }
+    pair(0, "ENDSEC", &mut out);
+    pair(0, "EOF", &mut out);
+
+    (out, cost.into_report(opts.unit))
 }
 
 #[cfg(test)]

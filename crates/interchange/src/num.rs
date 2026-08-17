@@ -253,6 +253,63 @@ pub fn simplest_in<B: Backend>(lo: &Rat<B>, hi: &Rat<B>) -> Rat<B> {
     go(lo, hi, 64)
 }
 
+/// The exact rational a `places`-digit decimal rendering denotes — [`to_decimal`]'s own rounding,
+/// available as a number.
+///
+/// A writer needs both: the text to put in the file, and the *value* that text will read back as,
+/// so the error it introduced can be **measured** rather than bounded by `10⁻ᵖˡᵃᶜᵉˢ/2` and hoped
+/// about. `to_decimal(&round_decimal(q, p), p) == to_decimal(q, p)` for every `q`.
+///
+/// ```
+/// use interchange::num::{round_decimal, to_decimal};
+/// use lattice::{Bignum, Rat};
+///
+/// let third = Rat::<Bignum>::new(1, 3);
+/// assert_eq!(round_decimal(&third, 3), Rat::new(333, 1000));
+/// assert_eq!(to_decimal(&round_decimal(&third, 3), 3), to_decimal(&third, 3));
+/// // Half-up on the magnitude, so the sign is carried rather than biasing the rounding.
+/// assert_eq!(round_decimal(&Rat::<Bignum>::new(-1, 2), 0), Rat::from_i128(-1));
+/// ```
+pub fn round_decimal<B: Backend>(q: &Rat<B>, places: usize) -> Rat<B> {
+    let negative = q.sign() < 0;
+    let magnitude = if negative { q.neg() } else { q.clone() };
+    let scale = pow10::<B>(places as i64);
+    let rounded = magnitude
+        .mul(&scale)
+        .add(&Rat::new(1, 2))
+        .floor()
+        .div(&scale);
+    if negative { rounded.neg() } else { rounded }
+}
+
+/// [`to_decimal`] with trailing zeros (and a bare trailing point) removed.
+///
+/// The same *value*, written the way a person and a file both prefer it: a path full of
+/// `0.000000000000` is unreadable and quadruples an SVG for no information. Trimming is lossless —
+/// `"4.000000"` and `"4"` denote the same rational.
+///
+/// ```
+/// use interchange::num::to_decimal_trimmed;
+/// use lattice::{Bignum, Rat};
+///
+/// assert_eq!(to_decimal_trimmed(&Rat::<Bignum>::from_i128(4), 6), "4");
+/// assert_eq!(to_decimal_trimmed(&Rat::<Bignum>::new(1, 2), 6), "0.5");
+/// assert_eq!(to_decimal_trimmed(&Rat::<Bignum>::new(-1, 4), 6), "-0.25");
+/// assert_eq!(to_decimal_trimmed(&Rat::<Bignum>::from_i128(0), 6), "0");
+/// ```
+pub fn to_decimal_trimmed<B: Backend>(q: &Rat<B>, places: usize) -> String {
+    let text = to_decimal(q, places);
+    if !text.contains('.') {
+        return text;
+    }
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// A fixed-point decimal rendering of an exact rational, rounded half-up to `places` digits.
 ///
 /// The one place a rational becomes text. Writers need it (a DXF group value, an SVG coordinate)

@@ -105,6 +105,28 @@ impl Unit {
         })
     }
 
+    /// The DXF `$INSUNITS` code for this unit — the inverse of
+    /// [`from_dxf_insunits`](Self::from_dxf_insunits) on everything it accepts, so a written file
+    /// declares what a read file would have to.
+    pub fn dxf_insunits(self) -> i64 {
+        match self {
+            Unit::Inch => 1,
+            Unit::Foot => 2,
+            Unit::Millimetre => 4,
+            Unit::Centimetre => 5,
+            Unit::Metre => 6,
+            Unit::Kilometre => 7,
+            Unit::Mil => 9,
+            Unit::Yard => 10,
+            Unit::Micrometre => 13,
+            Unit::Decimetre => 14,
+            // The typographic units have no `$INSUNITS` code; a DXF written in them would have to
+            // lie, so the writer declares *unitless* and the reader on the other side refuses —
+            // which is the correct outcome, loudly.
+            Unit::Point | Unit::Pica | Unit::Pixel => 0,
+        }
+    }
+
     /// The unit a CSS/SVG length suffix names (`"mm"`, `"in"`, `"px"`, …).
     ///
     /// An empty suffix is SVG's "user units", which are pixels **only** once a `viewBox` has been
