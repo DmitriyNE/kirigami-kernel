@@ -1663,28 +1663,30 @@ mod tests {
             .clearance(qi(1))
     }
 
-    /// `acceptance::self_lapping_cone(segments, support_panels, true)`, copied verbatim.
+    /// `acceptance::self_lapping_cone(segments, support_panels, true)`, copied verbatim — which
+    /// means it moves whenever that does. Kept in step with the device's physical dimensioning
+    /// (2026-08-17): `Δ = 1/4`, `t = 6/25`, every length on the same 5/3.
     fn self_lapping_cone(segments: usize, support_panels: usize) -> Part<Bignum> {
-        let d = q(1, 10);
+        let d = q(1, 4);
         let rz0 = cone_wrap()
             .ruling()
             .comp(2)
             .eval(&qi(0))
             .expect("the wrap chart's ruling is regular at σ = 0");
-        let mu_w = q(-3, 1).div(&rz0);
+        let mu_w = q(-5, 1).div(&rz0);
         let witness = cone_wrap()
             .surface(&mu_w, &qi(0))
             .eval(&qi(0))
             .expect("the mid-annulus witness point is regular");
         construct::from_chart::<Bignum>(&cone_wrap())
-            .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
-            .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
+            .region_sigma(q(-5, 4), q(4, 7), SupportFn::constant(qi(0)))
+            .region_sigma(q(4, 7), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
             .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
             .keep_near(witness)
-            .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
-            .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
-            .clearance(qi(1))
-            .thickness(q(1, 20))
+            .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(157, 6)))
+            .subtract(Cutter::vertical_cylinder(qi(0), q(5, 6), q(100, 9)))
+            .clearance(q(5, 3))
+            .thickness(q(6, 25))
             .fit(RailFit {
                 degree: 4,
                 subdiv: 160,
@@ -1696,7 +1698,7 @@ mod tests {
                 terms: 14,
                 sqrt_eps: q(1, 1_000_000_000),
             })
-            .subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)))
+            .subtract(Cutter::vertical_cylinder(q(-5, 6), q(9, 2), q(5, 72)))
     }
 
     /// OPT.2.0 Q1 — stage attribution on the real test payloads.

@@ -34,29 +34,39 @@ fn sigma(n: i128, d: i128) -> Azimuth {
     Azimuth::Sigma(q(n, d))
 }
 
-/// The two-ramp recipe: the same 42° cone and the same stack as the acceptance device, with the
-/// seam centred on the base sheet instead of offset onto one side of it.
+/// The two-ramp recipe: the same 42° cone and the same **physical** stack as the acceptance
+/// device — 240 µm of 4-layer flex, a 10 µm ACF bondline, inner Ø 5 mm, all in millimetres — with
+/// the seam centred on the base sheet instead of offset onto one side of it.
+///
+/// [`acceptance::self_lapping_spec`] carries the table of where each number comes from; the only
+/// one that differs here is `seam_offset`.
 fn spec() -> LappedCone {
     LappedCone {
         // The Pythagorean (72, 65, 97) — sin β = 65/97, exact.
         apex: (qi(72), qi(65)),
-        thickness: q(1, 20),
-        gap: q(1, 40),
+        thickness: q(6, 25),
+        gap: q(1, 100),
         on_top: OnTop::Ccw,
-        // c = 0: the seam straddles the base cone, so BOTH ends ramp, by ∓(t/2 + g/2) = ∓1/20.
-        seam_offset: q(0, 40),
+        // c = 0: the seam straddles the base cone, so BOTH ends ramp, by ∓(t/2 + g/2) = ∓1/8.
+        seam_offset: qi(0),
+        // Both ramps span Δσ = 7/20, symmetrically. A ramp's edge of regression sweeps ≈0.9·h/Δσ²
+        // along the ruling and must stay inside the inner bound's µ̂ ≈ 1.81 or it crosses the
+        // sheet: 0.9·(1/8)/(7/20)² ≈ 0.92, clear by ~2×. Narrow them and the part is refused —
+        // soundly, because the sheet would have to crease. See docs/engineering-log.md.
         ccw: SideAngles {
-            ramp_start: sigma(9, 16),
+            ramp_start: sigma(2, 5),
             ramp_end: sigma(3, 4),
             sheet_end: sigma(5, 4),
         },
         cw: SideAngles {
-            ramp_start: sigma(-1, 2),
+            ramp_start: sigma(-2, 5),
             ramp_end: sigma(-3, 4),
             sheet_end: sigma(-5, 4),
         },
-        outer_r2: q(471, 50),
-        inner_r2: Some(qi(4)),
+        // The annulus, concentric here (the acceptance device's inner bound is off-axis):
+        // inner Ø 5 mm, outer ≈ 5.115 mm.
+        outer_r2: q(157, 6),
+        inner_r2: Some(q(25, 4)),
         neutral: q(1, 2),
         // Both ramps finish before the overlap starts (ramp_end 3/4 against the lap's 4/5), so the
         // gap really is `g` across the whole seam and the strict policy holds.
@@ -97,7 +107,12 @@ fn main() {
         }
     };
 
-    println!("lapped cone — two-ramp seam (c = 0), 42° cone, t = g = 1/20\n");
+    println!(
+        "lapped cone — two-ramp seam (c = {:.4}), 42° cone, t = {:.4} mm, g = {:.4} mm\n",
+        rat_to_f64(&spec.seam_offset),
+        rat_to_f64(&spec.thickness),
+        rat_to_f64(&spec.gap),
+    );
     println!(
         "recipe    h_ccw {:+.4}   h_cw {:+.4}   {} regions   lap σ ∈ [{:.4}, {:.4}] ∪ [{:.4}, {:.4}]",
         rat_to_f64(&lap.h_ccw),
@@ -119,7 +134,9 @@ fn main() {
 
     // — what BONDED certifies the seam clears —
     let t0 = std::time::Instant::now();
-    match lap.seam_clearance(&q(1, 25), 4_000) {
+    // BONDED *proves* `≥ keep_out`; it does not measure. Ask for half the authored gap — a
+    // keep-out at or above `g` is exactly what the ramp's intrusion makes unprovable.
+    match lap.seam_clearance(&spec.gap.div(&qi(2)), 4_000) {
         Verdict::Verified(c) => println!(
             "seam      BONDED certifies ≥ {:.4} between the facing faces over {} rail pair(s), \
              {} nodes   [{:.1}s]   (authored gap {:.4})",
@@ -139,7 +156,8 @@ fn main() {
     // — the resolution knobs are the caller's, exactly as `self_lapping_cone` sets them —
     let part: Part<Bignum> = lap
         .part
-        .clearance(qi(1))
+        // Matches the acceptance device: the DRC keep-out is a length in the part's own unit.
+        .clearance(q(5, 3))
         .fit(RailFit {
             degree: 4,
             subdiv: 160,
