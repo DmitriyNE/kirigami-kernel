@@ -768,6 +768,42 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The ψ-correction to the ramp split: measured, and rejected on the metric that matters
+  (2026-08-17).** `u` is affine in σ, but curvature turns with `ψ ∝ arctan σ`, whose speed
+  `dψ/dσ ∝ 1/(1+σ²)` varies **1.508×** across the acceptance ramp — so `EvenCurvature`'s
+  σ-midpoint split is skewed in the parameter that governs `R₁`. Since at the ramp's two ends
+  `h_σ = 0`, the weight on `h_σσ` there is exactly `(1+σ²)²`, and balancing the two ends wants
+
+  > `w₂/w₁ = ((1 + hi²)/(1 + lo²))²`
+
+  — **exactly rational**, no approximation of `arctan` anywhere, even though the quantity being
+  evened is an angle. For the acceptance ramp that is `(98/65)²`, putting the split at `9713/13829`
+  instead of `11/14`.
+
+  **It works on the proxy and loses on the product metric.** Peak `|µ̂_fold|` at the design width
+  `Δσ = 3/7`: cubic 2.474, midpoint split 1.641, weighted split **1.445** — a further 1.14× (my
+  endpoint-balancing algebra had predicted 1.39×; it over-predicts because the peak is not purely
+  at the ends, the mid-ramp `2σ h_σ` term matters). But swept against *ramp width*, which is the
+  thing the knob exists to buy:
+
+  | `Δσ` | cubic | midpoint split | weighted split |
+  |---|---|---|---|
+  | 3/8 | ε 7.48e-1 | ε 7.48e-1 | ε 7.48e-1 |
+  | 11/32 | Unresolved 9.62e-1 | **ε 7.60e-1** | **Refused** |
+  | 5/16 | Refused | Refused | Refused |
+
+  The weighted split trades one end of the ramp against the other, and which end binds depends on
+  the width: narrowing the first half to balance the far end makes the *near* end the constraint.
+  It reduces the peak at the design width and **costs** ramp-angle range at the frontier. Reverted;
+  `EvenCurvature` keeps the σ-midpoint split.
+
+  Generalizable, and the reason this was worth measuring rather than reasoning: **a proxy that
+  ranked two options correctly once can rank them backwards elsewhere.** Peak `|µ̂_fold|` at a
+  fixed width was the right proxy for cubic-vs-even (predicted 1.50, measured 1.507) and the wrong
+  one for midpoint-vs-weighted, because the two profiles differ in *where* the peak sits, not just
+  how big it is. The product question was never "what is the peak" but "how narrow a ramp still
+  certifies" — and that one had to be swept.
+
 - **The seam ramp's cubic spends its bend at the joins, and an even one buys 1.5× of ramp angle
   (2026-08-17).** `SupportFn::Smoothstep` is `3u² − 2u³`, so `h″ = (6 − 12u)·Δ/L²` — *linear*,
   peaking at `±6Δ/L²` at **both ends** and passing through zero mid-ramp. All the bending is

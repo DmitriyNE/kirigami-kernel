@@ -48,23 +48,24 @@ fn spec() -> LappedCone {
         gap: q(1, 100),
         on_top: OnTop::Cw,
         // c = 0: the seam straddles the base cone, so BOTH ends ramp, by ∓(t/2 + g/2) = ∓1/8.
-        seam_offset: q(-25, 200),
+        // seam_offset: q(-25, 200),
+        seam_offset: q(0, 200),
         // Both ramps span Δσ = 7/20, symmetrically. A ramp's edge of regression sweeps ≈0.9·h/Δσ²
         // along the ruling and must stay inside the inner bound's µ̂ ≈ 1.81 or it crosses the
         // sheet: 0.9·(1/8)/(7/20)² ≈ 0.92, clear by ~2×. Narrow them and the part is refused —
         // soundly, because the sheet would have to crease. See docs/engineering-log.md.
         ccw: SideAngles {
-            ramp_start: sigma(32, 80),
-            ramp_end: sigma(3, 4),
-            sheet_end: sigma(5, 4),
+            ramp_start: sigma(50, 80),
+            ramp_end: sigma(7, 8),
+            sheet_end: sigma(9, 8),
         },
-        // cw: SideAngles {
-        //     ramp_start: sigma(-1, 5),
-        //     ramp_end: sigma(-3, 4),
-        //     sheet_end: sigma(-5, 4),
-        // },
+        cw: SideAngles {
+            ramp_start: sigma(-50, 80),
+            ramp_end: sigma(-7, 8),
+            sheet_end: sigma(-9, 8),
+        },
         // ccw: SideAngles::flat(sigma(5, 4)),
-        cw: SideAngles::flat(sigma(-5, 4)),
+        // cw: SideAngles::flat(sigma(-9, 8)),
         // The annulus, concentric here (the acceptance device's inner bound is off-axis):
         // inner Ø 5 mm, outer ≈ 5.115 mm.
         outer_r2: q(157, 6),
