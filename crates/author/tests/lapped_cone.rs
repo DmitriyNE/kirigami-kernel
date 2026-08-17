@@ -350,8 +350,15 @@ fn the_stack_straddles_the_developed_surface_by_default() {
 ///
 /// Measured on the acceptance ramp, peak `|µ̂_fold|` is 2.474 against 1.641 — **1.507×**, versus
 /// the 1.500 the two peaks predict. This test pins the *consequence* rather than that ratio, which
-/// no public API exposes: at `Δσ = 11/32` the cubic's ε has already run past the part's DRC gate
-/// while the even profile still certifies, on a recipe differing in nothing else.
+/// no public API exposes: at `Δσ = 3/16` the cubic's ε has already run past the part's DRC gate —
+/// 7.4e0 against a gate of 3.5 — while the even profile still certifies at 1.8e0, on a recipe
+/// differing in nothing else.
+///
+/// The width at which the two part ways is a property of the *device*, not of the profiles: it is
+/// where the fold line's swing starts to reach material, so it moves whenever the annulus does.
+/// (It was `Δσ = 11/32` on the Ø 43 device; the correction to Ø 21.5 narrowed the kept band and
+/// took it to `3/16`. One step coarser, at `Δσ = 1/4`, the cubic fails by breaking the region into
+/// three faces instead of by ε — the same fold line, reported by topology; see #287.)
 #[test]
 fn an_even_ramp_certifies_a_ramp_the_cubic_cannot() {
     use acceptance::RampProfile;
@@ -360,7 +367,7 @@ fn an_even_ramp_certifies_a_ramp_the_cubic_cannot() {
     let narrowed = |p: RampProfile| {
         let mut spec = device_spec();
         spec.ramp_profile = p;
-        spec.ccw.ramp_start = sigma(21, 32); // Δσ = 11/32, where the two part ways
+        spec.ccw.ramp_start = sigma(13, 16); // Δσ = 3/16, where the two part ways
         acceptance::self_lapping_cone_from(&spec, 16, 8, false, None)
     };
 

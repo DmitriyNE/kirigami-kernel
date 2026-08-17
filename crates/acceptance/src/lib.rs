@@ -119,7 +119,11 @@ pub fn self_lapping_cone_from(
             sqrt_eps: q(1, 1_000_000_000),
         });
     if with_drill {
-        part = part.subtract(Cutter::vertical_cylinder(q(-7, 3), q(25, 2), q(9, 16)));
+        // From [`seam_drill_axis`], not restated beside it: the round-trip check reads that
+        // function to fold the holes back onto the *same* cylinder, so a second copy here is a
+        // silent way for the two to drift apart — and did, when the annulus was re-proportioned.
+        let (cx, cy, r2) = seam_drill_axis();
+        part = part.subtract(Cutter::vertical_cylinder(cx, cy, r2));
     }
     if let Some((apex, profile)) = feature {
         part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
@@ -140,7 +144,7 @@ pub fn self_lapping_cone_from(
 /// | stack `t` | `6/25` mm = 240 µm | 4-layer flex, `w ∈ ±120 µm` about the midplane |
 /// | ramp step `Δ` | `1/4` mm | **pinned**: certified SHEAR `δ = Δ·cot β = Δ·72/65 = 18/65` |
 /// | seam gap `g` | `1/100` mm = 10 µm | `Δ − t`; the ACF bondline, since `SEP ≡ ACF gap` |
-/// | inner Ø | 5 mm | at the off-axis inner bound's closest approach to the axis |
+/// | annulus | Ø 8 → Ø 21.5 mm | the trimmed sheet, cut **normal to itself** at both radii |
 /// | ramp width | ≈ 61° of azimuth | the ≈60° degree-1 seam ramp |
 ///
 /// The seam centreline sits `t/2 + g/2 = 1/8` off the base sheet's mid-surface — the value at
@@ -154,7 +158,7 @@ pub fn self_lapping_cone_from(
 /// `φ = 118.98°`, so the ramp spans `61.02°` — the nearest small rational to the authored 60°.
 ///
 /// The pick is **derived** now: both trim radii live in the recipe, so `lapped_cone`'s own
-/// mid-annulus point at `ρ = (4 + 43/2)/2 = 51/4` is in material by construction. It had to be
+/// mid-annulus point at `ρ = (4 + 43/4)/2 = 59/8` is in material by construction. It had to be
 /// named while the inner bound was an off-axis cylinder applied afterwards, which the recipe could
 /// not see.
 pub fn self_lapping_spec() -> lapped::LappedCone {
@@ -172,16 +176,12 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
             sheet_end: sigma(5, 4),
         },
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
-        outer_r: q(43, 2),
+        outer_r: q(43, 4),
         inner_r: Some(qi(4)),
-        // **Cylindrical, deliberately, and this is the one number that is not yet the product's.**
-        // The physical edge is a normal cut, `TrimStyle::NormalCut` builds it exactly, and
-        // `author/tests/normal_trim.rs` certifies one on a gore. At *this* device's proportions —
-        // a 4 → 21.5 annulus, aspect 5.4 — it does not yet: the quadric arm wants a `subdiv` that
-        // runs past ten minutes, and at `subdiv = 1280` the inner cone refuses outright rather
-        // than loosening. Until that is understood the pinned device stays on the cheap trim, so
-        // the acceptance bar measures something that certifies. See the engineering log.
-        trim: lapped::TrimStyle::Cylindrical,
+        // The physical edge: cut **normal to the sheet**, not vertically. Both bounds are cones,
+        // and both are recognized as cones of revolution (`develop::cut::RevCone`), so they carry
+        // the same closed-form distance a cylinder does and cost the same split.
+        trim: lapped::TrimStyle::NormalCut,
         // The bending-neutral mid-plane: what `seam_offset` is measured against.
         neutral: q(1, 2),
         // The cubic, because every pinned measurement on this device was taken on it.
@@ -197,8 +197,14 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
 /// The centre of the self-lapping device's seam drill, `(x, y, r²)` — the 3-D cylinder both
 /// derived holes must fold back onto. Exposed so a round-trip check tests the *same* cylinder the
 /// part was cut with instead of restating its numbers.
+///
+/// The **direction** is the design choice — `(−7, 25)` puts it on the lapped wedge at `az ≈ 100.6°`,
+/// and azimuth is what fixes which σ, which region and which ramp height the hole lands at. The
+/// **radius** only has to be in the annulus, and this one sits mid-way: `ρ = 7.63` in `[4, 10.75]`.
+/// So a re-proportioning scales this vector and leaves every σ-pinned measurement alone, which is
+/// exactly what the Ø 43 → Ø 21.5 correction did (`×3/5`).
 pub fn seam_drill_axis() -> (Q, Q, Q) {
-    (q(-7, 3), q(25, 2), q(9, 16))
+    (q(-7, 5), q(15, 2), q(9, 16))
 }
 
 /// The **lap slot**: the L-shaped feature [`self_lapping_cone_with`] is stressed with — arm `1/4`,
@@ -223,15 +229,16 @@ pub fn seam_drill_axis() -> (Q, Q, Q) {
 /// * **Clear of the joins.** Neither footprint crosses a region boundary, which is refused
 ///   ([`PartFault::HoleCrossesRegions`](author::part::PartFault::HoleCrossesRegions)) rather than
 ///   realized.
-/// * **Inside the annulus.** Its radii sit between the eccentric inner cut (`≈4.12` there) and the
-///   outer cylinder (`≈5.12`), so it is an interior hole and not a rim bite.
+/// * **Inside the annulus.** Its radii sit around `ρ ≈ 7.6`, between the inner bound at `4` and the
+///   outer at `10.75`, so it is an interior hole and not a rim bite. Like the seam drill it is
+///   placed by *direction*, and re-proportioning scales the vector rather than re-authoring it.
 ///
 /// The axes are turned for the same reason [`ell_slot`]'s are: the rulings project to radial rays,
 /// so an L whose arms lie along the radius is met once and its footprint is an ordinary band. Here
 /// the local radial direction resolves to `(−0.63, +0.78)` in `(u, v)` — opposite signs, so a ray
 /// leaves one arm, crosses the notch and re-enters the other. `(3, 4, 5)` keeps every vertex exact.
 pub fn lap_slot() -> Vec<Edge<Bignum>> {
-    let (cx, cy, a, t) = (q(7, 3), q(25, 2), q(7, 6), q(7, 12));
+    let (cx, cy, a, t) = (q(7, 5), q(15, 2), q(7, 6), q(7, 12));
     let (ux, uy) = (q(3, 5), q(-4, 5));
     let (vx, vy) = (q(4, 5), q(3, 5));
     let p = |su: &Q, sv: &Q| {

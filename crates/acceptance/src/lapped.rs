@@ -131,11 +131,13 @@ pub enum GapPolicy {
 /// It needs no new cutter kind: [`Cutter::extrude`] of a circular profile from a point apex *is*
 /// that cone.
 ///
-/// **What it costs.** The two bound the same circle, so they certify to the same ε — measured
-/// 2.277e-1 for both on the acceptance gore. But a cone is a `CutSurface::Quadric`, whose
-/// certificate encloses the traced point in a **box** rather than cancelling the surface equation
-/// against the chart fields, so it needs a far finer `RailFit::subdiv` for the same bound —
-/// measured 64×. That is conditioning, not a weaker claim; below it the verdict is `Unresolved`.
+/// **What it costs: nothing.** The two bound the same circle, so they certify to the same ε —
+/// measured 2.277e-1 for both on the acceptance gore — and at the same `RailFit::subdiv`. A cone is
+/// a `CutSurface::Quadric`, and the general quadric certificate encloses the traced point in a
+/// **box** rather than cancelling the surface equation against the chart fields, which used to cost
+/// this 64× the split; but a cone *of revolution* has a closed-form distance, so
+/// [`develop::cut::RevCone`] recognizes it and the certificate becomes a symbolic residual in σ,
+/// exactly as the cylinder's is. `author/tests/normal_trim.rs` is where that is measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TrimStyle {
     /// A vertical cylinder about the axis. Bevelled against the cone, and cheap to certify.

@@ -768,8 +768,64 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A cone of revolution has a closed-form distance, and using it made the drafted trim free
+  (2026-08-17).** The pinned device now cuts **normal to the sheet** at both radii — the physical
+  edge — instead of with a vertical cylinder, and the trim style costs nothing: same ε, same
+  `subdiv`, and the two agree to the digit at the same radius.
+
+  **What was actually wrong.** `CutSurface::Quadric`'s certificate bounds the distance to `{F = 0}`
+  by inflating a **box** around the traced point until a first-order bound closes inside it. That is
+  the right instrument for a general quadric and the wrong one for a cone: it throws away the σ↔µ̂
+  correlation the two special surfaces keep by cancelling symbolically, so it needed 64× the split
+  on a gore and more than the device could afford on an annulus; and because the ball has to clear
+  the nappe selector by the full working radius, a cut passing within `clearance/2` of the apex
+  plane was **refused** (`NappeCrossed`) rather than loosened. Neither is reachable with a cylinder,
+  which is why every cut before this one was fine.
+
+  **The fix is a recognition step, not a new surface kind.** `develop::cut::RevCone::recognize`
+  extracts `(apex, axis, cos²α)` from `(M, b, c)` by exact linear algebra over ℚ — the double root
+  of the characteristic cubic in closed form (a double root of a rational cubic *is* rational), then
+  `S − rI` must be exactly rank one, then the apex must solve `Sp = −b/2` with `c = pᵀSp`. Every
+  step is a checked equality, so an elliptic cone, a cylinder and a hyperboloid each fail a
+  different one and fall back to the general arm. What it buys: in the meridian half-plane the
+  nappe is a ray, and the distance to a ray is the perpendicular drop `|s·cos α − t̂·sin α|` where
+  the projection lands on it, `|X − apex|` where it does not — both with rational radicands, so the
+  irrational half-angle is never represented. Measured on the gore's inner bound: `Unresolved` at
+  ε 3.3e1 → **Verified at ε 7.6e-8**, at `subdiv = 160`, and refining 8× no longer moves it — what
+  is left is the degree-4 rail fit, which is the cylinder arm's behaviour exactly.
+
+  Generalizable: **a certificate's conditioning is a property of the representation you reach for,
+  not of the geometry.** The box arm was not a weaker claim about the same object; it was a claim
+  made without the structure that was sitting in the coefficients. Worth asking, at any arm that
+  needs an enclosure the others do not, whether the special case is recognizable — the recognition
+  is cheap, once, and the verification is what makes it sound.
+
+  Also: the second "wall" recorded below — `subdiv = 1280` refusing where 160 was `Unresolved` —
+  was never a monotonicity defect. Verdicts are fail-fast, so the coarse run stopped at an earlier
+  stage's `Unresolved` and never reached the cut that refuses. A worse verdict under refinement is
+  worth suspecting, but the first thing to check is whether the two runs got to the same place.
+
+- **The outer diameter was Ø 21.5, not Ø 43 — and the correction re-audited the fixture again
+  (2026-08-17).** Halving the annulus dropped every feature placed in millimetres off the part
+  (`Inactive` roles, genus 0). Re-placed by **scaling the direction vector, not re-authoring the
+  point**: azimuth is what fixes which σ, which region and which ramp height a feature lands at, so
+  a pure radial scale moves the drill and the slot while leaving every σ-pinned measurement — the
+  `γ` probes, the ramp-band window, the region assignments — exactly where they were. The one
+  exception is the drafted-sweep apex, which scales in `z` too, because the cast is a similarity.
+
+  It also found the restated-constant tax for the **fifth** time: the seam drill's centre was
+  written in `seam_drill_axis()` *and* inline in `self_lapping_cone_from`, so the round-trip test
+  folded holes back onto a cylinder the part was no longer cut with. Now one reads the other.
+
+  Two pins moved for reasons worth keeping. `refold` was measuring `|ρ² − r²|` — a **squared**
+  residual, ≈`2r` times the length anyone reading `1/20` would assume, and one that scales with the
+  square of everything; it is a radius now. And the ramp width at which the even profile beats the
+  cubic moved `Δσ 11/32 → 3/16`, because that threshold is where the fold line's swing reaches
+  material — a property of the *annulus*, not of the profiles.
+
 - **The device is the product's size now, and the trim that made it necessary is the one thing
-  still deferred (2026-08-17).** The annulus is Ø 8 → Ø 43 mm, the target dimensions. What landed:
+  still deferred (2026-08-17).** *(Superseded above: the trim landed, and the diameter was
+  corrected to Ø 21.5.)* The annulus is Ø 8 → Ø 43 mm, the target dimensions. What landed:
   `LappedCone` carries **radii, not squared radii** (a normal cut needs `r` itself — its disc plane
   sits where the neutral surface *has* that radius — and `√(r²)` is not rational in general), plus
   a `TrimStyle` choosing between a vertical cylinder and a cut normal to the sheet.

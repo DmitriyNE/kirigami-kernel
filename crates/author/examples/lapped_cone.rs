@@ -37,7 +37,7 @@ fn sigma(n: i128, d: i128) -> Azimuth {
 }
 
 /// The two-ramp recipe: the same 42° cone and the same **physical** stack as the acceptance
-/// device — 240 µm of 4-layer flex, a 10 µm ACF bondline, Ø 8 → Ø 43 mm, all in millimetres — with
+/// device — 240 µm of 4-layer flex, a 10 µm ACF bondline, Ø 8 → Ø 21.5 mm, all in millimetres — with
 /// the seam centred on the base sheet instead of offset onto one side of it.
 ///
 /// [`acceptance::self_lapping_spec`] carries the table of where each number comes from; the only
@@ -67,14 +67,13 @@ fn spec() -> LappedCone {
         // },
         // ccw: SideAngles::flat(sigma(5, 4)),
         cw: SideAngles::flat(sigma(-9, 8)),
-        // The device's annulus: inner Ø 8 mm, outer Ø 43 mm, cut normal to the sheet.
-        outer_r: q(43, 2),
+        // The device's annulus: inner Ø 8 mm, outer Ø 21.5 mm, cut normal to the sheet.
+        outer_r: q(43, 4),
         inner_r: Some(qi(4)),
-        // `Cylindrical`, matching the pinned device. `TrimStyle::NormalCut` is the physical edge
-        // and builds exactly, but at this annulus's proportions it does not yet certify — see
-        // `TrimStyle`'s own docs and the engineering log. Switching it here costs minutes and
-        // ends in a refusal, so the demo does not.
-        trim: TrimStyle::Cylindrical,
+        // The physical edge, and the pinned device's: both bounds are cones cut normal to the
+        // sheet. They cost what a cylinder costs — a cone of revolution has a closed-form distance,
+        // so `develop::cut::RevCone` puts them on the same certificate arm.
+        trim: TrimStyle::NormalCut,
         neutral: q(1, 2),
         // The even ramp: `h''` constant in magnitude, so the bend is spread across the ramp
         // instead of piling up at its two joins. Measured 1.5x less fold-line swing.
