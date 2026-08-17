@@ -259,15 +259,30 @@ Arc edges: chord densely and say so, because a rational-quadratic circular arc n
 Pythagorean rotations of its start point (`t = 3/4 → w = 4/5`, and such `t` are dense), and that is
 the escalation if the eyeball check turns out to need it. Not first.
 
-**(b) The cutter body — "where did it actually cut?"** Built from the sketch toward the surface it
-actually reached:
+**(b) The cutter body — "where did it actually cut?"** *Not yet built.* Built from the sketch toward
+the surface it actually reached:
 
-- **far cap** — the traced footprint loop (`shadow_cut_loops` → `HoleLoop` in `(σ, µ̂)`) lifted to
-  3-D by the chart;
+- **far cap** — the traced footprint loop (`HoleLoop` in `(σ, µ̂)`) lifted to 3-D by the chart;
 - **near cap** — each far-cap vertex projected *back* along its apex ray onto the sketch plane, an
   exact bijection between the caps (matching traced vertices against profile corners would not be).
   It therefore inherits the tracer's sampling and is **not** the authored data of (a);
 - **walls** — ruled between corresponding points along the apex rays.
+
+Every piece it needs is public or one `pub(crate)` away, and the route is settled:
+
+| step | the call |
+|---|---|
+| resolve | `Part::build_regions()` + `resolve::sweep()` — the prelude `Part::solid()` already runs |
+| which loops, on which chart | `realize::certify_holes(part, built, structure, segments)` → `Vec<(op, HoleLoop)>`, and `structure.holes` carries `(op, **region**, window)` — so the chart is `built.charts[region]` directly, with no σ-band search |
+| far cap lift | `chart.surface(&µ̂, &0).eval(&σ)` — `µ̂` **is** the chart's ruling parameter `µ`, not a normalized one |
+| near cap | `Cast::coords(&X)` → `(a, b)`, then `Frame::point(a, b)` |
+| faces | **triangles throughout** — a ruled quad between two apex rays is not coplanar and a traced far cap is not planar, so `FaceSurface::Plane` is only honest on triangles. A visibly-triangulated body also reads as a diagnostic rather than a part, which is the right signal |
+
+Two things measured while scouting, both of which shape the work: `hole_poly` returns `None` unless
+every arc is a traced `Curve`, so the body must sample `BoundaryArc` itself rather than reuse it;
+and the acceptance panel's own cutter is the *boundary* (an `intersect`), not a hole, so
+`structure.holes` is empty for it — the fixture has to be one of the AUTH.2 traced-slot devices,
+which cost ~30 s of certification apiece.
 
 The lap case falls out: the tracer returns one loop per sheet, so a cutter through the lap gives two
 bodies sharing a ray bundle — which is the picture the self-lapping device needs.

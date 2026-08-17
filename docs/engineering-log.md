@@ -768,6 +768,36 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **IO.3a: what a picture can check that a certificate cannot (2026-08-17).** `author::dump` emits
+  each extruded cutter's authored sketch as a planar face at its true 3-D position. The reason it
+  exists is narrow and worth stating: a cutter's frame is a **search result** — the ray pick snaps a
+  picked plane to rationals and certifies the *snap* (AUTH.1c) — and no certificate can say whether
+  the **pick** landed where the author meant. That is a question about intent.
+
+  The claim splits in two, and conflating them would make the artifact useless. (1) The face lies in
+  its frame's plane as an **exact rational identity**, `N·(X − o) = 0`, which holds for *any*
+  rational in-plane coordinate — so chording the arcs and snapping the `Surd` extrema costs the
+  outline's shape a little and costs the plane nothing. (2) *Where* that plane sits is not invariant:
+  shift the frame one unit along its normal and every vertex moves one unit while (1) keeps holding
+  for both. **So (1) alone can never catch a mis-pick**, which is exactly why the picture is the
+  instrument and the residual is not.
+
+  Both are made non-vacuous from the other side — the same vertices measured against a *different*
+  plane must give a nonzero residual — and the dump is asserted to be an **open shell the
+  closed-shell certificate refuses**, so a diagnostic structurally cannot pass for a part.
+
+  *Placed in `author`, not `interchange`.* The dump is a `Part → Brep` map, the same shape as
+  `Part::solid_brep`; `interchange` stays about files. The milestone tag is not the module boundary.
+
+  *Two facts found while scouting the unbuilt half (the cutter body), recorded so the next attempt
+  starts from them:* `export::trim::hole_poly` returns `None` unless **every** arc of the loop is a
+  traced `Curve`, so a general body must sample `BoundaryArc` itself; and `structure.holes` carries
+  `(op, **region**, window)`, which hands over the chart index directly — no σ-band search. The
+  acceptance panel is the wrong fixture for it, because its own cutter is the *boundary* (an
+  `intersect`) rather than a hole, so its `structure.holes` is empty; the AUTH.2 traced-slot devices
+  are the fixtures, at ~30 s of certification apiece. Route table in
+  `docs/interchange-design.md` §7b.
+
 - **IO.2: three defects, and only one of them came from a test (2026-08-17).** The writers landed
   with a round-trip suite, and what it caught is more interesting than what it asserted.
 
