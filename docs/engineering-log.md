@@ -768,6 +768,55 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **IO.3b: two routes to the same curve, and the sharpest number is not the certified one
+  (2026-08-17).** `author::dump::cutter_bodies` completes the dump: each hole op's certified `(σ, µ̂)`
+  footprint lifted to the sheet, cast **back** down its own generatrices to the sketch plane, ruled
+  between, triangulated.
+
+  The reason to emit both caps is that the near cap and the sketch face (IO.3a) are the *same closed
+  curve reached by two computations that share no code* — one from the authored profile edges through
+  `Frame::point`, one from the traced footprint through the chart and back through `Cast::coords`.
+  Measured on the L-slot device, every near-cap vertex lies **1.3e-9** from the authored outline. That
+  is the `hole_poly` 2⁻³⁰ snap grid, and it is five orders **tighter** than the cut's own certified
+  ε ≈ 7e-4 — because the tracer walks the *exact* wall equations, so casting back lands on the profile
+  itself; ε bounds the cut against its ideal, which is a different quantity. Generalizable: when two
+  independent routes to one object agree far better than either's certificate requires, the agreement
+  is evidence about the *construction*, and it is worth asserting at its real size rather than at the
+  certificate's.
+
+  **Two scouting claims the build refuted, both recorded in IO.3a above.** (1) `hole_poly` was written
+  off as unusable because it returns `None` for any loop not all-traced-`Curve` — true of the type,
+  false of this input, since `certify_holes` produces all-`Curve` loops on both branches. It is not
+  merely usable but *the right* converter: sharing it shows the polygon the part was actually cut
+  with, and inherits the sub-`MIN_STEP` merge the body needs for the same reason the solid does — the
+  tracer parks a vertex pair ~10⁻⁹ apart at each cell boundary, and a triangle on one is unbuildable
+  by any `f64` consumer. A diagnostic that samples its own way answers a slightly different question
+  than the build, which is worse than no diagnostic. (2) The AUTH.2 fixtures were priced at ~30 s of
+  certification each; measured, the L-slot panel costs **1.8 s** and the self-lapping seam drill
+  **6.8 s**, so the tests run the real devices rather than reductions of them. An estimate carried
+  forward from scouting is a guess until something measures it.
+
+  **The body closes, and that is a check on the tracer.** Caps share one exact-rational ear-clipped
+  triangulation (a fan would lay triangles outside a non-convex footprint — the content of AUTH.2) and
+  the walls share the caps' boundary edges, all by edge *identity*: `free = 0`, non-manifold `= 0`,
+  `V − E + F = 2`, closed-shell certificate **Verified**, and OCCT's independent audit agrees
+  (`closed`, `BRepCheck valid`). A footprint that self-crossed or dropped a vertex could not produce
+  that at any ε. It is emphatically **not** a warrant for the geometry — the guard stays structural:
+  raw `write_brep`, never `emit_certified_step`, and one open sketch face reopens the compound.
+
+  *A defect in the already-shipped half, found only by writing the thing out.* Every sketch ring
+  closed on a **duplicate of its first vertex** — the chaining walk ends where it started — so each
+  polygonal profile carried a zero-length edge in its face wire. Four IO.3a tests passed over it
+  (vertex counts were asserted as inequalities and `free_edges == verts`, both of which a duplicate
+  satisfies). It became visible the first time the dump reached OCCT, which is the same shape as
+  #267: the exact-versus-`f64` seam is where a picture stops being able to hide.
+
+  *The lap, as predicted and sharper.* The self-lapping seam drill's two footprints land on **two
+  different regions** (body and tail plateau) — which is why the region travels with the loop instead
+  of being searched for afterwards. A metric cutter, having no sketch plane, gets its far cap and
+  nothing else: an open patch that says so, rather than a silently omitted hole or a wall ruled to an
+  invented plane.
+
 - **IO.3a: what a picture can check that a certificate cannot (2026-08-17).** `author::dump` emits
   each extruded cutter's authored sketch as a planar face at its true 3-D position. The reason it
   exists is narrow and worth stating: a cutter's frame is a **search result** — the ray pick snaps a
@@ -790,7 +839,8 @@ fine — this is a log, not a schema.
   `Part::solid_brep`; `interchange` stays about files. The milestone tag is not the module boundary.
 
   *Two facts found while scouting the unbuilt half (the cutter body), recorded so the next attempt
-  starts from them:* `export::trim::hole_poly` returns `None` unless **every** arc of the loop is a
+  starts from them — **and the first and the cost estimate below were both wrong; see IO.3b
+  above**:* `export::trim::hole_poly` returns `None` unless **every** arc of the loop is a
   traced `Curve`, so a general body must sample `BoundaryArc` itself; and `structure.holes` carries
   `(op, **region**, window)`, which hands over the chart index directly — no σ-band search. The
   acceptance panel is the wrong fixture for it, because its own cutter is the *boundary* (an

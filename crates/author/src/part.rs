@@ -1025,6 +1025,13 @@ impl<B: Backend> PartSolid<B> {
     pub fn brep(&self) -> &export::brep::Brep<B> {
         &self.brep
     }
+    /// The same, taken by value — for a caller assembling a **compound** with
+    /// [`Brep::absorb`](export::brep::Brep::absorb), which moves the geometry rather than copying
+    /// an exact Bézier carrier per face. Drops the certified ε with the rest of the wrapper, which
+    /// is the intended reading: what comes out is geometry, and the verdict stayed behind.
+    pub fn into_brep(self) -> export::brep::Brep<B> {
+        self.brep
+    }
     /// The max certified rail bound of the STEP re-fit.
     pub fn eps(&self) -> &Rat<B> {
         &self.eps

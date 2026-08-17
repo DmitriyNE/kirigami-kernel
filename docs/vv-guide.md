@@ -2435,6 +2435,21 @@ my file right?"), while the cutter body's near cap is projected back from the *t
 therefore inherits the tracer's sampling. Conflating them would let a sampling artifact read as an
 import error.
 
+*Kept apart as questions, they are the strongest check available as a **differential**.* The near cap
+and the sketch face are the same closed curve reached by two computations that share no code — one
+from the authored profile edges through `Frame::point`, one from the traced footprint through the
+chart and back down the generatrices — so the criterion is that every near-cap vertex lies within the
+footprint's own **snap grid** of the authored outline, not within the cut's certified ε. Those differ
+by five orders (`1e-9` against `7e-4` on the L-slot device), and asserting the loose one would pass a
+tracer that had drifted a thousandfold: ε bounds the cut against its ideal, which is a different
+quantity from whether the two routes describe the same curve. The criterion is non-vacuous from two
+sides — the same measurement against a displaced outline must blow up, and the near cap's own extent
+must *be* the authored outline's, so a degenerate cluster sitting on one edge fails. The body's
+**closure** is asserted separately and for a separate reason: caps sharing one triangulation and
+walls sharing the caps' boundary edges sew a sphere by edge identity alone, which a self-crossing or
+vertex-dropping footprint cannot produce at any ε — a check on the tracer, never a warrant for the
+geometry, and the routing guard above is what keeps it from being read as one.
+
 ---
 
 ## 9. Sequencing

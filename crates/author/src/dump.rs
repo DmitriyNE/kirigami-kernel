@@ -23,12 +23,42 @@
 //! `(a, b)` whatsoever. Which means the in-plane sampling below — arcs chorded, `Surd` extrema
 //! bracketed to rationals — costs the *shape* of the outline a little and costs the *plane* nothing.
 //! The two are separate claims and the test asserts them separately.
+//!
+//! # Where the cut actually reached
+//!
+//! [`sketch_faces`] shows what was *asked for*. [`cutter_bodies`] shows what was *got*: the
+//! resolver's own certified footprint — the closed `(σ, µ̂)` loop the solid is cut with — lifted
+//! back to three dimensions, with the sketch plane it was cast from and the generatrices between.
+//!
+//! The two caps are the same loop under two maps, which is what makes the pair worth emitting:
+//!
+//! - the **far cap** is `chart.surface(µ̂, 0)` evaluated at each footprint σ — on the sheet's
+//!   **neutral** surface, `w = 0`. A viewer therefore shows it buried mid-thickness rather than
+//!   lying on a lid, and that is the honest place for it: the footprint is a fact about the chart,
+//!   which is the neutral surface, not about whichever face of the stackup you happen to see first;
+//! - the **near cap** is each of those points cast *back* along its own generatrix,
+//!   [`Cast::coords`](develop::extrude::Cast::coords) then
+//!   [`Frame::point`](develop::extrude::Frame::point) — in the sketch plane, exactly, by the same
+//!   identity [`sketch_faces`] reports;
+//! - the **walls** are ruled between corresponding points, so each one *is* a generatrix segment.
+//!
+//! So the near cap and the sketch face are the same curve computed two entirely different ways —
+//! one from the authored profile edges, one from the traced footprint pulled back through the
+//! chart. They agree only if the tracer, the chart and the frame all agree, and nothing about the
+//! certified ε would tell you if they did not.
+//!
+//! **Triangles throughout**, and not for want of a better face type: a ruled quad between two
+//! generatrices is not coplanar and a footprint lifted onto a curved sheet is not planar, so
+//! [`FaceSurface::Plane`] is honest only on a triangle. That a body reads as visibly faceted is a
+//! second benefit rather than a cost — it looks like the diagnostic it is.
 
-use crate::part::{Cutter, Part};
+use crate::part::{Cutter, Part, PartFault};
+use certify_core::Verdict;
 use export::approx::{rat_to_f64, surd_to_f64};
-use export::brep::{Brep, EdgeGeom, FaceSurface};
+use export::brep::{Brep, EdgeGeom, FaceSurface, HalfEdge};
 use geom::content::{Edge, Point2};
 use lattice::{Backend, Rat, Surd};
+use std::collections::BTreeMap;
 
 /// Interior chords per arc when a profile arc is sampled into the sketch wire.
 const ARC_CHORDS: usize = 16;
@@ -124,6 +154,13 @@ fn profile_loops<B: Backend>(edges: &[Edge<B>], bits: u32) -> Vec<Vec<[Rat<B>; 2
             let pts = edge_samples(&edges[j], forward, bits);
             // `pts[0]` is the running tail, already in the ring.
             ring.extend_from_slice(&pts[1..]);
+        }
+        // A closed walk ends where it started, so the last sample repeats the first. The wire is
+        // built cyclically below, so keeping it would put a **zero-length edge** in the face —
+        // exactly the sub-tolerance edge OCCT refuses (#267). Emitted as a picture only, this went
+        // unseen until the dump was actually written out.
+        if ring.len() >= 2 && ring[ring.len() - 1] == ring[0] {
+            ring.pop();
         }
         if ring.len() >= 3 {
             loops.push(ring);
@@ -229,4 +266,359 @@ pub fn sketch_faces<B: Backend>(part: &Part<B>, bits: u32) -> SketchDump<B> {
         cutters,
         plane_residual: residual,
     }
+}
+
+// — (b) the cutter body: where the cut actually reached —
+
+/// A point in the chart's domain coordinates `(σ, µ̂)`.
+type P2<B> = (Rat<B>, Rat<B>);
+
+/// A triangulated ring: the cleaned polygon, and index triples into it.
+type Triangulation<B> = (Vec<P2<B>>, Vec<[usize; 3]>);
+
+/// `|a| ⊔ |b|`, the running worst residual.
+fn worst<B: Backend>(acc: Rat<B>, v: Rat<B>) -> Rat<B> {
+    let v = if v.sign() < 0 { v.neg() } else { v };
+    if v > acc { v } else { acc }
+}
+
+/// The exact 2-D cross product `(a − o) × (b − o)`.
+fn cross2<B: Backend>(o: &P2<B>, a: &P2<B>, b: &P2<B>) -> Rat<B> {
+    a.0.sub(&o.0)
+        .mul(&b.1.sub(&o.1))
+        .sub(&a.1.sub(&o.1).mul(&b.0.sub(&o.0)))
+}
+
+/// Is `p` inside the closed counter-clockwise triangle `a b c`?
+fn in_triangle<B: Backend>(p: &P2<B>, a: &P2<B>, b: &P2<B>, c: &P2<B>) -> bool {
+    cross2(a, b, p).sign() >= 0 && cross2(b, c, p).sign() >= 0 && cross2(c, a, p).sign() >= 0
+}
+
+/// **Triangulate a simple polygon by ear clipping**, in exact rational arithmetic. Returns the
+/// polygon re-wound counter-clockwise with its exactly-collinear vertices dropped, and index
+/// triples into *that* ring.
+///
+/// Ear clipping rather than a fan because a traced footprint is routinely non-convex — that is the
+/// whole content of AUTH.2 — and a fan from any one vertex of a non-convex polygon lays triangles
+/// outside it. The arithmetic is exact for the same class of reason: every test here is a *sign*
+/// question, and a sign decided by a rounded cross product is how a triangulation quietly folds
+/// over itself.
+///
+/// `None` when the ring has no area, or when a pass finds no ear at all. A simple polygon always
+/// has one, so that is a refusal — the caller reports it rather than falling back to a fan, since
+/// a fan would be wrong on exactly the inputs that got here.
+fn triangulate<B: Backend>(poly: &[P2<B>]) -> Option<Triangulation<B>> {
+    // A collinear vertex carries no shape and can never be clipped (its ear has zero area), so it
+    // would stall the loop below. Dropping one can expose another, hence the stack.
+    let mut ring: Vec<P2<B>> = Vec::with_capacity(poly.len());
+    for p in poly {
+        while ring.len() >= 2 && cross2(&ring[ring.len() - 2], &ring[ring.len() - 1], p).is_zero() {
+            ring.pop();
+        }
+        ring.push(p.clone());
+    }
+    while ring.len() >= 3
+        && cross2(&ring[ring.len() - 2], &ring[ring.len() - 1], &ring[0]).is_zero()
+    {
+        ring.pop();
+    }
+    while ring.len() >= 3 && cross2(&ring[ring.len() - 1], &ring[0], &ring[1]).is_zero() {
+        ring.remove(0);
+    }
+    let n = ring.len();
+    if n < 3 {
+        return None;
+    }
+
+    let mut area2 = Rat::from_i128(0);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area2 = area2.add(&ring[i].0.mul(&ring[j].1).sub(&ring[j].0.mul(&ring[i].1)));
+    }
+    if area2.is_zero() {
+        return None;
+    }
+    if area2.sign() < 0 {
+        ring.reverse();
+    }
+
+    let mut live: Vec<usize> = (0..n).collect();
+    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(n - 2);
+    while live.len() > 3 {
+        let m = live.len();
+        let mut clipped = None;
+        for k in 0..m {
+            let (ia, ib, ic) = (live[(k + m - 1) % m], live[k], live[(k + 1) % m]);
+            let (a, b, c) = (&ring[ia], &ring[ib], &ring[ic]);
+            // Reflex or collinear: not an ear.
+            if cross2(a, b, c).sign() <= 0 {
+                continue;
+            }
+            // Any other live vertex in the closed ear blocks it — closed rather than open, so a
+            // vertex sitting *on* the ear's edge cannot leave a T-junction behind.
+            if live
+                .iter()
+                .any(|&v| v != ia && v != ib && v != ic && in_triangle(&ring[v], a, b, c))
+            {
+                continue;
+            }
+            tris.push([ia, ib, ic]);
+            clipped = Some(k);
+            break;
+        }
+        live.remove(clipped?);
+    }
+    tris.push([live[0], live[1], live[2]]);
+    Some((ring, tris))
+}
+
+/// One body's edge table: the map from an unordered vertex pair to the edge id that carries it.
+///
+/// Two triangles meet along an edge exactly when both wires name the same id, so this is the whole
+/// of the watertightness — nothing here compares a coordinate. It is per-body deliberately: two
+/// cutter bodies that happen to touch must stay two bodies.
+#[derive(Default)]
+struct Wires {
+    ids: BTreeMap<(usize, usize), usize>,
+}
+
+impl Wires {
+    /// The directed use of the edge `a → b`, creating the edge on first sight.
+    fn half<B: Backend>(&mut self, brep: &mut Brep<B>, a: usize, b: usize) -> HalfEdge {
+        let key = if a <= b { (a, b) } else { (b, a) };
+        let id = match self.ids.get(&key) {
+            Some(&id) => id,
+            None => {
+                let id = brep.add_edge(key.0, key.1, EdgeGeom::Line);
+                self.ids.insert(key, id);
+                id
+            }
+        };
+        (id, a > b)
+    }
+
+    /// Emit the planar triangle `a b c`, sharing every edge it has in common with what came before.
+    fn triangle<B: Backend>(&mut self, brep: &mut Brep<B>, a: usize, b: usize, c: usize) {
+        let wire = vec![
+            self.half(brep, a, b),
+            self.half(brep, b, c),
+            self.half(brep, c, a),
+        ];
+        brep.add_face(FaceSurface::Plane, wire);
+    }
+}
+
+/// What one emitted body is, and which op it belongs to.
+pub struct BodyReport {
+    /// The material op that cut it — an index into the part's ops, the order
+    /// [`Part::cutters`](crate::part::Part::cutters) reports.
+    pub op: usize,
+    /// The region whose chart carries its far cap.
+    pub region: usize,
+    /// Footprint vertices, after the collinear ones are dropped. The far cap has this many, and so
+    /// does the near cap when there is one.
+    pub vertices: usize,
+    /// Whether the near cap and the walls were emitted — true exactly for an extruded cutter,
+    /// which is the only kind with a sketch plane to cast back to. `false` leaves the far cap on
+    /// its own: an honest open patch showing where a metric cutter reached, and no more.
+    pub solid: bool,
+}
+
+/// What a cutter dump produced, alongside the geometry.
+pub struct CutterDump<B: Backend> {
+    /// The bodies, as one compound — closed shells for the extruded cutters, open far-cap patches
+    /// for the metric ones.
+    pub brep: Brep<B>,
+    /// One entry per emitted body, in footprint order.
+    pub bodies: Vec<BodyReport>,
+    /// The largest certified cut bound over the footprints this was built from — the same ε the
+    /// part's own report carries, restated here because it is what the picture's *shape* is good
+    /// to.
+    pub eps: Rat<B>,
+    /// The largest `|N·(X − o)|` over every near-cap vertex — **exactly zero**, since a cast-back
+    /// point is by construction `Frame::point` of its own frame coordinates. Measured rather than
+    /// asserted, for the same reason [`SketchDump::plane_residual`] is.
+    pub near_residual: Rat<B>,
+}
+
+impl<B: Backend> CutterDump<B> {
+    /// One line, the format the demos print.
+    pub fn summary(&self) -> String {
+        let closed = self.bodies.iter().filter(|b| b.solid).count();
+        format!(
+            "{} bodies ({closed} closed, {} far-cap only) → {} faces, {} vertices   \
+             near-cap plane residual {}   ε {:.3e}",
+            self.bodies.len(),
+            self.bodies.len() - closed,
+            self.brep.faces().len(),
+            self.brep.verts().len(),
+            if self.near_residual.is_zero() {
+                "exactly 0"
+            } else {
+                "NONZERO — a near cap is not in its own sketch plane"
+            },
+            rat_to_f64(&self.eps),
+        )
+    }
+}
+
+/// **Every cutter's traced footprint, as a body between the sheet it reached and the plane it was
+/// drawn in.**
+///
+/// `segments` is the chord budget the footprint loops are certified at; `16` is the number the
+/// solid path itself uses, so the default picture is the geometry the part was built from rather
+/// than a finer one drawn alongside it.
+///
+/// An extruded cutter yields a **closed** shell — near cap, walls, far cap, every edge shared by
+/// exactly two triangles. A metric cutter (a drill, a half-space) has no sketch plane to cast back
+/// to, so it yields its far cap alone, and [`BodyReport::solid`] says which is which rather than
+/// leaving the caller to infer it from a face count.
+///
+/// Diagnostic geometry, so: write it with [`write_brep`](export::step::write_brep) and **never**
+/// with [`emit_certified_step`](export::step::emit_certified_step). That a body's shell happens to
+/// close is a fact about the tracer — a footprint is a simple closed curve — and not a warrant for
+/// any of the geometry inside it.
+///
+/// Refuses whatever the resolution refuses ([`Part::develop`](crate::part::Part::develop)'s faults,
+/// identically, since it runs the same prelude), and is `Unresolved` on the same loose ε.
+///
+/// ```no_run
+/// use certify_core::Verdict;
+/// use lattice::{Bignum, Rat};
+///
+/// let apex = develop::extrude::Apex::direction([
+///     Rat::<Bignum>::from_i128(0),
+///     Rat::from_i128(0),
+///     Rat::from_i128(1),
+/// ])
+/// .unwrap();
+/// let part = acceptance::sketch_panel(Some((apex, acceptance::ell_slot())));
+///
+/// let Verdict::Verified(dump) = author::dump::cutter_bodies(&part, 16) else {
+///     panic!("the L-slot resolves")
+/// };
+/// assert_eq!(dump.brep.free_edges(), 0, "an extruded cutter's body is a closed shell");
+/// assert!(dump.near_residual.is_zero(), "the near cap is in the sketch plane, exactly");
+///
+/// // Package it with the folded sheet and write it **raw** — never `emit_certified_step`.
+/// let Verdict::Verified(solid) = part.solid() else { panic!("the part resolves") };
+/// let mut compound = solid.into_brep();
+/// compound.absorb(author::dump::sketch_faces(&part, 20).brep);
+/// compound.absorb(dump.brep);
+/// # #[cfg(feature = "step")]
+/// export::step::write_brep("cutter_dump.step", &compound);
+/// ```
+pub fn cutter_bodies<B: Backend>(
+    part: &Part<B>,
+    segments: usize,
+) -> Verdict<CutterDump<B>, PartFault, Rat<B>> {
+    use crate::realize::RErr;
+    let built = match part.build_regions() {
+        Ok(b) => b,
+        Err(f) => return Verdict::Refuted(f),
+    };
+    let structure = match crate::resolve::sweep(part, &built) {
+        Ok(s) => s,
+        Err(f) => return Verdict::Refuted(f),
+    };
+    let prints = match crate::realize::footprints(part, &built, &structure, segments.max(8)) {
+        Ok(p) => p,
+        Err(RErr::Fault(f)) => return Verdict::Refuted(f),
+        Err(RErr::Loose(e)) => return Verdict::Unresolved(e),
+    };
+
+    let zero = Rat::from_i128(0);
+    let mut brep = Brep::new();
+    let mut bodies = Vec::with_capacity(prints.len());
+    let mut eps = Rat::from_i128(0);
+    let mut near_residual = Rat::from_i128(0);
+
+    for fp in &prints {
+        let Some((ring, tris)) = triangulate(&fp.poly) else {
+            return Verdict::Refuted(PartFault::LoopBroken);
+        };
+        eps = worst(eps, fp.eps.clone());
+
+        // The far cap: the footprint on the sheet. `µ̂` **is** the chart's ruling parameter, so
+        // this is the surface point the tracer's own predicate was evaluated at.
+        let chart = &built.charts[fp.region];
+        let mut far = Vec::with_capacity(ring.len());
+        for (s, m) in &ring {
+            match chart.surface(m, &zero).eval(s) {
+                Some(x) => far.push(x),
+                None => return Verdict::Refuted(PartFault::Pole),
+            }
+        }
+
+        // The near cap: each far-cap point cast *back* along its own generatrix. Casting back is
+        // what makes the two caps an exact bijection; matching traced vertices against profile
+        // corners would not be one, because the tracer's vertices sit where the *events* are.
+        let near = match &part.ops[fp.op].1 {
+            Cutter::Extrude(e) => {
+                let Ok(cast) = e.cast() else {
+                    return Verdict::Refuted(PartFault::CutUnresolved { op: fp.op });
+                };
+                let mut near = Vec::with_capacity(far.len());
+                for x in &far {
+                    // `None` only where the generatrix runs parallel to the sketch plane, which no
+                    // point of a footprint does — the cut it bounds came down that very ray.
+                    let Some((a, b)) = cast.coords(x) else {
+                        return Verdict::Refuted(PartFault::CutUnresolved { op: fp.op });
+                    };
+                    let p = e.frame.point(&a, &b);
+                    near_residual = worst(near_residual, plane_residual(&e.frame, &p));
+                    near.push(p);
+                }
+                Some(near)
+            }
+            _ => None,
+        };
+
+        let push = |brep: &mut Brep<B>, pts: &[[Rat<B>; 3]]| -> Vec<usize> {
+            pts.iter()
+                .map(|p| {
+                    brep.add_vertex([
+                        Surd::from_rat(p[0].clone()),
+                        Surd::from_rat(p[1].clone()),
+                        Surd::from_rat(p[2].clone()),
+                    ])
+                })
+                .collect()
+        };
+        let far_ids = push(&mut brep, &far);
+        let near_ids = near.as_ref().map(|n| push(&mut brep, n));
+
+        let mut w = Wires::default();
+        for t in &tris {
+            w.triangle(&mut brep, far_ids[t[0]], far_ids[t[1]], far_ids[t[2]]);
+        }
+        if let Some(near_ids) = &near_ids {
+            // The near cap carries the same triangulation wound the other way, and each wall quad
+            // splits on the diagonal `near_i → far_{i+1}`. Every edge then falls to exactly two
+            // triangles traversing it in opposite directions, which is what closes the shell.
+            for t in &tris {
+                w.triangle(&mut brep, near_ids[t[2]], near_ids[t[1]], near_ids[t[0]]);
+            }
+            let n = ring.len();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                w.triangle(&mut brep, near_ids[i], near_ids[j], far_ids[j]);
+                w.triangle(&mut brep, near_ids[i], far_ids[j], far_ids[i]);
+            }
+        }
+
+        bodies.push(BodyReport {
+            op: fp.op,
+            region: fp.region,
+            vertices: ring.len(),
+            solid: near_ids.is_some(),
+        });
+    }
+
+    Verdict::Verified(CutterDump {
+        brep,
+        bodies,
+        eps,
+        near_residual,
+    })
 }

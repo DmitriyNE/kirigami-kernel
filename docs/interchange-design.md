@@ -259,40 +259,70 @@ Arc edges: chord densely and say so, because a rational-quadratic circular arc n
 Pythagorean rotations of its start point (`t = 3/4 → w = 4/5`, and such `t` are dense), and that is
 the escalation if the eyeball check turns out to need it. Not first.
 
-**(b) The cutter body — "where did it actually cut?"** *Not yet built.* Built from the sketch toward
-the surface it actually reached:
+**(b) The cutter body — "where did it actually cut?"** `author::dump::cutter_bodies`. Built from
+the surface the cut actually reached, back toward the sketch:
 
-- **far cap** — the traced footprint loop (`HoleLoop` in `(σ, µ̂)`) lifted to 3-D by the chart;
-- **near cap** — each far-cap vertex projected *back* along its apex ray onto the sketch plane, an
+- **far cap** — the traced footprint loop (`HoleLoop` in `(σ, µ̂)`) lifted to 3-D by the chart, at
+  `w = 0`: the sheet's **neutral** surface, so a viewer shows it buried mid-thickness rather than on
+  a lid. That is the honest place for it — the footprint is a fact about the chart, and the chart
+  *is* the neutral surface;
+- **near cap** — each far-cap vertex cast *back* along its own generatrix onto the sketch plane, an
   exact bijection between the caps (matching traced vertices against profile corners would not be).
   It therefore inherits the tracer's sampling and is **not** the authored data of (a);
-- **walls** — ruled between corresponding points along the apex rays.
+- **walls** — ruled between corresponding points, so each wall *is* a generatrix segment.
 
-Every piece it needs is public or one `pub(crate)` away, and the route is settled:
+The route, as built:
 
 | step | the call |
 |---|---|
 | resolve | `Part::build_regions()` + `resolve::sweep()` — the prelude `Part::solid()` already runs |
-| which loops, on which chart | `realize::certify_holes(part, built, structure, segments)` → `Vec<(op, HoleLoop)>`, and `structure.holes` carries `(op, **region**, window)` — so the chart is `built.charts[region]` directly, with no σ-band search |
+| which loops, on which chart | `realize::footprints` over `certify_holes` → `Vec<CertifiedHole>`; `structure.holes` carries `(op, **region**, window)`, so the region travels with the loop and the chart is `built.charts[region]` directly, with no σ-band search |
+| the polygon | `export::trim::hole_poly` — **shared with the solid path**, not re-derived. See the correction below |
 | far cap lift | `chart.surface(&µ̂, &0).eval(&σ)` — `µ̂` **is** the chart's ruling parameter `µ`, not a normalized one |
 | near cap | `Cast::coords(&X)` → `(a, b)`, then `Frame::point(a, b)` |
-| faces | **triangles throughout** — a ruled quad between two apex rays is not coplanar and a traced far cap is not planar, so `FaceSurface::Plane` is only honest on triangles. A visibly-triangulated body also reads as a diagnostic rather than a part, which is the right signal |
+| faces | **triangles throughout** — a ruled quad between two generatrices is not coplanar and a traced far cap is not planar, so `FaceSurface::Plane` is only honest on triangles. A visibly-triangulated body also reads as a diagnostic rather than a part, which is the right signal. Ear-clipped in exact rational arithmetic, because a traced footprint is routinely non-convex (that is the content of AUTH.2) and a fan lays triangles outside it |
 
-Two things measured while scouting, both of which shape the work: `hole_poly` returns `None` unless
-every arc is a traced `Curve`, so the body must sample `BoundaryArc` itself rather than reuse it;
-and the acceptance panel's own cutter is the *boundary* (an `intersect`), not a hole, so
-`structure.holes` is empty for it — the fixture has to be one of the AUTH.2 traced-slot devices,
-which cost ~30 s of certification apiece.
+**Two scouting claims the implementation corrected.** First, `hole_poly` was recorded as unusable
+because it returns `None` for any loop that is not all-traced-`Curve` — true of the type, false of
+this input: `certify_holes` produces all-`Curve` loops on both its branches, so the converter is not
+merely usable but *the right one*, because the diagnostic should show the polygon the part was cut
+with rather than a parallel sampling of its own. Sharing it also inherits the sub-`MIN_STEP` vertex
+merge for free, which the body needs for exactly the reason the solid does: the tracer parks a pair
+of vertices ~10⁻⁹ apart at every cell boundary, and a triangle on such a pair is unbuildable by any
+`f64` consumer. Second, the AUTH.2 traced-slot fixtures were priced at ~30 s of certification
+apiece; measured, `sketch_panel` with the L-slot costs **1.8 s** and the self-lapping seam drill
+**6.8 s**, so the tests run on the real devices rather than on a reduction of them.
 
-The lap case falls out: the tracer returns one loop per sheet, so a cutter through the lap gives two
-bodies sharing a ray bundle — which is the picture the self-lapping device needs.
+The lap case falls out as predicted, and in the sharper form: the self-lapping seam drill's two
+footprints land on **two different regions** (the body and the tail plateau), which is what makes
+the region worth carrying rather than searching for.
 
-**Packaging.** One compound with the folded sheet, per the user's call. `write_brep` is the raw
-writer (`emit_certified_step` is certify + `write_brep`), and the shim already accumulates every
-face into a single `TopoDS_Shell` regardless of connectivity — so this is plausibly zero FFI work,
-which is a *measurement* to take in IO.3, not an assumption to build on. **Diagnostic geometry must
+**The body closes.** Near cap, walls and far cap sew into a sphere — `free_edges = 0`,
+`non-manifold = 0`, `V − E + F = 2` — because the caps share one triangulation and the walls share
+the caps' boundary edges, all by edge *identity*, with no coordinate compared. OCCT's independent
+audit agrees (`closed`, `BRepCheck valid`). That is a real check on the tracer: a footprint that
+self-crossed or dropped a vertex could not produce it, whatever ε it certified at. It is **not** a
+warrant for the geometry, and the guard against reading it as one is structural — see Packaging.
+
+A **metric** cutter (a drill, a half-space) has no sketch plane to cast back to, so it gets its far
+cap and nothing else: an open patch that says so via `BodyReport::solid`, rather than a silently
+omitted hole or a wall ruled to an invented plane.
+
+**Packaging.** One compound with the folded sheet, per the user's call, assembled with
+`Brep::absorb` — an id-shift, so what was watertight stays watertight and what was separate stays
+separate. The FFI question is now measured rather than assumed: **zero shim work**, the existing
+`write_brep` takes the 325-face compound as is (20 226 STEP entities). **Diagnostic geometry must
 never route through `emit_certified_step`**: a picture that carries a certificate is a lie about
-what was checked.
+what was checked. The compound is open regardless — one sketch face is all boundary — so it cannot
+pass a closed-shell check even by accident.
+
+**The differential that makes the pair worth emitting.** The near cap and the sketch face are the
+same closed curve reached by two computations that share no code: one from the authored profile
+edges through `Frame::point`, one from the traced footprint through the chart and back down the
+generatrices. Measured on the L-slot device, every near-cap vertex lies **1.3 · 10⁻⁹** from the
+authored outline — the `hole_poly` snap grid, *not* the cut's certified ε ≈ 7 · 10⁻⁴, because the
+tracer walks the exact wall equations and casting back lands on the profile itself. Nothing in any
+certificate would report these two disagreeing; ε bounds the cut, not the correspondence.
 
 ## 8. Where the code lives
 
@@ -304,9 +334,12 @@ the workspace in exactly one place and no certified path acquires a third-party 
 `no_float` lint scopes to `lattice`/`certify_core`/`arrange2d`, so nothing there needs changing; the
 floats in this crate are parse transport (§2.1) and writer output, both above the quarantine.
 
-Two small API additions the dump needs, made as general accessors rather than as dump-shaped
+Three small API additions the dump needs, made as general accessors rather than as dump-shaped
 special cases (no-ossification): a public read-only `Part::cutters()` over the `(OpKind, Cutter)`
-list, and whatever the far-cap lift needs from the tracer that is currently `pub(crate)`.
+list; `PartSolid::into_brep()`, the by-value counterpart of `brep()` for a caller assembling a
+compound; and `Brep::absorb`, the compound operation itself. Nothing from the tracer needed
+widening — `realize::footprints` sits inside `author` alongside the dump, so the resolver internals
+stayed `pub(crate)`.
 
 **SVG** is read through `roxmltree` + `svgtypes` (not `usvg` — it drags fonts and a rasterizer):
 XML is a real grammar and the path mini-language is genuinely fiddly. Cost: **8 crates**.

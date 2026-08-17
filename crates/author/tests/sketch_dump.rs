@@ -1,10 +1,11 @@
-//! **IO.3a — the authored sketch, at the plane it cuts from.**
+//! **IO.3 — the diagnostic dump: the sketch it was cut with, and the body the cut swept.**
 //!
 //! A cutter's frame is a *search result*: `develop::pick` snaps a picked plane to rationals and
 //! certifies the snap. What no certificate can say is whether the **pick** landed where the author
 //! meant — that is a question about intent, and a picture is the only instrument for it.
 //!
-//! So this file asserts two claims that are easy to conflate and must not be:
+//! So the first half of this file asserts two claims about the **sketch** (IO.3a) that are easy to
+//! conflate and must not be:
 //!
 //! 1. **The face lies in its frame's plane, exactly.** `N·(X − o) = 0` as a rational equality, for
 //!    every vertex, with no tolerance. This is invariant under *any* in-plane sampling, which is
@@ -12,6 +13,10 @@
 //! 2. **Where that plane sits is not invariant** — perturb the frame and the vertices move by
 //!    exactly the perturbation. That is the whole diagnostic value: a mis-picked plane is visible,
 //!    and claim 1 keeps holding while it happens, so claim 1 alone would never catch it.
+//!
+//! The second half is the **body** (IO.3b), and its headline claim is a *differential*: the near
+//! cap and the sketch face are the same closed curve reached by two computations that share no
+//! code. See the section break below.
 
 use author::dump::{plane_residual, sketch_faces};
 use author::part::Cutter;
@@ -212,4 +217,283 @@ fn the_dump_is_an_open_shell_that_no_certificate_would_accept() {
         ),
         "the closed-shell certificate must REFUSE a diagnostic sketch"
     );
+}
+
+// ─────────────────────────── IO.3b — the body the cut actually swept ───────────────────────────
+//
+// `sketch_faces` shows what was *asked for*; `cutter_bodies` shows what was *got*. The pair is
+// what makes either worth emitting, and the tests below split the claims the same way the geometry
+// does: one about the body's structure, one about the two routes agreeing, one about a cutter that
+// reaches two sheets, and one about a cutter that has no sketch plane at all.
+
+use author::dump::cutter_bodies;
+use certify_core::Verdict;
+
+/// The chord budget the solid path certifies at — the number the body is drawn from.
+const BODY_SEGMENTS: usize = 16;
+
+/// A parallel sweep along `z`, the apex every AUTH.2 fixture is cut with.
+fn parallel() -> develop::extrude::Apex<Bignum> {
+    develop::extrude::Apex::direction([Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)])
+        .expect("a real direction")
+}
+
+/// The AUTH.2 L-slot device: a non-convex traced footprint on the Stage-1 gore.
+fn ell_device() -> author::part::Part<Bignum> {
+    acceptance::sketch_panel(Some((parallel(), acceptance::ell_slot())))
+}
+
+/// The authored L outline as float segments, read off the fixture's own edges rather than restated
+/// — a duplicated corner list is a golden that drifts.
+fn ell_segments() -> Vec<([f64; 2], [f64; 2])> {
+    acceptance::ell_slot()
+        .iter()
+        .map(|e| match e {
+            geom::content::Edge::Seg(s) => (
+                [surd_to_f64(&s.start.x), surd_to_f64(&s.start.y)],
+                [surd_to_f64(&s.end.x), surd_to_f64(&s.end.y)],
+            ),
+            geom::content::Edge::Arc(_) => panic!("the L-slot is a polygon"),
+        })
+        .collect()
+}
+
+/// The distance from `p` to the segment `a b`.
+fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((p[0] - a[0] - t * dx).powi(2) + (p[1] - a[1] - t * dy).powi(2)).sqrt()
+}
+
+fn verified<T>(v: Verdict<T, author::part::PartFault, Q>, what: &str) -> T {
+    match v {
+        Verdict::Verified(t) => t,
+        Verdict::Refuted(f) => panic!("{what}: refuted: {f:?}"),
+        Verdict::Unresolved(e) => panic!(
+            "{what}: unresolved at ε ≈ {}",
+            export::approx::rat_to_f64(&e)
+        ),
+    }
+}
+
+/// **The body closes, and that is a check on the tracer.**
+///
+/// A footprint is a simple closed curve, so the near cap, the walls and the far cap sew into a
+/// sphere: every edge falls to exactly two triangles, and `V − E + F = 2`. Nothing here compares a
+/// coordinate — the shell is watertight *by identity*, because the caps share one triangulation and
+/// the walls share the caps' boundary edges — so a footprint that self-crossed, doubled back, or
+/// dropped a vertex could not produce this, whatever ε it certified at.
+///
+/// And the guard the whole module exists for is asserted from the other side: absorbing the sketch
+/// face into the same compound **reopens** it, so what a viewer receives can never pass for a part.
+#[test]
+fn the_cutter_body_closes_over_its_own_footprint() {
+    let part = ell_device();
+    let dump = verified(cutter_bodies(&part, BODY_SEGMENTS), "the L-slot body");
+
+    assert_eq!(
+        dump.bodies.len(),
+        1,
+        "one cutter, one footprint on one sheet"
+    );
+    let body = &dump.bodies[0];
+    assert!(
+        body.solid,
+        "an extruded cutter has a sketch plane to cast back to"
+    );
+    assert!(
+        body.vertices > 20,
+        "a traced L-slot footprint, not a bounding box: {} vertices",
+        body.vertices
+    );
+
+    let (v, e, f) = (
+        dump.brep.verts().len(),
+        dump.brep.edges().len(),
+        dump.brep.faces().len(),
+    );
+    assert_eq!(
+        v,
+        2 * body.vertices,
+        "one near-cap and one far-cap vertex each"
+    );
+    assert_eq!(
+        f,
+        2 * (body.vertices - 2) + 2 * body.vertices,
+        "two ear-clipped caps of n−2 triangles, plus two per wall quad"
+    );
+    assert_eq!(dump.brep.free_edges(), 0, "a closed shell has no free edge");
+    assert_eq!(dump.brep.nonmanifold_edges(), 0);
+    assert_eq!(
+        v as i64 - e as i64 + f as i64,
+        2,
+        "χ = 2: the shell is a sphere, so the footprint bounded a disc"
+    );
+
+    // The near cap is in the sketch plane exactly — the same rational identity `sketch_faces`
+    // reports, reached by a completely different route (cast back, not authored).
+    assert_eq!(dump.near_residual, Q::from_i128(0));
+
+    // …and the certificate agrees the *body* is closed, where it refuses the sketch face.
+    let sc = dump.brep.to_shell_certificate();
+    assert!(
+        matches!(
+            certify_core::shell::closed_shell_holed(
+                sc.n_verts,
+                &sc.edge_start,
+                &sc.edge_end,
+                &sc.wire_edge,
+                &sc.wire_reversed,
+                &sc.loop_start,
+                &sc.face_start,
+            ),
+            Verdict::Verified(_)
+        ),
+        "the traced footprint's body must sew into a closed shell"
+    );
+
+    // The compound guard: one open sketch face reopens the whole thing.
+    let mut compound = dump.brep;
+    let sketch = sketch_faces(&part, 20);
+    let open = sketch.brep.free_edges();
+    assert!(open > 0);
+    compound.absorb(sketch.brep);
+    assert_eq!(
+        compound.free_edges(),
+        open,
+        "absorbing is a compound, not a sew: the body keeps its seams and the sketch keeps its \
+         boundary, so a dump can never pass for a part"
+    );
+}
+
+/// **The near cap traces the authored profile — and neither computation knows about the other.**
+///
+/// One route is the sketch: authored profile edges, sampled in frame coordinates, placed by
+/// `Frame::point`. The other is the body's near cap: the resolver's traced `(σ, µ̂)` footprint,
+/// lifted onto the chart, cast *back* down its own generatrices, and only then read in frame
+/// coordinates. They land on the same curve only if the tracer, the chart and the frame all agree,
+/// and no certified ε would report it if they did not — ε bounds the cut, not the correspondence.
+#[test]
+fn the_near_cap_traces_the_authored_profile() {
+    let dump = verified(
+        cutter_bodies(&ell_device(), BODY_SEGMENTS),
+        "the L-slot body",
+    );
+    let segs = ell_segments();
+    let near: Vec<[f64; 2]> = dump
+        .brep
+        .verts()
+        .iter()
+        .filter(|v| surd_to_f64(&v[2]).abs() < 1e-12)
+        .map(|v| [surd_to_f64(&v[0]), surd_to_f64(&v[1])])
+        .collect();
+    assert_eq!(
+        near.len(),
+        dump.bodies[0].vertices,
+        "the whole near cap, in the z = 0 plane"
+    );
+
+    let dist = |p: [f64; 2], segs: &[([f64; 2], [f64; 2])]| {
+        segs.iter()
+            .map(|(a, b)| seg_dist(p, *a, *b))
+            .fold(f64::INFINITY, f64::min)
+    };
+    // `hole_poly` snaps the footprint to a 2⁻³⁰ ≈ 9.3e-10 dyadic grid, and that — not the cut's
+    // certified ε ≈ 7e-4 — is what the correspondence is good to: the tracer walks the *exact*
+    // wall equations, so casting back lands on the profile itself.
+    let budget = 1e-8;
+    let worst = near.iter().map(|&p| dist(p, &segs)).fold(0.0, f64::max);
+    assert!(
+        worst < budget,
+        "worst near-cap distance to the authored L: {worst:e} (budget {budget:e})"
+    );
+
+    // Non-vacuous from two sides. First: the same measurement against the same L shifted by 1/10
+    // — a displacement a hundred-thousandth the size of which would already fail above.
+    let moved: Vec<_> = segs
+        .iter()
+        .map(|(a, b)| ([a[0] + 0.1, a[1]], [b[0] + 0.1, b[1]]))
+        .collect();
+    let off = near.iter().map(|&p| dist(p, &moved)).fold(0.0, f64::max);
+    assert!(
+        off > budget * 1e5,
+        "measured against a displaced outline the distance must blow up, or the check is empty: \
+         {off:e}"
+    );
+
+    // Second: the near cap *covers* the outline rather than clustering on one edge of it — an
+    // extent within a snap of the authored L's own.
+    let ext = |f: fn(&[f64; 2]) -> f64, pts: &[[f64; 2]]| {
+        pts.iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                (lo.min(f(p)), hi.max(f(p)))
+            })
+    };
+    let corners: Vec<[f64; 2]> = segs.iter().map(|(a, _)| *a).collect();
+    for (axis, name) in [(0usize, "x"), (1, "y")] {
+        let (a, b) = match axis {
+            0 => (ext(|p| p[0], &near), ext(|p| p[0], &corners)),
+            _ => (ext(|p| p[1], &near), ext(|p| p[1], &corners)),
+        };
+        assert!(
+            (a.0 - b.0).abs() < budget && (a.1 - b.1).abs() < budget,
+            "the near cap's {name}-extent {a:?} is not the authored outline's {b:?}"
+        );
+    }
+}
+
+/// **One cutter through the lap is one cutter per sheet.** The self-lapping cone passes over
+/// itself, so the seam drill pierces the material twice — and the two footprints land on *different
+/// regions*, which is exactly why the region travels with the loop instead of being searched for
+/// afterwards.
+#[test]
+fn a_cutter_through_the_lap_gives_a_body_per_sheet() {
+    let dump = verified(
+        cutter_bodies(&acceptance::self_lapping_cone(16, 8, true), BODY_SEGMENTS),
+        "the self-lapping seam drill",
+    );
+    assert_eq!(
+        dump.bodies.len(),
+        2,
+        "the drill pierces the head and the lapping tail"
+    );
+    assert_eq!(
+        dump.bodies[0].op, dump.bodies[1].op,
+        "both footprints belong to the same authored op"
+    );
+    assert_ne!(
+        dump.bodies[0].region, dump.bodies[1].region,
+        "…on two different regions of the development — the body and the tail plateau"
+    );
+}
+
+/// **A metric cutter gets its far cap and no more.** A drill has no sketch plane to cast back to,
+/// so there is no near cap to emit and nothing honest to rule walls between. What comes out is the
+/// footprint on the sheet, as an open patch that says so.
+#[test]
+fn a_metric_cutter_yields_an_open_far_cap() {
+    let part = acceptance::sketch_drill(Q::from_i128(0), Q::new(11, 5), Q::new(1, 25));
+    let dump = verified(cutter_bodies(&part, BODY_SEGMENTS), "the drilled disc");
+
+    assert_eq!(dump.bodies.len(), 1);
+    let body = &dump.bodies[0];
+    assert!(!body.solid, "a cylinder has no frame, so no near cap");
+    assert_eq!(dump.brep.verts().len(), body.vertices, "one cap, not two");
+    assert_eq!(
+        dump.brep.faces().len(),
+        body.vertices - 2,
+        "one ear-clipped cap of n−2 triangles"
+    );
+    assert_eq!(
+        dump.brep.free_edges(),
+        body.vertices,
+        "an open patch: its boundary is the footprint loop itself"
+    );
+    // No near cap was emitted, so the plane residual has nothing to be nonzero about.
+    assert_eq!(dump.near_residual, Q::from_i128(0));
 }
