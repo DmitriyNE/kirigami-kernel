@@ -268,11 +268,12 @@ impl<B: Backend> RevCone<B> {
 /// the apex that went to infinity.
 ///
 /// A sketch swept from a *direction* rather than a point (`Apex::direction`, the straight drill) is
-/// how a plan-view outline lands where it was drawn, so it is the sweep every imported cut file
-/// wants. But a circle in that sweep clears to a [`CutSurface::Quadric`], and the general quadric
-/// arm bounds distance by inflating a box — which measured **ε 5.56 against 1.53** for the same Ø 8
-/// bore on the acceptance device, purely as a change of instrument. `CutSurface::Cylinder` has had
-/// the closed form all along; all that was missing was noticing that the quadric *is* one.
+/// one of the two apex kinds any profile can be cut with, and its circle clears to a
+/// [`CutSurface::Quadric`] just as a finite apex's does. The general quadric arm then bounds
+/// distance by inflating a box — which measured **ε 5.56 against 1.53** for the same Ø 8 bore on the
+/// acceptance device, purely as a change of instrument. `CutSurface::Cylinder` has had the closed
+/// form all along; all that was missing was noticing that the quadric *is* one. Without this, the
+/// two apex kinds cost seven orders of magnitude differently for no geometric reason.
 ///
 /// Like [`RevCone`], recognition is a verified proposal: every step below is an exact rational
 /// equality, and anything that fails falls back to the general arm.

@@ -791,10 +791,10 @@ fine — this is a log, not a schema.
   carries it exactly back to the anchor. Only arcs about *different* centres still refuse.
 
   **`RevCylinder`: the same conditioning hole as last session's `RevCone`, one apex kind over.** A
-  plan-view drawing has to be swept *straight down* to land where it was drawn, so the straight
-  drill is the default sweep for a cut file — and its profile circle clears to a `Quadric` that
-  `RevCone` cannot recognize (a cylinder's eigenvalues are `λ, λ, 0`, so it passes the double-root
-  step and declines at `cos²α = 1`, not where that function's doc claimed). Measured on the device's
+  profile swept from a direction rather than a point clears to a `Quadric` that `RevCone` cannot
+  recognize (a cylinder's eigenvalues are `λ, λ, 0`, so it passes the double-root step and declines
+  at `cos²α = 1`, not where that function's doc claimed), so the two apex kinds were costing seven
+  orders of magnitude differently for no geometric reason. Measured on the device's
   own bore: **ε 5.5585e0 → 1.5266e0**, now digit-identical to the closed-form cylinder *and* to the
   drafted cone. Recognition is the same verified-proposal shape: rank one, `|a|² = λ·N_jj`,
   `b + 2Sp = 0`, `R² > 0`, every step an exact ℚ equality. One asymmetry with `RevCone` is
