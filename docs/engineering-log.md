@@ -768,8 +768,50 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Normal-cut trims work: two bugs, and the second one is a convention mismatch that only a
+  downward-opening wall could expose (2026-08-17).** The construction was right from the start; the
+  kernel had two independent defects between it and a certificate, and a cylinder hit neither.
+
+  **① The oracle declined the whole class.** `fit_cut_rail` returned `None` for every
+  `CutSurface::Quadric`, reasoning that a general quadric wall turns around in σ and a graph rail
+  cannot follow one that does. It is the *search*, not the certificate — `cut_fit` re-checks the
+  proposal against the real surface — so declining was conservatism that cost the capability.
+  Fixed by sampling `cut_mu_form` at the same Chebyshev nodes the cylinder arm uses.
+
+  **② The pick and the label meant different things.** `BranchSide::Wall(_, upper)` says which end
+  of the cutter's **shadow** an end is; `RootPick` names a **root** of the µ̂-quadratic. Those
+  coincide only when the quadratic opens *upward*, so that "inside the cutter" is the interval
+  **between** its roots — which every cylinder satisfies (`a = |u|² − (u·â)²/|â|² ≥ 0` by
+  Cauchy–Schwarz, always). A cone wall met twice on one side has `a < 0`: inside is the
+  *complement*, so a shadow piece's **lower** end is the quadratic's **upper** root. Exactly
+  inverted, and unobservable until a downward-opening wall existed. `mu_form_opens_up` now reads
+  the sign of `a` and reconciles them.
+
+  **What it looked like from outside, and why that was misleading.** The symptom was
+  `CutFitFault::NappeCrossed` — and the certificate was *right*: with the wrong root the oracle
+  traced the far branch at `µ̂ ≈ −12.3`, whose 3-D points sit at `z ∈ [−100, −30]` against a cut
+  circle at `z = −2.77`. The fitted rail really was off on the mirror nappe. Two hypotheses died
+  on the way: root-pick (tested by flipping — *vacuously*, because at that point the oracle still
+  returned `None` before the pick was read) and apex proximity (the nappe numbers, `n_z = 325/144`
+  and `d = −235225/20736`, matched a hand computation and left 5.09 of margin against a required
+  2.26). What settled it was bucketing the actual box the check sees.
+
+  **The result corroborates itself.** A vertical cylinder and a normal-cut cone at the same radius
+  meet the sheet in the *same circle* — both are surfaces of revolution about the chart's axis —
+  and they now certify to **ε 2.277e-1 both**, agreeing to the digit through two unrelated
+  representations: a `Cylinder` with a symbolic residual and a `Quadric` bounded by a first-order
+  ball. The quadric route pays 64× the `subdiv` (10240 against 160) because its arm encloses the
+  traced point in a box instead of cancelling the surface equation against the chart fields — a
+  conditioning cost its own doc comment predicted, and it says `Unresolved` rather than certifying
+  loosely. Both pinned in `crates/author/tests/normal_trim.rs`.
+
+  Generalizable: **two vocabularies for the same geometric end will agree on every case you have,
+  until sign flips.** "Which end of the shadow" and "which root of the quadratic" had been
+  interchangeable across every fixture in the repo, because every cutter so far was met *between*
+  its roots. Nothing marked the assumption because nothing had violated it.
+
 - **A normal-cut annulus bound is exactly constructible and the kernel cannot yet resolve it
-  (2026-08-17).** Today's annulus is bounded by vertical cylinders, which meet the 42° cone at a
+  (2026-08-17) — superseded by the entry above; the diagnosis there is the correct one.** Today's annulus is bounded by vertical cylinders, which meet the 42° cone at a
   bevel; a real trim is cut perpendicular to the sheet. The construction the user specified turns
   out to need **no new cutter kind and no approximation**: put a disc of radius `r` in the plane
   where the base cone's *neutral* surface has that radius (`z = −(72/65)r` on `72ρ + 65z = 0`),

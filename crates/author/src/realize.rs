@@ -23,6 +23,7 @@ use crate::part::{
 };
 use crate::resolve::{BranchSide, Label, Structure, wall_of};
 use certify_core::Verdict;
+use develop::cut::{CutSurface, cut_mu_form};
 use develop::part::Development;
 use develop::unroll::{BoundaryArc, FlatOutline, UnrollFault, unroll_trim_loop};
 use export::brep::Brep;
@@ -33,6 +34,25 @@ use export::trim::{
     hole_rail, shadow_hole_loops, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
+
+/// Does the wall's µ̂-quadratic open **upward** over `span` — i.e. is "inside the cutter" the
+/// interval *between* its roots?
+///
+/// Sampled at the span's midpoint, because it only chooses which branch the oracle proposes;
+/// `cut_fit` certifies whatever comes back, so a wrong answer costs a refusal and never a wrong
+/// `Verified`. A vanishing or absent leading coefficient means one root, where the choice is moot
+/// — `true` keeps the historical mapping.
+fn mu_form_opens_up<B: Backend>(
+    chart: &geom::chart::Chart<B>,
+    wall: &CutSurface<B>,
+    span: &Interval<B>,
+) -> bool {
+    let mid = span.lo.add(&span.hi).div(&Rat::from_i128(2));
+    match cut_mu_form(chart, wall, &Rat::from_i128(0)).and_then(|f| f.a.eval(&mid)) {
+        Some(a) => a.sign() >= 0,
+        None => true,
+    }
+}
 
 /// A per-op exact σ-extent within one region (the two-tangent clamp), or `None` (no extent).
 type Extent<B> = Option<(Rat<B>, Rat<B>)>;
@@ -310,24 +330,40 @@ fn certify_boundary<B: Backend>(
             } else {
                 fit_base
             };
+            let walls = part.ops[label.0]
+                .1
+                .walls()
+                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
+            let wall = &walls[crate::resolve::wall_of(label)];
             let pick = match label.1 {
                 BranchSide::Lower => RootPick::Lower,
                 BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
+                // `upper` says which end of the cutter's **shadow** this is — not which root of
+                // the µ̂-quadratic. The two coincide only when that quadratic opens *upward*, so
+                // that "inside the cutter" is the interval **between** its roots. Every cylinder
+                // is that case, which is why the identity held until a cone wall turned up.
+                //
+                // A wall whose ruling meets it twice on one side has `a < 0`: inside is then the
+                // *complement* of the root interval, so a shadow piece's **lower** end is the
+                // quadratic's **upper** root and vice versa. Reading the sign of `a` is what makes
+                // the resolver's convention and the oracle's agree; without it the oracle traces
+                // the far branch, and `cut_fit` reports it as `NappeCrossed` — the fitted rail
+                // really is off on the mirror nappe, so the refusal is right and the cause is here.
+                //
+                // Only the *search* branch depends on this, so a midpoint sample settles it: a
+                // wrong guess costs a refusal from `cut_fit`, never a wrong `Verified`.
                 BranchSide::Wall(_, upper) => {
-                    if upper {
+                    let opens_up = mu_form_opens_up(&built.charts[ri], wall, &span);
+                    if upper == opens_up {
                         RootPick::Upper
                     } else {
                         RootPick::Lower
                     }
                 }
             };
-            let walls = part.ops[label.0]
-                .1
-                .walls()
-                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
             let (mu, e) = match certified_rail_surface(
                 &built.charts[ri],
-                &walls[crate::resolve::wall_of(label)],
+                wall,
                 pick,
                 &span,
                 fit,
