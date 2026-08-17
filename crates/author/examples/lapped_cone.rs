@@ -70,11 +70,11 @@ fn spec() -> LappedCone {
         // The device's annulus: inner Ø 8 mm, outer Ø 43 mm, cut normal to the sheet.
         outer_r: q(43, 2),
         inner_r: Some(qi(4)),
-        trim: if std::env::var("CYL").is_ok() {
-            TrimStyle::Cylindrical
-        } else {
-            TrimStyle::NormalCut
-        },
+        // `Cylindrical`, matching the pinned device. `TrimStyle::NormalCut` is the physical edge
+        // and builds exactly, but at this annulus's proportions it does not yet certify — see
+        // `TrimStyle`'s own docs and the engineering log. Switching it here costs minutes and
+        // ends in a refusal, so the demo does not.
+        trim: TrimStyle::Cylindrical,
         neutral: q(1, 2),
         // The even ramp: `h''` constant in magnitude, so the bend is spread across the ramp
         // instead of piling up at its two joins. Measured 1.5x less fold-line swing.
@@ -167,15 +167,11 @@ fn main() {
     // — the resolution knobs are the caller's, exactly as `self_lapping_cone` sets them —
     let part: Part<Bignum> = lap
         .part
-        // Matches the acceptance device: the DRC keep-out is a length in the part's own unit,
-        // and a normal-cut trim wants the finer split (its walls are quadrics).
+        // Matches the acceptance device: the DRC keep-out is a length in the part's own unit.
         .clearance(qi(7))
         .fit(RailFit {
             degree: 4,
-            subdiv: std::env::var("SUB")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10_240),
+            subdiv: 160,
             bits: 44,
         })
         .segments(segments)
