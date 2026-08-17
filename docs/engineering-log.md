@@ -779,22 +779,43 @@ fine — this is a log, not a schema.
   complementary to the base cone as a normal cut must be. `Cutter::extrude` of a
   `Profile::circle` from an `Apex::point` *is* that cone, and every number is rational.
 
-  **It does not resolve.** `develop()` and `solid()` both return `Unresolved(ε = clearance)` —
-  and that exact value is the signature of `realize.rs:1149`, `assemble_flat` coming back
-  Unresolved. So the failure is in the **2-D flat boolean**, not in a cut certificate: ε tracks
-  the clearance exactly and ignores `segments`, so nothing ever refined.
+  **It does not resolve** — `Unresolved(ε = clearance)`. **My first diagnosis of *where* was wrong
+  and the correction is the substance of this entry.** I attributed it to `assemble_flat` (the 2-D
+  boolean) because a grep found exactly one site returning `Unresolved(clearance)`; a probe placed
+  at that site never fires. It is `RErr::Loose` from `export::trim::certified_rail_surface`,
+  reporting the clearance as its own bound — the rail **fit**, one stage earlier.
 
-  Isolated to a narrow cause, which is the useful part:
+  Finding that needed a *controlled* A/B, which the first pass was not: it had changed the radii,
+  the pick, `inner_r2` and the clearance all at once. One blank (flat gore, `h ≡ 0`, outer cylinder
+  `r = 5`, named witness, clearance 3, segments 64), inner bound the **same circle** `ρ = 5/2`,
+  only the cutter differing:
 
-  | varied | result |
+  | inner bound | verdict |
   |---|---|
-  | radii 4 → 21.5 vs the original 2.5 → 5 | same failure — **not scale** |
-  | full seam recipe vs one region at `h ≡ 0` | same failure — **not the ramp or the wrap** |
-  | the same machinery as a *hole* (`lap_slot`) | certifies today — **not extruded cutters** |
+  | cylinder | Verified, ε 2.277e-1, 0 holes, roles `[LowerBound, UpperBound]` |
+  | cone | Unresolved, ε 3.000e0 |
 
-  So the gap is precisely **an extruded cutter serving as a µ̂ bound rather than a hole**. The role
-  derivation in `resolve.rs` is generic over op kind, so this is not obviously a missing feature so
-  much as an untested path. Task #288 carries the exact apexes and the next probe.
+  **The resolver is completely correct for both.** Probed: identical roles, one run over the whole
+  σ range, and *numerically identical* µ̂ intervals sample for sample — `(−6.2779, −3.1389)`,
+  `(−3.2647, −1.6323)`, `(−2.5557, −1.2778)`, `(−4.1509, −2.0755)`. It must be so: the base cone
+  and the cutter cone are coaxial surfaces of revolution, so both meet the sheet in the circle
+  `ρ = 5/2`, which on a cone chart is `µ̂ = const`. The only difference anywhere is the end label —
+  `(1, Lower)` against `(1, Wall(0, false))`.
+
+  So: `walls()` is fine (a disc dedupes to one carrier quadric), the role derivation is fine, the
+  shadow is fine. What fails is fitting a rail to that wall — **on a rail whose true value is
+  constant**, the easiest fit there is. A fitter that cannot manage a constant is not hitting a
+  conditioning wall; something upstream of it is wrong for this wall. The root pick is ruled out
+  (flipping it changes nothing). The standing hypothesis is that a **coaxial** cone-cone pullback
+  degenerates a coefficient the general path assumes nonzero — every extruded fixture so far
+  (`lap_slot`, `ell_slot`, the sketch panels) has its apex off the chart's axis, so a cutter
+  sharing the chart's axis is simply an untested configuration. Task #288.
+
+  Two things worth keeping from the correction. **"Exactly one site returns this value" is not a
+  diagnosis** — it is a hypothesis, and the cheap confirmation is a print at that site, which took
+  one run. And **an A/B that changes four things measures none of them**: the first pass looked
+  like evidence of a broad gap ("extruded cutters cannot bound") and the controlled one showed the
+  bound machinery working perfectly right up to the last stage.
 
   Worth noting for the roadmap conversation this came out of: the *authoring* side of the product
   question was already answered — the kernel's existing vocabulary expresses a manufacturing-real
