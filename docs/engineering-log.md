@@ -793,6 +793,32 @@ fine — this is a log, not a schema.
   `LWPOLYLINE` with bulges and the import is exact; export the same outline as `ARC` entities and it
   costs a certified δ.** That is a sentence for the user-facing docs.
 
+  *Refinement stops at a floor, and the floor is the enclosure.* Measured on the DXF-`ARC` path:
+  `δ` = 1.3e-1 / 7.3e-3 / 3.7e-5 / 2.0e-10 at 4/8/16/32 bisections, then flat at ~1.6e-16·r. Past
+  ~54 steps the search is finer than the `cos`/`sin`/`π` enclosures it is *measured against*, so
+  what is left is their accumulated `ROUND_BITS` rounding — and more series terms very slightly
+  **widen** it, because each extra term is another rounding. Pinned as a floor with a control at 96
+  iterations, not behind a loose "smaller than last time".
+
+  *Two implementation traps, both worth carrying forward.* (a) **Uncapped Newton for `√k` is not
+  slow, it is unusable** — it roughly squares the denominator per step, so 40 steps build a
+  ~2⁴⁰-bit number and the test simply hangs. (`author::part::rational_sqrt_above` takes three steps
+  for exactly this reason.) Bounding it with outward rounding onto a `2⁻ᵇⁱᵗˢ` grid costs the exact
+  answer when there is one, which is repaired by asking for the **simplest rational in the final
+  bracket** (Stern–Brocot) and testing whether it squares to `k`. (b) An angle that is a whole
+  multiple of 90° had *already* been solved by the quarter-turn reduction, and the code was handing
+  the zero residual to the enclosure machinery and reporting the enclosure floor as if it were
+  error. Fixing it made an SVG rounded rectangle — the flex outline shape — import at `δ = 0`, and
+  broke three tests that had been using 0°/90°/270° arcs to exercise the *snapped* path. Same
+  pattern as the p-curve milestone: **defects caused by the geometry getting better.**
+
+  *`δ = 0` is a statement about the translator, not about the file.* An SVG `<rect rx>` states a
+  **shape** (its corner endpoints are the axis-aligned tangent points, so the arcs are exactly
+  tangent); a DXF bulge states a **curve**, and `tan(Δθ/4)` for a quarter turn is `√2 − 1`, which no
+  file can write. So a real rounded rectangle exported as bulges imports *exactly* — as the curve
+  the file actually contains, whose `r²` sits ~10⁻¹¹ off the quarter-circle its author meant. Saying
+  "exact" without that distinction would be the most misleading true sentence in the milestone.
+
   Same construction, one level up: a rational-quadratic circular arc needs weight `cos(Δθ/2)`, which
   is rational exactly when `1 + tan²(Δθ/2)` is a rational square — i.e. at **Pythagorean** angles
   (`t = 3/4 → w = 4/5`). Those are dense, so exact conic edges in the B-rep are reachable by

@@ -25,3 +25,8 @@ develop.workspace = true
 # *more exact*. See `docs/interchange-design.md` §8.
 roxmltree = "0.21"
 svgtypes = "0.16"
+
+[dev-dependencies]
+# The end-to-end check reads a file and compares the profile against the one the acceptance device
+# already cuts with. Dev-only: no certified crate gains a dependency on the file boundary.
+acceptance.workspace = true

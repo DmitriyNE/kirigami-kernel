@@ -633,8 +633,12 @@ fn rect_element<B: Backend>(
                   s: [Rat<B>; 2],
                   e: [Rat<B>; 2]|
      -> Result<Element<B>, ImportFault> {
+        // Each corner runs start → end through a `+90°` turn in the underlying algebra — SVG's
+        // y-down basis does not change that, and the reader's flip is what makes these clockwise
+        // in the model. Labelling them by how they *look* on screen was a real defect: it survived
+        // every unit test and only showed up as a corner arc taking the long way round.
         let a =
-            ExactArc::exact(cx, cy, r2.clone(), s, e, false).map_err(|f| arc_fault("rect", &f))?;
+            ExactArc::exact(cx, cy, r2.clone(), s, e, true).map_err(|f| arc_fault("rect", &f))?;
         Ok(Element::Arc(map_arc(a, m, "rect")?))
     };
     out.push(corner(

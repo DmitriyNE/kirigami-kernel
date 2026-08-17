@@ -446,6 +446,7 @@ dependencies = [
 name = "interchange"
 version = "0.0.0"
 dependencies = [
+ "acceptance",
  "arrange2d",
  "develop",
  "geom",

@@ -51,18 +51,37 @@ importer that hands it an inconsistent arc feeds the arrangement bad data rather
 refusal). A DXF `ARC` gives centre, radius *and* two angles: four exact rationals describing a point
 that is irrational. One of them must move. §4 decides which, and by how much.
 
-### 2.3 Two numbers, never conflated
+### 2.3 Three numbers, never conflated
 
-Every read returns two quantities that a single "tolerance" would blur:
+Every read returns three quantities that a single "tolerance" would blur:
 
 | | what it measures | whose fault |
 |---|---|---|
 | **δ** (backward error) | how far the geometry we built is from the geometry the file states | ours |
+| **transport** | an ulp bound on decimal-text → rational, where a parser got there first | the parser's |
 | **closure gap** | how far the file's own adjacent entities are from meeting | the file's |
 
 A file whose outline has a 3 µm gap between a LINE end and the next ARC start is a *data* problem;
 reporting it inside δ would let a sloppy file masquerade as a lossy importer, and would hide a real
 importer regression behind whichever file happened to be worst. They are separate fields.
+
+**Transport is exactly zero for DXF and only bounded for SVG**, and the difference is the reason
+§8 reads DXF by hand: the DXF reader sees the file's own group-value text, so `rat_from_decimal`
+applies to the literal. The SVG path grammar arrives through `svgtypes` as `f64`, recovered via
+shortest-round-trip `Display` — the literal itself for anything under 17 significant digits, and
+bounded by an ulp beyond that. We cannot see the text from that side, so we do not claim to have
+recovered it.
+
+### 2.4 `δ = 0` is a statement about the translator, not a promise about the file
+
+Both an SVG `<rect rx>` and a DXF bulge polyline import at `δ = 0`, and they mean different things
+by it. The `<rect>` states a **shape**: its corner endpoints are the axis-aligned tangent points, so
+the arcs come out exactly tangent to the sides. A bulge states a **curve**: `tan(Δθ/4)` for a
+quarter turn is `√2 − 1`, which no file can write down, so a real file carries a decimal near it and
+the import reproduces *that* curve exactly — faithful to the file, and not quite the tangent
+quarter-circle its author had in mind. Measured: `|r² − (1/4)²| ≈ 10⁻¹¹` for a ten-decimal bulge.
+
+Saying "exact" without that distinction would be the most misleading true sentence in the milestone.
 
 ### 2.4 The five-part contract
 
@@ -262,10 +281,19 @@ Two small API additions the dump needs, made as general accessors rather than as
 special cases (no-ossification): a public read-only `Part::cutters()` over the `(OpKind, Cutter)`
 list, and whatever the far-cap lift needs from the tracer that is currently `pub(crate)`.
 
-**Decided with the user:** `dxf` crate for DXF reading; `roxmltree` + `svgtypes` for SVG reading
-(not `usvg` — it drags fonts and a rasterizer). Writers: use the `dxf` crate's writer too, since it
-is already a dependency, and hand-roll R12 ASCII **only if** a target tool rejects its output — the
-fallback is named so the choice is made on a measurement.
+**SVG** is read through `roxmltree` + `svgtypes` (not `usvg` — it drags fonts and a rasterizer):
+XML is a real grammar and the path mini-language is genuinely fiddly. Cost: **8 crates**.
+
+**DXF is read directly**, reversing the earlier pick on a measurement taken before building on it.
+`dxf 0.6` costs **27 crates** — `image`, `chrono`, `uuid`, `serde`, `moxcms`, `getrandom`, `libc` —
+to read five entity types whose entire ASCII grammar is "pairs of lines". Size is the smaller half
+of the argument: the crate hands coordinates over as `f64`, which discards the file's own decimal
+text and with it §2.1's exact number bridge. Reading the text ourselves is both smaller **and more
+exact** — it is what makes DXF's transport error zero rather than ulp-bounded (§2.3). The reader is
+~250 lines and refuses binary DXF by name.
+
+Writers (IO.2) are hand-rolled for both formats, since we control our own output and the DXF
+dependency is now gone either way.
 
 ### 8.1 The SVG writer is a drawing, not a viewer
 

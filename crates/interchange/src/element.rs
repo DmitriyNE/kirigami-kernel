@@ -274,13 +274,19 @@ pub fn to_profile<B: Backend>(loops: &[Vec<Element<B>>]) -> Profile<B> {
         for e in chain {
             p = match e {
                 Element::Segment { start, end } => p.polyline(&[start.clone(), end.clone()]),
-                Element::Arc(a) => p.arc(
-                    a.cx.clone(),
-                    a.cy.clone(),
-                    a.r2.clone(),
-                    a.start.clone(),
-                    a.end.clone(),
-                ),
+                // `Profile::arc` always draws the **counter-clockwise** run from its first point to
+                // its second, so a clockwise arc is the same geometry with the endpoints swapped.
+                // Handing it a clockwise arc unswapped does not fail — it silently draws the
+                // *major* arc the long way round, which decomposes into extra monotone pieces and
+                // fills the complement of what was authored.
+                Element::Arc(a) => {
+                    let (from, to) = if a.ccw {
+                        (a.start.clone(), a.end.clone())
+                    } else {
+                        (a.end.clone(), a.start.clone())
+                    };
+                    p.arc(a.cx.clone(), a.cy.clone(), a.r2.clone(), from, to)
+                }
                 Element::Circle { cx, cy, r2 } => p.circle_r2(cx.clone(), cy.clone(), r2.clone()),
             };
         }
