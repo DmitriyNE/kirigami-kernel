@@ -148,6 +148,8 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
         outer_r2: q(471, 50),
         inner_r2: None,
+        // The bending-neutral mid-plane: what `seam_offset` is measured against.
+        neutral: q(1, 2),
         // The ramp deliberately descends *inside* the lap here, so the gap closes over part of the
         // seam and `Constant` would refuse it. What it actually reaches is BONDED's to report.
         policy: lapped::GapPolicy::MinDistance,

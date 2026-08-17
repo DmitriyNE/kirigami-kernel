@@ -14,7 +14,7 @@
 use acceptance::lapped::{
     Azimuth, GapPolicy, LapFault, LappedCone, OnTop, SideAngles, lapped_cone,
 };
-use export::approx::rat_to_f64;
+use export::approx::{rat_to_f64, surd_to_f64};
 use lattice::{Bignum, Rat};
 
 type Q = Rat<Bignum>;
@@ -270,4 +270,68 @@ fn bonded_reports_what_the_seam_actually_clears() {
         !matches!(lap.seam_clearance(&q(1, 20), nodes), Verdict::Verified(_)),
         "the authored gap 1/20 is NOT cleared everywhere — the ramp descends inside the lap"
     );
+}
+
+/// **Where the stack sits relative to the developed surface, and why the default is the middle.**
+///
+/// The chart surface is what `develop` unrolls *isometrically*, so it is the surface the flat
+/// pattern is true for — which for a bent laminate is its bending-neutral axis, mid-stack. The
+/// default `neutral = 1/2` puts it there; `0` and `1` put it on a face, and the emitted solid moves
+/// by half a thickness along the normal between them, which is the whole content of the knob.
+#[test]
+fn the_stack_straddles_the_developed_surface_by_default() {
+    use author::part::{Part, PartFault};
+    use certify_core::Verdict;
+
+    // The acceptance gore, which is a known-good solid — only the neutral knob varies.
+    let build = |f: Option<Q>| -> Part<Bignum> {
+        let p = acceptance::sketch_panel(None);
+        match f {
+            Some(f) => p.neutral(f),
+            None => p,
+        }
+    };
+    let span = |part: &Part<Bignum>| -> (f64, f64) {
+        let Verdict::Verified(s) = part.solid() else {
+            panic!("the annulus is a solid")
+        };
+        s.brep()
+            .verts()
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                let z = surd_to_f64(&v[2]);
+                (lo.min(z), hi.max(z))
+            })
+    };
+
+    let (mid_lo, mid_hi) = span(&build(None)); // the default
+    let (face_lo, face_hi) = span(&build(Some(qi(0))));
+    let t = 0.125;
+    // `neutral = 0` puts the whole stack on the `+n` side, so the solid rides half a thickness
+    // higher than the centred one — measured along z, that is `(t/2)·(n·ẑ)`.
+    let nz = rat_to_f64(
+        &fixtures::devices::cone()
+            .normal()
+            .comp(2)
+            .eval(&qi(0))
+            .expect("regular at σ = 0"),
+    );
+    let want = t / 2.0 * nz;
+    assert!(
+        (face_lo - mid_lo - want).abs() < 1e-9 && (face_hi - mid_hi - want).abs() < 1e-9,
+        "neutral 0 must lift the solid by exactly (t/2)·(n·ẑ) = {want:.6}: \
+         mid [{mid_lo:.6}, {mid_hi:.6}] vs face [{face_lo:.6}, {face_hi:.6}]"
+    );
+    // …and the stack is the same thickness either way — the knob moves it, it does not stretch it.
+    assert!(
+        ((mid_hi - mid_lo) - (face_hi - face_lo)).abs() < 1e-9,
+        "the thickness is unchanged by where the neutral surface sits"
+    );
+
+    // Outside [0, 1] the developed surface leaves the material, and that is refused by name rather
+    // than silently developing a surface the part does not have.
+    assert!(matches!(
+        build(Some(q(3, 2))).solid(),
+        Verdict::Refuted(PartFault::NeutralOutsideStack)
+    ));
 }

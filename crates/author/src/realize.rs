@@ -1296,9 +1296,9 @@ pub(crate) fn solid_brep<B: Backend>(
     if charts.is_empty() {
         return Verdict::Refuted(PartFault::EmptyRegion);
     }
-    let w = Interval {
-        lo: Rat::from_i128(0),
-        hi: part.thickness.clone(),
+    let w = match part.thickness_window() {
+        Some(w) => w,
+        None => return Verdict::Refuted(PartFault::NeutralOutsideStack),
     };
     let solid =
         match brep_trim_solid_regions(&charts, &w, &inner, &outer, None, &holes, &poly_holes) {
@@ -1551,9 +1551,9 @@ fn wire_solid<B: Backend>(
     let eps_all = rmax(&wire_eps, &hole_eps);
 
     let charts: Vec<(Interval<B>, &geom::chart::Chart<B>)> = vec![(band, &built.charts[0])];
-    let w = Interval {
-        lo: Rat::from_i128(0),
-        hi: part.thickness.clone(),
+    let w = match part.thickness_window() {
+        Some(w) => w,
+        None => return Verdict::Refuted(PartFault::NeutralOutsideStack),
     };
     let solid = match brep_trim_solid_regions(
         &charts,

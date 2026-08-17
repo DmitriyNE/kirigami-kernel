@@ -768,6 +768,35 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The developed surface was the stack's bottom face, and that is a flat-pattern error, not a
+  cosmetic one (2026-08-17).** The solid's thickness window was hard-coded `[0, t]`, so the chart —
+  the surface `develop` unrolls **isometrically** — sat on a *face* of the material rather than
+  through it. A bent laminate's flat pattern is only true on its **bending-neutral axis**; taken on a
+  face it is wrong by roughly `(t/2)·κ`. `Part::neutral(f)` now places the window at
+  `[−f·t, (1−f)·t]` and **defaults to `1/2`**, with `f` outside `[0, 1]` refused as
+  `NeutralOutsideStack` (the developed surface would leave the material).
+
+  **How it surfaced is worth recording: from a viewer, not from a test.** The user opened
+  `cutter_dump.step` and observed that the cutter body terminated *on a surface* rather than inside
+  the sheet. Measured on the L-slot device, `w = 0` is at `z = 2.2038` and `w = t` at `z = 2.2876`
+  with `n·ẑ = +0.67` — the stack was entirely above the chart, so the body stopped at the underside
+  instead of passing through. The same fact, seen two ways.
+
+  **The trade it makes, stated rather than buried.** The footprint is computed exactly where the cut
+  meets the developed surface, and the solid's walls are then ruled along `n` from there. Under
+  `[0, t]` that made the cut exact on the `w = 0` face and off by a full `t` at the other; centred it
+  is off by `t/2` on **both**. The worst-case envelope halves and "exact on one face" is lost. Two
+  AUTH.3 faithfulness tests asserted the lost property and had to be re-based — but to something
+  *stronger*, and derived rather than magic: a lid vertex sits off the authored vertical cylinder by
+  exactly `(t/2)·|n_xy| = (t/2)·(72/97)`, predicted from the cone invariant `n·ẑ = 65/97` and
+  measured at `4.639e-2` against a prediction of `4.639e-2`. The old window could not have passed
+  that bound.
+
+  Generalizable: **a hard-coded window is a modelling decision in disguise.** `[0, t]` reads as an
+  implementation detail and is in fact the claim "the pattern is the bottom face's pattern" — which
+  nothing in the codebase ever stated, and which the word "neutral surface" (used throughout for the
+  chart) actively contradicted.
+
 - **LAP: the lapped cone becomes a parameter set, and three of its checks turn out to be exact
   (2026-08-17).** The self-lapping device was a hand-written recipe; it is now one point in
   `acceptance::LappedCone` — apex direction, stack thickness, seam gap, which end laps on top, the

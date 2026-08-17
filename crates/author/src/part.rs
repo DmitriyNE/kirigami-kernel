@@ -601,6 +601,9 @@ pub enum PartFault {
     /// flat sector exceeds 360°): two σ-disjoint preimages both certify, so no sound choice
     /// exists. Author the feature outside the lap wedge.
     AmbiguousPreimage,
+    /// [`neutral`](Part::neutral) is outside `[0, 1]`, which puts the developed surface outside the
+    /// material. The flat pattern would then be the pattern of a surface the part does not have.
+    NeutralOutsideStack,
 }
 
 /// One declared σ-region: the (snapped) band, its support recipe, and the requested azimuth
@@ -624,6 +627,7 @@ pub struct Part<B: Backend = Bignum> {
     pub(crate) pick: Option<RegionPick<B>>,
     pub(crate) clearance: Rat<B>,
     pub(crate) thickness: Rat<B>,
+    pub(crate) neutral: Rat<B>,
     pub(crate) cfg: DevConfig<B>,
     pub(crate) fit: RailFit,
     pub(crate) segments: usize,
@@ -655,6 +659,7 @@ impl<B: Backend> Part<B> {
             pick: None,
             clearance: Rat::from_i128(1),
             thickness: Rat::new(1, 8),
+            neutral: Rat::new(1, 2),
             cfg: DevConfig::tight(),
             fit: RailFit::default(),
             segments: 48,
@@ -756,11 +761,43 @@ impl<B: Backend> Part<B> {
         self
     }
 
-    /// The sheet thickness — the normal-offset window `[0, t]` the solid evaluator extrudes
-    /// through (a physical product quantity).
+    /// The sheet thickness — the width of the normal-offset window the solid evaluator extrudes
+    /// through (a physical product quantity). Where that window sits relative to the developed
+    /// surface is [`neutral`](Part::neutral)'s business.
     pub fn thickness(mut self, t: Rat<B>) -> Self {
         self.thickness = t;
         self
+    }
+
+    /// **Where the stack sits relative to the developed surface** — the fraction of the thickness
+    /// lying *below* it (on the `−n` side). The window is `[−f·t, (1−f)·t]`.
+    ///
+    /// The default is `1/2`, and the reason is mechanical rather than aesthetic. The chart surface
+    /// is what [`develop`](Part::develop) unrolls **isometrically**, so it is the surface the flat
+    /// pattern is true for — which for a bent laminate is its **bending-neutral axis**, mid-stack.
+    /// Putting the stack entirely on one side would make the developed pattern the pattern of a
+    /// *face*, wrong by roughly `(t/2)·κ` against the sheet it is supposed to cut.
+    ///
+    /// `0` puts the developed surface on the stack's lower face (material entirely on the `+n`
+    /// side) and `1` on its upper; anything between is a laminate whose neutral axis is off-centre,
+    /// which a real asymmetric stackup has. Values outside `[0, 1]` put the developed surface
+    /// outside the material entirely and are refused as [`PartFault::NeutralOutsideStack`].
+    pub fn neutral(mut self, fraction: Rat<B>) -> Self {
+        self.neutral = fraction;
+        self
+    }
+
+    /// The thickness window `[−f·t, (1−f)·t]`, or `None` when the neutral fraction is outside
+    /// `[0, 1]` (the developed surface would not be in the material).
+    pub(crate) fn thickness_window(&self) -> Option<Interval<B>> {
+        let (zero, one) = (Rat::from_i128(0), Rat::from_i128(1));
+        if self.neutral < zero || self.neutral > one {
+            return None;
+        }
+        Some(Interval {
+            lo: self.neutral.mul(&self.thickness).neg(),
+            hi: one.sub(&self.neutral).mul(&self.thickness),
+        })
     }
 
     /// Expert hatch: the develop enclosure budget (series terms + `√` bisection).

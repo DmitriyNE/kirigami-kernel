@@ -16,17 +16,20 @@
 //! | 6 | ramp start / ramp end / sheet end, per side | azimuth ([`Azimuth`]) |
 //! | + | outer (and optional inner) trim radius | `r²` about the cone axis |
 //!
-//! **Parameter 5's datum is the one worth stating twice.** The solid's thickness window is `[0, t]`,
-//! so the chart surface `w = 0` is a *face* of the sheet, not its mid-surface. Measuring the seam
-//! centreline mid-to-mid is both what an engineer means — where does the stack sit relative to the
-//! rest of the board — and the only datum on which the placement law closes:
+//! **Parameter 5's datum.** The stack straddles the developed surface — the thickness window is
+//! `[−t/2, +t/2]` at the default [`neutral`](LappedCone::neutral) `= 1/2` — so the chart surface
+//! *is* the mid-plane and the seam centreline is measured mid-surface to mid-surface, which is what
+//! an engineer means by "where does the stack sit". The placement law is then
 //!
 //! > `h_upper = c + t/2 + g/2`,  `h_lower = c − t/2 − g/2`
 //!
-//! The upper sheet then occupies `[h_upper, h_upper + t]` and the lower `[h_lower, h_lower + t]`,
-//! leaving exactly `g` between their facing faces with the gap's midpoint at `c + t/2`. At
-//! `c = ±(t/2 + g/2)` one of the two `h` is exactly zero — that end never leaves the base cone, and
-//! its ramp vanishes. At `c = 0` the seam straddles the base symmetrically and both ends ramp.
+//! The upper sheet occupies `[h_upper − t/2, h_upper + t/2]` and the lower likewise, leaving exactly
+//! `g` between their facing faces with the gap's midpoint at `c`. At `c = ±(t/2 + g/2)` one of the
+//! two `h` is exactly zero — that end never leaves the base cone, and its ramp vanishes. At `c = 0`
+//! the seam straddles the base symmetrically and both ends ramp.
+//!
+//! The **gap** is `g` at any `neutral`, since both sheets shift together; the *offset's* mid-to-mid
+//! reading is what needs `1/2`.
 //!
 //! # What is exact, and what snaps
 //!
@@ -190,6 +193,17 @@ pub struct LappedCone {
     /// The inner trim radius squared, if the blank is an annulus. `None` leaves the inner bound to
     /// the caller's own authoring ops.
     pub inner_r2: Option<Q>,
+    /// **Where the stack sits relative to the developed surface** — the fraction of the thickness
+    /// below it, passed straight to [`Part::neutral`](author::part::Part::neutral). `1/2` is the
+    /// bending-neutral mid-plane and the right answer for a laminate.
+    ///
+    /// It interacts with [`seam_offset`](LappedCone::seam_offset), which is why it lives here rather
+    /// than being left to the caller: `seam_offset` is a *chart-to-chart* displacement, and that is
+    /// the same thing as mid-surface to mid-surface **exactly when this is `1/2`**. At any other
+    /// value the base sheet's own mid-surface sits `t/2 − f·t` off the chart, and `seam_offset`
+    /// stops meaning what its documentation says. The seam **gap** is `g` either way — that one is
+    /// `f`-independent, since both sheets shift together.
+    pub neutral: Q,
     /// How the gap is checked.
     pub policy: GapPolicy,
     /// The component pick, when the derived one will not do.
@@ -437,7 +451,7 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
     if let Some(r2) = &spec.inner_r2 {
         part = part.subtract(Cutter::vertical_cylinder(qi(0), qi(0), r2.clone()));
     }
-    part = part.thickness(t.clone());
+    part = part.thickness(t.clone()).neutral(spec.neutral.clone());
 
     Ok(Lapped {
         part,
