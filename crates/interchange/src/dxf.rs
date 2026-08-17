@@ -505,10 +505,13 @@ mod tests {
     /// the file's exactly, the endpoints are certified onto it, and `δ` is the endpoint distance.
     #[test]
     fn an_arc_entity_costs_a_certified_delta_and_keeps_its_circle() {
-        let e = "0\nARC\n10\n0.0\n20\n0.0\n40\n5.0\n50\n0.0\n51\n90.0\n\
+        // 30° → 90°: the start angle is deliberately *off* the quarter-turn grid, where the
+        // reduction would have solved it exactly and this test would prove nothing. The closing
+        // lines run to the nominal `(5 cos 30°, 5 sin 30°)`, which the weld absorbs.
+        let e = "0\nARC\n10\n0.0\n20\n0.0\n40\n5.0\n50\n30.0\n51\n90.0\n\
                  0\nLINE\n10\n0.0\n20\n5.0\n11\n0.0\n21\n0.0\n\
-                 0\nLINE\n10\n0.0\n20\n0.0\n11\n5.0\n21\n0.0\n";
-        let read = read_dxf::<Bignum>(&file(Some(4), e), &opts()).expect("quarter disc");
+                 0\nLINE\n10\n0.0\n20\n0.0\n11\n4.330127018922193\n21\n2.5\n";
+        let read = read_dxf::<Bignum>(&file(Some(4), e), &opts()).expect("a sector");
         assert_eq!(read.report.loops, 1);
         assert!(!read.report.is_exact(), "an ARC entity is not free");
         assert!(read.report.delta < Q::new(1, 1_000_000_000_000_000i128));

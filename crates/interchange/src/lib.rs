@@ -28,6 +28,7 @@ pub mod dxf;
 pub mod element;
 pub mod num;
 pub mod report;
+pub mod svg;
 pub mod unit;
 
 use arrange2d::profile::Profile;

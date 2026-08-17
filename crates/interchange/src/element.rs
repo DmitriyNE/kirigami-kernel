@@ -346,22 +346,31 @@ mod tests {
     /// segment travelled must appear as the *closure gap* rather than as `δ`.
     #[test]
     fn an_arc_pins_the_junction_and_the_segment_follows() {
-        // A 90° arc of radius 1 about the origin, from 0° to 90°: endpoints are snapped, so they
-        // are near (1,0) and (0,1) but not equal to them.
+        // A 60° arc of radius 1 about the origin, from 30° to 90°. 30° is *not* a multiple of a
+        // quarter turn, so its endpoint is snapped rather than exact — which is the case this test
+        // exists for. (A 0°/90°/180°/270° endpoint is exact, and would make the test vacuous.)
         let arc = from_centre_angles::<Bignum>(
             p(0, 0),
             &Q::from_i128(1),
-            &Q::from_i128(0),
+            &Q::from_i128(30),
             &Q::from_i128(90),
             &ArcTolerance::report_only(),
         )
         .expect("certified");
         let delta = arc.delta.clone();
-        // Two segments closing the quarter disc, drawn to the *nominal* corners.
+        assert!(delta.sign() > 0, "30° must be the snapped case");
+        // Two segments closing the sector, drawn to the *nominal* corner (cos 30°, sin 30°).
+        let nominal = [
+            Q::new(8_660_254_037_844_386, 10_000_000_000_000_000),
+            Q::new(1, 2),
+        ];
         let bag = vec![
             Element::Arc(arc),
             seg(p(0, 1), p(0, 0)),
-            seg(p(0, 0), p(1, 0)),
+            Element::Segment {
+                start: p(0, 0),
+                end: nominal,
+            },
         ];
         let out = assemble::<Bignum>(bag, &Q::new(1, 100)).expect("closes");
         assert_eq!(out.loops.len(), 1);
@@ -401,24 +410,29 @@ mod tests {
     #[test]
     fn an_arc_to_arc_gap_refuses_rather_than_repairing() {
         let tol = ArcTolerance::report_only();
+        // Both junction angles are off the quarter-turn grid, so both endpoints are *snapped*; the
+        // two arcs sit on different circles, so those snapped points differ by a hair that neither
+        // may absorb without leaving its own circle. (A 0°/90° endpoint is exact and would weld
+        // cleanly — which is why this test names 30°/150° explicitly.)
         let first = from_centre_angles::<Bignum>(
             p(0, 0),
             &Q::from_i128(1),
-            &Q::from_i128(0),
-            &Q::from_i128(90),
+            &Q::from_i128(150),
+            &Q::from_i128(30),
             &tol,
         )
         .expect("certified");
-        // A second arc on a *different* circle whose snapped start is microscopically off `first`'s
-        // snapped end.
+        // A concentric arc one micron larger, coming back the other way: its 30°/150° endpoints sit
+        // a micron off `first`'s — near enough to weld, and on a different circle.
         let second = from_centre_angles::<Bignum>(
-            [Q::from_i128(0), Q::from_i128(2)],
-            &Q::from_i128(1),
-            &Q::from_i128(270),
-            &Q::from_i128(360),
+            p(0, 0),
+            &Q::new(1_000_001, 1_000_000),
+            &Q::from_i128(30),
+            &Q::from_i128(150),
             &tol,
         )
         .expect("certified");
+        assert!(first.delta.sign() > 0 && second.delta.sign() > 0);
         let out = assemble::<Bignum>(
             vec![Element::Arc(first), Element::Arc(second)],
             &Q::new(1, 10),

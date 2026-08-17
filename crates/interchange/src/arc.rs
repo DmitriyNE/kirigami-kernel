@@ -193,6 +193,33 @@ impl<B: Backend> ExactArc<B> {
         dx.mul(&dx).add(&dy.mul(&dy)) == self.r2
     }
 
+    /// An arc whose data is **already** exactly consistent — `δ = 0` by assertion, not by hope.
+    ///
+    /// The constructor for geometry that needs no search because the file states it in a form the
+    /// rationals can hold outright: a rounded rectangle's corner, whose endpoints are the axis-
+    /// aligned tangent points `(cx ± r, cy)` and `(cx, cy ± r)`. Refuses [`ArcFault::NotOnCircle`]
+    /// if the caller is wrong about that, which is the point of routing through here rather than
+    /// building the struct literal.
+    pub fn exact(
+        cx: Rat<B>,
+        cy: Rat<B>,
+        r2: Rat<B>,
+        start: [Rat<B>; 2],
+        end: [Rat<B>; 2],
+        ccw: bool,
+    ) -> Result<Self, ArcFault<B>> {
+        ExactArc {
+            cx,
+            cy,
+            r2,
+            start,
+            end,
+            ccw,
+            delta: Rat::from_i128(0),
+        }
+        .sealed()
+    }
+
     /// Check the hypothesis, then hand the arc back. The one exit every constructor uses.
     fn sealed(self) -> Result<Self, ArcFault<B>> {
         if self.is_consistent() {
@@ -408,19 +435,28 @@ fn point_at_degrees<B: Backend>(
     let quarters = wrapped.div(&ninety).floor();
     let rem = wrapped.sub(&ninety.mul(&quarters));
 
-    // The residual angle in radians, as a certified enclosure.
-    let rad = pi::<B>(tol.terms).scale(&rem.div(&Rat::from_i128(180)));
-    let cos_iv = cos_on(&rad, tol.terms);
-    let sin_iv = sin_on(&rad, tol.terms);
+    // An angle that is a whole multiple of 90° has already been solved by the reduction: the point
+    // is `c` plus a quarter turn of `(r, 0)`, with nothing left to approximate. This is not a
+    // micro-optimization — axis-aligned quarter arcs are what a rounded rectangle is made of, and
+    // they deserve to import at `δ = 0` rather than at the enclosure floor.
+    let (g, h, delta) = if rem.is_zero() {
+        (Rat::from_i128(1), Rat::from_i128(0), Rat::from_i128(0))
+    } else {
+        // The residual angle in radians, as a certified enclosure.
+        let rad = pi::<B>(tol.terms).scale(&rem.div(&Rat::from_i128(180)));
+        let cos_iv = cos_on(&rad, tol.terms);
+        let sin_iv = sin_on(&rad, tol.terms);
 
-    let t = solve_half_tangent(&cos_iv, tol.iters);
-    let (g, h) = half_tangent_point(&t);
+        let t = solve_half_tangent(&cos_iv, tol.iters);
+        let (g, h) = half_tangent_point(&t);
 
-    // Distance from the emitted direction to the enclosed true one: |Δ| ≤ |Δx| + |Δy|, each bounded
-    // by the wider side of its enclosure. Scaled by r, this is the point displacement.
-    let ex = farthest_from(&g, &cos_iv);
-    let ey = farthest_from(&h, &sin_iv);
-    let delta = r.mul(&ex.add(&ey));
+        // Distance from the emitted direction to the enclosed true one: |Δ| ≤ |Δx| + |Δy|, each
+        // bounded by the wider side of its enclosure. Scaled by r, this is the displacement.
+        let ex = farthest_from(&g, &cos_iv);
+        let ey = farthest_from(&h, &sin_iv);
+        let delta = r.mul(&ex.add(&ey));
+        (g, h, delta)
+    };
 
     // Apply the whole quarter turns exactly: (x, y) ↦ (−y, x), `quarters` times.
     let (mut px, mut py) = (r.mul(&g), r.mul(&h));
