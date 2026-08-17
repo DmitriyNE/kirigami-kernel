@@ -14,7 +14,7 @@
 //! | 4 | which end laps on top | [`OnTop`] |
 //! | 5 | seam offset `c` | **mid-surface to mid-surface**, from the base sheet |
 //! | 6 | ramp start / ramp end / sheet end, per side | azimuth ([`Azimuth`]) |
-//! | + | outer (and optional inner) trim radius | `r²` about the cone axis |
+//! | + | outer (and optional inner) trim radius | about the cone axis; cut per [`TrimStyle`] |
 //!
 //! **Parameter 5's datum.** The stack straddles the developed surface — the thickness window is
 //! `[−t/2, +t/2]` at the default [`neutral`](LappedCone::neutral) `= 1/2` — so the chart surface
@@ -73,10 +73,12 @@
 //! edges and is a check on the sheets, not a proof about the band between them. The full-band
 //! version is `develop::bonded`'s own deferred scaling step.
 
+use arrange2d::profile::Profile;
 use author::construct;
 use author::part::{Cutter, Part, SupportFn};
 use certify_core::Verdict;
 use develop::bonded::{ClearFault, LapRail, clear_boxes};
+use develop::extrude::{Apex, Frame};
 use export::approx::{f64_to_rat, rat_to_f64};
 use fixtures::devices::wrap_cone;
 use geom::chart::Chart;
@@ -110,6 +112,37 @@ pub enum GapPolicy {
     /// Allow a ramp to descend inside the lap. Nothing is refused for it; the gap simply varies
     /// there, and [`Lapped::seam_clearance`] reports what it actually reaches.
     MinDistance,
+}
+
+/// **How the trim meets the sheet.**
+///
+/// A vertical cylinder is the drawing-board idiom — a disc in the physical `xy`-plane — but it
+/// meets a cone of half-angle `β` at that same angle, so it leaves a **bevelled** edge. What a
+/// router or laser held against the work actually makes is a cut **normal to the sheet**, and that
+/// boundary is a cone too:
+///
+/// 1. the disc's plane sits at the `z` where the neutral surface *has* radius `r` —
+///    on `cos β·ρ + sin β·z = 0`, that is `z = −r·cot β`;
+/// 2. the apex sits on the axis so the generatrix through the rim runs along the cone's own
+///    normal, `z_apex = z − r·tan β`.
+///
+/// Both come out with generatrix ratio `Δρ/Δz = cot β` exactly — half-angle `90° − β`,
+/// complementary to the base cone, which is what "normal" means — and every number stays rational.
+/// It needs no new cutter kind: [`Cutter::extrude`] of a circular profile from a point apex *is*
+/// that cone.
+///
+/// **What it costs.** The two bound the same circle, so they certify to the same ε — measured
+/// 2.277e-1 for both on the acceptance gore. But a cone is a `CutSurface::Quadric`, whose
+/// certificate encloses the traced point in a **box** rather than cancelling the surface equation
+/// against the chart fields, so it needs a far finer `RailFit::subdiv` for the same bound —
+/// measured 64×. That is conditioning, not a weaker claim; below it the verdict is `Unresolved`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TrimStyle {
+    /// A vertical cylinder about the axis. Bevelled against the cone, and cheap to certify.
+    Cylindrical,
+    /// A cone whose generatrix runs along the sheet's own normal — the physical trim.
+    #[default]
+    NormalCut,
 }
 
 /// **How a ramp spends its bend** — the profile the support climbs by.
@@ -233,11 +266,17 @@ pub struct LappedCone {
     pub ccw: SideAngles,
     /// The clockwise end's three azimuths.
     pub cw: SideAngles,
-    /// The outer trim radius **squared**, about the cone axis.
-    pub outer_r2: Q,
-    /// The inner trim radius squared, if the blank is an annulus. `None` leaves the inner bound to
-    /// the caller's own authoring ops.
-    pub inner_r2: Option<Q>,
+    /// The outer trim radius, about the cone axis.
+    ///
+    /// The radius and not its square, because [`TrimStyle::NormalCut`] needs `r` itself — its
+    /// disc plane sits at the `z` where the neutral surface *has* that radius — and `√(r²)` is
+    /// not rational in general. A cylinder squares it back, exactly.
+    pub outer_r: Q,
+    /// The inner trim radius, if the blank is an annulus. `None` leaves the inner bound to the
+    /// caller's own authoring ops.
+    pub inner_r: Option<Q>,
+    /// **How the trim meets the sheet** — see [`TrimStyle`].
+    pub trim: TrimStyle,
     /// **Where the stack sits relative to the developed surface** — the fraction of the thickness
     /// below it, passed straight to [`Part::neutral`](author::part::Part::neutral). `1/2` is the
     /// bending-neutral mid-plane and the right answer for a laminate.
@@ -351,6 +390,31 @@ fn apex_generator(c: &Q, s: &Q) -> Option<(Q, Q)> {
     (b.sign() > 0 && a > b).then_some((a, b))
 }
 
+/// The **normal-cut** boundary cone through the neutral surface's circle of radius `r`.
+///
+/// `apex` is the base cone's `(cos β, sin β)`, only as a ratio — the same pair
+/// [`LappedCone::apex`] carries, and [`apex_generator`] has already refused the degenerate ends,
+/// so neither component is zero here.
+///
+/// The disc sits at `z = −r·cot β`, where the neutral surface `cos β·ρ + sin β·z = 0` has exactly
+/// radius `r`; the apex sits `r·tan β` further down the axis, which puts the generatrix through
+/// the rim along the cone's own normal `(cos β, sin β)`. Both are exact rational divisions.
+fn normal_cut(apex: &(Q, Q), r: &Q) -> Cutter<Bignum> {
+    let (c, s) = (&apex.0, &apex.1);
+    let z_r = r.mul(c).div(s).neg();
+    let z_apex = z_r.sub(&r.mul(s).div(c));
+    Cutter::extrude(
+        Frame::new(
+            [qi(0), qi(0), z_r],
+            [qi(1), qi(0), qi(0)],
+            [qi(0), qi(1), qi(0)],
+        )
+        .expect("the xy axes are independent"),
+        Apex::point([qi(0), qi(0), z_apex]),
+        Profile::new().circle(qi(0), qi(0), r.clone()).into_edges(),
+    )
+}
+
 /// Validate a recipe and build its blank.
 ///
 /// The part carries the chart, the regions, the trim ops and the thickness — the geometry. The
@@ -364,11 +428,11 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
     if g.sign() < 0 {
         return Err(LapFault::GapNegative);
     }
-    if spec.outer_r2.sign() <= 0 {
+    if spec.outer_r.sign() <= 0 {
         return Err(LapFault::RadiiNotAnAnnulus);
     }
-    if let Some(r2) = &spec.inner_r2 {
-        if r2.sign() <= 0 || *r2 >= spec.outer_r2 {
+    if let Some(ri) = &spec.inner_r {
+        if ri.sign() <= 0 || *ri >= spec.outer_r {
             return Err(LapFault::RadiiNotAnAnnulus);
         }
     }
@@ -543,14 +607,17 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
     let pick = spec
         .pick
         .clone()
-        .unwrap_or_else(|| witness(&chart, &spec.outer_r2, spec.inner_r2.as_ref()));
-    part = part.keep_near(pick).intersect(Cutter::vertical_cylinder(
-        qi(0),
-        qi(0),
-        spec.outer_r2.clone(),
-    ));
-    if let Some(r2) = &spec.inner_r2 {
-        part = part.subtract(Cutter::vertical_cylinder(qi(0), qi(0), r2.clone()));
+        .unwrap_or_else(|| witness(&chart, &spec.outer_r, spec.inner_r.as_ref()));
+    part = part.keep_near(pick);
+    let bound = |r: &Q| -> Cutter<Bignum> {
+        match spec.trim {
+            TrimStyle::Cylindrical => Cutter::vertical_cylinder(qi(0), qi(0), r.mul(r)),
+            TrimStyle::NormalCut => normal_cut(&spec.apex, r),
+        }
+    };
+    part = part.intersect(bound(&spec.outer_r));
+    if let Some(ri) = &spec.inner_r {
+        part = part.subtract(bound(ri));
     }
     part = part.thickness(t.clone()).neutral(spec.neutral.clone());
 
@@ -572,16 +639,14 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
 /// component rather than leave it to a rule. The µ is found in floats and then *evaluated exactly*,
 /// so the witness is an exact surface point however it was chosen — a pick is a search input, and
 /// which point in the component it is does not matter.
-fn witness(chart: &Chart<Bignum>, outer_r2: &Q, inner_r2: Option<&Q>) -> [Q; 3] {
+fn witness(chart: &Chart<Bignum>, outer_r: &Q, inner_r: Option<&Q>) -> [Q; 3] {
     let zero = qi(0);
     let r = chart.ruling();
     let at0 = |k: usize| r.comp(k).eval(&zero).map(|v| rat_to_f64(&v)).unwrap_or(0.0);
     let (rx, ry, rz) = (at0(0), at0(1), at0(2));
     let rho_r = (rx * rx + ry * ry).sqrt();
-    let outer = rat_to_f64(outer_r2).max(0.0).sqrt();
-    let inner = inner_r2
-        .map(|v| rat_to_f64(v).max(0.0).sqrt())
-        .unwrap_or(0.0);
+    let outer = rat_to_f64(outer_r);
+    let inner = inner_r.map(rat_to_f64).unwrap_or(0.0);
     let target = 0.5 * (outer + inner);
     let mut mu = if rho_r > 0.0 { target / rho_r } else { 1.0 };
     if mu * rz > 0.0 {
@@ -675,8 +740,8 @@ impl Lapped {
             let mu = sign * rat_to_f64(r2).max(0.0).sqrt() / rho;
             out.push(f64_to_rat::<Bignum>(mu, SNAP_BITS));
         };
-        push(&self.spec.outer_r2);
-        if let Some(r2) = &self.spec.inner_r2 {
+        push(&self.spec.outer_r);
+        if let Some(r2) = &self.spec.inner_r {
             push(r2);
         }
         out

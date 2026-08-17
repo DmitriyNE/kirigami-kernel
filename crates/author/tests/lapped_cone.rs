@@ -179,11 +179,11 @@ fn every_precondition_refuses_by_name() {
     );
     assert_eq!(bad(&|s| s.gap = qi(-1)), Some(LapFault::GapNegative));
     assert_eq!(
-        bad(&|s| s.outer_r2 = qi(0)),
+        bad(&|s| s.outer_r = qi(0)),
         Some(LapFault::RadiiNotAnAnnulus)
     );
     assert_eq!(
-        bad(&|s| s.inner_r2 = Some(qi(100))),
+        bad(&|s| s.inner_r = Some(qi(100))),
         Some(LapFault::RadiiNotAnAnnulus),
         "an inner radius outside the outer one is not an annulus"
     );
@@ -361,19 +361,26 @@ fn an_even_ramp_certifies_a_ramp_the_cubic_cannot() {
         let mut spec = device_spec();
         spec.ramp_profile = p;
         spec.ccw.ramp_start = sigma(21, 32); // Δσ = 11/32, where the two part ways
-        acceptance::self_lapping_cone_from(&spec, 16, 8, false, None).develop()
+        acceptance::self_lapping_cone_from(&spec, 16, 8, false, None)
     };
 
     assert!(
-        !matches!(narrowed(RampProfile::Smoothstep), Verdict::Verified(_)),
+        !matches!(
+            narrowed(RampProfile::Smoothstep).develop(),
+            Verdict::Verified(_)
+        ),
         "the cubic cannot hold this ramp — that is the limit the even profile lifts"
     );
-    let Verdict::Verified(flat) = narrowed(RampProfile::EvenCurvature) else {
+    let even = narrowed(RampProfile::EvenCurvature);
+    // Half the part's own DRC keep-out, read from the part rather than restated.
+    let gate = even.drc_clearance().div(&qi(2));
+    let Verdict::Verified(flat) = even.develop() else {
         panic!("the even ramp certifies the same seam at the same width");
     };
     assert!(
-        flat.eps().cmp(&q(5, 6)) == core::cmp::Ordering::Less,
-        "…and under the device's own DRC gate, not merely somewhere: ε {:.3e}",
+        flat.eps().cmp(&gate) == core::cmp::Ordering::Less,
+        "…and under the device's own DRC gate {:.3e}, not merely somewhere: ε {:.3e}",
+        rat_to_f64(&gate),
         rat_to_f64(flat.eps())
     );
 }

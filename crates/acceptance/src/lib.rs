@@ -29,7 +29,7 @@ use author::part::{Cutter, Part, SupportFn};
 use develop::cone::DevConfig;
 use develop::extrude::{Apex, Frame};
 use export::trim::RailFit;
-use fixtures::devices::{cone, cone_wrap};
+use fixtures::devices::cone;
 use geom::content::Edge;
 use lattice::{Bignum, Rat};
 
@@ -103,15 +103,10 @@ pub fn self_lapping_cone_from(
     let mut part = lapped::lapped_cone(spec)
         .expect("the device recipe is valid")
         .part
-        // The inner annulus bound is **off-axis**, which `LappedCone`'s concentric radii do not
-        // express — so it stays an authoring op, exactly as a caller's own trim would. Radius
-        // `10/3` centred `5/6` off the axis, so its closest approach is `10/3 − 5/6 = 5/2`: the
-        // finished part's inner Ø 5 mm.
-        .subtract(Cutter::vertical_cylinder(qi(0), q(5, 6), q(100, 9)))
-        // The DRC keep-out is a length in the part's own unit, so it rides the same 5/3 as every
-        // other length here. Left at 1 it would be a *relatively* tighter budget on a larger part
-        // — a silent re-tightening of the acceptance bar disguised as a scale change.
-        .clearance(q(5, 3))
+        // The DRC keep-out is a length in the part's own unit, so it rides the part's scale. Left
+        // where it was it would be a *relatively* tighter budget on a larger part — a silent
+        // re-tightening of the acceptance bar disguised as a re-proportioning.
+        .clearance(qi(7))
         .fit(RailFit {
             degree: 4,
             subdiv: 160,
@@ -124,7 +119,7 @@ pub fn self_lapping_cone_from(
             sqrt_eps: q(1, 1_000_000_000),
         });
     if with_drill {
-        part = part.subtract(Cutter::vertical_cylinder(q(-5, 6), q(9, 2), q(5, 72)));
+        part = part.subtract(Cutter::vertical_cylinder(q(-7, 3), q(25, 2), q(9, 16)));
     }
     if let Some((apex, profile)) = feature {
         part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
@@ -158,22 +153,12 @@ pub fn self_lapping_cone_from(
 /// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on. `ramp_start = 4/7` is
 /// `φ = 118.98°`, so the ramp spans `61.02°` — the nearest small rational to the authored 60°.
 ///
-/// The pick is named rather than derived: the annulus's inner bound is an **off-axis** cylinder
-/// applied by [`self_lapping_cone_with`] afterwards, so the mid-annulus point `lapped_cone` would
-/// derive could land in material that op removes.
+/// The pick is **derived** now: both trim radii live in the recipe, so `lapped_cone`'s own
+/// mid-annulus point at `ρ = (4 + 43/2)/2 = 51/4` is in material by construction. It had to be
+/// named while the inner bound was an off-axis cylinder applied afterwards, which the recipe could
+/// not see.
 pub fn self_lapping_spec() -> lapped::LappedCone {
     let sigma = |n: i128, d: i128| lapped::Azimuth::Sigma(q(n, d));
-    // The σ = 0 ruling's point at z = −5, the device's own witness (the historical −3, carried
-    // through the 5/3 scale that puts the inner bound at the real Ø 5 mm).
-    let rz0 = cone_wrap()
-        .ruling()
-        .comp(2)
-        .eval(&qi(0))
-        .expect("the wrap chart's ruling is regular at σ = 0");
-    let pick = cone_wrap()
-        .surface(&q(-5, 1).div(&rz0), &qi(0))
-        .eval(&qi(0))
-        .expect("the mid-annulus witness point is regular");
     lapped::LappedCone {
         // The Pythagorean (72, 65, 97): sin β = 65/97, the 42° device, exact.
         apex: (qi(72), qi(65)),
@@ -187,8 +172,16 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
             sheet_end: sigma(5, 4),
         },
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
-        outer_r2: q(157, 6),
-        inner_r2: None,
+        outer_r: q(43, 2),
+        inner_r: Some(qi(4)),
+        // **Cylindrical, deliberately, and this is the one number that is not yet the product's.**
+        // The physical edge is a normal cut, `TrimStyle::NormalCut` builds it exactly, and
+        // `author/tests/normal_trim.rs` certifies one on a gore. At *this* device's proportions —
+        // a 4 → 21.5 annulus, aspect 5.4 — it does not yet: the quadric arm wants a `subdiv` that
+        // runs past ten minutes, and at `subdiv = 1280` the inner cone refuses outright rather
+        // than loosening. Until that is understood the pinned device stays on the cheap trim, so
+        // the acceptance bar measures something that certifies. See the engineering log.
+        trim: lapped::TrimStyle::Cylindrical,
         // The bending-neutral mid-plane: what `seam_offset` is measured against.
         neutral: q(1, 2),
         // The cubic, because every pinned measurement on this device was taken on it.
@@ -197,7 +190,7 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         // The ramp deliberately descends *inside* the lap here, so the gap closes over part of the
         // seam and `Constant` would refuse it. What it actually reaches is BONDED's to report.
         policy: lapped::GapPolicy::MinDistance,
-        pick: Some(pick),
+        pick: None,
     }
 }
 
@@ -205,7 +198,7 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
 /// derived holes must fold back onto. Exposed so a round-trip check tests the *same* cylinder the
 /// part was cut with instead of restating its numbers.
 pub fn seam_drill_axis() -> (Q, Q, Q) {
-    (q(-5, 6), q(9, 2), q(5, 72))
+    (q(-7, 3), q(25, 2), q(9, 16))
 }
 
 /// The **lap slot**: the L-shaped feature [`self_lapping_cone_with`] is stressed with — arm `1/4`,
@@ -238,7 +231,7 @@ pub fn seam_drill_axis() -> (Q, Q, Q) {
 /// the local radial direction resolves to `(−0.63, +0.78)` in `(u, v)` — opposite signs, so a ray
 /// leaves one arm, crosses the notch and re-enters the other. `(3, 4, 5)` keeps every vertex exact.
 pub fn lap_slot() -> Vec<Edge<Bignum>> {
-    let (cx, cy, a, t) = (q(5, 6), q(109, 24), q(5, 12), q(5, 24));
+    let (cx, cy, a, t) = (q(7, 3), q(25, 2), q(7, 6), q(7, 12));
     let (ux, uy) = (q(3, 5), q(-4, 5));
     let (vx, vy) = (q(4, 5), q(3, 5));
     let p = |su: &Q, sv: &Q| {

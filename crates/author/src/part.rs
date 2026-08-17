@@ -764,6 +764,14 @@ impl<B: Backend> Part<B> {
     /// The sheet thickness — the width of the normal-offset window the solid evaluator extrudes
     /// through (a physical product quantity). Where that window sits relative to the developed
     /// surface is [`neutral`](Part::neutral)'s business.
+    /// The DRC keep-out this part carries — the budget every certificate is measured against.
+    ///
+    /// Exposed so a test can state "under this part's own gate" instead of restating the number,
+    /// which is how a gate quietly stops tracking the part it guards.
+    pub fn drc_clearance(&self) -> &Rat<B> {
+        &self.clearance
+    }
+
     pub fn thickness(mut self, t: Rat<B>) -> Self {
         self.thickness = t;
         self

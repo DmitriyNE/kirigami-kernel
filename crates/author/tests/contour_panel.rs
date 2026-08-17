@@ -205,13 +205,23 @@ fn the_wrapping_device_refuses_a_kept_contour_by_name() {
             .into_edges()
     };
 
+    // Both squares are stated as multiples of the device's **own** outer radius, not as absolutes:
+    // they only mean anything relative to the panel they contain or bite, and an absolute pair
+    // silently stops doing either when the device is re-proportioned (it did, at Ø 8 → Ø 43).
+    let r_out = acceptance::self_lapping_spec().outer_r;
+    let (hw, cy, hh) = (
+        r_out.mul(&q(8, 5)),
+        r_out.mul(&q(1, 2)),
+        r_out.mul(&q(3, 10)),
+    );
+
     // The control: a contour containing the whole panel restricts nothing.
     let plain = match device().develop() {
         Verdict::Verified(fl) => fl,
         v => panic!("the device itself must certify, got {}", name(&v)),
     };
     let wrapped = match device()
-        .intersect(drilled(square(qi(0), qi(0), qi(8), qi(8))))
+        .intersect(drilled(square(qi(0), qi(0), hw.clone(), hw.clone())))
         .develop()
     {
         Verdict::Verified(fl) => fl,
@@ -226,7 +236,7 @@ fn the_wrapping_device_refuses_a_kept_contour_by_name() {
     // the far-nappe material reaches the resolver — as a second σ-run, or as one op that both holes
     // and bounds — and both are this exclusion.
     let bitten = device()
-        .intersect(drilled(square(qi(0), q(5, 2), qi(8), q(3, 2))))
+        .intersect(drilled(square(qi(0), cy, hw, hh)))
         .develop();
     match bitten {
         Verdict::Refuted(PartFault::DisconnectedRegion)

@@ -331,11 +331,10 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         "…and have the same perimeter: {pn:.6} vs {pf:.6}"
     );
 
-    // **VV.2** — measured 7.2640e-1 develop (identical to the featureless device: the panel
-    // boundary dominates ε, which is exactly why the checks above are shape measurements and not
-    // verdicts). The DRC gate is half the part's `clearance`, and both moved by 5/3 with every
-    // other length when the device took its physical dimensions (2026-08-17; was 4.1481e-1 against
-    // a 1/2 gate).
+    // **VV.2** — develop ε tracks the featureless device (the panel boundary dominates it, which
+    // is exactly why the checks above are shape measurements and not verdicts). Both the ε and the
+    // gate are read rather than restated: the gate is half the part's own `clearance`, so the pair
+    // survives a re-proportioning instead of silently drifting apart from the device it guards.
     let cut = flat.report().ops[3]
         .cut_eps
         .clone()
@@ -345,7 +344,7 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         rat_to_f64(flat.eps()),
         rat_to_f64(&cut)
     );
-    let gate = q(5, 6); // half the device's `clearance` of 5/3
+    let gate = part.drc_clearance().div(&qi(2)); // half the device's own DRC keep-out
     assert!(
         flat.eps().cmp(&gate) == core::cmp::Ordering::Less,
         "develop ε {:.4e} is not under the DRC gate {:.4e}",
@@ -353,8 +352,11 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         rat_to_f64(&gate)
     );
     assert!(
-        cut.cmp(&q(1, 100)) == core::cmp::Ordering::Less,
-        "the traced cut certified to {:.4e}, above its 1.0000e-2 budget",
+        // 1.949e-2 measured. Re-pinned from 1e-2 when the annulus became Ø 8 → Ø 43 and the slot
+        // was re-placed at its middle with 2.8× the arm: a traced cut's bound is a length on the
+        // feature, so it grew with the feature and not with anything about the tracer.
+        cut.cmp(&q(1, 40)) == core::cmp::Ordering::Less,
+        "the traced cut certified to {:.4e}, above its 2.5000e-2 budget",
         rat_to_f64(&cut)
     );
 
@@ -475,18 +477,19 @@ fn a_ruling_meets_the_traced_footprint_twice_on_each_sheet() {
 /// the whole part, passes every certificate and fails this by 1.6%.
 #[test]
 fn the_taper_tells_the_two_sheets_apart() {
-    // The apex is a point in the device's own coordinates, so it rides the same scale the device
-    // does — `(27/40, 27/10, 12)` became `(9/8, 9/2, 20)` when the part grew by 5/3 to put its
-    // inner bound at the real Ø 5 mm. Left unscaled the sweep simply misses the sheets, and the
-    // test fails by finding no slot holes at all rather than by measuring a wrong taper.
-    let z_apex = 20.0;
+    // The apex is a point in the device's own coordinates, so it moves whenever the device does —
+    // `(27/40, 27/10, 12)` → `(9/8, 9/2, 20)` at the physical dimensioning, → `(7/2, 25/2, 84)`
+    // when the annulus became Ø 8 → Ø 43 and `lap_slot` was re-placed at its middle. Left behind,
+    // the sweep simply misses the sheets and the test fails by finding no slot holes at all rather
+    // than by measuring a wrong taper.
+    let z_apex = 84.0;
     let run = |apex: Apex<Bignum>, name: &str| {
         let part = slotted(16, apex);
         let flat = develop_or_panic(&part, name);
         (part, flat)
     };
     let (part_p, flat_p) = run(parallel(), "the parallel slot");
-    let (part_d, flat_d) = run(Apex::point([q(9, 8), q(9, 2), qi(20)]), "the drafted slot");
+    let (part_d, flat_d) = run(Apex::point([q(7, 2), q(25, 2), qi(84)]), "the drafted slot");
     let (hp, hd) = (
         derived_holes(&part_p, &flat_p),
         derived_holes(&part_d, &flat_d),

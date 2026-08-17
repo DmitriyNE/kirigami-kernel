@@ -14,7 +14,9 @@
 //!
 //! Flags: `--out-dir <dir>` (default `generated-demos/`), `--segments N`, `--panels N`.
 
-use acceptance::lapped::{self, Azimuth, GapPolicy, LappedCone, OnTop, RampProfile, SideAngles};
+use acceptance::lapped::{
+    self, Azimuth, GapPolicy, LappedCone, OnTop, RampProfile, SideAngles, TrimStyle,
+};
 use author::part::Part;
 use certify_core::Verdict;
 use develop::cone::DevConfig;
@@ -35,7 +37,7 @@ fn sigma(n: i128, d: i128) -> Azimuth {
 }
 
 /// The two-ramp recipe: the same 42° cone and the same **physical** stack as the acceptance
-/// device — 240 µm of 4-layer flex, a 10 µm ACF bondline, inner Ø 5 mm, all in millimetres — with
+/// device — 240 µm of 4-layer flex, a 10 µm ACF bondline, Ø 8 → Ø 43 mm, all in millimetres — with
 /// the seam centred on the base sheet instead of offset onto one side of it.
 ///
 /// [`acceptance::self_lapping_spec`] carries the table of where each number comes from; the only
@@ -65,10 +67,14 @@ fn spec() -> LappedCone {
         // },
         // ccw: SideAngles::flat(sigma(5, 4)),
         cw: SideAngles::flat(sigma(-9, 8)),
-        // The annulus, concentric here (the acceptance device's inner bound is off-axis):
-        // inner Ø 5 mm, outer ≈ 5.115 mm.
-        outer_r2: q(157, 6),
-        inner_r2: Some(q(25, 4)),
+        // The device's annulus: inner Ø 8 mm, outer Ø 43 mm, cut normal to the sheet.
+        outer_r: q(43, 2),
+        inner_r: Some(qi(4)),
+        trim: if std::env::var("CYL").is_ok() {
+            TrimStyle::Cylindrical
+        } else {
+            TrimStyle::NormalCut
+        },
         neutral: q(1, 2),
         // The even ramp: `h''` constant in magnitude, so the bend is spread across the ramp
         // instead of piling up at its two joins. Measured 1.5x less fold-line swing.
@@ -161,11 +167,15 @@ fn main() {
     // — the resolution knobs are the caller's, exactly as `self_lapping_cone` sets them —
     let part: Part<Bignum> = lap
         .part
-        // Matches the acceptance device: the DRC keep-out is a length in the part's own unit.
-        .clearance(q(5, 3))
+        // Matches the acceptance device: the DRC keep-out is a length in the part's own unit,
+        // and a normal-cut trim wants the finer split (its walls are quadrics).
+        .clearance(qi(7))
         .fit(RailFit {
             degree: 4,
-            subdiv: 160,
+            subdiv: std::env::var("SUB")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_240),
             bits: 44,
         })
         .segments(segments)

@@ -214,20 +214,23 @@ fn the_chord_golden_rejects_a_bridged_hole() {
 fn the_certified_bounds_stay_within_budget() {
     // Pinned bounds. Raise ONLY with a recorded reason; lower freely when a change earns it.
     //
-    // Re-pinned 2026-08-17, when the device became the *physical* one: 240 µm stack, Δ = 1/4 mm
-    // ramp step, inner Ø 5 mm. Two effects, and separating them is what makes these numbers
-    // auditable rather than "whatever it measured".
+    // Re-pinned 2026-08-17 (2026-08-17 also saw the physical dimensioning — see the git log for
+    // that pass). This one is the **re-proportioning** to the product's own annulus, Ø 8 → Ø 43 mm,
+    // and the two that moved moved for one reason each:
     //
-    //   * **Scale.** Every length grew by `5/3` (the inner bound moved from 1.5 to 2.5 mm), so an
-    //     ε quoted as a *length* grows by `5/3` and `refold` — a squared distance — by `25/9`.
-    //     `develop 0.45 → 3/4` and `solid 0.1 → 1/6` are exactly that, nothing more.
-    //   * **A harder device.** The ramp climbs `Δ = 1/4` over `Δσ = 3/7` where it used to climb
-    //     `1/10` over `1/2` — 2.5× the step in 6/7 of the azimuth. The fold inverts on that
-    //     steeper support, so `fold` and `refold` cost a little above their pure scalings
-    //     (`1/3 → 7/20`, `25/900 → 1/20`). That surcharge is the ramp, and it is the number to
-    //     watch if the ramp is ever tightened again.
-    let develop_max = q(3, 4);
-    let solid_max = q(1, 6);
+    //   * `develop 3/4 → 13/4`. The outer radius went 5.115 → 21.5, a factor **4.2**, and the ε
+    //     went 7.264e-1 → 3.053e0 — the same 4.2. It is a length on a longer part and nothing
+    //     more, which is exactly what one wants a re-scaling to look like.
+    //   * `solid 1/6 → 1/3`. 1.278e-1 → 2.715e-1, a factor 2.1 — *half* the length ratio, because
+    //     the solid's ε is set by the σ-slice chords rather than the radial extent, and the
+    //     azimuthal sampling did not change.
+    //
+    // `fold` and `refold` are left where they were and still clear them (3.316e-1 against 7/20,
+    // 3.421e-2 against 1/20). Neither tracks the radius: the fold works in the flat pattern's own
+    // frame, and the refold residual is measured against the seam drill, which was re-placed
+    // rather than scaled.
+    let develop_max = q(13, 4);
+    let solid_max = q(1, 3);
     let fold_max = q(7, 20);
     let refold_max = q(1, 20);
 

@@ -768,6 +768,39 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The device is the product's size now, and the trim that made it necessary is the one thing
+  still deferred (2026-08-17).** The annulus is Ø 8 → Ø 43 mm, the target dimensions. What landed:
+  `LappedCone` carries **radii, not squared radii** (a normal cut needs `r` itself — its disc plane
+  sits where the neutral surface *has* that radius — and `√(r²)` is not rational in general), plus
+  a `TrimStyle` choosing between a vertical cylinder and a cut normal to the sheet.
+
+  **What certifies, and what does not.** Cylindrical at the new proportions: develop ε 2.627 against
+  a 3.5 gate, solid 1.337e-1, 18 faces, 0 free edges, 5.4 s. `NormalCut` certifies on a gore
+  (`normal_trim.rs`, ε 2.277e-1, identical to a cylinder at the same radius) but **not yet at this
+  device's proportions**: an annulus of aspect 5.4 wants a `subdiv` that runs past ten minutes, and
+  at `subdiv = 1280` the inner cone refuses outright rather than loosening — which is a second
+  wall, not the same one, since refining should never turn `Unresolved` into `Refuted`. So the
+  pinned device stays `Cylindrical`, said out loud in the recipe rather than left to be discovered.
+
+  **Re-pinning, with the causes kept apart.** `develop 3/4 → 13/4` is *exactly* the radius ratio:
+  outer 5.115 → 21.5 is 4.2×, and ε 7.264e-1 → 3.053e0 is 4.2×. `solid 1/6 → 1/3` is 2.1× — half
+  of that, because a solid's ε is set by the σ-slice chords and the azimuthal sampling did not
+  change. `fold` and `refold` did not move at all and keep their old budgets: neither tracks the
+  radius. A traced-cut bound went 1e-2 → 1/40 because the slot itself grew 2.8×.
+
+  **The restated-constant tax, a fourth time — and this time it was paid off.** Four more absolutes
+  had quietly stopped meaning anything: a "contour containing the whole panel" was a ±8 square that
+  the Ø 43 panel now *bites*; the drafted-sweep apex was left at the old scale so the sweep missed
+  the sheets; and two DRC gates were half of a clearance that had since changed. Each is now
+  **derived** — the squares as multiples of the device's own `outer_r`, the gates from a new
+  `Part::drc_clearance()`. That accessor exists precisely so a test can say "under this part's own
+  gate" instead of restating the number.
+
+  Generalizable: **a re-proportioning is the cheapest audit of a fixture there is, and it keeps
+  finding the same class of defect.** Every constant that needed a hand edit was one that should
+  have been read from the recipe. The count across this session is now four independent instances;
+  the fix each time is to express the relationship, not the value.
+
 - **Normal-cut trims work: two bugs, and the second one is a convention mismatch that only a
   downward-opening wall could expose (2026-08-17).** The construction was right from the start; the
   kernel had two independent defects between it and a certificate, and a cylinder hit neither.
