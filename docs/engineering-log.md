@@ -768,6 +768,35 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#293 landed on attempt 2, and the fix was the step ordering, not the grouping (2026-08-18).**
+  Attempt 1 changed `hull_of` and failed three green fixtures; the entry below has the transcript.
+  What made attempt 2 work was reading `certify_boundary` end to end *first* and writing down the
+  obligation before touching it:
+
+  > **A rail must be certified over the σ the boundary actually uses** — and the boundary is not
+  > known until step 3′, which *deletes* the outermost segment of each chain (and, in the
+  > whole-side case, the entire lower chain) and puts a turn arc there instead.
+
+  Step 2 fitted a rail for every label and raised on the first that did not certify — including
+  labels whose every segment step 3′ was about to delete. Near a tangent ruling a graph rail cannot
+  be certified at all, so a sliver `0.0042` wide next to a tangent end was a hard failure for a
+  rail nothing would ever evaluate. Now a fit that does not certify is **recorded, not raised**, and
+  `covered` raises it — with the reason the fit gave, so a loose one stays refinable — only if a
+  *surviving* segment needs it. Nothing is weakened: a rail the boundary uses must still certify,
+  which is the whole of the obligation.
+
+  With that in place, index-adjacency grouping is fine after all, and the elaborate
+  "group by tangent window" design the previous entry proposed is unnecessary. **The criterion was
+  never the problem; requiring certificates for discarded rails was.**
+
+  On the device (pinned recipe, ccw ramp moved off the tab so #291 does not mask this): the float
+  oracle's decline is gone and `develop` reports `Unresolved ε 3.5000e0` — exactly `clearance/2`,
+  the DRC gate — where before it was `1.1220e1`, an order above it. 786/786 green.
+  `rim_notch::the_drawing_clears_every_structural_blocker_once_the_ramp_is_off_the_tab` pins it by
+  shape rather than by golden: `Unresolved` not `Refuted`, ε at the threshold not above it.
+
+  *2026-08-18 · resolved(#293) · `crates/author/src/realize.rs`*
+
 - **The third blocker: one wall, two passes, one hulled span (2026-08-18, → #293).** With #292's
   chart arm in play every rail certificate passes, so the drawing's next refusal is the **float
   oracle** — `fit_cut_rail` declining with `disc −5.230392e3` at its first Chebyshev node. The

@@ -144,15 +144,33 @@ fn span_pieces<B: Backend>(
     out
 }
 
-/// Find `label`'s rail piece preferring `region`, falling back to any region.
-fn find_piece<B: Backend>(
-    pieces: &[RailPiece<B>],
+/// Find `label`'s rail piece covering `sigma`, preferring `region`.
+///
+/// One label can have **several** pieces in one region: a wall that bounds in two separated σ-runs
+/// is fitted once per run, and on a wrapping chart that is the normal case rather than the odd one
+/// (#293). So σ identifies the piece and region only breaks ties — matching on region alone returns
+/// whichever piece came first, which is a rail from the wrong side of the chart. The region-only
+/// arms stay as the fallback for a σ inside no piece's span, which is the shape every caller had
+/// while there was only ever one.
+fn find_piece<'a, B: Backend>(
+    pieces: &'a [RailPiece<B>],
     label: Label,
     region: usize,
-) -> Option<&RailPiece<B>> {
+    sigma: &Rat<B>,
+) -> Option<&'a RailPiece<B>> {
+    use core::cmp::Ordering;
+    let covers = |p: &RailPiece<B>| {
+        p.span.lo.cmp(sigma) != Ordering::Greater && sigma.cmp(&p.span.hi) != Ordering::Greater
+    };
     pieces
         .iter()
-        .find(|p| p.label == label && p.region == region)
+        .find(|p| p.label == label && p.region == region && covers(p))
+        .or_else(|| pieces.iter().find(|p| p.label == label && covers(p)))
+        .or_else(|| {
+            pieces
+                .iter()
+                .find(|p| p.label == label && p.region == region)
+        })
         .or_else(|| pieces.iter().find(|p| p.label == label))
 }
 
@@ -170,7 +188,7 @@ fn rail_at<B: Backend>(
             band.lo.cmp(sigma) != Ordering::Greater && sigma.cmp(&band.hi) != Ordering::Greater
         })
         .unwrap_or(0);
-    find_piece(pieces, label, ri)?.mu.eval(sigma)
+    find_piece(pieces, label, ri, sigma)?.mu.eval(sigma)
 }
 
 /// Snap a σ to the `2⁻³⁰` dyadic grid (the STEP corner discipline — huge-denominator corner σ
@@ -212,14 +230,30 @@ fn certify_boundary<B: Backend>(
             }
         }
     }
-    let hull_of = |label: Label| -> (Rat<B>, Rat<B>) {
-        let (mut lo, mut hi): (Option<Rat<B>>, Option<Rat<B>>) = (None, None);
+    // The σ-hulls a label is used over — one per maximal group of CONSECUTIVE runs, not one hull
+    // over all of them.
+    //
+    // A label that bounds in two separated runs must be fitted twice, and on a wrapping chart that
+    // is not an edge case: a chart covering more than a turn passes every azimuth twice, so a wall
+    // bounding at one azimuth bounds at two σ. Hulling those together spans the gap between them,
+    // where the wall is not merely unfitted but *absent* — the device drawing's R 0.25 root fillet
+    // subtends 7.6° of azimuth and was handed a 60°+ span, on which the oracle rightly declined
+    // (`disc < 0` at its first node, #293).
+    //
+    // Splitting is safe for the *other* reason runs go non-consecutive — a boundary spliced by a
+    // turn arc, or another label bounding between — only because a fit that does not certify is
+    // now recorded rather than raised: those groups are slivers beside a tangent ruling that no
+    // graph rail can follow, and step 3′ deletes their segments anyway.
+    //
+    // Within a group the hull is unchanged: each run extends into its neighbours' brackets, because
+    // the true corner lies between the samples, and to the domain ends on the outermost runs.
+    let hulls_of = |label: Label| -> Vec<(Rat<B>, Rat<B>)> {
+        let mut out: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+        let mut prev: Option<usize> = None;
         for (i, run) in runs.iter().enumerate() {
             if run.lower != label && run.upper != label {
                 continue;
             }
-            // Extend into the event brackets (the true corner lies between the samples), and to
-            // the domain ends on the outermost runs.
             let a = if i == 0 {
                 domain.lo.clone()
             } else {
@@ -230,16 +264,17 @@ fn certify_boundary<B: Backend>(
             } else {
                 runs[i + 1].lo.clone()
             };
-            lo = Some(match lo {
-                None => a.clone(),
-                Some(x) => rmin(&x, &a),
-            });
-            hi = Some(match hi {
-                None => b.clone(),
-                Some(x) => rmax(&x, &b),
-            });
+            match prev {
+                Some(p) if p + 1 == i => {
+                    let last = out.last_mut().expect("a run started the group");
+                    last.0 = rmin(&last.0, &a);
+                    last.1 = rmax(&last.1, &b);
+                }
+                _ => out.push((a, b)),
+            }
+            prev = Some(i);
         }
-        (lo.expect("label appears in a run"), hi.expect("label"))
+        out
     };
 
     // — 2. Fit + certify each label's rail per region (the A4 shape). —
@@ -292,97 +327,116 @@ fn certify_boundary<B: Backend>(
         }
         None
     };
+    // **Certify what the boundary uses, not what it might use.**
+    //
+    // The chains are not final here: step 3′ *deletes* the outermost segment of each chain — and
+    // in the whole-side case the entire lower chain — replacing them with a turn arc. A rail whose
+    // every segment is about to be deleted is one this function was demanding a certificate for and
+    // then throwing away, and near a tangent ruling a graph rail cannot be certified at all. So a
+    // fit that does not certify is **recorded, not raised**: [`covered`] raises it, with the reason
+    // the fit actually gave, if a *surviving* segment turns out to need it. Nothing is weakened —
+    // a rail the boundary uses must still certify, which is the whole of the obligation.
+    //
+    // `Ok(ε)` is a loose fit (refinable), `Err(fault)` a refusal.
+    let mut deferred: Vec<(Label, Result<Rat<B>, PartFault>)> = Vec::new();
     let mut pieces: Vec<RailPiece<B>> = Vec::new();
     for &label in &labels {
-        let (lo, hi) = hull_of(label);
-        for (span_lo, span_hi, ri) in span_pieces(&bands, &lo, &hi) {
-            // The hull already extends into the event brackets, so every refined corner lies
-            // inside the certified span; no further padding (over-reach walks the fit into the
-            // cutter's √-branch endpoints, where the oracle rightly declines).
-            let mut span = Interval {
-                lo: span_lo,
-                hi: span_hi,
-            };
-            let mid = span.lo.add(&span.hi).mul(&Rat::new(1, 2));
-            if let Some((t1, t2)) = window_around(ri, label.0, crate::resolve::wall_of(label), &mid)
-            {
-                span = Interval {
-                    lo: rmax(&span.lo, &t1),
-                    hi: rmin(&span.hi, &t2),
+        for (lo, hi) in hulls_of(label) {
+            for (span_lo, span_hi, ri) in span_pieces(&bands, &lo, &hi) {
+                // The hull already extends into the event brackets, so every refined corner lies
+                // inside the certified span; no further padding (over-reach walks the fit into the
+                // cutter's √-branch endpoints, where the oracle rightly declines).
+                let mut span = Interval {
+                    lo: span_lo,
+                    hi: span_hi,
                 };
-            }
-            if span.lo.cmp(&span.hi) != Ordering::Less {
-                return Err(RErr::Fault(PartFault::CutUnresolved { op: label.0 }));
-            }
-            // A narrow off-origin span is ill-conditioned in the monomial basis (the G2/notch
-            // finding) — cap the fit degree there.
-            let narrow = span
-                .hi
-                .sub(&span.lo)
-                .mul(&Rat::from_i128(4))
-                .cmp(&domain_width)
-                == Ordering::Less;
-            let fit = if narrow && fit_base.degree > 3 {
-                RailFit {
-                    degree: 3,
-                    ..fit_base
+                let mid = span.lo.add(&span.hi).mul(&Rat::new(1, 2));
+                if let Some((t1, t2)) =
+                    window_around(ri, label.0, crate::resolve::wall_of(label), &mid)
+                {
+                    span = Interval {
+                        lo: rmax(&span.lo, &t1),
+                        hi: rmin(&span.hi, &t2),
+                    };
                 }
-            } else {
-                fit_base
-            };
-            let walls = part.ops[label.0]
-                .1
-                .walls()
-                .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
-            let wall = &walls[crate::resolve::wall_of(label)];
-            let pick = match label.1 {
-                BranchSide::Lower => RootPick::Lower,
-                BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
-                // `upper` says which end of the cutter's **shadow** this is — not which root of
-                // the µ̂-quadratic. The two coincide only when that quadratic opens *upward*, so
-                // that "inside the cutter" is the interval **between** its roots. Every cylinder
-                // is that case, which is why the identity held until a cone wall turned up.
-                //
-                // A wall whose ruling meets it twice on one side has `a < 0`: inside is then the
-                // *complement* of the root interval, so a shadow piece's **lower** end is the
-                // quadratic's **upper** root and vice versa. Reading the sign of `a` is what makes
-                // the resolver's convention and the oracle's agree; without it the oracle traces
-                // the far branch, and `cut_fit` reports it as `NappeCrossed` — the fitted rail
-                // really is off on the mirror nappe, so the refusal is right and the cause is here.
-                //
-                // Only the *search* branch depends on this, so a midpoint sample settles it: a
-                // wrong guess costs a refusal from `cut_fit`, never a wrong `Verified`.
-                BranchSide::Wall(_, upper) => {
-                    let opens_up = mu_form_opens_up(&built.charts[ri], wall, &span);
-                    if upper == opens_up {
-                        RootPick::Upper
-                    } else {
-                        RootPick::Lower
+                if span.lo.cmp(&span.hi) != Ordering::Less {
+                    deferred.push((label, Err(PartFault::CutUnresolved { op: label.0 })));
+                    continue;
+                }
+                // A narrow off-origin span is ill-conditioned in the monomial basis (the G2/notch
+                // finding) — cap the fit degree there.
+                let narrow = span
+                    .hi
+                    .sub(&span.lo)
+                    .mul(&Rat::from_i128(4))
+                    .cmp(&domain_width)
+                    == Ordering::Less;
+                let fit = if narrow && fit_base.degree > 3 {
+                    RailFit {
+                        degree: 3,
+                        ..fit_base
                     }
-                }
-            };
-            let (mu, e) = match certified_rail_surface(
-                &built.charts[ri],
-                wall,
-                pick,
-                &span,
-                fit,
-                &part.clearance,
-                &part.cfg,
-            ) {
-                Verdict::Verified(x) => x,
-                Verdict::Unresolved(e) => return Err(RErr::Loose(e)),
-                Verdict::Refuted(_) => {
-                    return Err(RErr::Fault(PartFault::CutUnresolved { op: label.0 }));
-                }
-            };
-            eps = rmax(&eps, &e);
-            pieces.push(RailPiece {
-                label,
-                region: ri,
-                mu,
-                span,
-            });
+                } else {
+                    fit_base
+                };
+                let walls = part.ops[label.0]
+                    .1
+                    .walls()
+                    .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
+                let wall = &walls[crate::resolve::wall_of(label)];
+                let pick = match label.1 {
+                    BranchSide::Lower => RootPick::Lower,
+                    BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
+                    // `upper` says which end of the cutter's **shadow** this is — not which root of
+                    // the µ̂-quadratic. The two coincide only when that quadratic opens *upward*, so
+                    // that "inside the cutter" is the interval **between** its roots. Every cylinder
+                    // is that case, which is why the identity held until a cone wall turned up.
+                    //
+                    // A wall whose ruling meets it twice on one side has `a < 0`: inside is then the
+                    // *complement* of the root interval, so a shadow piece's **lower** end is the
+                    // quadratic's **upper** root and vice versa. Reading the sign of `a` is what makes
+                    // the resolver's convention and the oracle's agree; without it the oracle traces
+                    // the far branch, and `cut_fit` reports it as `NappeCrossed` — the fitted rail
+                    // really is off on the mirror nappe, so the refusal is right and the cause is here.
+                    //
+                    // Only the *search* branch depends on this, so a midpoint sample settles it: a
+                    // wrong guess costs a refusal from `cut_fit`, never a wrong `Verified`.
+                    BranchSide::Wall(_, upper) => {
+                        let opens_up = mu_form_opens_up(&built.charts[ri], wall, &span);
+                        if upper == opens_up {
+                            RootPick::Upper
+                        } else {
+                            RootPick::Lower
+                        }
+                    }
+                };
+                let (mu, e) = match certified_rail_surface(
+                    &built.charts[ri],
+                    wall,
+                    pick,
+                    &span,
+                    fit,
+                    &part.clearance,
+                    &part.cfg,
+                ) {
+                    Verdict::Verified(x) => x,
+                    Verdict::Unresolved(e) => {
+                        deferred.push((label, Ok(e)));
+                        continue;
+                    }
+                    Verdict::Refuted(_) => {
+                        deferred.push((label, Err(PartFault::CutUnresolved { op: label.0 })));
+                        continue;
+                    }
+                };
+                eps = rmax(&eps, &e);
+                pieces.push(RailPiece {
+                    label,
+                    region: ri,
+                    mu,
+                    span,
+                });
+            }
         }
     }
 
@@ -400,8 +454,8 @@ fn certify_boundary<B: Backend>(
                 })
                 .unwrap_or(0);
             let corner = match (
-                find_piece(&pieces, left, ri),
-                find_piece(&pieces, right, ri),
+                find_piece(&pieces, left, ri, &mid),
+                find_piece(&pieces, right, ri, &mid),
             ) {
                 (Some(l), Some(r)) => {
                     let dmu = l.mu.sub(&r.mu);
@@ -553,8 +607,16 @@ fn certify_boundary<B: Backend>(
     let covered = |segs: &[(Rat<B>, Rat<B>, Label)]| -> Result<(), RErr<B>> {
         for (a, b, label) in segs {
             for (plo, phi, ri) in span_pieces(&bands, a, b) {
-                let piece = find_piece(&pieces, *label, ri)
-                    .ok_or(RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
+                // No piece means the fit was recorded rather than raised (step 2). This segment
+                // survived step 3′, so the boundary really does need that rail: raise the reason
+                // the fit gave — a loose one stays refinable, a refusal stays a refusal.
+                let Some(piece) = find_piece(&pieces, *label, ri, &plo) else {
+                    return Err(match deferred.iter().find(|(l, _)| l == label) {
+                        Some((_, Ok(e))) => RErr::Loose(e.clone()),
+                        Some((_, Err(f))) => RErr::Fault(*f),
+                        None => RErr::Fault(PartFault::CutUnresolved { op: label.0 }),
+                    });
+                };
                 if plo.cmp(&piece.span.lo) == Ordering::Less
                     || piece.span.hi.cmp(&phi) == Ordering::Less
                 {
@@ -1028,7 +1090,8 @@ pub(crate) fn flat_pattern<B: Backend>(
                 region_pieces.reverse();
             }
             for (plo, phi, ri) in region_pieces {
-                let piece = find_piece(&boundary.pieces, *label, ri).ok_or(PartFault::Pole)?;
+                let piece =
+                    find_piece(&boundary.pieces, *label, ri, &plo).ok_or(PartFault::Pole)?;
                 let (start, end) = if forward {
                     (plo.clone(), phi.clone())
                 } else {
@@ -1264,7 +1327,8 @@ pub(crate) fn solid_brep<B: Backend>(
         let mut out = Vec::new();
         for (a, b, label) in segs {
             for (plo, phi, ri) in span_pieces(&bands, a, b) {
-                let piece = find_piece(&boundary.pieces, *label, ri).ok_or(PartFault::Pole)?;
+                let piece =
+                    find_piece(&boundary.pieces, *label, ri, &plo).ok_or(PartFault::Pole)?;
                 out.push((Interval { lo: plo, hi: phi }, piece.mu.clone()));
             }
         }

@@ -66,6 +66,47 @@ fn the_device_drawing_splits_the_material_section_and_is_refused_by_name() {
     );
 }
 
+/// **#293 — a wall that bounds twice is fitted twice.** Move the ccw ramp off the tab and the
+/// section stops splitting, so the drawing gets past [`PartFault::SectionNotSimple`] and the *next*
+/// thing it meets is the rail fitting. Two fields differ from the pinned device, which is what
+/// keeps this a measurement of that device rather than a restated one.
+///
+/// The tab's root fillet bounds the material in **two disjoint σ-runs** — the 410.7° chart passes
+/// its azimuth twice — and a single hull over both spanned 60°+ of azimuth for a fillet subtending
+/// 7.6°, on which the float oracle rightly declined (`disc < 0`). One rail per run fixes it.
+///
+/// What is asserted is the shape of the answer, not a golden: **`Unresolved`, not `Refuted`** —
+/// every *structural* blocker on this device is now a resolution question — and an ε at the DRC
+/// threshold rather than an order above it. Certifying it outright still needs #292's chart arm;
+/// the 3-D arm cannot close on the drawing's imported rim at any subdivision.
+#[test]
+fn the_drawing_clears_every_structural_blocker_once_the_ramp_is_off_the_tab() {
+    let mut spec = self_lapping_spec();
+    spec.ccw.ramp_start = acceptance::lapped::Azimuth::Sigma(Q::new(1, 10));
+    spec.ccw.ramp_end = acceptance::lapped::Azimuth::Sigma(Q::new(1, 2));
+    spec.inner_profile = Some(acceptance::inner_cut_profile());
+    let v = self_lapping_cone_from(&spec, 8, 8, false, None).develop();
+
+    let eps = match &v {
+        Verdict::Unresolved(e) => e.clone(),
+        other => panic!(
+            "no structural refusal should remain, got {}",
+            fault(match other {
+                Verdict::Verified(_) => Verdict::Unresolved(qi(0)),
+                Verdict::Refuted(f) => Verdict::Refuted(*f),
+                Verdict::Unresolved(e) => Verdict::Unresolved(e.clone()),
+            })
+        ),
+    };
+    // The device's clearance is 7, so the DRC gate is ε < 7/2. Landing *at* the gate says every
+    // rail is fitted where its wall is; an ε above it is the gross mis-fit #293 removed.
+    assert!(
+        eps.cmp(&Q::new(7, 2)) != core::cmp::Ordering::Greater,
+        "ε {} should sit at the DRC threshold, not above it",
+        export::approx::rat_to_f64(&eps)
+    );
+}
+
 /// **The flank, not the sheet, on its own is enough.** A straight-sided tab — vertical flanks, a
 /// chord tip — is crossed sideways by a *radial* ruling too, because its flanks are not radial. So
 /// this one splits the section on the base cone, where the drawing's radial-flanked tab does not.
