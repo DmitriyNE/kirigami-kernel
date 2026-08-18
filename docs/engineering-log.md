@@ -768,6 +768,40 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#292 adoption: implemented, measured, reverted — the tightness does not reach part ε
+  (2026-08-18).** The composition that works is the inverse of the obvious one: give
+  `traced_cut_fit` a per-sub-interval `refine` callback and take the tighter of the two bounds.
+  That is provable in two steps — a `None` refinement is a no-op (786/786), then wire the chart arm
+  (786/786, no pinned budget disturbed) — and it sidesteps the duplicated-implementation problem
+  the previous attempt hit, because the 3-D arm keeps computing its own bound its own way.
+
+  Then the A/B, on one tree, same fixtures:
+
+  | fixture | without refinement | with |
+  |---|---|---|
+  | plain bore | `Verified ε 3.3369e0`, 3.5 s | `Verified ε 3.3369e0`, 5.4 s |
+  | plain bore, ramp moved | `Verified ε 2.3465e0`, 3.5 s | `Verified ε 2.3465e0`, 5.4 s |
+  | drawing, ramp moved | `Unresolved ε 3.5000e0`, 35 s | `Unresolved ε 3.5000e0`, 40 s |
+
+  **ε identical everywhere; runtime +15% to +54%.** The spike's `10²`–`10¹²` per-rail tightness does
+  not reach the part: `ε` is a **max over pipeline stages**, and the rail certificate is not the
+  binding one. A bound that improves by twelve orders and moves nothing is a bound on something
+  nobody was waiting for — reverted, and `cut_fit` is untouched.
+
+  **The thing this task was opened for was already fixed, and not by the chart arm.** The drawing's
+  imported rim was *refused* because the nappe condition was checked at a fixed `clearance/2`; that
+  landed earlier the same day and turned the refusal into a refinable `Unresolved`. Recognition
+  stopped being a capability gate there. What the chart arm demonstrates — that a wall certifies
+  with no classification at all — stands, and it stays in the tree with its comparison test; what it
+  does not have is a fixture where adopting it measures a benefit.
+
+  *Method note, since this is the third revert in a row and they were not the same mistake:* the
+  useful discipline turned out to be **A/B on one tree before keeping anything**. The first two
+  reverts were caught by the suite; this one the suite could never have caught, because green was
+  never in question — only whether the change was worth its cost.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
 - **#292 adoption attempt, reverted — the arm policy is settled, the blocker is a duplicated
   implementation (2026-08-18).** Two things came out of trying to make the chart arm the default,
   and the first settles a question the spike had left open.
