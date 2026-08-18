@@ -768,6 +768,50 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **What actually stops the drawing: eight rails on the tab, and an enclosure that loses its own
+  cancellation (2026-08-18, → #292).** Chased the `ε 3.5000e0` to ground. Per-rail on the device
+  (pinned recipe, ramp moved off the tab so #291 does not mask it), seventeen rails are fitted and
+  the picture is unambiguous:
+
+  | rails | 3-D arm | chart arm |
+  |---|---|---|
+  | the trims and the bore rim (9) | `1.2e-1 … 5.4e0`, **one `Unresolved 5.3874e0`** | `1.1e-13 … 4.9e-3`, **all Verified** |
+  | the tab's fillets and flanks (8) | **`Unresolved ε 3.5000e0`** (the sentinel) | **`Refuted(DegenerateSurface)`** |
+
+  So `ε 3.5000e0` is `quadric_distance_on`'s "nothing certified" value, `max(widest, radius)` with
+  `radius = clearance/2`, on **eight rails belonging to the tab's sub-millimetre walls** — the
+  R 0.25 root fillets, the R 0.15 tip fillets, the flanks. Everything else certifies. And the chart
+  arm, which is `10¹²` better on the other nine and resolves one the 3-D arm cannot, has *nothing*
+  to say on those same eight.
+
+  **Why the chart arm declines, and it is not geometry.** Instrumented at the decline: `a` is
+  healthy — `[+4.9223e1, +4.9315e1]`, tight, far from zero — and the **discriminant encloses to
+  `[−3.0227e2, +5.8864e2]`**. Width ~890 around a true value that is a modest positive number. It
+  straddles zero, so no crossing can be named, so the arm declines. `b² − 4ac` is a small difference
+  of large terms and combining three independent enclosures throws the cancellation away.
+
+  **And the obvious fix does not work.** Forming `disc` symbolically as a rational function of σ
+  (`MuCut::disc()`, which already exists and is what the resolver's station targeting uses) and
+  enclosing *that* leaves the eight rails refusing exactly as before. Interval **Horner** over a
+  polynomial whose own coefficients carry the cancellation is no better than combining the terms —
+  the dependency is in the arithmetic, not in the expression tree. This is the same trap `s` fell
+  into and escaped, and it escaped only because `s` is genuinely `~1e-8`, so a relatively terrible
+  enclosure is still absolutely small. `disc` has no such luck.
+
+  What that points at is a *centred* evaluation — value at the sub-interval midpoint plus a
+  derivative-bounded remainder — which is the standard remedy for dependency and which this codebase
+  already uses elsewhere (`integrate_on_slope`'s "thin-midpoint dependency-taming"). Not attempted;
+  named so the next attempt starts there rather than at a fourth guess.
+
+  **Ruled out along the way, each by measurement, so nobody re-tries them:** the ball radius (shrank
+  `clearance` 7 → 1/2; six rails still report the sentinel and two report `ε 1.67e4`/`7.70e4`); the
+  oracle's samples (the µ̂ nodes are smooth and sane, `−2.6 … −4.4`, no poles); the fit's
+  conditioning (normalized-basis interpolation in `t = (σ−mid)/half`, expanded back exactly —
+  **no change**, the second time that has been measured); and the window inset (widened 20×, from
+  1/200 to 1/10 of the window — **no change**, so it is not proximity to the tangent rulings).
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
 - **#292 adoption: implemented, measured, reverted — the tightness does not reach part ε
   (2026-08-18).** The composition that works is the inverse of the obvious one: give
   `traced_cut_fit` a per-sub-interval `refine` callback and take the tighter of the two bounds.
