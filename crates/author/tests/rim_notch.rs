@@ -35,11 +35,17 @@
 //!
 //! With the ramp moved off the wedge, both features land on flat sheet on both passes. The bore's
 //! tab then **develops faithfully** — its four flank edges land on the drawing through the cast,
-//! which is the check that distinguishes a green certificate from a right part. The rim's lug
-//! develops `Verified` and **is not in the emitted pattern at all** (#296): the boundary is the
-//! plain rim, to four decimals the same as the same circle authored without a lug. That is a wrong
-//! part with a green certificate, so it is pinned twice here — the criterion `#[ignore]`d, and a
-//! tripwire asserting today's behaviour so the day it changes is not silent.
+//! which is the check that distinguishes a green certificate from a right part.
+//!
+//! The rim's lug develops `Verified` and comes out **inverted** (#296): where the drawing puts
+//! material reaching *out* to `r = 17.78`, the emitted rim dips *in*, to `15.884` on the base sheet
+//! and `15.917` on the offset one, against `16.043` elsewhere. Both notches sit at the lug's own
+//! azimuth. The radius the boundary would have if it followed the cap's **complementary** arc —
+//! the 165° minor arc, dipping to sketch `ρ = 10.575` instead of the drawn 195° arc reaching
+//! `13.75` — is `15.9235`. So the tab is cut as a **bite** rather than a lug: the walls are
+//! enrolled and traced, and the traversal sense of the cap is what is wrong. A wrong part with a
+//! green certificate, pinned twice here — the criterion `#[ignore]`d, and a tripwire asserting
+//! today's behaviour so the day it changes is not silent.
 
 use acceptance::{self_lapping_cone_from, self_lapping_spec};
 use arrange2d::profile::Profile;
@@ -296,12 +302,12 @@ fn the_drawings_tab_develops_and_its_flanks_land_on_the_drawing() {
 /// to say where material starts and stops, and a rim is not one.
 ///
 /// **This is the acceptance criterion and it does not hold yet — #296.** The develop reports
-/// `Verified` and the emitted flat pattern is the **plain rim**: the lug's material is not kept.
-/// Measured on this device at `segments = 8` — max `|r|` in the outline `16.3377`, at vertex 28,
-/// `(12.2510, −10.8089)`; the *same circle authored as a profile with no lug* gives `16.3377` at
-/// vertex 28, `(12.2510, −10.8089)`, identical to four decimals, where the lug's tip must develop
-/// to `17.78`. The lug's walls are traced (90 outline points against the control's 54) but they
-/// bound nothing. So this finds 0 flank edges where it needs 4.
+/// `Verified` and the lug comes out **inverted**: the emitted rim dips *inward* over the lug's
+/// wedge — to `15.884` on the base sheet and `15.917` on the offset one, against `16.043`
+/// elsewhere — where the drawing puts material reaching *outward* to `17.78`. The radius the
+/// boundary would take if it followed the cap's complementary 165° arc (dipping to sketch
+/// `ρ = 10.575`) is `15.9235`, which is what it is doing. So this finds 0 flank edges where it
+/// needs 4.
 ///
 /// It is specific to the wrapping device, which is what makes it a bug and not a scope line: on the
 /// narrow gore a kept contour built the same way — a major arc plus a radial lug — carries its lug
@@ -341,9 +347,14 @@ fn the_drawings_rim_lug_develops_and_its_flanks_land_on_the_drawing() {
 /// **The defect itself, pinned so it cannot be forgotten (#296).**
 ///
 /// The test above is the criterion and is `#[ignore]`d. This one runs, and asserts what the kernel
-/// *actually does today*: the developed boundary reaches the rim and stops there, where the drawing
-/// puts material 1.7 units further out. **When #296 is fixed this test fails**, which is the point
-/// — it is a tripwire, not an endorsement.
+/// *actually does today*: the developed boundary never reaches out to the lug's tip, because the
+/// tab is cut as an inward **bite** instead — the cap is traversed the wrong way round. **When #296
+/// is fixed this test fails**, which is the point — it is a tripwire, not an endorsement.
+///
+/// The assertion is on the outward reach rather than on the notch's depth deliberately: the notch's
+/// radius depends on which sheet each of the lug's two passes lands on (measured `15.884` on the
+/// base and `15.917` on the offset, against a rim at `16.043` on the two-ramp recipe), while
+/// "nothing reaches the tip" is one statement that holds whatever the region structure is.
 ///
 /// Both radii are derived, not restated: the development places a point at its slant distance from
 /// the apex, so a sheet radius `ρ` lands at `ρ·√(1 + cot²β)`; the rim's `ρ` is the recipe's gauge

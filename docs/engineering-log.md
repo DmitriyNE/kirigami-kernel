@@ -768,38 +768,45 @@ fine — this is a log, not a schema.
 
 ## Findings
 
-- **A kept contour's outward lug is silently dropped on the wrapping device — a green certificate
-  on a smaller part (2026-08-18, #296).** Found by the faithfulness check, not by any verdict, and
-  it is the reason [[verify-demo-faithfulness]] exists. `outer_profile = outer_cut_profile()`
-  develops **`Verified`** on the self-lapping device and the emitted pattern is the **plain rim**:
-  max `|r|` in the outline `16.3377` at vertex 28, `(12.2510, −10.8089)`, against the *same circle
-  authored as a profile with no lug* giving `16.3377` at vertex 28, `(12.2510, −10.8089)` —
-  identical to four decimals, where the lug's tip must develop to `17.78`. Its walls **are** traced
-  (90 outline points against the control's 54); they simply bound nothing.
+- **The rim tab's cap is traversed the wrong way, so the lug is cut as an inward bite
+  (2026-08-18, #296) — and my first diagnosis of it was wrong in an instructive way.**
+  `outer_profile = outer_cut_profile()` develops **`Verified`** and the tab comes out inverted: over
+  the lug's own wedge the emitted rim dips **inward**, to `15.8841` on the base sheet and `15.9169`
+  on the offset one, against `16.0429` elsewhere, where the drawing puts material reaching **out**
+  to `17.78`. The two notches sit at `ψ = ∓59.7°`, symmetric about zero — exactly the two passes of
+  plan azimuth 90°. And the radius the boundary takes if it follows the cap's **complementary** arc
+  (the 165° minor arc, dipping to sketch `ρ = 10.575`, rather than the drawn 195° arc reaching
+  `13.75`) is `15.9235`. Right place, right feature, right magnitude.
 
-  What that rules out, each measured rather than argued: it is **not convexification** (an
-  L-shaped kept contour on the narrow gore keeps its notch — flat area `0.6587` against its convex
-  hull's `1.4923`); it is **not arcs-plus-a-lug in general** (a major arc plus a radial lug, the
+  **What I got wrong, and why it is worth writing down.** I first reported the lug as *silently
+  dropped*, on the evidence that the emitted outline's **maximum radius** was identical — to four
+  decimals, same vertex index, same position — to the same circle authored with no lug. That
+  evidence is real and it is worthless: a maximum cannot move when a feature goes the *wrong way*.
+  I had built a scalar summary of a shape and then reasoned about the shape from the summary, for
+  several hours, including a chain of four "ruled out" hypotheses that were all answering the wrong
+  question. The user found it in a minute by **looking at the picture** and reading the curvature.
+  The rule that would have saved it: when the question is *what shape came out*, the first
+  measurement must be shape-valued — a radius profile, a fold-back, an overlay — never an extremum
+  or a norm. Extrema and ε are for *bounding* a shape you have already seen.
+
+  **What survives from that dead end**, each measured rather than argued, and all of it still true:
+  the **import is right** (`winding_parity` on the imported outline is correct at every probe —
+  material at ρ = 10 any azimuth, none at ρ = 11 off the wedge, material at ρ = 11 and 13.7 on it,
+  none at 13.9 — and `Extrusion::contains` uses that same predicate); it is **not convexification**
+  (an L-shaped kept contour on the narrow gore keeps its notch — `0.6587` against its convex hull's
+  `1.4923`); and it is **not arcs-plus-a-lug in general** (a major arc plus a radial lug, the
   drawing's rim in miniature, carries its lug on the narrow gore — `0.5932` against the same
-  circle's `0.4219`, +40.6%); it is **not the profile's fill** (`winding_parity` is right at every
-  probe — material at ρ = 10 any azimuth, none at ρ = 11 off the wedge, material at ρ = 11 and 13.7
-  on it, none at 13.9); and it is **not station targeting** (`bounding_wall` covers the whole
-  profile, and the uniform grid is 0.016–0.028 in σ against a 0.13-wide wedge).
+  circle's `0.4219`, +40.6%). Also worth carrying: on `h′ = 0` sheet the flank walls contribute
+  *no* crossing at all (the plane contains the ruling, so `a` and `b` both vanish), so the wedge's
+  ends are marked by the nose and rim roots alone.
 
-  So it is specific to the **wrapping** chart. `extruded_shadow` reads correct for this case — it
-  takes every wall's crossings along the ruling and classifies each stretch by the exact fill rule,
-  and the cast checks out by hand (a lower-nappe point at sheet `ρ = 11` projects to sketch
-  `ρ = 11.32`, inside the lug) — so suspicion sits **downstream of the shadow**, in the run and
-  label structure, where the nose wall bounds in **two separated σ-runs** because the wedge is
-  swept twice. That is #293's shape reached through an `Intersect` instead of a `Subtract`. Worth
-  noting for whoever instruments it: on `h′ = 0` sheet the flank walls contribute *no* crossing at
-  all (the plane contains the ruling, so `a` and `b` both vanish), which is right, and means the
-  wedge's ends are marked by the nose and rim roots alone. The first move is one instrumented
-  `resolve::sweep` printing, at each sample σ inside the wedge, the merged components and the
-  `(op, wall)` label on each end. Pinned twice in `author/tests/rim_notch.rs`: the faithfulness
-  criterion `#[ignore]`d, and `the_rim_lugs_material_is_dropped_today` as a tripwire that fails
-  when it starts working. **General lesson, again: a `Verified` outer bound says the emitted
-  boundary is near the walls it names, and says nothing about which walls it should have named.**
+  The walls are enrolled and traced; what is inverted is the **choice of branch**. So the first move
+  is at a σ inside the wedge (σ ≈ ±1): print `extruded_shadow`'s crossing list with its labels and
+  what `inside_near` returns between consecutive roots. The nose wall contributes two roots and the
+  near one is winning; the question is why. Note `inside_near`'s jitter is scaled by the stretch
+  being classified, and the wedge's stretches are narrow. Pinned twice in
+  `author/tests/rim_notch.rs`: the faithfulness criterion `#[ignore]`d, and
+  `the_rim_lugs_material_is_dropped_today` as a tripwire that fails when it starts working.
   *2026-08-18 · open · #296 · `author/src/resolve.rs`, measured on `acceptance::outer_cut_profile`*
 
 - **Both of the device's boundaries now come out of the drawing (2026-08-18, #295).** The outer
