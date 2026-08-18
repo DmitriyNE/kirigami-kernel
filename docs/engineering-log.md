@@ -768,6 +768,62 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#292 spike, GO: certify the wall in the chart and recognition stops mattering (2026-08-18).**
+  `develop::cut::ruling_cut_fit` measures the rail's distance to its wall the way the chart already
+  knows how, and it answers every question the spike was set:
+
+  > `dist(C(σ), wall) ≤ |s(σ)| / |∂s/∂µ̂| · |ruling(σ)|`, `s = a µ̂_fit² + b µ̂_fit + c` the rail's own
+  > residual in the µ̂-pullback [`cut_mu_form`] — **an exact rational function of σ**.
+
+  No ball, no gradient bound, no classification. The nappe becomes *which root*, decided at a point
+  rather than over an inflated box.
+
+  **Tightness, per rail, on the two-ramp device with a plain bore** (both arms certify, so they can
+  be compared; `subdiv 160`):
+
+  | rail | 3-D arm (closed form) | chart arm |
+  |---|---|---|
+  | outer, base cone | 1.4295e-1 | **6.6359e-14** |
+  | outer, ramp ① | 1.6854e-2 | **5.1627e-4** |
+  | outer, ramp ② | 2.0055e-2 | **1.7776e-3** |
+  | outer, flat ccw | 2.2124e-2 | **6.6767e-14** |
+  | bore, base cone | 6.2563e-8 | **5.8617e-14** |
+  | bore, ramp ① | 6.4560e-3 | **9.6798e-4** |
+  | bore, ramp ② | 1.2990e-2 | **7.5357e-3** |
+  | bore, flat ccw | 7.9878e-3 | **3.6707e-14** |
+
+  Tighter on **every** rail, by 10² to 10¹². That is not a surprise once stated: the 3-D arm
+  re-derives from an inflated ball a quantity the chart holds exactly, and the `σ ↔ µ̂` cancellation
+  it loses is the whole difference. Convergence on the ramp rails is clean `O(h)` — `5.1627e-4 →
+  2.6597e-4 → 1.4182e-4` and `1.7776e-3 → 8.9200e-4 → 4.5317e-4` over `subdiv 160 → 320 → 640`.
+
+  **And the wall that started this.** The drawing's Ø 8 rim — the imported circle `2.3e-14 mm`
+  off-axis, which `RevCone` declines and the 3-D arm cannot certify at *any* subdivision — certifies
+  at **ε 1.0384e-13**. All eight trim rails certify. Recognition is now what it should always have
+  been: an optimization that can be dropped without losing a capability.
+
+  **Two things the spike also found, and both are worth carrying.**
+
+  - *A sign error that looked like success.* The first cut returned `ε 0.0000e0` on every rail. The
+    mean-value term kept the slope's sign, so the "bound" was negative and `max` discarded it. A
+    certificate arm that reports **zero** is the failure mode to fear most, and the only reason it
+    was caught is that zero was implausible enough to check the terms. *Assert `ε ≥ 0` in the test,
+    and be suspicious of a bound that improves by orders of magnitude in one edit.*
+  - *The dependency trap it replaced.* Written as `|µ̂_fit − µ̂*|` with the two enclosed
+    independently, the bound reads `5.5e-1` where the rail is exact to `6.3e-8`: each of the two
+    swings by `~0.5` across a σ-piece and the difference inherits both swings. Forming `s` as a
+    rational function *first* and dividing by a slope **lower** bound is what keeps the
+    cancellation — a loose root enclosure cannot spoil a lower bound.
+
+  **Costs and open ends.** The chart arm ran the plain bore in `8.3 s` against `5.7 s` (+45%) —
+  `s` is a RatFunc product, so this lands on #279's coefficient growth. It degrades near a tangent
+  ruling where `∂s/∂µ̂ → 0`; those windows are already isolated exactly by `tangent_events` and owned
+  by the p-curve arm, but that hand-off is *not yet measured*. And with all rails certifying, the
+  drawing's next blocker is a different subsystem: `fit_cut_rail` — the **float oracle** — declines
+  on span `[−1.0397, −0.0602]`, which is neither certificate nor resolver.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
 - **Recognition must never be a capability gate — and the general arm is not yet good enough to make
   that true (2026-08-18, → #292).** The user rejected backward-error recognition as the fix for the
   entry below, in two sentences worth keeping verbatim in spirit: *"I really don't understand how it

@@ -2131,6 +2131,189 @@ fn max_rat<B: Backend>(a: Rat<B>, b: Rat<B>) -> Rat<B> {
     }
 }
 
+/// The reciprocal of an interval **bounded away from zero**, either sign — `None` when it
+/// straddles.
+fn recip_away<B: Backend>(x: &RatIv<B>) -> Option<RatIv<B>> {
+    if x.lo().sign() > 0 {
+        x.recip_pos()
+    } else if x.hi().sign() < 0 {
+        Some(x.neg().recip_pos()?.neg())
+    } else {
+        None
+    }
+}
+
+/// **SPIKE (#292) — the wall certificate measured in the chart instead of in 3-D.**
+///
+/// [`cut_fit`] builds the rail's 3-D point and asks how far it is from the surface. For a plane or
+/// a cylinder that is a closed form; for a general quadric it is a first-order ball bound, which
+/// loses the `σ ↔ µ̂` cancellation and — measured on the device's imported bore — does not converge
+/// at any subdivision. That made [`RevCone`] recognition a *capability* gate rather than an
+/// optimization, which is the defect: whether a cut can be performed must not depend on a
+/// classification.
+///
+/// This arm needs no classification. Distance to a surface is an **upper bound** problem, so any
+/// point of the surface will serve, and the chart already knows one exactly: the resolver computes
+/// every wall's µ̂-pullback `a(σ)µ̂² + b(σ)µ̂ + c(σ)` ([`cut_mu_form`]) to decide the shadow at all,
+/// and its roots are where **this very ruling** meets the wall. So
+///
+/// ```text
+///     dist(C(σ), wall) ≤ |µ̂_fit(σ) − µ̂*(σ)| · |ruling(σ)|
+/// ```
+///
+/// with `µ̂*` the nearer root **on the authored nappe**. Everything is rational but two `√`
+/// enclosures (the root and the ruling speed), there is no ball and no gradient, and the nappe
+/// question becomes *which root* — decided at a point rather than over an inflated box, so a wall
+/// with millimetres of headroom can never read as a crossing.
+///
+/// It is exact when the ruling meets the wall perpendicularly and overestimates by `1/sin θ` for a
+/// crossing angle `θ`, so it degrades where the ruling runs **tangent** to the wall — exactly the
+/// windows [`tangent_events`] already isolates and the p-curve arm already owns.
+pub fn ruling_cut_fit<B: Backend>(
+    chart: &Chart<B>,
+    cert: &CutFitCert<B>,
+) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
+    use core::cmp::Ordering;
+    let (lo, hi) = (&cert.span.lo, &cert.span.hi);
+    if lo.cmp(hi) != Ordering::Less {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let Some(form) = cut_mu_form(chart, &cert.surface, &cert.w) else {
+        return Verdict::Refuted(CutFitFault::DegenerateSurface);
+    };
+    // Only a quadric carries a live selector; a plane and a cylinder are whole surfaces.
+    let nappe = match &cert.surface {
+        CutSurface::Quadric(q) if q.nappe.n.iter().any(|k| !k.is_zero()) => Some(&q.nappe),
+        _ => None,
+    };
+    let (pedal, ruling, normal) = (chart.pedal(), chart.ruling(), chart.normal());
+    // The rail's own residual in the pullback, as a rational function of σ — **exact**, so its
+    // enclosure over a piece is tight. This is where the `σ ↔ µ̂` cancellation is kept: subtracting
+    // two independently-enclosed µ̂ values would inherit the full swing of each across the piece
+    // (measured: `5.5e-1` where the rail is exact to `6.3e-8`), while `s` itself is that `6.3e-8`.
+    let s = form
+        .a
+        .mul(&cert.mu_hat)
+        .add(&form.b)
+        .mul(&cert.mu_hat)
+        .add(&form.c)
+        .reduce();
+    let n_sub = cert.subdiv.max(1);
+    let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
+    let half = cert.clearance.mul(&Rat::new(1, 2));
+    let (two, four) = (
+        RatIv::point(Rat::from_i128(2)),
+        RatIv::point(Rat::from_i128(4)),
+    );
+    let mut eps = Rat::from_i128(0);
+    for k in 0..n_sub {
+        crate::counters::bump_cut_eval();
+        let sig = subiv(lo, &width, k);
+        let (Some(mu), Some(a), Some(b), Some(c), Some(r)) = (
+            eval_ratfunc_on(&cert.mu_hat, &sig),
+            eval_ratfunc_on(&form.a, &sig),
+            eval_ratfunc_on(&form.b, &sig),
+            eval_ratfunc_on(&form.c, &sig),
+            vec3_on(ruling, &sig),
+        ) else {
+            return Verdict::Refuted(CutFitFault::PoleInEval);
+        };
+        // Where this ruling meets the wall. An identically-affine section (a plane through the
+        // apex) has one crossing; a genuine quadratic has two, and none at all where the ruling
+        // misses the wall — which is not a fit this arm can certify.
+        let mut roots: Vec<RatIv<B>> = Vec::new();
+        if a.lo().is_zero() && a.hi().is_zero() {
+            if let Some(inv) = recip_away(&b) {
+                roots.push(c.neg().mul(&inv));
+            }
+        } else {
+            let disc = b.mul(&b).sub(&four.mul(&a).mul(&c));
+            if disc.lo().sign() > 0
+                && let Some(inv) = recip_away(&two.mul(&a))
+            {
+                let sq = sqrt_on(&disc, &cert.cfg.sqrt_eps);
+                roots.push(b.neg().sub(&sq).mul(&inv));
+                roots.push(b.neg().add(&sq).mul(&inv));
+            }
+        }
+        if roots.is_empty() {
+            return Verdict::Refuted(CutFitFault::DegenerateSurface);
+        }
+        let r2 = r[0].mul(&r[0]).add(&r[1].mul(&r[1])).add(&r[2].mul(&r[2]));
+        let speed = sqrt_on(&r2, &cert.cfg.sqrt_eps);
+        let Some(s_iv) = eval_ratfunc_on(&s, &sig) else {
+            return Verdict::Refuted(CutFitFault::PoleInEval);
+        };
+        // The nearest crossing that is on the authored nappe — an exact question at a point.
+        let mut best: Option<Rat<B>> = None;
+        for root in &roots {
+            if let Some(nap) = nappe {
+                let (Some(p), Some(nv)) = (vec3_on(pedal, &sig), vec3_on(normal, &sig)) else {
+                    return Verdict::Refuted(CutFitFault::PoleInEval);
+                };
+                let mut sel = RatIv::point(nap.d.clone()).neg();
+                for i in 0..3 {
+                    let y = p[i].add(&root.mul(&r[i])).add(&nv[i].scale(&cert.w));
+                    sel = sel.add(&y.scale(&nap.n[i]));
+                }
+                if sel.lo().sign() <= 0 {
+                    continue;
+                }
+            }
+            // Two sound readings of `|µ̂_fit − µ̂*|`, and the tighter one wins.
+            //
+            // The direct difference is honest but inherits both enclosures' swing. The mean-value
+            // form `|s| / |∂s/∂µ̂|` divides a **tight** numerator by a lower bound on the slope over
+            // a µ̂-range containing both points — and a lower bound is exactly the quantity a loose
+            // root enclosure cannot spoil. `∂s/∂µ̂ = 2aµ̂ + b` vanishes only at a tangent ruling,
+            // which is the case this arm hands to the p-curve.
+            let direct = abs_on(&mu.sub(root)).mul(&speed).hi().clone();
+            let hull = RatIv::new(
+                if mu.lo().cmp(root.lo()) == Ordering::Less {
+                    mu.lo().clone()
+                } else {
+                    root.lo().clone()
+                },
+                if mu.hi().cmp(root.hi()) == Ordering::Greater {
+                    mu.hi().clone()
+                } else {
+                    root.hi().clone()
+                },
+            );
+            let slope = two.mul(&a).mul(&hull).add(&b);
+            let d = match recip_away(&slope) {
+                Some(inv) => {
+                    // `inv` carries the slope's sign; the distance does not.
+                    let mv = abs_on(&s_iv.mul(&inv)).mul(&speed).hi().clone();
+                    if mv.cmp(&direct) == Ordering::Less {
+                        mv
+                    } else {
+                        direct
+                    }
+                }
+                None => direct,
+            };
+            best = Some(match best {
+                Some(x) if x.cmp(&d) != Ordering::Greater => x,
+                _ => d,
+            });
+        }
+        let Some(d) = best else {
+            return Verdict::Refuted(CutFitFault::NappeCrossed);
+        };
+        eps = max_rat(eps, d);
+    }
+    if eps.cmp(&half) == Ordering::Less {
+        Verdict::Verified(ValidCutFit {
+            span: cert.span.clone(),
+            eps,
+            clearance: cert.clearance.clone(),
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
 /// Certify the cut-fit obligation `sup_σ dist(C(σ, μ̂(σ)), {F=0}) ≤ ε` and gate it by
 /// the DRC `ε < clearance/2`.
 ///
@@ -3959,6 +4142,56 @@ mod tests {
         assert!(
             matches!(probe(0), DistOn::Fault(CutFitFault::NappeCrossed)),
             "nor does the apex, where inside inverts"
+        );
+    }
+
+    /// **The chart arm agrees with the closed form, and is tighter.** A cone of revolution is the
+    /// one wall both arms can measure — [`cut_fit`] through [`RevCone`]'s closed form,
+    /// [`ruling_cut_fit`] through the µ̂-pullback — so it is where the two can be compared, and the
+    /// comparison is the whole point of #292: the chart arm needs no recognition, so it must not
+    /// cost anything to give recognition up.
+    ///
+    /// It does not. Both certify the same exactly-on-the-wall rail, and the chart arm's bound is
+    /// *smaller*, because the rail's residual `s(σ)` is an exact rational function while the 3-D
+    /// arm re-derives the same quantity from an inflated ball. Measured on the device the gap is
+    /// 10²–10¹²; here it is enough to state the direction and that neither undercuts zero.
+    #[test]
+    fn the_chart_arm_certifies_what_the_closed_form_does_and_no_looser() {
+        let chart = cone();
+        // The exact offset-plane rail `plane_cut_rail_verifies_near_zero` uses: a rail that lies on
+        // its wall identically, so both arms are measuring the same zero by different routes.
+        let n = [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)]; // the z = 1 plane
+        let d = Q::from_i128(1);
+        let cert = CutFitCert {
+            mu_hat: plane_cut_rail(&chart, &n, &d),
+            w: Q::from_i128(0),
+            surface: CutSurface::Plane { n, d },
+            span: ivl(1, 3),
+            subdiv: 8,
+            clearance: Q::new(1, 100),
+            cfg: DevConfig::tight(),
+        };
+        let three_d = match cut_fit(&chart, &cert) {
+            Verdict::Verified(v) => v.eps,
+            v => panic!(
+                "the 3-D arm must certify this rail, got {}",
+                verdict_tag(&v)
+            ),
+        };
+        let chartwise = match ruling_cut_fit(&chart, &cert) {
+            Verdict::Verified(v) => v.eps,
+            v => panic!("the chart arm must certify it too, got {}", verdict_tag(&v)),
+        };
+        assert!(
+            chartwise.sign() >= 0,
+            "a distance bound is never negative: {}",
+            to_f64(&chartwise)
+        );
+        assert!(
+            chartwise.cmp(&three_d) != core::cmp::Ordering::Greater,
+            "the chart arm ({}) must not be looser than the closed form ({})",
+            to_f64(&chartwise),
+            to_f64(&three_d)
         );
     }
 
