@@ -13,39 +13,32 @@
 //! projection passes exactly through the axis and runs *along* the flank; on a ramp it misses by up
 //! to 0.481 mm and runs *across* it.
 //!
-//! Both features sit in the wedge the 410.7° chart covers **twice** (material azimuth is
+//! Both features sit in the wedge the 410.7° chart covers **twice** — material azimuth is
 //! `270° + 4·arctan σ`, so `az ∈ (64.6°, 115.4°)` is swept on the base cone and again on the
-//! lapping sheet), and on the pinned device the second pass lands on the ramp. So each is refused
-//! there, and *which* refusal it earns is the measurement:
+//! lapping sheet:
 //!
 //! | | the bore's tab (subtract) | the rim's lug (intersect) |
 //! |---|---|---|
-//! | base pass | σ ≈ −1.079…−0.927, `h′ = 0` ✓ | σ ≈ −1.067…−0.937, `h′ = 0` ✓ |
-//! | lapping pass | σ ≈ +0.888…+1.049, on the ramp | σ ≈ +0.937…+1.067, straddling the ramp's end |
-//! | refusal | [`PartFault::SectionNotSimple`] — the kept material is two µ̂-intervals at one σ | [`PartFault::TopologyMismatch`] — the section stays simple; the assembled outline does not |
+//! | base pass | σ ≈ −1.079…−0.927, `h′ = 0` | σ ≈ −1.067…−0.937, `h′ = 0` |
+//! | lapping pass | σ ≈ +0.888…+1.049, on the pinned ramp | σ ≈ +0.937…+1.067, straddling its end |
+//!
+//! On the pinned device the tab's second pass lands on the ramp and it refuses
+//! [`PartFault::SectionNotSimple`] — the kept material is two µ̂-intervals at one σ.
 //!
 //! The tab's route is understood: a region is modelled as **one µ̂-interval per σ** — a lower rail
 //! and an upper rail, both graphs over σ — plus interior holes, and a tab that bays in sideways
 //! splits that interval, which the section sampler sees and names. That is #291.
 //!
-//! The lug's is **not**, and the honest reading is narrower than it looks: `SectionNotSimple` never
-//! fires, the outline comes back as two faces, and the coherence gate refuses it — but since the
-//! lug's material is not being kept anywhere on this chart (#296), what the two faces are is an
-//! open question, not a second face of #291. Stated as measured, and no further.
-//!
 //! With the ramp moved off the wedge, both features land on flat sheet on both passes. The bore's
 //! tab then **develops faithfully** — its four flank edges land on the drawing through the cast,
 //! which is the check that distinguishes a green certificate from a right part.
 //!
-//! The rim's lug develops `Verified` and comes out **inverted** (#296): where the drawing puts
-//! material reaching *out* to `r = 17.78`, the emitted rim dips *in*, to `15.884` on the base sheet
-//! and `15.917` on the offset one, against `16.043` elsewhere. Both notches sit at the lug's own
-//! azimuth. The radius the boundary would have if it followed the cap's **complementary** arc —
-//! the 165° minor arc, dipping to sketch `ρ = 10.575` instead of the drawn 195° arc reaching
-//! `13.75` — is `15.9235`. So the tab is cut as a **bite** rather than a lug: the walls are
-//! enrolled and traced, and the traversal sense of the cap is what is wrong. A wrong part with a
-//! green certificate, pinned twice here — the criterion `#[ignore]`d, and a tripwire asserting
-//! today's behaviour so the day it changes is not silent.
+//! The rim's lug is **kept but not yet buildable** (#296). It used to come back `Verified` with the
+//! tab cut *inward* as a bite; that was the shadow fragmenting a non-convex kept region at every
+//! wall crossing, and coalescing the patches fixed it. What stops it now is a named refusal —
+//! `RailSpanShort { op: 0 }`, §12.4's p-curve end at the lug's **mixed corner**: its flank is
+//! tangent to the nose arc at one end and meets the rim transversally at the other, so #294's
+//! `flank_splice`, which wants a tangency at both, does not fire.
 
 use acceptance::{self_lapping_cone_from, self_lapping_spec};
 use arrange2d::profile::Profile;
@@ -301,26 +294,23 @@ fn the_drawings_tab_develops_and_its_flanks_land_on_the_drawing() {
 /// — so it moves the upper rail and closes nothing in σ. The exclusion is about contours that have
 /// to say where material starts and stops, and a rim is not one.
 ///
-/// **This is the acceptance criterion and it does not hold yet — #296.** The develop reports
-/// `Verified` and the lug comes out **inverted**: the emitted rim dips *inward* over the lug's
-/// wedge — to `15.884` on the base sheet and `15.917` on the offset one, against `16.043`
-/// elsewhere — where the drawing puts material reaching *outward* to `17.78`. The radius the
-/// boundary would take if it followed the cap's complementary 165° arc (dipping to sketch
-/// `ρ = 10.575`) is `15.9235`, which is what it is doing. So this finds 0 flank edges where it
-/// needs 4.
+/// **This is the acceptance criterion and it does not hold yet — #296.** The lug is now *kept*
+/// (the shadow's abutting patches are coalesced, so an `Intersect` no longer fragments a non-convex
+/// kept region — see `resolve::extruded_shadow`), and what stops it is a named refusal:
+/// `RailSpanShort { op: 0 }`, §12.4's p-curve end at the lug's **mixed corner**. The bore's tab has
+/// a *tangency at each end of its flank*, which is the shape #294's `flank_splice` detects; the
+/// lug's flank is tangent to the nose arc at one end and meets the rim **transversally** at the
+/// other, so the two windows never overlap and the splice does not fire. The boundary genuinely
+/// jumps in µ̂ at the flank azimuth — a `Cap` along the flank wall, the same emission #294 already
+/// builds — and it is the *detection* that has to grow.
 ///
-/// It is specific to the wrapping device, which is what makes it a bug and not a scope line: on the
-/// narrow gore a kept contour built the same way — a major arc plus a radial lug — carries its lug
-/// (flat area `0.5932` against the same circle's `0.4219`), and a non-convex L-shaped kept contour
-/// keeps its notch (`0.6587` against its convex hull's `1.4923`). #296 carries the diagnosis and
-/// what has already been ruled out.
+/// Until then this refuses rather than lying, which is the whole difference from before: it used to
+/// come back `Verified` with the tab cut *inward* as a bite, the emitted rim dipping to `15.884`
+/// where the drawing wants `17.78`.
 ///
 /// Kept as written rather than weakened, because it is the statement that has to become true.
-/// `ε` when it runs: `3.478` against this part's `clearance/2 = 3.5` — a **rail-fit chord bound**,
-/// `160 → 320 → 640` in `RailFit::subdiv` taking it `3.478 → 1.617 → 0.655` at `51 → 84 → 152` s,
-/// while `segments` and the fit's `degree`/`bits` move it not at all.
 #[test]
-#[ignore = "#296: the lug is silently dropped on the wrapping device — the criterion, not a pass"]
+#[ignore = "#296: the lug's mixed corner needs the §12.4 splice — the criterion, not a pass"]
 fn the_drawings_rim_lug_develops_and_its_flanks_land_on_the_drawing() {
     let mut spec = ramp_off_the_wedge();
     spec.outer_profile = Some(acceptance::outer_cut_profile());
@@ -344,120 +334,28 @@ fn the_drawings_rim_lug_develops_and_its_flanks_land_on_the_drawing() {
     );
 }
 
-/// **The defect itself, pinned so it cannot be forgotten (#296).**
+/// **What the lug does today, pinned so the next change to it is not silent (#296).**
 ///
-/// The test above is the criterion and is `#[ignore]`d. This one runs, and asserts what the kernel
-/// *actually does today*: the developed boundary never reaches out to the lug's tip, because the
-/// tab is cut as an inward **bite** instead — the cap is traversed the wrong way round. **When #296
-/// is fixed this test fails**, which is the point — it is a tripwire, not an endorsement.
+/// The criterion above is `#[ignore]`d. This one runs and asserts the current, *honest* behaviour:
+/// the lug is kept, and the boundary it needs cannot be built yet, so the part is refused by name —
+/// `RailSpanShort { op: 0 }`, §12.4's p-curve end at the lug's mixed corner. **When #296 is fixed
+/// this test fails**, which is the point.
 ///
-/// The assertion is on the outward reach rather than on the notch's depth deliberately: the notch's
-/// radius depends on which sheet each of the lug's two passes lands on (measured `15.884` on the
-/// base and `15.917` on the offset, against a rim at `16.043` on the two-ramp recipe), while
-/// "nothing reaches the tip" is one statement that holds whatever the region structure is.
-///
-/// Both radii are derived, not restated: the development places a point at its slant distance from
-/// the apex, so a sheet radius `ρ` lands at `ρ·√(1 + cot²β)`; the rim's `ρ` is the recipe's gauge
-/// (a cast fixes its own gauge radius) and the lug tip's is [`acceptance::lapped::draft_image`] of
-/// the profile's own farthest point.
+/// It is worth knowing what this replaced. Before the shadow's patches were coalesced, every lug
+/// configuration came back `Verified` with the tab cut *inward* as a bite, and the ramp's position
+/// appeared to matter — `TopologyMismatch` with 2 faces at the pinned ramp, 6 with the ramp over
+/// the whole wedge, `Verified` either side. All of that was downstream of the fragmentation: the
+/// kept region was split at every wall crossing, the component pick kept whichever piece held the
+/// witness, and which piece that was moved with the geometry. None of it was about the ramp. The
+/// ramp variants are gone from this file for that reason — they measured an artifact.
 #[test]
-fn the_rim_lugs_material_is_dropped_today() {
+fn the_rim_lug_refuses_by_name_pending_its_corner_splice() {
     let mut spec = ramp_off_the_wedge();
-    let profile = acceptance::outer_cut_profile();
-    // The profile's farthest point from the axis: an arc reaches `|c| + r`, a segment its ends.
-    let mut sketch_max = 0.0f64;
-    for e in &profile {
-        let d = match e {
-            Edge::Arc(a) => f(&a.circle.cx).hypot(f(&a.circle.cy)) + f(&a.circle.r2).sqrt(),
-            Edge::Seg(s) => sd(&s.start.x)
-                .hypot(sd(&s.start.y))
-                .max(sd(&s.end.x).hypot(sd(&s.end.y))),
-        };
-        sketch_max = sketch_max.max(d);
-    }
-    let slant = {
-        let (c, s) = (f(&spec.apex.0), f(&spec.apex.1));
-        (1.0 + (c / s).powi(2)).sqrt()
-    };
-    let rim = f(&spec.outer_r) * slant;
-    let tip = f(&acceptance::lapped::draft_image(
-        &spec.apex,
-        &spec.outer_r,
-        &Q::new((sketch_max * 1_000_000.0) as i128, 1_000_000),
-    )) * slant;
-    assert!(
-        tip > rim + 1.0,
-        "the lug must reach well past the rim to be worth checking: rim {rim:.4}, tip {tip:.4}"
-    );
-
-    spec.outer_profile = Some(profile);
-    let part = self_lapping_cone_from(&spec, 8, 8, false, None);
-    let flat = match part.develop() {
-        Verdict::Verified(fl) => fl,
-        v => panic!(
-            "the lug device develops (that is the whole problem), got {}",
-            fault(v)
-        ),
-    };
-    let reach = flat
-        .outline()
-        .vertices
-        .iter()
-        .map(|v| {
-            let (x, y) = v.center();
-            f(&x).hypot(f(&y))
-        })
-        .fold(0.0f64, f64::max);
-    assert!(
-        reach > rim - 1.0,
-        "the pattern must at least reach the rim: {reach:.4} against {rim:.4}"
-    );
-    assert!(
-        reach < (rim + tip) / 2.0,
-        "#296 IS FIXED — the lug now reaches {reach:.4} (rim {rim:.4}, tip {tip:.4}). \
-         Delete this tripwire and un-ignore the faithfulness test above."
-    );
-}
-
-/// **The rim lug under the ramp is refused, and by a different name than the tab is.**
-///
-/// The lug's lapping pass runs `σ ≈ 0.937…1.067`, straddling the pinned ramp's end at `σ = 1`, so
-/// part of it meets `h′ ≠ 0` sheet where a ruling crosses the radial flank instead of running along
-/// it. [`PartFault::SectionNotSimple`] never fires — an intersect only moves the upper rail, so the
-/// section stays one interval — and every certificate passes; the refusal comes at the far end,
-/// where the exact flat boolean assembles the outline into **2 faces** and the coherence gate
-/// declines to ship it. Sound, and symptom-named.
-///
-/// **What the ramp does to it is measured** — same file, same device, one parameter:
-///
-/// | ccw ramp | the lug's lapping pass meets | verdict |
-/// |---|---|---|
-/// | `[1/10, 1/2]` | plateau only | `Verified`, ε 3.478 |
-/// | `[4/7, 9/10]` | plateau only | `Verified`, ε 3.473 |
-/// | `[4/7, 1]` (pinned) | ramp end, then plateau | `TopologyMismatch`, **2** faces |
-/// | `[9/10, 11/10]` | ramp throughout | `TopologyMismatch`, **6** faces |
-///
-/// So the refusal tracks `h′ ≠ 0` under the flank, and the face count tracks how much of the wedge
-/// is under it. **What it is not yet safe to conclude** is that this is the tab's limit wearing
-/// another face: the two `Verified` rows above emit the plain rim (#296), so the lug's walls are not
-/// bounding anywhere on this chart, and whatever the extra faces are, they are not the lug's
-/// boundary being modelled badly. This is pinned as a refusal that must keep happening, not as a
-/// diagnosis.
-#[test]
-fn the_pinned_devices_ramp_refuses_the_rim_lug() {
-    let mut spec = self_lapping_spec();
     spec.outer_profile = Some(acceptance::outer_cut_profile());
     let v = self_lapping_cone_from(&spec, 8, 8, false, None).develop();
     assert!(
-        matches!(
-            v,
-            Verdict::Refuted(PartFault::TopologyMismatch {
-                expected_holes: 0,
-                faces,
-                ..
-            }) if faces != 1
-        ),
-        "the lug under the ramp must refuse as an incoherent outline, got {}",
+        matches!(v, Verdict::Refuted(PartFault::RailSpanShort { op: 0 })),
+        "the lug must refuse as the outer op's p-curve end, got {}",
         fault(v)
     );
 }

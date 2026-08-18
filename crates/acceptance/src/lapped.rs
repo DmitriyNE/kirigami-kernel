@@ -287,11 +287,11 @@ pub struct LappedCone {
     /// enclosing that axis, so it moves the upper rail and closes nothing in σ.
     ///
     /// **Scope, measured (#296).** An outline whose extra material reaches *outward* — a lug on the
-    /// rim — is carried on a narrow chart and is **silently dropped on the wrapping chart**: the
-    /// part develops `Verified` bounded by the plain circle, indistinguishable from the same circle
-    /// with no lug. So on a lapping device this is today a way to change the *gauge circle's shape*
-    /// where the outline stays inside its own hull, and not yet a way to add a tab to the rim.
-    /// `author/tests/rim_notch.rs` pins both the criterion and the current behaviour.
+    /// rim — is kept, and on the wrapping device its boundary cannot be built yet: the part refuses
+    /// `RailSpanShort`, §12.4's p-curve end at the lug's mixed corner, where the flank is tangent to
+    /// the nose arc at one end and meets the rim transversally at the other. So on a lapping device
+    /// this is today a way to change the *gauge circle's shape*, and not yet a way to add a tab to
+    /// the rim. `author/tests/rim_notch.rs` pins both the criterion and the refusal.
     pub outer_profile: Option<Vec<Edge<Bignum>>>,
     /// The inner trim radius, if the blank is an annulus. `None` leaves the inner bound to the
     /// caller's own authoring ops.

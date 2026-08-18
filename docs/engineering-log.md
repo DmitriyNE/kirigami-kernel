@@ -800,14 +800,32 @@ fine — this is a log, not a schema.
   *no* crossing at all (the plane contains the ruling, so `a` and `b` both vanish), so the wedge's
   ends are marked by the nose and rim roots alone.
 
-  The walls are enrolled and traced; what is inverted is the **choice of branch**. So the first move
-  is at a σ inside the wedge (σ ≈ ±1): print `extruded_shadow`'s crossing list with its labels and
-  what `inside_near` returns between consecutive roots. The nose wall contributes two roots and the
-  near one is winning; the question is why. Note `inside_near`'s jitter is scaled by the stretch
-  being classified, and the wedge's stretches are narrow. Pinned twice in
-  `author/tests/rim_notch.rs`: the faithfulness criterion `#[ignore]`d, and
-  `the_rim_lugs_material_is_dropped_today` as a tripwire that fails when it starts working.
-  *2026-08-18 · open · #296 · `author/src/resolve.rs`, measured on `acceptance::outer_cut_profile`*
+  **The cause, from one instrumented print of `extruded_shadow` at σ = −1.011.** The crossings are
+  `nose far −12.103`, `rim −10.925`, `nose near −10.853`, and the patches came back as *three*:
+  `[−12.103, −10.925]`, `[−10.925, −10.853]`, `[−10.853, 0]`. They **abut exactly** — their union is
+  the right material, out to the lug's tip. But `cuts` carries every wall's crossings, and a wall
+  crosses wherever its whole *carrier* does, not only where it bounds: a ruling through the lug meets
+  the rim circle **inside** the lug, where the profile is filled on both sides. Consecutive inside
+  stretches were being emitted as separate patches.
+
+  That is harmless for `Subtract` — `comp_subtract` folded over abutting patches gives exactly what
+  it gives over their union, labels included — and **not** harmless for `Intersect`, where
+  `comp_intersect` yields one component per patch and `sample_comps` merges components only across a
+  gap carved by a single subtract op. So a non-convex kept region was fragmented into abutting
+  components and the pick kept whichever held the witness. Which one that was moved with the
+  geometry, which is why the earlier ramp-position table looked meaningful: it was measuring an
+  artifact. **Fix: coalesce consecutive inside stretches into one maximal patch** in
+  `extruded_shadow` (degenerate zero-width stretches join a run rather than breaking it).
+
+  With that, the lug is kept and the device refuses **by name** instead of shipping a wrong part:
+  `RailSpanShort { op: 0 }` — §12.4's p-curve end at the lug's **mixed corner**. The bore's tab has
+  a tangency at *each* end of its flank, which is the shape #294's `flank_splice` detects; the lug's
+  flank is tangent to the nose arc at one end and meets the rim **transversally** at the other, so
+  the two windows never overlap and the splice does not fire. The boundary genuinely jumps in µ̂ at
+  the flank azimuth — a `Cap` along the flank wall, the emission #294 already builds — so what has
+  to grow is the *detection*. That is the rest of #296.
+  *2026-08-18 · partly fixed (the shadow), open (the corner) · #296 ·
+  `author/src/resolve.rs::extruded_shadow`*
 
 - **Both of the device's boundaries now come out of the drawing (2026-08-18, #295).** The outer
   trim was the last authored number in the recipe: a `Profile::circle` at `outer_r`, intersected.
