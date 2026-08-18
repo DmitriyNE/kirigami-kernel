@@ -768,6 +768,37 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#292 adopted, on the third measurement — and the cost objection went away with one line
+  (2026-08-18).** With the tab rails certifying, the chart arm has a benefit case at last, so
+  min-of-both goes in: `cut_fit` hands `traced_cut_fit` a per-sub-interval `refine`, the ball arm
+  computes its own bound as it always did, and the tighter of the two is taken. Composed that way
+  round on purpose — the ball arm's reading is per-variant and symbolic in σ, and rebuilding it from
+  outside is how two earlier attempts silently lost the `RevCylinder` substitution and the `σ ↔ µ̂`
+  correlation.
+
+  **Eager min-of-both cost +69%** on the plain bore (`3.5 s → 5.9 s`) for no ε change, which is the
+  trade that got the previous attempt reverted. The fix is one observation: `ε` is a **max** over
+  sub-intervals and the gate is `ε < clearance/2`, so a sub-interval whose own bound already clears
+  the gate cannot decide the verdict — asking the second arm about it buys a smaller number nobody
+  reads. Refining only where the first arm would fail takes it to **+14%** (`3.5 s → 4.0 s`), same ε,
+  and on a part where the first arm is comfortable throughout the second is never evaluated at all.
+
+  | | plain bore | plain bore, ramp moved | the drawing |
+  |---|---|---|---|
+  | before | `Verified 3.3369e0`, 3.5 s | `Verified 2.3465e0`, 3.5 s | `Unresolved 3.5000e0`, 35 s |
+  | eager | `Verified 3.3369e0`, 5.9 s | `Verified 2.3465e0`, 5.6 s | `Refuted(RailSpanShort)`, 50 s |
+  | lazy | `Verified 3.3369e0`, **4.0 s** | `Verified 2.3465e0`, **4.1 s** | `Refuted(RailSpanShort)`, 45 s |
+
+  **`Refuted` on the drawing is progress, and the test that failed says so.** `RailSpanShort` is
+  only reachable once a rail *has* a certificate and the boundary needs it past its certified span —
+  §12.4's p-curve end. The #293 test written earlier the same day asserted "no structural refusal
+  should remain" and failed, correctly: the arithmetic wall is gone and a structural one is now
+  visible behind it. Re-pinned as
+  `rim_notch::the_drawings_tab_rails_certify_and_what_is_left_is_the_p_curve_end`, with the whole
+  four-step chain in its doc.
+
+  *2026-08-18 · `crates/develop/src/cut.rs`*
+
 - **Fixed: the eight tab rails certify once the discriminant is enclosed by its centre
   (2026-08-18).** `develop::interval::eval_poly_on_centred` / `eval_ratfunc_on_centred` — the
   mean-value form, `p(X) ⊆ p(m) + p′(X)·(X − m)` with `m = mid X` — intersected with plain Horner so

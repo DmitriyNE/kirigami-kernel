@@ -75,35 +75,35 @@ fn the_device_drawing_splits_the_material_section_and_is_refused_by_name() {
 /// its azimuth twice — and a single hull over both spanned 60°+ of azimuth for a fillet subtending
 /// 7.6°, on which the float oracle rightly declined (`disc < 0`). One rail per run fixes it.
 ///
-/// What is asserted is the shape of the answer, not a golden: **`Unresolved`, not `Refuted`** —
-/// every *structural* blocker on this device is now a resolution question — and an ε at the DRC
-/// threshold rather than an order above it. Certifying it outright still needs #292's chart arm;
-/// the 3-D arm cannot close on the drawing's imported rim at any subdivision.
+/// **Where the drawing now stops, and it is three fixes further on.** The chain, each step pinned
+/// by a measurement rather than inferred:
+///
+/// | | the drawing reported |
+/// |---|---|
+/// | before any of this | `Refuted(NappeCrossed)` — a DRC cushion used as a soundness gate |
+/// | after the per-ball nappe check | `Unresolved ε 1.1220e1` |
+/// | after #293's rail-per-run | `Unresolved ε 3.5000e0` — exactly `clearance/2`, the ball bound's "nothing certified" sentinel on eight tab rails |
+/// | after the centred discriminant | **`Refuted(RailSpanShort)`** |
+///
+/// The last step is the interesting one and the reason `Refuted` here is *progress*, not
+/// regression: [`PartFault::RailSpanShort`] is only reachable once a rail **has** a certificate and
+/// the boundary needs it over σ the certificate does not cover. The eight rails on the tab's
+/// sub-millimetre walls — R 0.25 root fillets, R 0.15 tip fillets, the flanks — could not be
+/// certified *at all* while the µ̂-discriminant's enclosure straddled zero. They can now, and what
+/// is left is §12.4's p-curve end: a graph rail cannot reach a tangent ruling, and the turn arc has
+/// to own that stretch.
 #[test]
-fn the_drawing_clears_every_structural_blocker_once_the_ramp_is_off_the_tab() {
+fn the_drawings_tab_rails_certify_and_what_is_left_is_the_p_curve_end() {
     let mut spec = self_lapping_spec();
     spec.ccw.ramp_start = acceptance::lapped::Azimuth::Sigma(Q::new(1, 10));
     spec.ccw.ramp_end = acceptance::lapped::Azimuth::Sigma(Q::new(1, 2));
     spec.inner_profile = Some(acceptance::inner_cut_profile());
     let v = self_lapping_cone_from(&spec, 8, 8, false, None).develop();
 
-    let eps = match &v {
-        Verdict::Unresolved(e) => e.clone(),
-        other => panic!(
-            "no structural refusal should remain, got {}",
-            fault(match other {
-                Verdict::Verified(_) => Verdict::Unresolved(qi(0)),
-                Verdict::Refuted(f) => Verdict::Refuted(*f),
-                Verdict::Unresolved(e) => Verdict::Unresolved(e.clone()),
-            })
-        ),
-    };
-    // The device's clearance is 7, so the DRC gate is ε < 7/2. Landing *at* the gate says every
-    // rail is fitted where its wall is; an ε above it is the gross mis-fit #293 removed.
     assert!(
-        eps.cmp(&Q::new(7, 2)) != core::cmp::Ordering::Greater,
-        "ε {} should sit at the DRC threshold, not above it",
-        export::approx::rat_to_f64(&eps)
+        matches!(v, Verdict::Refuted(PartFault::RailSpanShort { op: 1 })),
+        "the tab's rails should certify and leave the p-curve end, got {}",
+        fault(v)
     );
 }
 

@@ -2131,6 +2131,32 @@ fn max_rat<B: Backend>(a: Rat<B>, b: Rat<B>) -> Rat<B> {
     }
 }
 
+/// `a`, or `b` when `b` is present and smaller — "take the tighter of two sound upper bounds".
+fn min_opt<B: Backend>(a: Rat<B>, b: Option<Rat<B>>) -> Rat<B> {
+    match b {
+        Some(b) if b.cmp(&a) == core::cmp::Ordering::Less => b,
+        _ => a,
+    }
+}
+
+/// One sub-interval's bound, refined **only where it needs to be**.
+///
+/// `ε` is the max over sub-intervals and the gate is `ε < clearance/2`, so a sub-interval whose own
+/// bound already clears the gate cannot be what decides the verdict — asking the second arm about it
+/// buys a smaller number nobody reads. Skipping it is sound (a larger-but-still-Verified `ε` is
+/// still an upper bound) and it is what keeps the second opinion free: on a part where the first arm
+/// is comfortable everywhere, the second is never evaluated at all.
+fn tighten<B: Backend>(d: Rat<B>, half: &Rat<B>, sig: &RatIv<B>, refine: Refine<'_, B>) -> Rat<B> {
+    if d.cmp(half) == core::cmp::Ordering::Less {
+        return d;
+    }
+    min_opt(d, refine(sig))
+}
+
+/// A second opinion on one σ-sub-interval: another sound upper bound on the same distance, or
+/// `None` where that arm has nothing to say. See [`traced_cut_fit`].
+type Refine<'a, B> = &'a dyn Fn(&RatIv<B>) -> Option<Rat<B>>;
+
 /// The reciprocal of an interval **bounded away from zero**, either sign — `None` when it
 /// straddles.
 fn recip_away<B: Backend>(x: &RatIv<B>) -> Option<RatIv<B>> {
@@ -2201,23 +2227,68 @@ pub fn ruling_cut_fit<B: Backend>(
     let n_sub = cert.subdiv.max(1);
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
     let half = cert.clearance.mul(&Rat::new(1, 2));
-    let (two, four) = (
-        RatIv::point(Rat::from_i128(2)),
-        RatIv::point(Rat::from_i128(4)),
-    );
     let mut eps = Rat::from_i128(0);
     for k in 0..n_sub {
         crate::counters::bump_cut_eval();
         let sig = subiv(lo, &width, k);
-        let (Some(mu), Some(a), Some(b), Some(c), Some(r)) = (
-            eval_ratfunc_on(&cert.mu_hat, &sig),
-            eval_ratfunc_on(&form.a, &sig),
-            eval_ratfunc_on(&form.b, &sig),
-            eval_ratfunc_on(&form.c, &sig),
-            vec3_on(ruling, &sig),
+        let Some(d) = chart_bound_on(
+            &sig,
+            &form,
+            &s,
+            &cert.mu_hat,
+            nappe,
+            (pedal, ruling, normal),
+            &cert.w,
+            &cert.cfg,
         ) else {
-            return Verdict::Refuted(CutFitFault::PoleInEval);
+            return Verdict::Refuted(CutFitFault::DegenerateSurface);
         };
+        eps = max_rat(eps, d);
+    }
+    if eps.cmp(&half) == Ordering::Less {
+        Verdict::Verified(ValidCutFit {
+            span: cert.span.clone(),
+            eps,
+            clearance: cert.clearance.clone(),
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
+/// The chart bound on **one** σ-sub-interval — `None` where this arm has nothing to say.
+///
+/// It declines in exactly two places, and both are statements about the sub-interval rather than
+/// about the rail: a pole in one of the evaluated fields, and a ruling with no crossing on the
+/// authored nappe. [`traced_cut_fit`] answers there instead, which is why this returns an option
+/// rather than a verdict.
+#[allow(clippy::too_many_arguments)]
+fn chart_bound_on<B: Backend>(
+    sig: &RatIv<B>,
+    form: &MuCut<B>,
+    s: &RatFunc<B>,
+    mu_hat: &RatFunc<B>,
+    nappe: Option<&Nappe<B>>,
+    fields: (&Vec3Rat<B>, &Vec3Rat<B>, &Vec3Rat<B>),
+    w: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Option<Rat<B>> {
+    use core::cmp::Ordering;
+    let (pedal, ruling, normal) = fields;
+    let (two, four) = (
+        RatIv::point(Rat::from_i128(2)),
+        RatIv::point(Rat::from_i128(4)),
+    );
+    let (Some(mu), Some(a), Some(b), Some(c), Some(r)) = (
+        eval_ratfunc_on(mu_hat, sig),
+        eval_ratfunc_on(&form.a, sig),
+        eval_ratfunc_on(&form.b, sig),
+        eval_ratfunc_on(&form.c, sig),
+        vec3_on(ruling, sig),
+    ) else {
+        return None;
+    };
+    {
         // Where this ruling meets the wall. An identically-affine section (a plane through the
         // apex) has one crossing; a genuine quadratic has two, and none at all where the ruling
         // misses the wall — which is not a fit this arm can certify.
@@ -2234,36 +2305,34 @@ pub fn ruling_cut_fit<B: Backend>(
             // own. Measured on the device's tab fillets, the naive reading came back
             // `[−3.0227e2, +5.8864e2]` around a modest positive number — no sign, no crossing, no
             // certificate (#292).
-            let disc = match crate::interval::eval_ratfunc_on_centred(&form.disc(), &sig) {
+            let disc = match crate::interval::eval_ratfunc_on_centred(&form.disc(), sig) {
                 Some(d) => d,
                 None => b.mul(&b).sub(&four.mul(&a).mul(&c)),
             };
             if disc.lo().sign() > 0
                 && let Some(inv) = recip_away(&two.mul(&a))
             {
-                let sq = sqrt_on(&disc, &cert.cfg.sqrt_eps);
+                let sq = sqrt_on(&disc, &cfg.sqrt_eps);
                 roots.push(b.neg().sub(&sq).mul(&inv));
                 roots.push(b.neg().add(&sq).mul(&inv));
             }
         }
         if roots.is_empty() {
-            return Verdict::Refuted(CutFitFault::DegenerateSurface);
+            return None;
         }
         let r2 = r[0].mul(&r[0]).add(&r[1].mul(&r[1])).add(&r[2].mul(&r[2]));
-        let speed = sqrt_on(&r2, &cert.cfg.sqrt_eps);
-        let Some(s_iv) = eval_ratfunc_on(&s, &sig) else {
-            return Verdict::Refuted(CutFitFault::PoleInEval);
-        };
+        let speed = sqrt_on(&r2, &cfg.sqrt_eps);
+        let s_iv = eval_ratfunc_on(s, sig)?;
         // The nearest crossing that is on the authored nappe — an exact question at a point.
         let mut best: Option<Rat<B>> = None;
         for root in &roots {
             if let Some(nap) = nappe {
-                let (Some(p), Some(nv)) = (vec3_on(pedal, &sig), vec3_on(normal, &sig)) else {
-                    return Verdict::Refuted(CutFitFault::PoleInEval);
+                let (Some(p), Some(nv)) = (vec3_on(pedal, sig), vec3_on(normal, sig)) else {
+                    return None;
                 };
                 let mut sel = RatIv::point(nap.d.clone()).neg();
                 for i in 0..3 {
-                    let y = p[i].add(&root.mul(&r[i])).add(&nv[i].scale(&cert.w));
+                    let y = p[i].add(&root.mul(&r[i])).add(&nv[i].scale(w));
                     sel = sel.add(&y.scale(&nap.n[i]));
                 }
                 if sel.lo().sign() <= 0 {
@@ -2308,19 +2377,7 @@ pub fn ruling_cut_fit<B: Backend>(
                 _ => d,
             });
         }
-        let Some(d) = best else {
-            return Verdict::Refuted(CutFitFault::NappeCrossed);
-        };
-        eps = max_rat(eps, d);
-    }
-    if eps.cmp(&half) == Ordering::Less {
-        Verdict::Verified(ValidCutFit {
-            span: cert.span.clone(),
-            eps,
-            clearance: cert.clearance.clone(),
-        })
-    } else {
-        Verdict::Unresolved(eps)
+        best
     }
 }
 
@@ -2348,6 +2405,47 @@ pub fn cut_fit<B: Backend>(
         .pedal()
         .add(&chart.ruling().scale(&cert.mu_hat))
         .add(&chart.normal().scale_rat(&cert.w));
+    // **The chart arm as a refinement, and the tighter of the two wins.**
+    //
+    // Neither dominates. The chart bound measures *along the ruling*, so it overestimates by
+    // `1/sin θ` at an oblique crossing; the 3-D bound measures perpendicular but re-derives from an
+    // inflated ball what the chart holds exactly. Measured: the chart arm is `10²`–`10¹²` tighter on
+    // the device's trims and resolves a rail the ball cannot, and *looser* on the flex panel, where
+    // using it alone broke a pinned ε budget. Both are upper bounds on the same distance, so the
+    // minimum is sound and is the tightest available.
+    //
+    // Composed this way round — the ball arm asking the chart for a second opinion, rather than the
+    // reverse — because the ball arm's own reading is per-variant and symbolic in σ, and rebuilding
+    // that from the outside is how two earlier attempts silently lost the `RevCylinder`
+    // substitution and the σ↔µ̂ correlation.
+    let (pedal, ruling, normal) = (chart.pedal(), chart.ruling(), chart.normal());
+    let chart_arm = cut_mu_form(chart, &cert.surface, &cert.w).map(|form| {
+        let s = form
+            .a
+            .mul(&cert.mu_hat)
+            .add(&form.b)
+            .mul(&cert.mu_hat)
+            .add(&form.c)
+            .reduce();
+        (form, s)
+    });
+    let nappe = match &cert.surface {
+        CutSurface::Quadric(q) if q.nappe.n.iter().any(|k| !k.is_zero()) => Some(&q.nappe),
+        _ => None,
+    };
+    let refine = |sig: &RatIv<B>| -> Option<Rat<B>> {
+        let (form, s) = chart_arm.as_ref()?;
+        chart_bound_on(
+            sig,
+            form,
+            s,
+            &cert.mu_hat,
+            nappe,
+            (pedal, ruling, normal),
+            &cert.w,
+            &cert.cfg,
+        )
+    };
     traced_cut_fit(
         &c,
         &cert.surface,
@@ -2355,6 +2453,7 @@ pub fn cut_fit<B: Backend>(
         cert.subdiv,
         &cert.clearance,
         &cert.cfg,
+        &refine,
     )
 }
 
@@ -2743,6 +2842,7 @@ fn traced_cut_fit<B: Backend>(
     subdiv: usize,
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
+    refine: Refine<'_, B>,
 ) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
     use core::cmp::Ordering;
     let (lo, hi) = (&span.lo, &span.hi);
@@ -2791,7 +2891,8 @@ fn traced_cut_fit<B: Backend>(
                     ) else {
                         return Verdict::Refuted(CutFitFault::PoleInEval);
                     };
-                    eps = max_rat(eps, cone.dist_hi(&n2v, &tav, &s2v, &sin_scaled, cfg));
+                    let d = cone.dist_hi(&n2v, &tav, &s2v, &sin_scaled, cfg);
+                    eps = max_rat(eps, tighten(d, &half, &sig, refine));
                 }
                 eps
             }
@@ -2804,7 +2905,9 @@ fn traced_cut_fit<B: Backend>(
                         None => return Verdict::Refuted(CutFitFault::PoleInEval),
                     };
                     match quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, &x, &half, cfg) {
-                        DistOn::Bound(d) | DistOn::Loose(d) => eps = max_rat(eps, d),
+                        DistOn::Bound(d) | DistOn::Loose(d) => {
+                            eps = max_rat(eps, tighten(d, &half, &sig, refine))
+                        }
                         DistOn::Fault(f) => return Verdict::Refuted(f),
                     }
                 }
@@ -2831,7 +2934,7 @@ fn traced_cut_fit<B: Backend>(
                 };
                 // distance = |residual| / |n|
                 let dist = abs_on(&res).mul(&inv_norm);
-                eps = max_rat(eps, dist.hi().clone());
+                eps = max_rat(eps, tighten(dist.hi().clone(), &half, &sig, refine));
             }
             eps
         }
@@ -2863,7 +2966,7 @@ fn traced_cut_fit<B: Backend>(
                 };
                 let rho = sqrt_on(&p2, &cfg.sqrt_eps); // √perp2 = distance to axis
                 let dist = abs_on(&rho.sub(&r)); // |ρ − R|
-                eps = max_rat(eps, dist.hi().clone());
+                eps = max_rat(eps, tighten(dist.hi().clone(), &half, &sig, refine));
             }
             eps
         }
