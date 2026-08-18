@@ -1172,6 +1172,15 @@ certificate green.
   enough that the far nappe is out of range. Recorded here rather than in a task because it is a
   property of the operation, not a gap in the implementation.
 
+  **And what the condition does *not* exclude, because the difference is easy to lose:** a kept
+  contour that **encloses the chart's own axis** and is cast from a point on it. That is what a rim
+  is — `acceptance/data/outer-cut.dxf`, the Ø 21.5 circle with a lug, intersected as the device's
+  outer bound — and it places on the 410.7° wrapping device where a biting square refuses. The
+  reason is the same sentence read forwards: the cast is a cone about the axis, and a ruling meets
+  it on the near sheet only, so the op moves the **upper rail** and closes nothing in σ. The
+  exclusion is about contours that have to say where material *starts and stops* along the ruling;
+  a bound that only says how far out it reaches is an ordinary µ̂ trim wearing a drawing's shape.
+
 - **A *subtract* that bays into the material — the same exclusion, and this one IS a gap (#291).**
   The paragraph above reads as though several µ̂-components were an artifact of intersecting an
   unbounded prism. They are not: a plain `Subtract` reaches the same place with no antipode and no

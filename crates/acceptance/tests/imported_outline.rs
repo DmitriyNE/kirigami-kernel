@@ -176,6 +176,104 @@ fn a_bulge_reproduces_the_file_s_curve_and_a_rect_reproduces_the_shape() {
     }
 }
 
+/// **The device's other cut file — and the one place a drawing and a recipe meet at `δ = 0`.**
+///
+/// `data/outer-cut.dxf` is the rim: four entities forming the Ø 21.5 circle interrupted over 15°
+/// about `+y` by a lug reaching out to Ø 27.5. Two things about it are load-bearing downstream and
+/// neither is a tolerance:
+///
+/// * **the rim arc's `r²` is exactly `1849/16`** — the recipe's own `outer_r = 43/4`, squared. So
+///   swapping the authored disc for the file changes the *shape* and not the gauge, and
+///   `lapped::normal_cut`'s cast is the same cast. A drawing that agreed only to nine decimals
+///   would have been a different part with a plausible-looking diff.
+/// * **the flanks are radial** — each one's line passes within `4·10⁻¹⁴ mm` of the axis, which is
+///   the file's float noise and not an exact zero. Cast from a point on the axis a radial line
+///   sweeps a *plane through the axis*, and whether a ruling lies in that plane or crosses it is
+///   the whole of `author/tests/rim_notch.rs`.
+#[test]
+fn the_devices_rim_file_states_the_recipes_own_radius_exactly() {
+    use interchange::dxf::{DxfOptions, read_dxf};
+    use interchange::element::Element;
+    use interchange::report::ImportFault;
+
+    assert!(matches!(
+        read_dxf::<Bignum>(acceptance::OUTER_CUT_DXF, &DxfOptions::default()),
+        Err(ImportFault::UnknownUnit { .. })
+    ));
+    let opts = DxfOptions::<Bignum> {
+        assume_unit: Some(acceptance::OUTER_CUT_UNIT),
+        ..Default::default()
+    };
+    let read = read_dxf::<Bignum>(acceptance::OUTER_CUT_DXF, &opts).expect("the device's rim");
+    assert_eq!(read.report.entities, 4);
+    assert_eq!(read.report.loops, 1, "{}", read.report.summary());
+
+    // The two error numbers stay apart here too: ours is the arc re-gauge, the file's is its own
+    // closure sloppiness, and it lands on the `LINE` endpoints where moving costs nothing.
+    let (delta, gap) = (&read.report.delta, &read.report.closure_gap);
+    assert!(
+        *delta < Q::new(1, 1_000_000_000_000i128),
+        "δ {}",
+        decimal(delta, 18)
+    );
+    assert!(
+        *gap > *delta && *gap < Q::new(1, 1_000_000_000i128),
+        "gap {}",
+        decimal(gap, 18)
+    );
+
+    let mut rim = 0usize;
+    let mut flanks = 0usize;
+    for el in &read.loops[0] {
+        match el {
+            Element::Arc(a) => {
+                assert!(a.is_consistent(), "an assembled arc left its circle");
+                if a.r2 == Q::new(1849, 16) {
+                    rim += 1;
+                }
+            }
+            Element::Segment { start, end } => {
+                // The line through `start`/`end` misses the axis by |start × end| / |end − start|.
+                let cross = start[0].mul(&end[1]).sub(&end[0].mul(&start[1]));
+                let cross = if cross.sign() < 0 { cross.neg() } else { cross };
+                // The flanks are ≈1.31 long, so bounding the numerator alone bounds the miss.
+                assert!(
+                    cross < Q::new(1, 10_000_000_000_000i128),
+                    "a flank is not radial: |a × b| = {}",
+                    decimal(&cross, 20)
+                );
+                flanks += 1;
+            }
+            other => panic!("unexpected element {other:?}"),
+        }
+    }
+    assert_eq!(
+        rim, 1,
+        "one arc on the recipe's own Ø 21.5 circle, r² = 1849/16 exactly"
+    );
+    assert_eq!(flanks, 2, "two radial flanks");
+
+    // The shape, by the arrangement's own fill rule: the disc out to 10.75 everywhere, and out to
+    // 13.75 only inside the lug's wedge.
+    let edges = read.profile().into_edges();
+    let at = |r: f64, deg: f64| -> bool {
+        let (x, y) = (r * deg.to_radians().cos(), r * deg.to_radians().sin());
+        let f = |v: f64| Q::new((v * 1_000_000.0) as i128, 1_000_000);
+        winding_parity(&f(x), &f(y), &edges)
+    };
+    assert!(at(10.0, 0.0) && at(10.0, 210.0), "the rim disc is material");
+    assert!(!at(11.0, 0.0) && !at(11.0, 270.0), "…and stops at 10.75");
+    assert!(
+        at(11.0, 90.0) && at(13.7, 90.0),
+        "the lug reaches out to 13.75"
+    );
+    assert!(!at(13.9, 90.0), "…and no further");
+    assert!(
+        !at(11.0, 82.0) && !at(11.0, 98.0),
+        "the lug is only 15° wide"
+    );
+}
+
 /// A file in inches produces a part 25.4× the one in millimetres — exactly, vertex for vertex.
 /// This is the control that makes the unit path a tested claim rather than a plausible one.
 #[test]

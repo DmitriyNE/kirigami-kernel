@@ -69,12 +69,20 @@ fn spec() -> LappedCone {
         cw: SideAngles::flat(sigma(-9, 8)),
         // The device's annulus: inner Ø 8 mm, outer Ø 21.5 mm, cut normal to the sheet.
         outer_r: q(43, 4),
+        // A plain rim. `acceptance::outer_cut_profile()` is the device's real one — the Ø 21.5
+        // circle with a lug reaching out to Ø 27.5, read straight out of `data/outer-cut.dxf` —
+        // and it resolves and certifies here, but the lug's material is **not kept**: the emitted
+        // pattern is the plain circle, indistinguishable from this one (#296). Left `None` so the
+        // demo's SVG and STEP are the part the recipe describes rather than a silently smaller one.
+        outer_profile: None,
         inner_r: Some(qi(4)),
-        // A plain bore. `acceptance::inner_cut_profile()` is the device's real one — read straight
-        // out of `acceptance/data/inner-cut.dxf` — but its tab is crossed sideways by the ramp's
-        // rulings, which makes the kept material two µ̂-intervals at one σ and refuses as
-        // `SectionNotSimple` (task #291).
-        inner_profile: None,
+        // The device's real bore, read out of `data/inner-cut.dxf` — the Ø 8 hole with a 10° tab
+        // reaching in to Ø 4. This recipe is the one that can carry it: its ramps sit at
+        // `σ ∈ [37/80, 7/8]`, so the tab meets `h′ = 0` sheet on both of its passes, where a
+        // ruling's plan projection passes exactly through the axis and runs *along* the tab's
+        // radial flanks instead of across them. On the pinned device the second pass lands on the
+        // ramp and it refuses `SectionNotSimple` (#291).
+        inner_profile: Some(acceptance::inner_cut_profile()),
         // The physical edge, and the pinned device's: both bounds are cones cut normal to the
         // sheet. They cost what a cylinder costs — a cone of revolution has a closed-form distance,
         // so `develop::cut::RevCone` puts them on the same certificate arm.

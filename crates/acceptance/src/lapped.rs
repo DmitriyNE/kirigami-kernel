@@ -34,7 +34,7 @@
 //! # What is exact, and what snaps
 //!
 //! **The apex is exact whenever the direction is Pythagorean.** The chart is
-//! [`wrap_cone`](fixtures::devices::wrap_cone)`(a, b)` with `sin β = (a² − b²)/(a² + b²)` — the
+//! [`fixtures::devices::wrap_cone`]`(a, b)` with `sin β = (a² − b²)/(a² + b²)` — the
 //! Pythagorean generator — so `b/a = tan(45° − β/2)`, and a rational `(cos β, sin β)` gives a
 //! rational `b/a` by two half-angle steps. The generator's overall scale is *gauge*: the Hopf map is
 //! invariant under `q ↦ λq`, so `(234, 104)` and `(9, 4)` are the same surface, with identical
@@ -275,11 +275,29 @@ pub struct LappedCone {
     /// disc plane sits at the `z` where the neutral surface *has* that radius — and `√(r²)` is
     /// not rational in general. A cylinder squares it back, exactly.
     pub outer_r: Q,
+    /// **The outer bound's outline**, in the plan (top) view, replacing the disc of
+    /// [`outer_r`](Self::outer_r) — one closed loop, drawn in the recipe's own millimetres. `None`
+    /// keeps the disc.
+    ///
+    /// The outer counterpart of [`inner_profile`](Self::inner_profile), and the same doctrine: the
+    /// outline replaces the disc *in the disc's own sketch*, so `outer_r` still gauges the cast and
+    /// the drawing decides the rest. It is `intersect`ed rather than subtracted, which is the one
+    /// asymmetry — and the reason it is not what `docs/cutter-extrude-design.md` §12.5 excludes:
+    /// this outline **bounds µ̂ alone**, being cast from a point on the chart's own axis and
+    /// enclosing that axis, so it moves the upper rail and closes nothing in σ.
+    ///
+    /// **Scope, measured (#296).** An outline whose extra material reaches *outward* — a lug on the
+    /// rim — is carried on a narrow chart and is **silently dropped on the wrapping chart**: the
+    /// part develops `Verified` bounded by the plain circle, indistinguishable from the same circle
+    /// with no lug. So on a lapping device this is today a way to change the *gauge circle's shape*
+    /// where the outline stays inside its own hull, and not yet a way to add a tab to the rim.
+    /// `author/tests/rim_notch.rs` pins both the criterion and the current behaviour.
+    pub outer_profile: Option<Vec<Edge<Bignum>>>,
     /// The inner trim radius, if the blank is an annulus. `None` leaves the inner bound to the
     /// caller's own authoring ops.
     ///
     /// With [`inner_profile`](Self::inner_profile) set this is no longer *the* boundary, but it is
-    /// still load-bearing: it is the radius the drafted cast is gauged to (see [`normal_cut`]), and
+    /// still load-bearing: it is the radius the drafted cast is gauged to (see [`TrimStyle::NormalCut`]), and
     /// the radius the component witness and the µ̂ band edges are derived from.
     pub inner_r: Option<Q>,
     /// **The inner bound's outline**, in the plan (top) view, replacing the disc of
@@ -452,7 +470,7 @@ fn normal_cut(apex: &(Q, Q), r: &Q, profile: Vec<Edge<Bignum>>) -> Cutter<Bignum
     )
 }
 
-/// **Where a sketch radius meets the sheet** — the radial map a [`normal_cut`] gauged to `r`
+/// **Where a sketch radius meets the sheet** — the radial map a [`TrimStyle::NormalCut`] trim gauged to `r`
 /// applies to a profile-plane radius `rho`.
 ///
 /// The cast is from a point on the axis, so it preserves azimuth **exactly** and moves radius by a
@@ -679,34 +697,36 @@ pub fn lapped_cone(spec: &LappedCone) -> Result<Lapped, LapFault> {
         .clone()
         .unwrap_or_else(|| witness(&chart, &spec.outer_r, spec.inner_r.as_ref()));
     part = part.keep_near(pick);
-    // A disc bound: the cheap closed forms, since a circle is what both styles agree on exactly.
-    let disc = |r: &Q| -> Cutter<Bignum> {
-        match spec.trim {
-            TrimStyle::Cylindrical => Cutter::vertical_cylinder(qi(0), qi(0), r.mul(r)),
-            TrimStyle::NormalCut => normal_cut(
+    // A trim bound at gauge radius `r`. The outline replaces the disc *in the disc's own sketch*:
+    // same plane, same apex, the cast still gauged so the reference circle `r` is cut square to the
+    // cone. Under `Cylindrical` a concentric disc is a vertical cylinder exactly — the cheap closed
+    // form, and what both styles agree on — while an outline is the straight drill through the plan
+    // sketch, for the same reason.
+    //
+    // One closure for both bounds, because the two differ only in `intersect` against `subtract`:
+    // a boundary that reads out of a file on one side and is authored on the other would otherwise
+    // be two constructions to keep in step.
+    let bound = |r: &Q, profile: Option<&Vec<Edge<Bignum>>>| -> Cutter<Bignum> {
+        match (spec.trim, profile) {
+            (TrimStyle::Cylindrical, None) => Cutter::vertical_cylinder(qi(0), qi(0), r.mul(r)),
+            (TrimStyle::Cylindrical, Some(edges)) => Cutter::extrude(
+                plan_frame(qi(0)),
+                Apex::direction([qi(0), qi(0), qi(1)]).expect("+z is a direction"),
+                clone_edges(edges),
+            ),
+            (TrimStyle::NormalCut, profile) => normal_cut(
                 &spec.apex,
                 r,
-                Profile::new().circle(qi(0), qi(0), r.clone()).into_edges(),
+                match profile {
+                    Some(edges) => clone_edges(edges),
+                    None => Profile::new().circle(qi(0), qi(0), r.clone()).into_edges(),
+                },
             ),
         }
     };
-    part = part.intersect(disc(&spec.outer_r));
+    part = part.intersect(bound(&spec.outer_r, spec.outer_profile.as_ref()));
     if let Some(ri) = &spec.inner_r {
-        part = part.subtract(match &spec.inner_profile {
-            None => disc(ri),
-            // The outline replaces the disc *in the disc's own sketch*: same plane, same apex, the
-            // cast still gauged so the reference circle `ri` is cut square to the cone. Under
-            // `Cylindrical` it is the straight drill instead, for the same reason the disc is a
-            // vertical cylinder there.
-            Some(edges) => match spec.trim {
-                TrimStyle::Cylindrical => Cutter::extrude(
-                    plan_frame(qi(0)),
-                    Apex::direction([qi(0), qi(0), qi(1)]).expect("+z is a direction"),
-                    clone_edges(edges),
-                ),
-                TrimStyle::NormalCut => normal_cut(&spec.apex, ri, clone_edges(edges)),
-            },
-        });
+        part = part.subtract(bound(ri, spec.inner_profile.as_ref()));
     }
     part = part.thickness(t.clone()).neutral(spec.neutral.clone());
 

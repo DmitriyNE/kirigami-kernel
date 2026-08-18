@@ -768,6 +768,99 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A kept contour's outward lug is silently dropped on the wrapping device — a green certificate
+  on a smaller part (2026-08-18, #296).** Found by the faithfulness check, not by any verdict, and
+  it is the reason [[verify-demo-faithfulness]] exists. `outer_profile = outer_cut_profile()`
+  develops **`Verified`** on the self-lapping device and the emitted pattern is the **plain rim**:
+  max `|r|` in the outline `16.3377` at vertex 28, `(12.2510, −10.8089)`, against the *same circle
+  authored as a profile with no lug* giving `16.3377` at vertex 28, `(12.2510, −10.8089)` —
+  identical to four decimals, where the lug's tip must develop to `17.78`. Its walls **are** traced
+  (90 outline points against the control's 54); they simply bound nothing.
+
+  What that rules out, each measured rather than argued: it is **not convexification** (an
+  L-shaped kept contour on the narrow gore keeps its notch — flat area `0.6587` against its convex
+  hull's `1.4923`); it is **not arcs-plus-a-lug in general** (a major arc plus a radial lug, the
+  drawing's rim in miniature, carries its lug on the narrow gore — `0.5932` against the same
+  circle's `0.4219`, +40.6%); it is **not the profile's fill** (`winding_parity` is right at every
+  probe — material at ρ = 10 any azimuth, none at ρ = 11 off the wedge, material at ρ = 11 and 13.7
+  on it, none at 13.9); and it is **not station targeting** (`bounding_wall` covers the whole
+  profile, and the uniform grid is 0.016–0.028 in σ against a 0.13-wide wedge).
+
+  So it is specific to the **wrapping** chart. `extruded_shadow` reads correct for this case — it
+  takes every wall's crossings along the ruling and classifies each stretch by the exact fill rule,
+  and the cast checks out by hand (a lower-nappe point at sheet `ρ = 11` projects to sketch
+  `ρ = 11.32`, inside the lug) — so suspicion sits **downstream of the shadow**, in the run and
+  label structure, where the nose wall bounds in **two separated σ-runs** because the wedge is
+  swept twice. That is #293's shape reached through an `Intersect` instead of a `Subtract`. Worth
+  noting for whoever instruments it: on `h′ = 0` sheet the flank walls contribute *no* crossing at
+  all (the plane contains the ruling, so `a` and `b` both vanish), which is right, and means the
+  wedge's ends are marked by the nose and rim roots alone. The first move is one instrumented
+  `resolve::sweep` printing, at each sample σ inside the wedge, the merged components and the
+  `(op, wall)` label on each end. Pinned twice in `author/tests/rim_notch.rs`: the faithfulness
+  criterion `#[ignore]`d, and `the_rim_lugs_material_is_dropped_today` as a tripwire that fails
+  when it starts working. **General lesson, again: a `Verified` outer bound says the emitted
+  boundary is near the walls it names, and says nothing about which walls it should have named.**
+  *2026-08-18 · open · #296 · `author/src/resolve.rs`, measured on `acceptance::outer_cut_profile`*
+
+- **Both of the device's boundaries now come out of the drawing (2026-08-18, #295).** The outer
+  trim was the last authored number in the recipe: a `Profile::circle` at `outer_r`, intersected.
+  `acceptance/data/outer-cut.dxf` replaces it — the Ø 21.5 rim interrupted over 15° about `+y` by a
+  lug reaching out to Ø 27.5 on two radial flanks and a 195° nose arc tangent to both. It is the
+  bore's tab inverted, and `LappedCone::outer_profile` is the field, wired through the *same*
+  `normal_cut` cast the disc used (gauged to `outer_r`, so the tool is unchanged and only the sketch
+  differs) by one `bound(r, profile)` closure that now serves both trims — the two differed only in
+  `intersect` against `subtract`, and keeping them as two constructions was how they would drift.
+
+  **The file lands on the recipe's own number.** Four entities → one loop, `δ = 1.2e-15`, closure
+  gap `2.3e-10` (the drawing's, on the two `LINE` endpoints, exactly as the bore file's is), and the
+  rim arc reads `r² = 1849/16` — **exactly** `(43/4)²`, the recipe's `outer_r`. The flanks are radial
+  to `|a × b| ≤ 4.6e-14`, i.e. their lines miss the axis by ≤ 4·10⁻¹⁴ mm: the file's own float noise,
+  not exact, which matters because a radial flank cast from an axis point is a **plane through the
+  axis** and that is the whole geometry of both cut files.
+
+  **Where it places, measured.** Material azimuth on this chart is `az = 270° + 4·arctan σ` (the kept
+  sheet is the *lower* nappe, so it is the ruling direction's azimuth plus 180° — worth writing down,
+  since reading the ruling alone puts every feature on the wrong side and mis-describes the lap
+  wedge). The lug's 82.5°–97.5° wedge therefore lands twice: `σ ∈ [−1.067, −0.937]` on the base cone
+  and `σ ∈ [+0.937, +1.067]` on the lapping sheet, straddling the pinned ramp's end at `σ = 1`. With
+  the ramp slid off that wedge the lug develops `Verified` — **but not faithfully**, which is the
+  entry above and the reason this one is not the landing it was written to be. Both files at once
+  on the same device also develop (`ε 3.478, 377 outline points, 333 s`), and the two-ramp driver
+  carries both through to a watertight solid (`develop ε 3.413, 443.7 s; solid ε 3.496, 94 faces,
+  0 free edges, 261.2 s`) — with the same caveat on the rim.
+
+  What **is** landed: the recipe field, the shared construction, the file, and the import — and the
+  bore's tab, which is checked against the drawing and passes.
+
+  **The pinned device refuses it, and by a different name than the tab earns.** A *subtract* that
+  bays in splits the µ̂-section and `sample_comps` says so (`SectionNotSimple`); with the lug the
+  section stays simple, every certificate passes, and the refusal comes at the far end —
+  `TopologyMismatch { expected_holes: 0, faces: 2 }`, the exact flat boolean assembling the outline
+  into two faces. Sliding the ramp under a fixed lug tracks it exactly: ccw ramp `[1/10, 1/2]` →
+  `Verified ε 3.478`; `[4/7, 9/10]` → `Verified ε 3.473`; `[4/7, 1]` (the pinned one, ending inside
+  the wedge) → **2** faces; `[9/10, 11/10]` (covering it) → **6**. So the refusal follows `h′ ≠ 0`
+  under the flank, and the face count follows how much of the wedge is under it.
+
+  **What that does *not* license is calling it #291's second face** — the tempting reading, and the
+  one I wrote down before checking the geometry. The two `Verified` rows emit the plain rim, so on
+  this chart the lug's walls bound nowhere; whatever the extra faces are, they are not the lug's
+  boundary modelled badly. Recorded as a refusal that must keep happening, and no more.
+
+  **The ε is a rail-fit chord bound, and the pinned fit leaves 0.6% headroom.** The lug device
+  certifies at `ε 3.478` against the part's own `clearance/2 = 3.5` gate, and that number does *not*
+  move with `segments` (3.4781 at 8, 16 and 32) — the #294 signature for "wrong knob", not for a
+  blind enclosure. Attributed by stage: the boundary certification is 3.478 and the unroll 1.81,
+  against 0.12 / 2.35 for the same device on plain discs. It is `RailFit::subdiv` that owns it —
+  `160 → 320 → 640` takes the boundary term `3.478 → 1.617 → 0.655` at `51 → 84 → 152` s, while the
+  fit's `degree` (4 → 6) and `bits` (44 → 80) move it not at all: a chord count, cleanly. So the
+  lug's walls simply need a finer rail fit than a concentric disc did, which is what a nose arc of
+  radius 1.59 at `ρ ≈ 12` should cost. Worth carrying: the bore-tab device sits at 3.387 on
+  the same gate, so *both* drawing-based devices certify inside 3.5% of the DRC bar at the pinned
+  `subdiv 160` — a recipe knob to raise before a third feature lands, not a wall.
+  *2026-08-18 · resolved · `acceptance/src/lapped.rs` (`outer_profile`, `bound`),
+  `acceptance/src/lib.rs` (`OUTER_CUT_DXF`, `outer_cut_profile`), `author/tests/rim_notch.rs`,
+  `docs/cutter-extrude-design.md` §12.5*
+
 - **The device drawing develops (2026-08-18) — the §12.4 mid-chain splice, and three more enclosure
   walls behind it.** #294's localization run named the four `RailSpanShort` segments at once: every
   one a **flank crossing** — the drawing's radial flank is collinear with a ruling, both fillets are

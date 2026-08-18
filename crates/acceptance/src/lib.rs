@@ -157,6 +157,19 @@ pub fn self_lapping_cone_from(
 /// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on. `ramp_start = 4/7` is
 /// `φ = 118.98°`, so the ramp spans `61.02°` — the nearest small rational to the authored 60°.
 ///
+/// **Placing a feature by azimuth.** The kept sheet is the *lower* nappe, so a point of material at
+/// chart parameter σ sits at plan azimuth
+///
+/// ```text
+/// az = 270° + 4·arctan σ        (mod 360°)
+/// ```
+///
+/// — which runs `64.65° → 115.35°` the long way round over `σ ∈ [−5/4, 5/4]`, 410.7° in all. So
+/// `az ∈ (64.65°, 115.35°)` is the **lap wedge**, swept twice: once by the base cone at `σ < 0` and
+/// once by the ramp and tail flap at `σ > 0`. Both cut files draw their feature inside it, which is
+/// why each of them appears twice in the flat pattern and why only the `σ > 0` pass can meet a ramp.
+/// Note the *ruling direction*'s azimuth is this less 180°: it is the sign of µ̂ that decides which.
+///
 /// The pick is **derived** now: both trim radii live in the recipe, so `lapped_cone`'s own
 /// mid-annulus point at `ρ = (4 + 43/4)/2 = 59/8` is in material by construction. It had to be
 /// named while the inner bound was an off-axis cylinder applied afterwards, which the recipe could
@@ -177,6 +190,13 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         },
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
         outer_r: q(43, 4),
+        // **Not yet the drawing**, for the same reason the bore is not: `outer_cut_profile()` is the
+        // rim this device is meant to have — the Ø 21.5 circle interrupted by a lug over 15° about
+        // `+y` — and the file reads exactly. Where the lug lands is what decides whether it places:
+        // its wedge sits inside the lap, so the chart passes it twice, and only a pass with `h′ ≠ 0`
+        // can run a ruling across a radial flank. Left `None` so the pinned device stays the object
+        // every V&V number was taken on; `author/tests/rim_notch.rs` is where it is measured.
+        outer_profile: None,
         inner_r: Some(qi(4)),
         // **Not yet the drawing.** `inner_cut_profile()` is the bore this device is meant to have —
         // the file reads exactly and the recipe carries it. What the resolver cannot yet place is
@@ -220,6 +240,42 @@ pub const INNER_CUT_DXF: &str = include_str!("../data/inner-cut.dxf");
 /// reader refuses to infer — an inferred unit is a 10× or 25.4× part — and the unit is supplied
 /// here, where it is a statement about *this* drawing rather than a default.
 pub const INNER_CUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// **The device's outer trim, as the drawing states it** — `data/outer-cut.dxf`, verbatim.
+///
+/// Embedded for the same reason [`INNER_CUT_DXF`] is: the file, not a transcription of it, is the
+/// definition, and the device is the same object wherever it is built.
+pub const OUTER_CUT_DXF: &str = include_str!("../data/outer-cut.dxf");
+
+/// The unit [`OUTER_CUT_DXF`] is read in — the same drawing, the same statement as
+/// [`INNER_CUT_UNIT`]: `$MEASUREMENT 1` picks a linetype table, it does not say millimetre.
+pub const OUTER_CUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// The outer trim's outline, read out of [`OUTER_CUT_DXF`].
+///
+/// Four entities on layer `VISIBLE` forming one closed loop: the Ø 21.5 rim, interrupted over a
+/// 15° wedge about `+y` by a **lug** — two exactly radial flanks running out from the rim to a
+/// 195° nose arc tangent to both, tipped at ρ = 13.75. So it is [`inner_cut_profile`]'s tab
+/// inverted: material reaching *out* of the rim rather than *in* to the bore, drawn with the same
+/// two wall kinds.
+///
+/// The flanks being radial is geometry, not drafting taste. Cast from a point on the axis
+/// ([`lapped::TrimStyle::NormalCut`]) a radial sketch line sweeps a **plane through the axis**, so the lug's
+/// flanks are the same walls the bore's tab has — which is what makes this outline the outer
+/// counterpart rather than a second unrelated shape.
+///
+/// Panics only on a file this repository ships, so a failure is a broken commit rather than a
+/// runtime condition; `tests/imported_outline.rs` is what names it.
+pub fn outer_cut_profile() -> Vec<Edge<Bignum>> {
+    let opts = interchange::dxf::DxfOptions::<Bignum> {
+        assume_unit: Some(OUTER_CUT_UNIT),
+        ..Default::default()
+    };
+    interchange::dxf::read_dxf::<Bignum>(OUTER_CUT_DXF, &opts)
+        .expect("data/outer-cut.dxf is a readable outline")
+        .profile()
+        .into_edges()
+}
 
 /// The inner cut's outline, read out of [`INNER_CUT_DXF`].
 ///
