@@ -1036,34 +1036,8 @@ pub fn tangent_turn_arc<B: Backend>(
         };
         // A junction cut may land exactly on a piece end, leaving nothing of it: that is a clean
         // join, not a failure, so the degenerate remainder is dropped rather than kept whole.
-        //
-        // The parameter is solved **exactly**, not searched. `PCurve::params_at_sigma` bisects, and
-        // a bisected parameter puts the arc's endpoint *near* the junction rather than on it — which
-        // the unroll's chaining check compares over ℚ and rejects (`ArcDiscontinuity`), correctly.
-        // A loop piece is a chord, so `σ(t) = a + (b − a)·t` and the junction is one division; a
-        // piece whose σ is not affine is refused rather than approximated, since an inexact join
-        // here is a boundary that does not close.
         let cut_at = |lo_side: bool, s: &Rat<B>| -> Option<Option<crate::pcurve::PCurve<B>>> {
-            let sigma = &piece.sigma;
-            if sigma.den().degree().unwrap_or(0) != 0 || sigma.num().degree().unwrap_or(0) > 1 {
-                return None;
-            }
-            let nth = |p: &lattice::Poly<B>, i: usize| {
-                p.coeffs()
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| Rat::from_i128(0))
-            };
-            let d0 = nth(sigma.den(), 0);
-            if d0.sign() == 0 {
-                return None;
-            }
-            let c0 = nth(sigma.num(), 0).div(&d0);
-            let c1 = nth(sigma.num(), 1).div(&d0);
-            if c1.sign() == 0 {
-                return None;
-            }
-            let t = s.sub(&c0).div(&c1);
+            let t = chord_t_at_sigma(piece, s)?;
             let span = if lo_side {
                 Interval {
                     lo: t,
@@ -1097,6 +1071,216 @@ pub fn tangent_turn_arc<B: Backend>(
         out.push(piece.clone());
     }
     None
+}
+
+/// The parameter at which a **chord** piece's σ equals `s` — exact, one division in ℚ.
+///
+/// The parameter is solved rather than searched, and that is a closure requirement, not a
+/// preference. `PCurve::params_at_sigma` bisects, and a bisected parameter puts an arc's endpoint
+/// *near* its junction rather than on it — which the unroll's exact chaining check compares over ℚ
+/// and rejects (`ArcDiscontinuity`), correctly. A loop piece is a chord, so `σ(t) = c₀ + c₁·t` and
+/// the junction is one division; a piece whose σ is not affine is refused (`None`) rather than
+/// approximated, since an inexact join here is a boundary that does not close.
+fn chord_t_at_sigma<B: Backend>(piece: &crate::pcurve::PCurve<B>, s: &Rat<B>) -> Option<Rat<B>> {
+    let sigma = &piece.sigma;
+    if sigma.den().degree().unwrap_or(0) != 0 || sigma.num().degree().unwrap_or(0) > 1 {
+        return None;
+    }
+    let nth = |p: &lattice::Poly<B>, i: usize| {
+        p.coeffs()
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| Rat::from_i128(0))
+    };
+    let d0 = nth(sigma.den(), 0);
+    if d0.sign() == 0 {
+        return None;
+    }
+    let c0 = nth(sigma.num(), 0).div(&d0);
+    let c1 = nth(sigma.num(), 1).div(&d0);
+    if c1.sign() == 0 {
+        return None;
+    }
+    Some(s.sub(&c0).div(&c1))
+}
+
+/// A chord piece re-emitted **endpoint-swapped** — the same set of domain points, walked the other
+/// way, so its certificate carries over. `None` on a coefficient pole or a piece that is not a
+/// chord (endpoint-swapping a curved piece would silently replace it with its chord, which is a
+/// different set).
+pub fn rev_chord<B: Backend>(piece: &crate::pcurve::PCurve<B>) -> Option<crate::pcurve::PCurve<B>> {
+    let affine =
+        |f: &RatFunc<B>| f.den().degree().unwrap_or(0) == 0 && f.num().degree().unwrap_or(0) <= 1;
+    if !affine(&piece.sigma) || !affine(&piece.mu) {
+        return None;
+    }
+    let a = piece.eval(&piece.domain.lo)?;
+    let b = piece.eval(&piece.domain.hi)?;
+    Some(segment(
+        &(b[0].clone(), b[1].clone()),
+        &(a[0].clone(), a[1].clone()),
+    ))
+}
+
+/// The run of a [`CutLoop`] from a graph rail's certified end to the tangent vertex the rail
+/// cannot reach — **half** a [`tangent_turn_arc`]. Where that function carries a boundary from one
+/// branch through a tangent and back out the other, this one stops at the vertex, because the
+/// boundary does not come back: it hands off along the tangent ruling — a profile flank — to a
+/// *different* wall's rail. That is §12.4's mid-chain case, and the device drawing's
+/// fillet–flank–fillet corner is the geometry that forces it: both fillets are tangent to the
+/// radial flank, so both their windows end at the flank's own ruling, and the stretch between each
+/// rail's certified span and that ruling belongs to no graph.
+///
+/// `from` is the handoff σ and `at_value` the rail's µ̂ there. The loop covers every σ of its
+/// window on **two** branches, and the value — not a branch-flag convention — is what says which
+/// of them the boundary is on: the candidate whose µ̂ at `from` lies nearer `at_value` wins, which
+/// is decided by the same fitted rail the chain itself uses.
+///
+/// The returned pieces run σ-**ascending** — `from → vertex` when `vertex_is_max`, `vertex → from`
+/// otherwise — so a caller splicing them into an ascending chain uses them as they come, whichever
+/// loop branch they were cut from. A piece walked against its traversal order is re-emitted
+/// endpoint-swapped ([`rev_chord`]); a chord reversed is the same chord, so the loop's per-piece
+/// certificates carry over unchanged.
+///
+/// `None` if `from` is outside the loop's σ-reach on either branch, the loop does not turn, or a
+/// piece to cut is not a chord — each a case where the caller's structure and this loop disagree,
+/// which is a refusal rather than something to approximate.
+pub fn turn_tail<B: Backend>(
+    cut: &CutLoop<B>,
+    from: &Rat<B>,
+    at_value: &Rat<B>,
+    vertex_is_max: bool,
+) -> Option<Vec<crate::pcurve::PCurve<B>>> {
+    use core::cmp::Ordering;
+    let n = cut.pieces.len();
+    if n < 4 {
+        return None;
+    }
+    let start_of = |k: usize| cut.pieces[k].eval(&cut.pieces[k].domain.lo);
+    let sig: Vec<Rat<B>> = (0..n)
+        .map(|k| {
+            let [s, _] = start_of(k)?;
+            Some(s)
+        })
+        .collect::<Option<_>>()?;
+    let (mut at_max, mut at_min) = (0usize, 0usize);
+    for k in 0..n {
+        if sig[k].cmp(&sig[at_max]) == Ordering::Greater {
+            at_max = k;
+        }
+        if sig[k].cmp(&sig[at_min]) == Ordering::Less {
+            at_min = k;
+        }
+    }
+    if at_max == at_min {
+        return None;
+    }
+    let (v, other) = if vertex_is_max {
+        (at_max, at_min)
+    } else {
+        (at_min, at_max)
+    };
+    let spans = |k: usize| -> Option<bool> {
+        let piece = &cut.pieces[k];
+        let [a, _] = piece.eval(&piece.domain.lo)?;
+        let [b, _] = piece.eval(&piece.domain.hi)?;
+        Some(
+            (a.cmp(from) != Ordering::Greater && from.cmp(&b) != Ordering::Greater)
+                || (b.cmp(from) != Ordering::Greater && from.cmp(&a) != Ordering::Greater),
+        )
+    };
+    // The two runs meeting at the vertex, walked away from it: **backward** in traversal order
+    // (the run arriving at the vertex) and **forward** (the run it opens). Each walk stops at the
+    // other extreme — past it, `from` would be found on the wrong run.
+    let mut cands: Vec<(bool, usize)> = Vec::new();
+    let mut k = (v + n - 1) % n;
+    loop {
+        if spans(k)? {
+            cands.push((false, k));
+            break;
+        }
+        if k == other {
+            break;
+        }
+        k = (k + n - 1) % n;
+    }
+    let mut k = v;
+    loop {
+        if spans(k)? {
+            cands.push((true, k));
+            break;
+        }
+        let nk = (k + 1) % n;
+        if nk == other {
+            break;
+        }
+        k = nk;
+    }
+    // The branch the boundary is on: nearer `at_value` at `from`.
+    let dist_at = |k: usize| -> Option<Rat<B>> {
+        let t = chord_t_at_sigma(&cut.pieces[k], from)?;
+        let [_, m] = cut.pieces[k].eval(&t)?;
+        Some(abs_rat(&m.sub(at_value)))
+    };
+    let (forward, kc) = match cands.len() {
+        0 => return None,
+        1 => cands[0],
+        _ => {
+            let (d0, d1) = (dist_at(cands[0].1)?, dist_at(cands[1].1)?);
+            if d0.cmp(&d1) != Ordering::Greater {
+                cands[0]
+            } else {
+                cands[1]
+            }
+        }
+    };
+    // Collect the run in traversal order, with the `from` piece cut exactly (a cut landing on a
+    // piece end leaves a degenerate remainder, dropped — a clean join, as in `tangent_turn_arc`).
+    let mut out: Vec<crate::pcurve::PCurve<B>> = Vec::new();
+    if forward {
+        // The leaving run: vertex → from.
+        let mut k = v;
+        loop {
+            if k == kc {
+                let t = chord_t_at_sigma(&cut.pieces[k], from)?;
+                let span = Interval {
+                    lo: cut.pieces[k].domain.lo.clone(),
+                    hi: t,
+                };
+                if let Some(head) = cut.pieces[k].restrict(&span) {
+                    out.push(head);
+                }
+                break;
+            }
+            out.push(cut.pieces[k].clone());
+            k = (k + 1) % n;
+        }
+    } else {
+        // The arriving run: from → vertex.
+        let t = chord_t_at_sigma(&cut.pieces[kc], from)?;
+        let span = Interval {
+            lo: t,
+            hi: cut.pieces[kc].domain.hi.clone(),
+        };
+        if let Some(tail) = cut.pieces[kc].restrict(&span) {
+            out.push(tail);
+        }
+        let mut k = (kc + 1) % n;
+        while k != v {
+            out.push(cut.pieces[k].clone());
+            k = (k + 1) % n;
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    // σ-ascending, as promised: the leaving run descends from a σ-max (and the arriving run
+    // descends into a σ-min), so exactly one of the four cases per vertex is already ascending.
+    if forward == vertex_is_max {
+        out.reverse();
+        out = out.iter().map(rev_chord).collect::<Option<Vec<_>>>()?;
+    }
+    Some(out)
 }
 
 /// A closed **cut loop** in the domain: the pieces of a solid cutter's intersection with the
@@ -2531,15 +2715,23 @@ pub fn pcurve_cut_fit<B: Backend>(
 
 /// A rational vector field enclosed over a parameter box. `None` where the shared denominator's
 /// enclosure straddles zero — a possible pole, so the quotient is unbounded there.
+///
+/// Enclosed **by the centre** ([`crate::interval::eval_poly_on_centred`]): a chart field is a
+/// degree-~24 polynomial whose interval-Horner enclosure is blind to its own cancellation, and the
+/// loss here is what every ball-arm certificate downstream pays for. Measured on the device
+/// drawing's fillet loops: a traced sub-piece ~10⁻⁶ wide enclosed to a **~1 mm** 3-D box under
+/// plain Horner, and every piece of every loop stuck at the DRC gate; the centred form returns the
+/// box to the piece's own scale.
 fn vec3_on<B: Backend>(f: &Vec3Rat<B>, sig: &RatIv<B>) -> Option<[RatIv<B>; 3]> {
-    let den = eval_poly_on(f.den(), sig);
+    use crate::interval::eval_poly_on_centred;
+    let den = eval_poly_on_centred(f.den(), sig);
     let inv = den
         .recip_pos()
         .or_else(|| den.neg().recip_pos().map(|r| r.neg()))?;
     Some([
-        eval_poly_on(&f.num()[0], sig).mul(&inv),
-        eval_poly_on(&f.num()[1], sig).mul(&inv),
-        eval_poly_on(&f.num()[2], sig).mul(&inv),
+        eval_poly_on_centred(&f.num()[0], sig).mul(&inv),
+        eval_poly_on_centred(&f.num()[1], sig).mul(&inv),
+        eval_poly_on_centred(&f.num()[2], sig).mul(&inv),
     ])
 }
 
@@ -2757,6 +2949,15 @@ fn quadric_distance_on<B: Backend>(
 
     // `|F|` over the box itself — the lemma is applied at each of its points, so this is the only
     // quantity that does not depend on the ball.
+    //
+    // Enclosed **by its centre** (the mean-value form), intersected with the plain accumulation so
+    // it is never looser. Interval-accumulating the quadratic form loses the cancellation between
+    // its terms, and the loss is not marginal: measured on the device drawing's R 0.25 fillet cone
+    // — traced points *on* the wall, boxes ~10⁻⁵ wide — the plain enclosure reads ~4·10² where the
+    // true |F| is ~10⁻², and every loop piece sticks at 1.4× the DRC gate (the same silent
+    // blindness as the µ̂-discriminant's, one function over). `F(m)` is a **point**: exact rational,
+    // zero width, whatever cancels inside it; the spread term is the gradient's sup over the box
+    // times the box half-widths, the same enclosure shape the lemma's `g` already uses.
     let mut f = RatIv::point(c.clone());
     for i in 0..3 {
         let row: [Rat<B>; 3] = core::array::from_fn(|j| m[i][j].clone());
@@ -2764,23 +2965,52 @@ fn quadric_distance_on<B: Backend>(
             .add(&x[i].mul(&dot_iv(&row, x)))
             .add(&x[i].mul(&RatIv::point(b[i].clone())));
     }
-    let f_hi = abs_on(&f).hi().clone();
+    let mid: [Rat<B>; 3] = core::array::from_fn(|i| x[i].mid());
+    let mut fm = c.clone();
+    for i in 0..3 {
+        let row_dot = m[i][0]
+            .mul(&mid[0])
+            .add(&m[i][1].mul(&mid[1]))
+            .add(&m[i][2].mul(&mid[2]));
+        fm = fm.add(&mid[i].mul(&row_dot)).add(&mid[i].mul(&b[i]));
+    }
+    let mut f_mv = abs_rat(&fm);
+    for i in 0..3 {
+        let row: [Rat<B>; 3] = core::array::from_fn(|j| m[i][j].add(&m[j][i]));
+        let gi = abs_on(&dot_iv(&row, x).add(&RatIv::point(b[i].clone())));
+        let hw = x[i].hi().sub(x[i].lo()).mul(&Rat::new(1, 2));
+        f_mv = f_mv.add(&gi.hi().mul(&hw));
+    }
+    let f_plain = abs_on(&f).hi().clone();
+    let f_hi = if f_mv.cmp(&f_plain) == core::cmp::Ordering::Less {
+        f_mv.clone()
+    } else {
+        f_plain.clone()
+    };
 
     // Grow the ball from small to the full radius and take the **first** one that contains its own
     // bound. Both the tightness and the cost live here: `g` is a minimum over the ball, so a
     // smaller ball gives a larger `g` and a tighter `ε` — and a rail that really is on the surface
     // has a tiny `|F|`, so it succeeds on the first and smallest try. Iterating only happens on the
     // way to `Unresolved`.
-    const STEPS: u32 = 4;
+    //
+    // The floor `radius·2⁻²⁰` is sized by the smallest feature a ball must fit *inside*, not by the
+    // clearance: over a ball comparable to a wall's own curvature radius the gradient's direction
+    // sweeps far enough that every component's enclosure straddles zero, `g` collapses, and the
+    // wall is unbounded at every radius however tight the traced box is. Measured on the device
+    // drawing's R 0.25 fillet cone with the old `radius/16 ≈ 0.22` floor: `widest` never set, every
+    // loop piece reported the bare `Loose(radius)` sentinel. Deepening the floor costs nothing on
+    // healthy cases — they succeed at the first, now tighter, ball — and a bounded walk upward on
+    // the rest.
+    const STEPS: u32 = 20;
     let mut widest = None;
     let mut on_nappe = false;
     for k in (0..=STEPS).rev() {
         let r = radius.mul(&Rat::new(1, 1i128 << k));
         // A ball that reaches the mirror nappe cannot carry the claim, whatever it bounds. The
-        // sequence grows, so once one fails so does every later one — but `continue` rather than
-        // `break` keeps the loop's shape independent of that.
+        // sequence grows and a larger ball contains this one, so the first failure ends the walk.
         if !nappe_ok(&r) {
-            continue;
+            break;
         }
         on_nappe = true;
         let ball = inflate(&r);
@@ -2794,9 +3024,11 @@ fn quadric_distance_on<B: Backend>(
         }
         let g = sqrt(&g2, &cfg.sqrt_eps).lo().clone();
         if g.sign() <= 0 {
-            // This ball reaches the quadric's own vertex, where the gradient dies and no
-            // first-order bound exists. A smaller ball may still clear it, so try the next one.
-            continue;
+            // This ball reaches far enough that the gradient's direction sweeps every component's
+            // enclosure through zero — the quadric's own vertex, or simply a wall smaller than the
+            // ball. `g` is a minimum over the ball, so it is monotone non-increasing in the
+            // radius: every larger ball collapses too, and the walk ends.
+            break;
         }
         // Rounded **up** to the standard fixed-precision budget: the quotient of two
         // deep-in-the-chart rationals otherwise carries hundreds of digits into an `ε` whose only
@@ -2821,15 +3053,6 @@ fn quadric_distance_on<B: Backend>(
         widest.unwrap_or_else(|| radius.clone()),
         radius.clone(),
     ))
-}
-
-/// A polynomial enclosed over an interval (interval Horner).
-fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
-    let mut acc = RatIv::point(Rat::from_i128(0));
-    for c in p.coeffs().iter().rev() {
-        acc = acc.mul(x).add(&RatIv::point(c.clone()));
-    }
-    acc
 }
 
 /// The shared core: the `traced` point as a rational vector function of its own parameter, the
