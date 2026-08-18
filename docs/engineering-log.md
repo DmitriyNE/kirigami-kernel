@@ -768,6 +768,35 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Fixed: the eight tab rails certify once the discriminant is enclosed by its centre
+  (2026-08-18).** `develop::interval::eval_poly_on_centred` / `eval_ratfunc_on_centred` — the
+  mean-value form, `p(X) ⊆ p(m) + p′(X)·(X − m)` with `m = mid X` — intersected with plain Horner so
+  it is never looser. The point of it is that **`p(m)` is exact**: a rational evaluated at a
+  rational, zero width, whatever cancels inside it. The dependency is confined to `p′(X)`, where the
+  radius multiplies it away, so the enclosure width is `O(r)` in the sub-interval rather than
+  `O(‖terms‖)` — and refinement finally buys something.
+
+  Applied to the µ̂-discriminant in the chart arm, **all seventeen rails certify** and the drawing's
+  fault moves from `Refuted(CutUnresolved)` to `Refuted(RailSpanShort { op: 1 })`. That is a strictly
+  later failure — `RailSpanShort` is only reachable *after* a rail has a certificate, and says the
+  boundary needs it over σ the certificate does not cover, which is §12.4's p-curve end. The eight
+  tab rails that could not be certified at all now can.
+
+  **Two things had to be right together, and knowing which is which matters.** Interval Horner on a
+  polynomial in *monomial form* suffers **repeated-`x` dependency** — the coefficients are already
+  combined, so there is no term cancellation left to lose. The separate and worse problem is
+  combining the enclosures of `a`, `b`, `c` and *then* forming `b² − 4ac`, which throws away a
+  cancellation the polynomial form never has to make. Forming the expression symbolically fixes the
+  second; the centred form fixes the first; **neither alone moved the fillets** — the symbolic
+  discriminant on its own was measured earlier and changed nothing.
+
+  Worth stating as a standing hazard rather than a fixed bug: `eval_ratfunc_on` is interval Horner
+  and it is used throughout, so any certified quantity that is a small difference of large terms
+  still has a useless enclosure wherever the centred form has not been reached for. That is the
+  accuracy face of the same coin as #279's cost problem.
+
+  *2026-08-18 · `crates/develop/src/interval.rs`, `crates/develop/src/cut.rs`*
+
 - **What actually stops the drawing: eight rails on the tab, and an enclosure that loses its own
   cancellation (2026-08-18, → #292).** Chased the `ε 3.5000e0` to ground. Per-rail on the device
   (pinned recipe, ramp moved off the tab so #291 does not mask it), seventeen rails are fitted and

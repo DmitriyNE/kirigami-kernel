@@ -2227,7 +2227,17 @@ pub fn ruling_cut_fit<B: Backend>(
                 roots.push(c.neg().mul(&inv));
             }
         } else {
-            let disc = b.mul(&b).sub(&four.mul(&a).mul(&c));
+            // The discriminant is formed **symbolically** and enclosed by the **centred** form, and
+            // both halves matter. `b² − 4ac` from three separate enclosures throws away a
+            // cancellation the polynomial never has to make; Horner over the symbolic polynomial
+            // then still pays repeated-σ dependency, which on a sub-millimetre wall is enough on its
+            // own. Measured on the device's tab fillets, the naive reading came back
+            // `[−3.0227e2, +5.8864e2]` around a modest positive number — no sign, no crossing, no
+            // certificate (#292).
+            let disc = match crate::interval::eval_ratfunc_on_centred(&form.disc(), &sig) {
+                Some(d) => d,
+                None => b.mul(&b).sub(&four.mul(&a).mul(&c)),
+            };
             if disc.lo().sign() > 0
                 && let Some(inv) = recip_away(&two.mul(&a))
             {
