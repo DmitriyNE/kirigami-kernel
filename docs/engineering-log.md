@@ -768,6 +768,43 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The third blocker: one wall, two passes, one hulled span (2026-08-18, → #293).** With #292's
+  chart arm in play every rail certificate passes, so the drawing's next refusal is the **float
+  oracle** — `fit_cut_rail` declining with `disc −5.230392e3` at its first Chebyshev node. The
+  discriminant is *negative*: the ruling there does not meet the wall at all. The oracle is right;
+  it was handed a span the wall does not live on.
+
+  The label is `(1, Wall(3, false))`, the drawing's `+x` root fillet — R 0.25 with its centre at
+  radius 3.75, so it subtends about **7.6°** of azimuth. It bounds the material in **two disjoint
+  σ-runs**, because the 410.7° chart passes the tab's azimuth twice:
+
+  | run | σ-range | width |
+  |---|---|---|
+  | 1 | `[−1.108464, −1.042318]` | 0.066 |
+  | 6 | `[+0.924479, +0.960938]` | 0.036 |
+
+  `hull_of` takes `rmin`/`rmax` over every run carrying the label, so those become **one** span
+  `[−1.108, +0.961]` — 30× longer than either, covering 60°+ of azimuth the fillet never reaches.
+  `window_around` clamps that to a tangent-bracket gap, `[−1.0397, −0.0602]`, still mostly outside
+  the wall's reality, and the oracle declines.
+
+  **A second defect compounds it, and its own comment gives it away.** `window_around` picks the
+  bracket gap containing the span's midpoint *without* checking the discriminant's sign; the
+  resolver's station targeting does check it. The comment beside `window_around` claims both use
+  "the same exact isolation … the *same* interval". They do not.
+
+  **Why it waited for this drawing.** Every feature so far bounds over one contiguous run — the
+  bore's `r = 4` wall, the outer trim. The L-slot (#264) *does* pierce both sheets of the wrap, but
+  it is a **hole**, and holes are attributed per σ-window rather than through `hull_of`. The tab is
+  the first **bound** that appears twice, and on a wrapping chart that is not an edge case: it is
+  what wrapping *means*.
+
+  The non-mechanical part of the fix is the bookkeeping, not the hull: `find_piece(pieces, label,
+  ri)` assumes at most one piece per (label, region) and takes the first match — and here both runs
+  are in region 0.
+
+  *2026-08-18 · open(#293) · `crates/author/src/realize.rs`*
+
 - **#292 spike, GO: certify the wall in the chart and recognition stops mattering (2026-08-18).**
   `develop::cut::ruling_cut_fit` measures the rail's distance to its wall the way the chart already
   knows how, and it answers every question the spike was set:
