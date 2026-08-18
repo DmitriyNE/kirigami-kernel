@@ -803,6 +803,36 @@ fine — this is a log, not a schema.
   ri)` assumes at most one piece per (label, region) and takes the first match — and here both runs
   are in region 0.
 
+  **Attempt 1, reverted — and the revert is the finding.** Grouping a label's runs by *consecutive
+  index* and fitting one rail per group does exactly what it should on the drawing: the rim wall is
+  fitted on the six σ-ranges where it actually bounds (all Verified at `~1e-13`, the gaps precisely
+  where the tab interrupts it) and the oracle decline is gone. It also fails three green fixtures —
+  `the_same_footprint_is_a_certified_hole_and_a_kept_part`, `a_rail_out_and_an_arc_back_is_a_solid_too`,
+  `only_the_declared_band_separates_a_working_intersect_from_a_refused_one` — on a rail over
+  `[−0.238004, −0.233797]`, width `0.0042`, at `ε 8.4285e1`.
+
+  **Run adjacency is the wrong criterion, and that is the whole lesson.** A label's runs are
+  non-consecutive for two different reasons, and they want opposite treatment:
+
+  - the wall is **absent** in between — the tab; the runs need *separate* rails;
+  - the wall is **present** but the boundary is spliced there (a turn arc at a tangent end, or
+    another label bounding between) — the AUTH.3b′/b″/b‴ contours; the runs need *one* rail, and
+    the old hull was doing real work.
+
+  Index adjacency cannot tell those apart. What can is **which disc-positive window each run falls
+  in**: runs sharing a tangent-window share a rail, runs in different windows get their own.
+  `window_around` already computes that window.
+
+  **Two negative results worth not repeating.** A discriminant guard on `window_around` fails the
+  same three fixtures — at the gap midpoint *and* at the query point — so those rails legitimately
+  clamp into a gap the discriminant calls empty; note `disc` is a *rational* function, so a pole
+  between two root brackets breaks the "one evaluation decides the gap" assumption the resolver's
+  station targeting also makes. And the oracle's Vandermonde is built in the raw σ variable, which
+  is ill-conditioned on a span of width `0.0042` about `−0.236`; rewriting the fit in `t = (σ−mid)/
+  half` and expanding back exactly changed that `ε 8.4285e1` **not at all**, which rules
+  conditioning out as the cause and leaves the normalization an unmotivated change until something
+  measures a benefit from it.
+
   *2026-08-18 · open(#293) · `crates/author/src/realize.rs`*
 
 - **#292 spike, GO: certify the wall in the chart and recognition stops mattering (2026-08-18).**
