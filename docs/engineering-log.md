@@ -768,6 +768,1138 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#292 adopted, on the third measurement — and the cost objection went away with one line
+  (2026-08-18).** With the tab rails certifying, the chart arm has a benefit case at last, so
+  min-of-both goes in: `cut_fit` hands `traced_cut_fit` a per-sub-interval `refine`, the ball arm
+  computes its own bound as it always did, and the tighter of the two is taken. Composed that way
+  round on purpose — the ball arm's reading is per-variant and symbolic in σ, and rebuilding it from
+  outside is how two earlier attempts silently lost the `RevCylinder` substitution and the `σ ↔ µ̂`
+  correlation.
+
+  **Eager min-of-both cost +69%** on the plain bore (`3.5 s → 5.9 s`) for no ε change, which is the
+  trade that got the previous attempt reverted. The fix is one observation: `ε` is a **max** over
+  sub-intervals and the gate is `ε < clearance/2`, so a sub-interval whose own bound already clears
+  the gate cannot decide the verdict — asking the second arm about it buys a smaller number nobody
+  reads. Refining only where the first arm would fail takes it to **+14%** (`3.5 s → 4.0 s`), same ε,
+  and on a part where the first arm is comfortable throughout the second is never evaluated at all.
+
+  | | plain bore | plain bore, ramp moved | the drawing |
+  |---|---|---|---|
+  | before | `Verified 3.3369e0`, 3.5 s | `Verified 2.3465e0`, 3.5 s | `Unresolved 3.5000e0`, 35 s |
+  | eager | `Verified 3.3369e0`, 5.9 s | `Verified 2.3465e0`, 5.6 s | `Refuted(RailSpanShort)`, 50 s |
+  | lazy | `Verified 3.3369e0`, **4.0 s** | `Verified 2.3465e0`, **4.1 s** | `Refuted(RailSpanShort)`, 45 s |
+
+  **`Refuted` on the drawing is progress, and the test that failed says so.** `RailSpanShort` is
+  only reachable once a rail *has* a certificate and the boundary needs it past its certified span —
+  §12.4's p-curve end. The #293 test written earlier the same day asserted "no structural refusal
+  should remain" and failed, correctly: the arithmetic wall is gone and a structural one is now
+  visible behind it. Re-pinned as
+  `rim_notch::the_drawings_tab_rails_certify_and_what_is_left_is_the_p_curve_end`, with the whole
+  four-step chain in its doc.
+
+  *2026-08-18 · `crates/develop/src/cut.rs`*
+
+- **Fixed: the eight tab rails certify once the discriminant is enclosed by its centre
+  (2026-08-18).** `develop::interval::eval_poly_on_centred` / `eval_ratfunc_on_centred` — the
+  mean-value form, `p(X) ⊆ p(m) + p′(X)·(X − m)` with `m = mid X` — intersected with plain Horner so
+  it is never looser. The point of it is that **`p(m)` is exact**: a rational evaluated at a
+  rational, zero width, whatever cancels inside it. The dependency is confined to `p′(X)`, where the
+  radius multiplies it away, so the enclosure width is `O(r)` in the sub-interval rather than
+  `O(‖terms‖)` — and refinement finally buys something.
+
+  Applied to the µ̂-discriminant in the chart arm, **all seventeen rails certify** and the drawing's
+  fault moves from `Refuted(CutUnresolved)` to `Refuted(RailSpanShort { op: 1 })`. That is a strictly
+  later failure — `RailSpanShort` is only reachable *after* a rail has a certificate, and says the
+  boundary needs it over σ the certificate does not cover, which is §12.4's p-curve end. The eight
+  tab rails that could not be certified at all now can.
+
+  **Two things had to be right together, and knowing which is which matters.** Interval Horner on a
+  polynomial in *monomial form* suffers **repeated-`x` dependency** — the coefficients are already
+  combined, so there is no term cancellation left to lose. The separate and worse problem is
+  combining the enclosures of `a`, `b`, `c` and *then* forming `b² − 4ac`, which throws away a
+  cancellation the polynomial form never has to make. Forming the expression symbolically fixes the
+  second; the centred form fixes the first; **neither alone moved the fillets** — the symbolic
+  discriminant on its own was measured earlier and changed nothing.
+
+  Worth stating as a standing hazard rather than a fixed bug: `eval_ratfunc_on` is interval Horner
+  and it is used throughout, so any certified quantity that is a small difference of large terms
+  still has a useless enclosure wherever the centred form has not been reached for. That is the
+  accuracy face of the same coin as #279's cost problem.
+
+  *2026-08-18 · `crates/develop/src/interval.rs`, `crates/develop/src/cut.rs`*
+
+- **What actually stops the drawing: eight rails on the tab, and an enclosure that loses its own
+  cancellation (2026-08-18, → #292).** Chased the `ε 3.5000e0` to ground. Per-rail on the device
+  (pinned recipe, ramp moved off the tab so #291 does not mask it), seventeen rails are fitted and
+  the picture is unambiguous:
+
+  | rails | 3-D arm | chart arm |
+  |---|---|---|
+  | the trims and the bore rim (9) | `1.2e-1 … 5.4e0`, **one `Unresolved 5.3874e0`** | `1.1e-13 … 4.9e-3`, **all Verified** |
+  | the tab's fillets and flanks (8) | **`Unresolved ε 3.5000e0`** (the sentinel) | **`Refuted(DegenerateSurface)`** |
+
+  So `ε 3.5000e0` is `quadric_distance_on`'s "nothing certified" value, `max(widest, radius)` with
+  `radius = clearance/2`, on **eight rails belonging to the tab's sub-millimetre walls** — the
+  R 0.25 root fillets, the R 0.15 tip fillets, the flanks. Everything else certifies. And the chart
+  arm, which is `10¹²` better on the other nine and resolves one the 3-D arm cannot, has *nothing*
+  to say on those same eight.
+
+  **Why the chart arm declines, and it is not geometry.** Instrumented at the decline: `a` is
+  healthy — `[+4.9223e1, +4.9315e1]`, tight, far from zero — and the **discriminant encloses to
+  `[−3.0227e2, +5.8864e2]`**. Width ~890 around a true value that is a modest positive number. It
+  straddles zero, so no crossing can be named, so the arm declines. `b² − 4ac` is a small difference
+  of large terms and combining three independent enclosures throws the cancellation away.
+
+  **And the obvious fix does not work.** Forming `disc` symbolically as a rational function of σ
+  (`MuCut::disc()`, which already exists and is what the resolver's station targeting uses) and
+  enclosing *that* leaves the eight rails refusing exactly as before. Interval **Horner** over a
+  polynomial whose own coefficients carry the cancellation is no better than combining the terms —
+  the dependency is in the arithmetic, not in the expression tree. This is the same trap `s` fell
+  into and escaped, and it escaped only because `s` is genuinely `~1e-8`, so a relatively terrible
+  enclosure is still absolutely small. `disc` has no such luck.
+
+  What that points at is a *centred* evaluation — value at the sub-interval midpoint plus a
+  derivative-bounded remainder — which is the standard remedy for dependency and which this codebase
+  already uses elsewhere (`integrate_on_slope`'s "thin-midpoint dependency-taming"). Not attempted;
+  named so the next attempt starts there rather than at a fourth guess.
+
+  **Ruled out along the way, each by measurement, so nobody re-tries them:** the ball radius (shrank
+  `clearance` 7 → 1/2; six rails still report the sentinel and two report `ε 1.67e4`/`7.70e4`); the
+  oracle's samples (the µ̂ nodes are smooth and sane, `−2.6 … −4.4`, no poles); the fit's
+  conditioning (normalized-basis interpolation in `t = (σ−mid)/half`, expanded back exactly —
+  **no change**, the second time that has been measured); and the window inset (widened 20×, from
+  1/200 to 1/10 of the window — **no change**, so it is not proximity to the tangent rulings).
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
+- **#292 adoption: implemented, measured, reverted — the tightness does not reach part ε
+  (2026-08-18).** The composition that works is the inverse of the obvious one: give
+  `traced_cut_fit` a per-sub-interval `refine` callback and take the tighter of the two bounds.
+  That is provable in two steps — a `None` refinement is a no-op (786/786), then wire the chart arm
+  (786/786, no pinned budget disturbed) — and it sidesteps the duplicated-implementation problem
+  the previous attempt hit, because the 3-D arm keeps computing its own bound its own way.
+
+  Then the A/B, on one tree, same fixtures:
+
+  | fixture | without refinement | with |
+  |---|---|---|
+  | plain bore | `Verified ε 3.3369e0`, 3.5 s | `Verified ε 3.3369e0`, 5.4 s |
+  | plain bore, ramp moved | `Verified ε 2.3465e0`, 3.5 s | `Verified ε 2.3465e0`, 5.4 s |
+  | drawing, ramp moved | `Unresolved ε 3.5000e0`, 35 s | `Unresolved ε 3.5000e0`, 40 s |
+
+  **ε identical everywhere; runtime +15% to +54%.** The spike's `10²`–`10¹²` per-rail tightness does
+  not reach the part: `ε` is a **max over pipeline stages**, and the rail certificate is not the
+  binding one. A bound that improves by twelve orders and moves nothing is a bound on something
+  nobody was waiting for — reverted, and `cut_fit` is untouched.
+
+  **The thing this task was opened for was already fixed, and not by the chart arm.** The drawing's
+  imported rim was *refused* because the nappe condition was checked at a fixed `clearance/2`; that
+  landed earlier the same day and turned the refusal into a refinable `Unresolved`. Recognition
+  stopped being a capability gate there. What the chart arm demonstrates — that a wall certifies
+  with no classification at all — stands, and it stays in the tree with its comparison test; what it
+  does not have is a fixture where adopting it measures a benefit.
+
+  *Method note, since this is the third revert in a row and they were not the same mistake:* the
+  useful discipline turned out to be **A/B on one tree before keeping anything**. The first two
+  reverts were caught by the suite; this one the suite could never have caught, because green was
+  never in question — only whether the change was worth its cost.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
+- **#292 adoption attempt, reverted — the arm policy is settled, the blocker is a duplicated
+  implementation (2026-08-18).** Two things came out of trying to make the chart arm the default,
+  and the first settles a question the spike had left open.
+
+  **Neither arm dominates, so the policy is `min` of both.** The chart bound measures *along the
+  ruling*, overestimating the true distance by `1/sin θ` for a crossing angle `θ`; the 3-D bound
+  measures perpendicular but re-derives from an inflated ball what the chart holds exactly. On the
+  lapped device the chart arm is `10²`–`10¹²` tighter; on the **flex panel** it is *looser*, and
+  chart-first alone raised that fixture's develop `ε` to `4.3611e-1` against a pinned budget of
+  `3.0000e-1`. Both are upper bounds on the same distance, so the minimum is sound and is the
+  tightest available. Spike-tightness measured on one device is not a policy.
+
+  **The blocker: `develop::cut` has two different 3-D distance implementations.** `traced_cut_fit`
+  is whole-span with its own per-variant closed forms *and* the `RevCylinder::recognize`
+  substitution; `surface_distance_on` is per-point, takes a `RevCone`, and is what `pcurve_cut_fit`
+  uses. They are not interchangeable, and wiring the chart arm's fallback to the second silently
+  dropped the `RevCylinder` substitution — flex panel `Unresolved` at `ε 7.5e-1`. A subtler second
+  version of the same mistake: enclosing `pedal`, `ruling` and µ̂ separately and combining them
+  drops the `σ ↔ µ̂` correlation inside a piece, which is exactly why `cut_fit` composes the rail
+  point as **one** `Vec3Rat` first — doing it the other way also cost that budget.
+
+  So adoption is gated on a refactor that has nothing to do with the chart arm: factor
+  `traced_cut_fit`'s per-sub-interval core out so both arms call the same code, and prove *that* a
+  no-op first. Reverted rather than shipped half-done; #292 carries the order.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
+- **#293 landed on attempt 2, and the fix was the step ordering, not the grouping (2026-08-18).**
+  Attempt 1 changed `hull_of` and failed three green fixtures; the entry below has the transcript.
+  What made attempt 2 work was reading `certify_boundary` end to end *first* and writing down the
+  obligation before touching it:
+
+  > **A rail must be certified over the σ the boundary actually uses** — and the boundary is not
+  > known until step 3′, which *deletes* the outermost segment of each chain (and, in the
+  > whole-side case, the entire lower chain) and puts a turn arc there instead.
+
+  Step 2 fitted a rail for every label and raised on the first that did not certify — including
+  labels whose every segment step 3′ was about to delete. Near a tangent ruling a graph rail cannot
+  be certified at all, so a sliver `0.0042` wide next to a tangent end was a hard failure for a
+  rail nothing would ever evaluate. Now a fit that does not certify is **recorded, not raised**, and
+  `covered` raises it — with the reason the fit gave, so a loose one stays refinable — only if a
+  *surviving* segment needs it. Nothing is weakened: a rail the boundary uses must still certify,
+  which is the whole of the obligation.
+
+  With that in place, index-adjacency grouping is fine after all, and the elaborate
+  "group by tangent window" design the previous entry proposed is unnecessary. **The criterion was
+  never the problem; requiring certificates for discarded rails was.**
+
+  On the device (pinned recipe, ccw ramp moved off the tab so #291 does not mask this): the float
+  oracle's decline is gone and `develop` reports `Unresolved ε 3.5000e0` — exactly `clearance/2`,
+  the DRC gate — where before it was `1.1220e1`, an order above it. 786/786 green.
+  `rim_notch::the_drawing_clears_every_structural_blocker_once_the_ramp_is_off_the_tab` pins it by
+  shape rather than by golden: `Unresolved` not `Refuted`, ε at the threshold not above it.
+
+  *2026-08-18 · resolved(#293) · `crates/author/src/realize.rs`*
+
+- **The third blocker: one wall, two passes, one hulled span (2026-08-18, → #293).** With #292's
+  chart arm in play every rail certificate passes, so the drawing's next refusal is the **float
+  oracle** — `fit_cut_rail` declining with `disc −5.230392e3` at its first Chebyshev node. The
+  discriminant is *negative*: the ruling there does not meet the wall at all. The oracle is right;
+  it was handed a span the wall does not live on.
+
+  The label is `(1, Wall(3, false))`, the drawing's `+x` root fillet — R 0.25 with its centre at
+  radius 3.75, so it subtends about **7.6°** of azimuth. It bounds the material in **two disjoint
+  σ-runs**, because the 410.7° chart passes the tab's azimuth twice:
+
+  | run | σ-range | width |
+  |---|---|---|
+  | 1 | `[−1.108464, −1.042318]` | 0.066 |
+  | 6 | `[+0.924479, +0.960938]` | 0.036 |
+
+  `hull_of` takes `rmin`/`rmax` over every run carrying the label, so those become **one** span
+  `[−1.108, +0.961]` — 30× longer than either, covering 60°+ of azimuth the fillet never reaches.
+  `window_around` clamps that to a tangent-bracket gap, `[−1.0397, −0.0602]`, still mostly outside
+  the wall's reality, and the oracle declines.
+
+  **A second defect compounds it, and its own comment gives it away.** `window_around` picks the
+  bracket gap containing the span's midpoint *without* checking the discriminant's sign; the
+  resolver's station targeting does check it. The comment beside `window_around` claims both use
+  "the same exact isolation … the *same* interval". They do not.
+
+  **Why it waited for this drawing.** Every feature so far bounds over one contiguous run — the
+  bore's `r = 4` wall, the outer trim. The L-slot (#264) *does* pierce both sheets of the wrap, but
+  it is a **hole**, and holes are attributed per σ-window rather than through `hull_of`. The tab is
+  the first **bound** that appears twice, and on a wrapping chart that is not an edge case: it is
+  what wrapping *means*.
+
+  The non-mechanical part of the fix is the bookkeeping, not the hull: `find_piece(pieces, label,
+  ri)` assumes at most one piece per (label, region) and takes the first match — and here both runs
+  are in region 0.
+
+  **Attempt 1, reverted — and the revert is the finding.** Grouping a label's runs by *consecutive
+  index* and fitting one rail per group does exactly what it should on the drawing: the rim wall is
+  fitted on the six σ-ranges where it actually bounds (all Verified at `~1e-13`, the gaps precisely
+  where the tab interrupts it) and the oracle decline is gone. It also fails three green fixtures —
+  `the_same_footprint_is_a_certified_hole_and_a_kept_part`, `a_rail_out_and_an_arc_back_is_a_solid_too`,
+  `only_the_declared_band_separates_a_working_intersect_from_a_refused_one` — on a rail over
+  `[−0.238004, −0.233797]`, width `0.0042`, at `ε 8.4285e1`.
+
+  **Run adjacency is the wrong criterion, and that is the whole lesson.** A label's runs are
+  non-consecutive for two different reasons, and they want opposite treatment:
+
+  - the wall is **absent** in between — the tab; the runs need *separate* rails;
+  - the wall is **present** but the boundary is spliced there (a turn arc at a tangent end, or
+    another label bounding between) — the AUTH.3b′/b″/b‴ contours; the runs need *one* rail, and
+    the old hull was doing real work.
+
+  Index adjacency cannot tell those apart. What can is **which disc-positive window each run falls
+  in**: runs sharing a tangent-window share a rail, runs in different windows get their own.
+  `window_around` already computes that window.
+
+  **Two negative results worth not repeating.** A discriminant guard on `window_around` fails the
+  same three fixtures — at the gap midpoint *and* at the query point — so those rails legitimately
+  clamp into a gap the discriminant calls empty; note `disc` is a *rational* function, so a pole
+  between two root brackets breaks the "one evaluation decides the gap" assumption the resolver's
+  station targeting also makes. And the oracle's Vandermonde is built in the raw σ variable, which
+  is ill-conditioned on a span of width `0.0042` about `−0.236`; rewriting the fit in `t = (σ−mid)/
+  half` and expanding back exactly changed that `ε 8.4285e1` **not at all**, which rules
+  conditioning out as the cause and leaves the normalization an unmotivated change until something
+  measures a benefit from it.
+
+  *2026-08-18 · open(#293) · `crates/author/src/realize.rs`*
+
+- **#292 spike, GO: certify the wall in the chart and recognition stops mattering (2026-08-18).**
+  `develop::cut::ruling_cut_fit` measures the rail's distance to its wall the way the chart already
+  knows how, and it answers every question the spike was set:
+
+  > `dist(C(σ), wall) ≤ |s(σ)| / |∂s/∂µ̂| · |ruling(σ)|`, `s = a µ̂_fit² + b µ̂_fit + c` the rail's own
+  > residual in the µ̂-pullback [`cut_mu_form`] — **an exact rational function of σ**.
+
+  No ball, no gradient bound, no classification. The nappe becomes *which root*, decided at a point
+  rather than over an inflated box.
+
+  **Tightness, per rail, on the two-ramp device with a plain bore** (both arms certify, so they can
+  be compared; `subdiv 160`):
+
+  | rail | 3-D arm (closed form) | chart arm |
+  |---|---|---|
+  | outer, base cone | 1.4295e-1 | **6.6359e-14** |
+  | outer, ramp ① | 1.6854e-2 | **5.1627e-4** |
+  | outer, ramp ② | 2.0055e-2 | **1.7776e-3** |
+  | outer, flat ccw | 2.2124e-2 | **6.6767e-14** |
+  | bore, base cone | 6.2563e-8 | **5.8617e-14** |
+  | bore, ramp ① | 6.4560e-3 | **9.6798e-4** |
+  | bore, ramp ② | 1.2990e-2 | **7.5357e-3** |
+  | bore, flat ccw | 7.9878e-3 | **3.6707e-14** |
+
+  Tighter on **every** rail, by 10² to 10¹². That is not a surprise once stated: the 3-D arm
+  re-derives from an inflated ball a quantity the chart holds exactly, and the `σ ↔ µ̂` cancellation
+  it loses is the whole difference. Convergence on the ramp rails is clean `O(h)` — `5.1627e-4 →
+  2.6597e-4 → 1.4182e-4` and `1.7776e-3 → 8.9200e-4 → 4.5317e-4` over `subdiv 160 → 320 → 640`.
+
+  **And the wall that started this.** The drawing's Ø 8 rim — the imported circle `2.3e-14 mm`
+  off-axis, which `RevCone` declines and the 3-D arm cannot certify at *any* subdivision — certifies
+  at **ε 1.0384e-13**. All eight trim rails certify. Recognition is now what it should always have
+  been: an optimization that can be dropped without losing a capability.
+
+  **Two things the spike also found, and both are worth carrying.**
+
+  - *A sign error that looked like success.* The first cut returned `ε 0.0000e0` on every rail. The
+    mean-value term kept the slope's sign, so the "bound" was negative and `max` discarded it. A
+    certificate arm that reports **zero** is the failure mode to fear most, and the only reason it
+    was caught is that zero was implausible enough to check the terms. *Assert `ε ≥ 0` in the test,
+    and be suspicious of a bound that improves by orders of magnitude in one edit.*
+  - *The dependency trap it replaced.* Written as `|µ̂_fit − µ̂*|` with the two enclosed
+    independently, the bound reads `5.5e-1` where the rail is exact to `6.3e-8`: each of the two
+    swings by `~0.5` across a σ-piece and the difference inherits both swings. Forming `s` as a
+    rational function *first* and dividing by a slope **lower** bound is what keeps the
+    cancellation — a loose root enclosure cannot spoil a lower bound.
+
+  **Costs and open ends.** The chart arm ran the plain bore in `8.3 s` against `5.7 s` (+45%) —
+  `s` is a RatFunc product, so this lands on #279's coefficient growth. It degrades near a tangent
+  ruling where `∂s/∂µ̂ → 0`; those windows are already isolated exactly by `tangent_events` and owned
+  by the p-curve arm, but that hand-off is *not yet measured*. And with all rails certifying, the
+  drawing's next blocker is a different subsystem: `fit_cut_rail` — the **float oracle** — declines
+  on span `[−1.0397, −0.0602]`, which is neither certificate nor resolver.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
+- **Recognition must never be a capability gate — and the general arm is not yet good enough to make
+  that true (2026-08-18, → #292).** The user rejected backward-error recognition as the fix for the
+  entry below, in two sentences worth keeping verbatim in spirit: *"I really don't understand how it
+  can be controlled and at which level the near-miss should convert to intent. Technically if we
+  have an exact intent, we can build exact geometry inside the kernel without resorting to import."*
+  And: *"even if we'll fix it by snapping to an exact coax cone, the next authored curve can be
+  intentionally not a coax cone and this will fail again."* Both are right, and together they name
+  the actual architectural defect: **whether a cut can be performed at all must not depend on a
+  classification.** A tolerance that decides *meaning* has no principled setting, and a fallback
+  that only works for the shapes the classifier recognizes is not a fallback.
+
+  **First half, fixed and measured.** The refusal was not even about the eccentricity. The general
+  quadric arm's nappe condition — "the ball in which the first-order lemma places a zero must lie on
+  the authored nappe's side" — was checked once at a **fixed** `clearance/2 = 3.5 mm`, deliberately,
+  to bundle a DRC cushion into a soundness gate. The device's imported bore clears its drafted
+  cutter's apex plane by `r·tan β = 3.61 mm`, so the cushion had ~0.1 mm of headroom and the ℓ¹
+  inflation ate it. Instrumented, the selector **holds at `r/2`, `r/4`, `r/8`, `r/16` and fails only
+  at the constant**. Checking it at the ball the bound actually closes on is strictly sufficient for
+  the lemma's own conclusion, and both §4.1 conditions still bite — a trace that genuinely reaches
+  the mirror nappe or the apex fails at every radius, `NappeCrossed` as before. Result on the
+  two-ramp device with the drawing: `Refuted(CutUnresolved)` → **`Unresolved`**, a refinable
+  looseness rather than a fault. 783/783 green.
+
+  **Second half, open, and the more interesting one.** Refinable is not the same as convergent.
+  Sweeping the rail fit: `subdiv 160 → ε 1.1220e1`, `320 → 3.7633e0`, `1280 → 7.0000e0`,
+  `5120 → 7.0000e0`. Non-monotone, then pinned at the clearance. So the general quadric arm is not
+  merely *slower* than the closed forms — on this wall it does not converge at all, and 32× the
+  subdivision buys nothing. That is why recognition became load-bearing in the first place: it was
+  never an optimization, it was the only arm that worked.
+
+  **The proposal that removes recognition from the capability question altogether.** The general arm
+  measures distance in 3-D: enclose the traced point in a box, inflate to a ball, bound `|F|/|∇F|`.
+  It pays for that with the lost `σ ↔ µ̂` cancellation, which is exactly what saturates. But the
+  chart already has the quantity we want, exactly and rationally: the resolver computes every wall's
+  **µ̂-pullback** `a(σ)µ̂² + b(σ)µ̂ + c(σ)` (`cut_mu_form`) to decide the shadow at all. Distance to a
+  surface is an *upper* bound problem, so any point on the surface will do — take the point on the
+  **same ruling** at the wall's own root `µ̂*`, and
+
+      dist(X(σ), wall) ≤ |µ̂_fit(σ) − µ̂*(σ)| · |r(σ)|
+
+  is sound, needs one `sqrt` enclosure for the root and one for the ruling speed, and is tight
+  wherever the ruling meets the wall transversally. No ball, no gradient, no recognition — and the
+  nappe question becomes "which root", which `BranchSide`/`RootPick` already carry exactly. It
+  degrades near a tangent ruling (the two roots collide), and those windows are already isolated
+  exactly by `tangent_events`, which is where the p-curve arm takes over. If this holds up,
+  `RevCone`/`RevCylinder` become a pure speed/tightness optimization — which is all a recognizer
+  should ever be — and an *intentionally* non-coaxial cut certifies through the same door.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
+- **A circle 2.3e-14 mm off-axis is not a cone of revolution, and that is enough to refuse the cut
+  (2026-08-18, → #292).** The user checked the entry below against *their* test device — the two-ramp
+  recipe in `crates/author/examples/lapped_cone.rs` — where the drawing's tab lands on conical sheet
+  in **both** passes, and reported that it is refused anyway. It is, and for an unrelated reason:
+  `Refuted(CutUnresolved { op: 1 })`, from `rail (1, Wall(2, false)) region 0 span [−1.125, 0.4625]
+  → NappeCrossed`. Wall 2 is the Ø 8 rim — the plainest wall in the file. **No section splits
+  anywhere in that run**, so this is a second, independent blocker, and the entry below overreached
+  in saying the drawing certifies on a cone: absence of a split was measured, "it certifies" was
+  not.
+
+  **The cause is a knife-edge exact predicate meeting a real file.** `RevCone::recognize` is a chain
+  of exact rational equalities. The drawing's rim circle is `cx = −1.7e-15`, `cy = +2.26e-14`,
+  `r² = 15.999999256…` (`r = 3.9999999070`). The cutter's apex is on the axis, so a circle whose
+  centre misses the axis by `2.3e-14 mm` sweeps an **oblique** cone; recognition declines, correctly,
+  and the wall falls to the general-quadric arm — whose nappe test inflates the traced box by
+  `clearance/2 = 3.5 mm` and needs the whole ball on one side of the selector. It is not, so
+  `NappeCrossed`: precisely the fault #288/#289 added `RevCone` to remove. Measured side by side on
+  the same device — plain bore **8/8 walls recognized, Verified in 5.7 s**; the drawing **4
+  recognized, the rim declined, refused in 24.7 s**.
+
+  **The lesson, and it generalizes past this file.** Exact recognition is the right doctrine for
+  *authored* geometry and the wrong one for *imported* geometry: no drawing will ever land on the
+  knife edge, and every near-miss silently costs the closed form — a seven-orders-of-magnitude ε
+  cliff (#289) or, as here, an outright refusal. Recognition has to be a *verified proposal with a
+  backward error*, which is what its own docs already claim it is — and the cheap place to do that
+  is the **builder**, not the quadric: `Cast::circle_wall` knows the circle and the apex, so "is
+  this a cone of revolution" is "is the apex on the circle's axis", and the near-miss is a length
+  rather than an optimization problem. #292 carries it.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`, `crates/develop/src/extrude.rs`*
+
+- **The drawing's tab is refused by the ramp, not by its own flanks — and the same fault name covers
+  a second open bug (2026-08-18).** #291 was filed as "the resolver cannot place an imported
+  outline's tab", with `choose_comps` named as the suspect and an exactly-radial flank named as the
+  cause. Instrumented, both are wrong, and the way they are wrong is the lesson: **a fault name that
+  points at the wrong subsystem costs a whole session.** `AmbiguousRegion { op: 1 }` says "the
+  resolver could not decide"; what actually happens is the resolver deciding correctly and hitting
+  the limit of what its *model* can hold.
+
+  **The mechanism.** A region is modelled as **one µ̂-interval per σ** — a lower rail and an upper
+  rail, both graphs over σ — plus interior holes carved by a single subtract op. A **tab** left in
+  the bore is material reaching inward. A ruling that runs *across* the tab instead of along it
+  enters the tab, leaves it, crosses a sliver of cut, and re-enters the sheet: the kept material is
+  **two µ̂-intervals at one σ**. `sample_comps` merges them and records the gap as a hole of op 1;
+  the role derivation then finds op 1 both holing and bounding and refuses. The refusal is *right* —
+  the gap opens into the exterior at the low-σ end of its band, so shipping it as a hole would emit
+  a closed island where the part has an open bay — but its name was not.
+
+  **The controlled measurement, inside one run.** The drawing's tab passes the 410.7° chart twice at
+  the same plan azimuth, and the two passes land on different sheet:
+
+  | pass | region | `h` | ruling's plan miss | section |
+  |---|---|---|---|---|
+  | σ ∈ −1.079…−0.927 | 0 | `0` | **exactly 0.000000000** | one interval ✓ |
+  | σ ∈ +0.888…+1.049 | 1 (the ramp) | `0 → 1/4` | up to **0.481 mm** | **split** at σ = 0.897, 0.906, 0.915 ✗ |
+
+  Same cut, same walls traversed in the same order (`Wall 2→3→5→6→7→1→2`, the r = 4 rim, the root
+  fillets, the flanks, the tip). Only the sheet differs, and the number that separates them is
+  geometric and blunt: on a cone (`h′ = 0`) a ruling's plan projection passes exactly through the
+  axis, so a **radially** flanked tab is entered once and left once; across the ramp it misses the
+  axis by 0.481 mm, against a tab **0.35 mm** half-wide at its root. *On the ramp the ruling is
+  further off-axis than the tab is wide.* Corroborated by moving the ramp off the tab (`ramp` σ
+  ∈ (0.1, 0.5)): every gap disappears and the refusal moves on to an unrelated rail fit.
+
+  The split gap runs from the tab's **root fillet** (`Wall 3`) to its **flank** (`Wall 4`), born at
+  the flank∩tip-fillet corner and pinched shut at the flank∩root-fillet corner — the tab's own two
+  corners, 3.8° of azimuth apart, which is why exactly three of the 48-per-region samples see it.
+
+  **The straight-sided tab is the other half of the same statement.** Vertical flanks are not radial,
+  so a radial ruling crosses them sideways too — that fixture splits the section on the *base cone*,
+  and at **every** width tried (half-width 0.347 → 2.400 mm), because the two-interval band lives
+  between the tab's corner azimuth and its flank azimuth and every width has one. The earlier
+  reading ("not sampling density, therefore `choose_comps`") had the first half right.
+
+  **One model limit, two open bugs.** #287 — a too-steep seam ramp whose edge of regression sweeps
+  `≈0.9·max|h|/Δσ²` into the kept material — reaches the *same site* by separating the material into
+  two stretches at one σ, and the entry below already noted its fault "names an op-role conflict and
+  points at the inner trim; the op named is innocent". Both now raise
+  `PartFault::SectionNotSimple { op }`, whose docs carry the mechanism and both routes to it.
+
+  **What this hands on.** Not a patch: the region's boundary has to be *traced as a loop* over the
+  event partition — which AUTH.2c already does for a cutter's footprint — instead of fitted as one
+  lower rail and one upper rail.
+
+  ⚠️ **Correction (2026-08-18, same day).** This entry closed by saying "the drawing cuts a cone but
+  not a ramp". Only half of that was measured: the *absence of a split* on conical sheet was, "it
+  cuts" was not. On the two-ramp device, where both tab passes are conical, the drawing is still
+  refused — for the unrelated reason in the entry above (#292). Two independent blockers, and both
+  must land.
+
+  *2026-08-18 · open(#287, #290, #291) · `crates/author/src/{resolve,part}.rs`,
+  `crates/author/tests/rim_notch.rs`, `docs/cutter-extrude-design.md` §12.5*
+
+- **The first real cut file: what it cost, and the three walls it hit (2026-08-17).** The user
+  supplied `crates/acceptance/data/inner-cut.dxf` — the device's Ø 8 bore with a 10° tab reaching in
+  to Ø 4, root fillets R 0.25, tip fillets R 0.15 — to replace the plain disc. Four separate things
+  came out of trying to cut it, and only two of them are now fixed.
+
+  **The import: the deferred junction lift was exactly what a real file needed.** `element.rs` had
+  written down, and not built, the arc-to-arc junction rule: where two `ARC` entities meet, neither
+  endpoint may move without leaving its own circle. A `LWPOLYLINE` of bulges never hits it — and the
+  first real drawing is eight chained `ARC`/`LINE` entities with **four** such junctions. Built as
+  specified (`ExactArc::regauged`): hold the centre, take the shared vertex as the new start, and
+  carry the far end round by the arc's **own** sweep, applied as the rotation its two endpoints
+  already encode — `cos = (u·w)/r²`, `sin = (u×w)/r²`, both rational, and `cos² + sin² = 1`
+  *exactly* because `is_consistent` has already put both on one circle. So the arc is re-gauged,
+  never bent, and its radius is what moved. Read: one loop, **δ = 2.6e-14**, closure gap **2.3e-10**.
+  Two details worth keeping: the file declares `$MEASUREMENT 1` (metric) but no `$INSUNITS`, and
+  those are different claims — the reader refuses rather than guess a 10× part; and the drawing's
+  Ø 8 is stated as `r = 3.999999907`, which the importer carries rather than tidies.
+
+  Also learned by a failing test I had written to assert the opposite: **a lens of two concentric
+  arcs now closes**, because re-gauging the follower puts it on the leader's own circle and its sweep
+  carries it exactly back to the anchor. Only arcs about *different* centres still refuse.
+
+  **`RevCylinder`: the same conditioning hole as last session's `RevCone`, one apex kind over.** A
+  profile swept from a direction rather than a point clears to a `Quadric` that `RevCone` cannot
+  recognize (a cylinder's eigenvalues are `λ, λ, 0`, so it passes the double-root step and declines
+  at `cos²α = 1`, not where that function's doc claimed), so the two apex kinds were costing seven
+  orders of magnitude differently for no geometric reason. Measured on the device's
+  own bore: **ε 5.5585e0 → 1.5266e0**, now digit-identical to the closed-form cylinder *and* to the
+  drafted cone. Recognition is the same verified-proposal shape: rank one, `|a|² = λ·N_jj`,
+  `b + 2Sp = 0`, `R² > 0`, every step an exact ℚ equality. One asymmetry with `RevCone` is
+  load-bearing: a **live nappe selector is declined outright**, because the distance to a whole
+  cylinder is a *lower* bound for the distance to half of one, and a certificate may not be
+  optimistic.
+
+  **What still refuses, and it is not what I first thought (→ #291).** A rim notch is not expensive:
+  a wedge whose flanks clear the axis certifies at **ε 1.5266e0**, the plain bore's own figure. Three
+  distinct refusals sit between that and this drawing — an exactly-radial flank gives `Pole` (the
+  wall contains a whole ruling, so the µ̂-pullback degenerates, and the drawing's flanks are radial
+  to **8.8e-16 mm**); a near-radial one gives `AmbiguousRegion` down to about 1/32 mm of miss; and an
+  all-straight notch gives `AmbiguousRegion` at **every** width from half-width 0.347 to 2.400 mm,
+  which rules out sampling density as the cause of that one.
+
+  **And the negative result worth more than the fix I attempted.** `resolve.rs` substitutes a mixed
+  profile's bounding-circle proxy for the per-wall tangent windows, and the comment beside it says a
+  superset is the right error. Making it a union *did* localize the imported tab — its fault moved
+  `AmbiguousRegion` → `DisconnectedRegion` — and **regressed three green acceptance tests**. So
+  extra stations are not free: `choose_comps` refuses at any sample it cannot attribute, and a
+  station near a wall's tangent ruling is exactly such a sample. Reverted; the comment's claim is
+  wrong and #291 carries it.
+
+  ⚠️ **Correction to this entry as first written (2026-08-18).** "Three distinct refusals" reads as
+  three causes; the drawing has **one**, and `choose_comps` is not it — instrumented, the drawing
+  never reaches `choose_comps` with an unattributable sample. See the next entry: the refusal is the
+  role derivation, and the "near-radial flank" and "all-straight notch" figures are two symptoms of
+  the same split section rather than a degenerate-wall ladder.
+
+  *2026-08-17 · open(#290, #291) · `crates/interchange/src/{arc,element}.rs`,
+  `crates/develop/src/cut.rs`, `crates/acceptance/{data,src,tests}`*
+
+- **A cone of revolution has a closed-form distance, and using it made the drafted trim free
+  (2026-08-17).** The pinned device now cuts **normal to the sheet** at both radii — the physical
+  edge — instead of with a vertical cylinder, and the trim style costs nothing: same ε, same
+  `subdiv`, and the two agree to the digit at the same radius.
+
+  **What was actually wrong.** `CutSurface::Quadric`'s certificate bounds the distance to `{F = 0}`
+  by inflating a **box** around the traced point until a first-order bound closes inside it. That is
+  the right instrument for a general quadric and the wrong one for a cone: it throws away the σ↔µ̂
+  correlation the two special surfaces keep by cancelling symbolically, so it needed 64× the split
+  on a gore and more than the device could afford on an annulus; and because the ball has to clear
+  the nappe selector by the full working radius, a cut passing within `clearance/2` of the apex
+  plane was **refused** (`NappeCrossed`) rather than loosened. Neither is reachable with a cylinder,
+  which is why every cut before this one was fine.
+
+  **The fix is a recognition step, not a new surface kind.** `develop::cut::RevCone::recognize`
+  extracts `(apex, axis, cos²α)` from `(M, b, c)` by exact linear algebra over ℚ — the double root
+  of the characteristic cubic in closed form (a double root of a rational cubic *is* rational), then
+  `S − rI` must be exactly rank one, then the apex must solve `Sp = −b/2` with `c = pᵀSp`. Every
+  step is a checked equality, so an elliptic cone, a cylinder and a hyperboloid each fail a
+  different one and fall back to the general arm. What it buys: in the meridian half-plane the
+  nappe is a ray, and the distance to a ray is the perpendicular drop `|s·cos α − t̂·sin α|` where
+  the projection lands on it, `|X − apex|` where it does not — both with rational radicands, so the
+  irrational half-angle is never represented. Measured on the gore's inner bound: `Unresolved` at
+  ε 3.3e1 → **Verified at ε 7.6e-8**, at `subdiv = 160`, and refining 8× no longer moves it — what
+  is left is the degree-4 rail fit, which is the cylinder arm's behaviour exactly.
+
+  Generalizable: **a certificate's conditioning is a property of the representation you reach for,
+  not of the geometry.** The box arm was not a weaker claim about the same object; it was a claim
+  made without the structure that was sitting in the coefficients. Worth asking, at any arm that
+  needs an enclosure the others do not, whether the special case is recognizable — the recognition
+  is cheap, once, and the verification is what makes it sound.
+
+  Also: the second "wall" recorded below — `subdiv = 1280` refusing where 160 was `Unresolved` —
+  was never a monotonicity defect. Verdicts are fail-fast, so the coarse run stopped at an earlier
+  stage's `Unresolved` and never reached the cut that refuses. A worse verdict under refinement is
+  worth suspecting, but the first thing to check is whether the two runs got to the same place.
+
+- **The outer diameter was Ø 21.5, not Ø 43 — and the correction re-audited the fixture again
+  (2026-08-17).** Halving the annulus dropped every feature placed in millimetres off the part
+  (`Inactive` roles, genus 0). Re-placed by **scaling the direction vector, not re-authoring the
+  point**: azimuth is what fixes which σ, which region and which ramp height a feature lands at, so
+  a pure radial scale moves the drill and the slot while leaving every σ-pinned measurement — the
+  `γ` probes, the ramp-band window, the region assignments — exactly where they were. The one
+  exception is the drafted-sweep apex, which scales in `z` too, because the cast is a similarity.
+
+  It also found the restated-constant tax for the **fifth** time: the seam drill's centre was
+  written in `seam_drill_axis()` *and* inline in `self_lapping_cone_from`, so the round-trip test
+  folded holes back onto a cylinder the part was no longer cut with. Now one reads the other.
+
+  Two pins moved for reasons worth keeping. `refold` was measuring `|ρ² − r²|` — a **squared**
+  residual, ≈`2r` times the length anyone reading `1/20` would assume, and one that scales with the
+  square of everything; it is a radius now. And the ramp width at which the even profile beats the
+  cubic moved `Δσ 11/32 → 3/16`, because that threshold is where the fold line's swing reaches
+  material — a property of the *annulus*, not of the profiles.
+
+- **The device is the product's size now, and the trim that made it necessary is the one thing
+  still deferred (2026-08-17).** *(Superseded above: the trim landed, and the diameter was
+  corrected to Ø 21.5.)* The annulus is Ø 8 → Ø 43 mm, the target dimensions. What landed:
+  `LappedCone` carries **radii, not squared radii** (a normal cut needs `r` itself — its disc plane
+  sits where the neutral surface *has* that radius — and `√(r²)` is not rational in general), plus
+  a `TrimStyle` choosing between a vertical cylinder and a cut normal to the sheet.
+
+  **What certifies, and what does not.** Cylindrical at the new proportions: develop ε 2.627 against
+  a 3.5 gate, solid 1.337e-1, 18 faces, 0 free edges, 5.4 s. `NormalCut` certifies on a gore
+  (`normal_trim.rs`, ε 2.277e-1, identical to a cylinder at the same radius) but **not yet at this
+  device's proportions**: an annulus of aspect 5.4 wants a `subdiv` that runs past ten minutes, and
+  at `subdiv = 1280` the inner cone refuses outright rather than loosening — which is a second
+  wall, not the same one, since refining should never turn `Unresolved` into `Refuted`. So the
+  pinned device stays `Cylindrical`, said out loud in the recipe rather than left to be discovered.
+
+  **Re-pinning, with the causes kept apart.** `develop 3/4 → 13/4` is *exactly* the radius ratio:
+  outer 5.115 → 21.5 is 4.2×, and ε 7.264e-1 → 3.053e0 is 4.2×. `solid 1/6 → 1/3` is 2.1× — half
+  of that, because a solid's ε is set by the σ-slice chords and the azimuthal sampling did not
+  change. `fold` and `refold` did not move at all and keep their old budgets: neither tracks the
+  radius. A traced-cut bound went 1e-2 → 1/40 because the slot itself grew 2.8×.
+
+  **The restated-constant tax, a fourth time — and this time it was paid off.** Four more absolutes
+  had quietly stopped meaning anything: a "contour containing the whole panel" was a ±8 square that
+  the Ø 43 panel now *bites*; the drafted-sweep apex was left at the old scale so the sweep missed
+  the sheets; and two DRC gates were half of a clearance that had since changed. Each is now
+  **derived** — the squares as multiples of the device's own `outer_r`, the gates from a new
+  `Part::drc_clearance()`. That accessor exists precisely so a test can say "under this part's own
+  gate" instead of restating the number.
+
+  Generalizable: **a re-proportioning is the cheapest audit of a fixture there is, and it keeps
+  finding the same class of defect.** Every constant that needed a hand edit was one that should
+  have been read from the recipe. The count across this session is now four independent instances;
+  the fix each time is to express the relationship, not the value.
+
+- **Normal-cut trims work: two bugs, and the second one is a convention mismatch that only a
+  downward-opening wall could expose (2026-08-17).** The construction was right from the start; the
+  kernel had two independent defects between it and a certificate, and a cylinder hit neither.
+
+  **① The oracle declined the whole class.** `fit_cut_rail` returned `None` for every
+  `CutSurface::Quadric`, reasoning that a general quadric wall turns around in σ and a graph rail
+  cannot follow one that does. It is the *search*, not the certificate — `cut_fit` re-checks the
+  proposal against the real surface — so declining was conservatism that cost the capability.
+  Fixed by sampling `cut_mu_form` at the same Chebyshev nodes the cylinder arm uses.
+
+  **② The pick and the label meant different things.** `BranchSide::Wall(_, upper)` says which end
+  of the cutter's **shadow** an end is; `RootPick` names a **root** of the µ̂-quadratic. Those
+  coincide only when the quadratic opens *upward*, so that "inside the cutter" is the interval
+  **between** its roots — which every cylinder satisfies (`a = |u|² − (u·â)²/|â|² ≥ 0` by
+  Cauchy–Schwarz, always). A cone wall met twice on one side has `a < 0`: inside is the
+  *complement*, so a shadow piece's **lower** end is the quadratic's **upper** root. Exactly
+  inverted, and unobservable until a downward-opening wall existed. `mu_form_opens_up` now reads
+  the sign of `a` and reconciles them.
+
+  **What it looked like from outside, and why that was misleading.** The symptom was
+  `CutFitFault::NappeCrossed` — and the certificate was *right*: with the wrong root the oracle
+  traced the far branch at `µ̂ ≈ −12.3`, whose 3-D points sit at `z ∈ [−100, −30]` against a cut
+  circle at `z = −2.77`. The fitted rail really was off on the mirror nappe. Two hypotheses died
+  on the way: root-pick (tested by flipping — *vacuously*, because at that point the oracle still
+  returned `None` before the pick was read) and apex proximity (the nappe numbers, `n_z = 325/144`
+  and `d = −235225/20736`, matched a hand computation and left 5.09 of margin against a required
+  2.26). What settled it was bucketing the actual box the check sees.
+
+  **The result corroborates itself.** A vertical cylinder and a normal-cut cone at the same radius
+  meet the sheet in the *same circle* — both are surfaces of revolution about the chart's axis —
+  and they now certify to **ε 2.277e-1 both**, agreeing to the digit through two unrelated
+  representations: a `Cylinder` with a symbolic residual and a `Quadric` bounded by a first-order
+  ball. The quadric route pays 64× the `subdiv` (10240 against 160) because its arm encloses the
+  traced point in a box instead of cancelling the surface equation against the chart fields — a
+  conditioning cost its own doc comment predicted, and it says `Unresolved` rather than certifying
+  loosely. Both pinned in `crates/author/tests/normal_trim.rs`.
+
+  Generalizable: **two vocabularies for the same geometric end will agree on every case you have,
+  until sign flips.** "Which end of the shadow" and "which root of the quadratic" had been
+  interchangeable across every fixture in the repo, because every cutter so far was met *between*
+  its roots. Nothing marked the assumption because nothing had violated it.
+
+- **A normal-cut annulus bound is exactly constructible and the kernel cannot yet resolve it
+  (2026-08-17) — superseded by the entry above; the diagnosis there is the correct one.** Today's annulus is bounded by vertical cylinders, which meet the 42° cone at a
+  bevel; a real trim is cut perpendicular to the sheet. The construction the user specified turns
+  out to need **no new cutter kind and no approximation**: put a disc of radius `r` in the plane
+  where the base cone's *neutral* surface has that radius (`z = −(72/65)r` on `72ρ + 65z = 0`),
+  and put the sweep apex on the axis so the generatrix through the rim runs along the cone's own
+  normal `(72, 65)/97` — i.e. `z_apex = −(97²/(65·72))·r`. Both cutters then come out with
+  generatrix ratio `Δρ/Δz = 72/65` **exactly**, half-angle `arctan(72/65) = 90° − β`,
+  complementary to the base cone as a normal cut must be. `Cutter::extrude` of a
+  `Profile::circle` from an `Apex::point` *is* that cone, and every number is rational.
+
+  **It does not resolve** — `Unresolved(ε = clearance)`. **My first diagnosis of *where* was wrong
+  and the correction is the substance of this entry.** I attributed it to `assemble_flat` (the 2-D
+  boolean) because a grep found exactly one site returning `Unresolved(clearance)`; a probe placed
+  at that site never fires. It is `RErr::Loose` from `export::trim::certified_rail_surface`,
+  reporting the clearance as its own bound — the rail **fit**, one stage earlier.
+
+  Finding that needed a *controlled* A/B, which the first pass was not: it had changed the radii,
+  the pick, `inner_r2` and the clearance all at once. One blank (flat gore, `h ≡ 0`, outer cylinder
+  `r = 5`, named witness, clearance 3, segments 64), inner bound the **same circle** `ρ = 5/2`,
+  only the cutter differing:
+
+  | inner bound | verdict |
+  |---|---|
+  | cylinder | Verified, ε 2.277e-1, 0 holes, roles `[LowerBound, UpperBound]` |
+  | cone | Unresolved, ε 3.000e0 |
+
+  **The resolver is completely correct for both.** Probed: identical roles, one run over the whole
+  σ range, and *numerically identical* µ̂ intervals sample for sample — `(−6.2779, −3.1389)`,
+  `(−3.2647, −1.6323)`, `(−2.5557, −1.2778)`, `(−4.1509, −2.0755)`. It must be so: the base cone
+  and the cutter cone are coaxial surfaces of revolution, so both meet the sheet in the circle
+  `ρ = 5/2`, which on a cone chart is `µ̂ = const`. The only difference anywhere is the end label —
+  `(1, Lower)` against `(1, Wall(0, false))`.
+
+  So: `walls()` is fine (a disc dedupes to one carrier quadric), the role derivation is fine, the
+  shadow is fine. What fails is fitting a rail to that wall — **on a rail whose true value is
+  constant**, the easiest fit there is. A fitter that cannot manage a constant is not hitting a
+  conditioning wall; something upstream of it is wrong for this wall. The root pick is ruled out
+  (flipping it changes nothing). The standing hypothesis is that a **coaxial** cone-cone pullback
+  degenerates a coefficient the general path assumes nonzero — every extruded fixture so far
+  (`lap_slot`, `ell_slot`, the sketch panels) has its apex off the chart's axis, so a cutter
+  sharing the chart's axis is simply an untested configuration. Task #288.
+
+  Two things worth keeping from the correction. **"Exactly one site returns this value" is not a
+  diagnosis** — it is a hypothesis, and the cheap confirmation is a print at that site, which took
+  one run. And **an A/B that changes four things measures none of them**: the first pass looked
+  like evidence of a broad gap ("extruded cutters cannot bound") and the controlled one showed the
+  bound machinery working perfectly right up to the last stage.
+
+  Worth noting for the roadmap conversation this came out of: the *authoring* side of the product
+  question was already answered — the kernel's existing vocabulary expresses a manufacturing-real
+  normal cut exactly, in ℚ, with the orthogonality holding by construction rather than by fit.
+  What is missing is one resolver path, not a representation.
+
+- **The ψ-correction to the ramp split: measured, and rejected on the metric that matters
+  (2026-08-17).** `u` is affine in σ, but curvature turns with `ψ ∝ arctan σ`, whose speed
+  `dψ/dσ ∝ 1/(1+σ²)` varies **1.508×** across the acceptance ramp — so `EvenCurvature`'s
+  σ-midpoint split is skewed in the parameter that governs `R₁`. Since at the ramp's two ends
+  `h_σ = 0`, the weight on `h_σσ` there is exactly `(1+σ²)²`, and balancing the two ends wants
+
+  > `w₂/w₁ = ((1 + hi²)/(1 + lo²))²`
+
+  — **exactly rational**, no approximation of `arctan` anywhere, even though the quantity being
+  evened is an angle. For the acceptance ramp that is `(98/65)²`, putting the split at `9713/13829`
+  instead of `11/14`.
+
+  **It works on the proxy and loses on the product metric.** Peak `|µ̂_fold|` at the design width
+  `Δσ = 3/7`: cubic 2.474, midpoint split 1.641, weighted split **1.445** — a further 1.14× (my
+  endpoint-balancing algebra had predicted 1.39×; it over-predicts because the peak is not purely
+  at the ends, the mid-ramp `2σ h_σ` term matters). But swept against *ramp width*, which is the
+  thing the knob exists to buy:
+
+  | `Δσ` | cubic | midpoint split | weighted split |
+  |---|---|---|---|
+  | 3/8 | ε 7.48e-1 | ε 7.48e-1 | ε 7.48e-1 |
+  | 11/32 | Unresolved 9.62e-1 | **ε 7.60e-1** | **Refused** |
+  | 5/16 | Refused | Refused | Refused |
+
+  The weighted split trades one end of the ramp against the other, and which end binds depends on
+  the width: narrowing the first half to balance the far end makes the *near* end the constraint.
+  It reduces the peak at the design width and **costs** ramp-angle range at the frontier. Reverted;
+  `EvenCurvature` keeps the σ-midpoint split.
+
+  Generalizable, and the reason this was worth measuring rather than reasoning: **a proxy that
+  ranked two options correctly once can rank them backwards elsewhere.** Peak `|µ̂_fold|` at a
+  fixed width was the right proxy for cubic-vs-even (predicted 1.50, measured 1.507) and the wrong
+  one for midpoint-vs-weighted, because the two profiles differ in *where* the peak sits, not just
+  how big it is. The product question was never "what is the peak" but "how narrow a ramp still
+  certifies" — and that one had to be swept.
+
+- **The seam ramp's cubic spends its bend at the joins, and an even one buys 1.5× of ramp angle
+  (2026-08-17).** `SupportFn::Smoothstep` is `3u² − 2u³`, so `h″ = (6 − 12u)·Δ/L²` — *linear*,
+  peaking at `±6Δ/L²` at **both ends** and passing through zero mid-ramp. All the bending is
+  crammed into the two joins with the constant neighbours and the middle of the ramp does no work.
+  That is the uneven distribution, exactly.
+
+  **The two symptoms are one number.** `R₁ + w = det J / |n′|²` (`develop::bonded`), so material
+  at `µ̂` has `R₁ ∝ (µ̂ − µ̂_fold)` and bending strain goes as `w/(µ̂ − µ̂_fold)` — where `µ̂_fold`
+  is the `det J = 0` rail, the same fold line whose excursion caps the ramp angle. Peak strain and
+  the angle limit are not two constraints to trade off; they are one quantity seen twice.
+
+  **What is achievable, and it is a closed-form optimum.** Subject to `h′ = 0` at both ends and a
+  rise `Δ` over width `L`, the profile minimising peak `|h″|` is the bang-bang pair of parabolas,
+  `h″ = ±4Δ/L²` — constant in magnitude, which is what "even" means. `4` against `6`: 1.5×.
+  Measured peak `|µ̂_fold|` on the acceptance ramp, **2.474 → 1.641 = 1.507×**, against the 1.500
+  the peaks predict, at an *identical* certified ε. Swept for where it bites: both profiles hold
+  at `Δσ = 3/8`; at `Δσ = 11/32` the cubic's ε has run past the part's own DRC gate (9.6e-1
+  against 5/6) while the even profile certifies at 7.60e-1; by `5/16` neither holds.
+
+  Landed as `RampProfile::{Smoothstep, EvenCurvature}` — `Smoothstep` the default, since every
+  pinned measurement was taken on it. No engine change was needed: `SupportFn::InU` already takes
+  an arbitrary rational function of `u`, and the recipe already emits multiple bands, so the
+  optimum is two polynomial half-bands over ℚ and stays exact.
+
+  Two things deliberately *not* taken. `EvenCurvature` is C¹ but its `h″` **steps** at the ends
+  and midpoint — no crease, but a curvature step is its own stress concentrator, and a trapezoidal
+  `h″` would round it off for some of the 1.5×. And there is a second ~1.3× in the
+  *parametrization*: `u` is affine in σ, but curvature lives in the turning angle
+  `ψ = (260/97)·arctan σ`, whose `dψ/dσ` varies 1.35× across this ramp, so even an even-in-`u`
+  profile is skewed in the parameter that governs `R₁`. Correcting that needs a rational
+  approximant (arctan is not rational), which is sound here precisely because `h` is *authored*
+  rather than approximated — the certificate bounds whatever profile it is given.
+
+  Generalizable: **"C¹ and gap-free" is a smoothness claim, not a distribution claim.** The cubic
+  was chosen for the joins it makes and was never asked what it does *between* them; the answer is
+  "nothing in the middle, everything at the edges". Worth asking of any interpolant whose second
+  derivative is what the physics reads.
+
+- **The acceptance device's dimensions were arbitrary, and scaling it to the real ones is what
+  found out which of its pins were physics (2026-08-17).** `thickness: 1/20` traced back to
+  `839ff53` (2026-08-11), where `brep_trim_solid` first needed a `w` window and got a round
+  rational; the 917-line demo carried it, the facade rewrite carried it, `LappedCone` inherited it
+  as a *parameter*. No comment, doc or commit message ever justified it. The half-angle was real
+  all along (`sin β = 65/97` via the Pythagorean `(72, 65, 97)`); the lengths were not.
+
+  **The derivation chain, so the numbers are auditable rather than asserted.** `t = 6/25` mm
+  (240 µm) from `paper.md` §338's `w ∈ ±120 µm` — which independently confirms `neutral = 1/2`.
+  `Δ = 1/4` mm is *pinned, not rounded*: the certified SHEAR is `δ = Δ·cot β = Δ·(72/65) = 18/65`,
+  so `Δ` can only be `1/4`. Then `g = Δ − t = 1/100` mm — a 10 µm ACF bondline, consistent with
+  `SEP ≡ ACF gap` — and `c = t/2 + g/2 = 1/8` keeps the one-ramp device with a ramp height of
+  exactly `Δ`. Every length scales `5/3` to put the off-axis inner bound's closest approach at the
+  stated inner Ø 5 mm.
+
+  **The device certifies on the real numbers**: 771/771, `develop` ε 7.264e-1, `fold` 3.345e-1,
+  `refold` 3.745e-2, `solid` 1.278e-1, genus 2, watertight, and the full demo emits 5 derived holes
+  with a 2.7e-3 slot residual.
+
+  **What the scaling exposed, which is the actual value of the exercise.** Every constant that had
+  to be edited by hand was a *restated* one — a number that should have been read from the recipe
+  and was copied instead:
+
+  * `self_lapping_part.rs` measured the refold residual against a hard-coded `(-0.5, 2.7, 1/40)`
+    copy of the drill axis — the exact thing `seam_drill_axis()`'s doc comment says it exists to
+    prevent ("so a round-trip check tests the *same* cylinder the part was cut with instead of
+    restating its numbers"). It reported 4.62 against a 1e-2 budget; read from the recipe it is
+    3.7e-2. A 460× phantom failure that would have been "read" as the scale change.
+  * The drafted-slot apex `(27/40, 27/10, 12)` did not scale, so the sweep missed the sheets and
+    the taper test failed by finding *no* slot holes rather than by measuring a wrong taper.
+  * The flat-authored hexagon's centre and radius, the slot's `far.offset` window (pinned to the
+    old `Δ = 1/10`), and the DRC gate `1/2` (half a `clearance` that itself did not scale) were all
+    absolutes standing in for relationships. Each is now derived — the offset window as a fraction
+    of `Δ`, the budgets as the spec's own `t + g`.
+
+  Re-pinned VV.2 with the two effects separated: `develop 0.45 → 3/4` and `solid 0.1 → 1/6` are the
+  pure `5/3`; `fold 1/3 → 7/20` and `refold 25/900 → 1/20` carry a surcharge because the ramp now
+  climbs `Δ = 1/4` over `Δσ = 3/7` where it climbed `1/10` over `1/2` — 2.5× the step in 6/7 of the
+  azimuth. That surcharge is the ramp, and it is the number to watch if the ramp is tightened.
+
+  Generalizable: **an arbitrary fixture dimension is not neutral — it hides which pins are physics
+  and which are bookkeeping.** Nothing was *wrong* while every length was 1; the restated constants
+  and the derived ones were indistinguishable because they never had to disagree. Changing the
+  scale made them disagree, and the ones that broke were exactly the ones that should never have
+  been written down. A cheap audit for any fixture: multiply it by a constant and see what fails.
+
+  Open, not resolved here: `docs/agent-glossary.md` says the device wraps "~1.49 turns", but the
+  demo measures a 275.2° developed sector against 240.9° per turn — 1.14 turns. `paper.md` §338
+  warns that an earlier ledger conflated the developed-sector and spatial-azimuth frames, so this
+  is probably the same conflation surviving in the glossary. Not touched without a decision.
+
+- **A seam ramp has a fold line, it sweeps across the ruling, and a too-abrupt ramp drags it
+  through the part (2026-08-17).** Steepening the lapped cone's CCW ramp (`ramp_start` 1/2 → 11/16,
+  so `Δσ` 0.25 → 0.0625) or raising its seam offset (`c` 0 → 1/10) each independently turns
+  `develop`/`solid` into `Refuted(AmbiguousRegion { op: 1 })`, op 1 being the inner-radius
+  `subtract`. Raising `segments` 16 → 64 does not help. **This is a real geometric limit, not a
+  bookkeeping artifact** — the finding was initially mis-read as the latter and the correction is
+  the point of the entry.
+
+  **What the refusal actually detects.** A region's support ramp bends the sheet in σ, and the
+  ruled surface that realizes the bend has an edge of regression — the fold line where the rulings
+  converge, `det J = 0`. At `h ≡ 0` it is the cone's apex ray, `µ̂ = 0`. Under a ramp it slides
+  monotonically along the ruling, and the excursion scales with `max|h| / Δσ²`. Traced across the
+  CCW ramp band:
+
+  | recipe | `max|h|/Δσ²` | fold line sweeps | vs. kept material |
+  |---|---|---|---|
+  | `c = 0`, `Δσ = 0.25` (baseline) | 0.8 | `+0.39 → −0.72` | stays in the `|µ̂| ≲ 1.26` hole ✓ |
+  | `c = 1/10`, `Δσ = 0.25` | 2.4 | `+1.18 → −2.17` | **inside** `(−2.32, −1.44)` for `σ ≥ 0.7214` ✗ |
+  | `c = 0`, `Δσ = 0.0625` | 12.8 | `+10.2 → −∞` | **inside** `(−2.29, −1.44)` at `σ ≈ 0.7233` ✗ |
+
+  Directly measured, not inferred: at `σ = 0.7233` and `0.7246` the steep recipe's fold line sits
+  at `µ̂ = −1.49` and `−1.98`, inside the kept lower nappe. The sheet would have to crease across
+  itself. The measured law is `|µ̂_fold|max ≈ 0.9 · max|h|/Δσ²` (baseline 0.72 vs 0.72 predicted;
+  `c = 1/10` 2.17 vs 2.16) and the part is buildable iff that excursion clears the inner hole,
+  `r_in / ρ_r`, with `ρ_r ≈ 1.3815` the ruling's radial speed on this cone.
+
+  **The resolver detects it correctly and reports it wrongly.** `sample_comps` merges two
+  µ̂-intervals separated by one subtract op into a face-with-hole unless the gap contains the
+  `det J = 0` rail. On this part topology that test *is* "is the fold line clear of the material",
+  checked at every sample — sound, and it fires before the fold reaches the sheet (the rail must
+  leave the hole before it can enter the material). But the *fault* it raises is
+  `AmbiguousRegion { op }`, which names an op-role conflict and points at the inner trim. The
+  cause is the ramp. The op named is innocent.
+
+  **The envelope, measured on the 42° device (`r ∈ [2, 3.069]`, `t = g = 1/20`).** Passing
+  `max|h|/Δσ²`: 0.15, 0.25, 0.27, 0.60, 0.80, 1.20, 1.42, 1.44. Refusing: 2.40, 2.52, 3.20, 12.8,
+  38. Frontier in `(1.44, 2.40)`, consistent with `0.9·x < 1.26`. **The ramp's slope, not its
+  height, is the constraint** — any offset is reachable given enough azimuth. Confirmed by
+  prediction: `c = 1/5` (five times the acceptance device's offset) refuses with a narrow CW ramp
+  and verifies once that ramp alone is widened `Δσ` 0.25 → 0.5; `c = 1/10` with
+  `ccw.ramp_start = 2/5` verifies through `solid` (22 faces, 0 free edges, ε 4.5e-2). A *failed*
+  prediction was as informative: widening the inner radius 2 → 2.5 to let the fold line pass
+  through the hole does **not** rescue `c = 1/10, Δσ = 0.25`, because the excursion runs to −2.17
+  and would need `r_in > 3.0` — past the outer radius. At that ramp no annulus exists.
+
+  Generalizable, and the correction is the lesson: **"the checker's reasoning is a proxy" does not
+  imply "the refusal is spurious."** The merge test is stated in terms of a parametrization rail
+  and reads like bookkeeping, so the first diagnosis was "sound but over-conservative, let it
+  through". Tracing the rail against the material showed the opposite — relaxing it would have
+  shipped a self-folding sheet. What is actually wrong is the *diagnostic*: a fault named for the
+  bookkeeping instead of for the geometry sends the user to tune the wrong parameter. Worth
+  checking the reverse direction too: a validation that measures the fold-line excursion up front
+  would refuse by name, with numbers, before any certification runs.
+
+- **The developed surface was the stack's bottom face, and that is a flat-pattern error, not a
+  cosmetic one (2026-08-17).** The solid's thickness window was hard-coded `[0, t]`, so the chart —
+  the surface `develop` unrolls **isometrically** — sat on a *face* of the material rather than
+  through it. A bent laminate's flat pattern is only true on its **bending-neutral axis**; taken on a
+  face it is wrong by roughly `(t/2)·κ`. `Part::neutral(f)` now places the window at
+  `[−f·t, (1−f)·t]` and **defaults to `1/2`**, with `f` outside `[0, 1]` refused as
+  `NeutralOutsideStack` (the developed surface would leave the material).
+
+  **How it surfaced is worth recording: from a viewer, not from a test.** The user opened
+  `cutter_dump.step` and observed that the cutter body terminated *on a surface* rather than inside
+  the sheet. Measured on the L-slot device, `w = 0` is at `z = 2.2038` and `w = t` at `z = 2.2876`
+  with `n·ẑ = +0.67` — the stack was entirely above the chart, so the body stopped at the underside
+  instead of passing through. The same fact, seen two ways.
+
+  **The trade it makes, stated rather than buried.** The footprint is computed exactly where the cut
+  meets the developed surface, and the solid's walls are then ruled along `n` from there. Under
+  `[0, t]` that made the cut exact on the `w = 0` face and off by a full `t` at the other; centred it
+  is off by `t/2` on **both**. The worst-case envelope halves and "exact on one face" is lost. Two
+  AUTH.3 faithfulness tests asserted the lost property and had to be re-based — but to something
+  *stronger*, and derived rather than magic: a lid vertex sits off the authored vertical cylinder by
+  exactly `(t/2)·|n_xy| = (t/2)·(72/97)`, predicted from the cone invariant `n·ẑ = 65/97` and
+  measured at `4.639e-2` against a prediction of `4.639e-2`. The old window could not have passed
+  that bound.
+
+  Generalizable: **a hard-coded window is a modelling decision in disguise.** `[0, t]` reads as an
+  implementation detail and is in fact the claim "the pattern is the bottom face's pattern" — which
+  nothing in the codebase ever stated, and which the word "neutral surface" (used throughout for the
+  chart) actively contradicted.
+
+- **LAP: the lapped cone becomes a parameter set, and three of its checks turn out to be exact
+  (2026-08-17).** The self-lapping device was a hand-written recipe; it is now one point in
+  `acceptance::LappedCone` — apex direction, stack thickness, seam gap, which end laps on top, the
+  seam offset, three azimuths per side, trim radii. `self_lapping_cone` is re-expressed through it,
+  and the 277-test author/acceptance/develop/fixtures run — VV.1 work budgets, VV.2 ε bounds, VV.3
+  chord goldens included — passes unchanged, which is what makes the re-expression a *refactor*
+  rather than a new device wearing the old pins.
+
+  **The datum, which is where the design nearly went wrong.** The seam offset is stated
+  mid-surface to mid-surface, not to the chart. The solid's thickness window is `[0, t]`, so the
+  chart surface `w = 0` is a *face* of the sheet; measuring the seam centreline against it puts a
+  spurious `t/2` in the placement law and the "one ramp vanishes" condition stops closing. The
+  correct law is `h_upper = c + t/2 + g/2`, `h_lower = c − t/2 − g/2`, whose vanishing condition is
+  `c = ±(t/2 + g/2)` — which is what the user stated in the first place and what I got wrong when I
+  first wrote it out. Generalizable: **when a kernel's natural datum is a face and the product's is a
+  mid-plane, the parameter belongs in product language and the conversion belongs in one place.**
+  (The same slip produced a "buried mid-thickness" claim in the IO.3 docs, corrected with this.)
+
+  **Three checks that look like they need `arctan` and do not.** On the wrapping chart
+  `φ = 4·arctan σ`, so two azimuths differ by exactly `2π` iff `1 + σ₁σ₀ = 0`. Therefore: the `2π`
+  shift **is** the Möbius `σ ↦ −1/σ` — the same involution Stage 2 re-centred the seam with, arrived
+  at from the opposite direction; a lap exists iff `1 + σ_ccw·σ_cw < 0`, a sign over ℚ; and the two
+  overlap windows are exactly `[−1/σ_cw, σ_ccw]` and `[σ_cw, −1/σ_ccw]`. No transcendental, no
+  tolerance, in any precondition.
+
+  **What a rational direction buys, per parameter.** For the **apex** it is exact whenever the
+  direction is Pythagorean, and the reason is structural: `wrap_cone(a, b)` has
+  `sin β = (a² − b²)/(a² + b²)`, the Pythagorean *generator*, so `b/a = tan(45° − β/2)` and two
+  half-angle steps rationalize any Pythagorean `(cos β, sin β)`. The 42° device is literally
+  `(65, 72, 97)`. For the **azimuths** it buys nothing: `σ = tan(φ/4)` is a *quarter*-angle, needing
+  the direction and its half-direction both Pythagorean, so those snap and echo, and a `σ` escape
+  hatch is what makes an existing σ-authored device reproducible at δ = 0.
+
+  **The generator's scale is gauge.** `wrap_cone(234, 104)` and `wrap_cone(9, 4)` store different
+  `q` and have *identical* `normal`, `ruling` and `pedal` — the Hopf map is invariant under
+  `q ↦ λq`. Measured rather than assumed, and it is what lets an apex direction be converted with no
+  gcd bookkeeping.
+
+  **The minimum gap is BONDED's to report, not the fixture's to compute.** Where a ramp descends
+  inside the lap the gap is not the authored one, and the honest number is `bonded::clear`'s
+  certified lower bound on the true 3-D distance — sound despite the tangential shift, which is the
+  whole reason CLEAR exists. It needed one widening: a lap pairs the head's σ-window with the tail's,
+  two disjoint intervals, where `clear` seeded both boxes the same. Its search was always pairwise
+  over `I_A × I_B`, so `clear_boxes` is the general entry and `clear` the equal-box sugar. Two limits
+  stated rather than implied: it certifies **rails** (fixed `µ, w`), so sampling the band edges is a
+  check on the sheets and not a proof about the band; and it **proves `≥ keep_out` rather than
+  measuring**, so reading the gap off it means bracketing. On the device: `1/100` certifies, the
+  authored `1/20` does not — the ramp's intrusion, visible in the number.
+
+- **IO.3b: two routes to the same curve, and the sharpest number is not the certified one
+  (2026-08-17).** `author::dump::cutter_bodies` completes the dump: each hole op's certified `(σ, µ̂)`
+  footprint lifted to the sheet, cast **back** down its own generatrices to the sketch plane, ruled
+  between, triangulated.
+
+  The reason to emit both caps is that the near cap and the sketch face (IO.3a) are the *same closed
+  curve reached by two computations that share no code* — one from the authored profile edges through
+  `Frame::point`, one from the traced footprint through the chart and back through `Cast::coords`.
+  Measured on the L-slot device, every near-cap vertex lies **1.3e-9** from the authored outline. That
+  is the `hole_poly` 2⁻³⁰ snap grid, and it is five orders **tighter** than the cut's own certified
+  ε ≈ 7e-4 — because the tracer walks the *exact* wall equations, so casting back lands on the profile
+  itself; ε bounds the cut against its ideal, which is a different quantity. Generalizable: when two
+  independent routes to one object agree far better than either's certificate requires, the agreement
+  is evidence about the *construction*, and it is worth asserting at its real size rather than at the
+  certificate's.
+
+  **Two scouting claims the build refuted, both recorded in IO.3a above.** (1) `hole_poly` was written
+  off as unusable because it returns `None` for any loop not all-traced-`Curve` — true of the type,
+  false of this input, since `certify_holes` produces all-`Curve` loops on both branches. It is not
+  merely usable but *the right* converter: sharing it shows the polygon the part was actually cut
+  with, and inherits the sub-`MIN_STEP` merge the body needs for the same reason the solid does — the
+  tracer parks a vertex pair ~10⁻⁹ apart at each cell boundary, and a triangle on one is unbuildable
+  by any `f64` consumer. A diagnostic that samples its own way answers a slightly different question
+  than the build, which is worse than no diagnostic. (2) The AUTH.2 fixtures were priced at ~30 s of
+  certification each; measured, the L-slot panel costs **1.8 s** and the self-lapping seam drill
+  **6.8 s**, so the tests run the real devices rather than reductions of them. An estimate carried
+  forward from scouting is a guess until something measures it.
+
+  **The body closes, and that is a check on the tracer.** Caps share one exact-rational ear-clipped
+  triangulation (a fan would lay triangles outside a non-convex footprint — the content of AUTH.2) and
+  the walls share the caps' boundary edges, all by edge *identity*: `free = 0`, non-manifold `= 0`,
+  `V − E + F = 2`, closed-shell certificate **Verified**, and OCCT's independent audit agrees
+  (`closed`, `BRepCheck valid`). A footprint that self-crossed or dropped a vertex could not produce
+  that at any ε. It is emphatically **not** a warrant for the geometry — the guard stays structural:
+  raw `write_brep`, never `emit_certified_step`, and one open sketch face reopens the compound.
+
+  *A defect in the already-shipped half, found only by writing the thing out.* Every sketch ring
+  closed on a **duplicate of its first vertex** — the chaining walk ends where it started — so each
+  polygonal profile carried a zero-length edge in its face wire. Four IO.3a tests passed over it
+  (vertex counts were asserted as inequalities and `free_edges == verts`, both of which a duplicate
+  satisfies). It became visible the first time the dump reached OCCT, which is the same shape as
+  #267: the exact-versus-`f64` seam is where a picture stops being able to hide.
+
+  *The lap, as predicted and sharper.* The self-lapping seam drill's two footprints land on **two
+  different regions** (body and tail plateau) — which is why the region travels with the loop instead
+  of being searched for afterwards. A metric cutter, having no sketch plane, gets its far cap and
+  nothing else: an open patch that says so, rather than a silently omitted hole or a wall ruled to an
+  invented plane.
+
+- **IO.3a: what a picture can check that a certificate cannot (2026-08-17).** `author::dump` emits
+  each extruded cutter's authored sketch as a planar face at its true 3-D position. The reason it
+  exists is narrow and worth stating: a cutter's frame is a **search result** — the ray pick snaps a
+  picked plane to rationals and certifies the *snap* (AUTH.1c) — and no certificate can say whether
+  the **pick** landed where the author meant. That is a question about intent.
+
+  The claim splits in two, and conflating them would make the artifact useless. (1) The face lies in
+  its frame's plane as an **exact rational identity**, `N·(X − o) = 0`, which holds for *any*
+  rational in-plane coordinate — so chording the arcs and snapping the `Surd` extrema costs the
+  outline's shape a little and costs the plane nothing. (2) *Where* that plane sits is not invariant:
+  shift the frame one unit along its normal and every vertex moves one unit while (1) keeps holding
+  for both. **So (1) alone can never catch a mis-pick**, which is exactly why the picture is the
+  instrument and the residual is not.
+
+  Both are made non-vacuous from the other side — the same vertices measured against a *different*
+  plane must give a nonzero residual — and the dump is asserted to be an **open shell the
+  closed-shell certificate refuses**, so a diagnostic structurally cannot pass for a part.
+
+  *Placed in `author`, not `interchange`.* The dump is a `Part → Brep` map, the same shape as
+  `Part::solid_brep`; `interchange` stays about files. The milestone tag is not the module boundary.
+
+  *Two facts found while scouting the unbuilt half (the cutter body), recorded so the next attempt
+  starts from them — **and the first and the cost estimate below were both wrong; see IO.3b
+  above**:* `export::trim::hole_poly` returns `None` unless **every** arc of the loop is a
+  traced `Curve`, so a general body must sample `BoundaryArc` itself; and `structure.holes` carries
+  `(op, **region**, window)`, which hands over the chart index directly — no σ-band search. The
+  acceptance panel is the wrong fixture for it, because its own cutter is the *boundary* (an
+  `intersect`) rather than a hole, so its `structure.holes` is empty; the AUTH.2 traced-slot devices
+  are the fixtures, at ~30 s of certification apiece. Route table in
+  `docs/interchange-design.md` §7b.
+
+- **IO.2: three defects, and only one of them came from a test (2026-08-17).** The writers landed
+  with a round-trip suite, and what it caught is more interesting than what it asserted.
+
+  *From the round trip.* (a) An R12 `POLYLINE` carries a **dummy** `10/20/30` of its own — the
+  format requires it, and the real vertices live one entity deeper in the `VERTEX` records. The
+  reader was collecting every `10/20` in the span, so it picked up a phantom vertex at the origin
+  and split every written loop in two. Nothing but the writer's own output exercises the R12
+  spelling, so no hand-written fixture could have found it. (b) The reader's y-flip used
+  `vb.y + vb.h`; reflecting a `viewBox` **onto itself** is `2·vb.y + vb.h`. The two are identical
+  whenever `vb.y = 0`, which every hand-written fixture happened to have — the writer's own frame,
+  centred on its geometry at `vb.y = −5`, was the first non-zero one and came back five millimetres
+  off.
+
+  *From reading the demo's output, not from a test.* The `viewBox` was printed at six places while
+  coordinates went to nine, because a frame at twelve places is unreadable. But the reader
+  reconstructs the flip axis **from the printed frame**, so the writer's exact flip constant and
+  the reader's rounded one differed by the frame's rounding and shifted the whole drawing by a
+  micron in `y`. Fixed by rounding the frame *first* and deriving the flip from the rounded values;
+  pinned by a fixture with deliberately untidy bounds, since every earlier fixture had integer
+  extents and printed exactly. **Generalizable: when a reader reconstructs a constant from data the
+  writer also rounds, the writer must use the rounded value, not the exact one.**
+
+  *A claim of my own the implementation refuted.* The IO.0 gate's table had inbound's "which datum
+  moves" applying outbound as well. It does not: outbound, **both** formats derive centre and radius
+  from one written scalar, and the asymmetry is *which* scalar — DXF writes `tan(Δθ/4)`, SVG writes
+  `√r²`. That makes them exact on different arcs, which is a sharper and more useful fact: a quarter
+  turn of radius 5 is free in SVG and costs DXF a rounding; a semicircle of radius `√2` is free in
+  DXF and costs SVG one. Two-sided, so neither format dominates.
+
+  Worth keeping: for an arc with rational centre and endpoints, `cos Δθ` and `sin Δθ` are **exact
+  rationals** (`u·v/r²` and `u×v/r²`). The *turn* of an exact arc is exact — only its quarter-tangent
+  is not — so `large-arc` and the bulge's major/minor branch are decided by an exact sign test
+  rather than by a comparison against a tolerance.
+
+- **IO.0: most of an import is exact, and "files are floats" is wrong twice over (2026-08-17).**
+  The reflex design for a CAD reader is "snap to a tolerance". Two facts kill it. First, a decimal
+  literal **is** a rational — `12.345` is `12345/1000` — so the only loss in reading a coordinate is
+  the `f64` the parser transports it through, and Rust's shortest-round-trip `Display` gives the
+  literal back exactly for anything under 17 significant digits. Every `LINE`, `CIRCLE`,
+  `LWPOLYLINE` vertex, SVG `L`/`M`/`H`/`V`, unit conversion (`1mm = 480/127 px` exactly; DXF names
+  its unit) and `matrix`/`translate`/`scale` transform imports at **δ = 0**.
+
+  Second, where δ ≠ 0 does arise it is a *consistency* failure, not a rounding: a DXF `ARC` states
+  centre, radius **and** two angles — four exact rationals describing an irrational point — so one
+  datum must move, and *which* one differs per source form. The surprise is the ranking. A DXF
+  `LWPOLYLINE` **bulge** is exact and free: with `d = P₁ − P₀`, `n = perp(d)` and `b = tan(Δθ/4)`
+  from the file, the centre `c = mid + ((1−b²)/(4b))·n` is rational (the normalization of `n` cancels
+  against the half-chord, since `cot(Δθ/2) = (1−b²)/(2b)`), and `r² := |P₀−c|²` seats *both* vertices
+  on the circle — `P₁` because `c` is on their perpendicular bisector by construction. SVG `A` is
+  the same trick read backwards: hold the two rational endpoints, choose the centre on their rational
+  bisector, and δ becomes a **radius** deviation rather than an endpoint one. Only DXF `ARC` is
+  genuinely lossy, and its δ is certified by the shipped `develop::interval` `arctan`/`pi`/`sin_on`
+  enclosures over a rational tangent-half-angle rotation `M(t) = [[1−t², −2t], [2t, 1−t²]]/(1+t²)`,
+  which is exactly on the circle for every rational `t` because `(1−t²)² + (2t)² = (1+t²)²`.
+
+  *Actionable, and the reason this is a Finding rather than a design note:* **export your outline as
+  `LWPOLYLINE` with bulges and the import is exact; export the same outline as `ARC` entities and it
+  costs a certified δ.** That is a sentence for the user-facing docs.
+
+  *Refinement stops at a floor, and the floor is the enclosure.* Measured on the DXF-`ARC` path:
+  `δ` = 1.3e-1 / 7.3e-3 / 3.7e-5 / 2.0e-10 at 4/8/16/32 bisections, then flat at ~1.6e-16·r. Past
+  ~54 steps the search is finer than the `cos`/`sin`/`π` enclosures it is *measured against*, so
+  what is left is their accumulated `ROUND_BITS` rounding — and more series terms very slightly
+  **widen** it, because each extra term is another rounding. Pinned as a floor with a control at 96
+  iterations, not behind a loose "smaller than last time".
+
+  *Two implementation traps, both worth carrying forward.* (a) **Uncapped Newton for `√k` is not
+  slow, it is unusable** — it roughly squares the denominator per step, so 40 steps build a
+  ~2⁴⁰-bit number and the test simply hangs. (`author::part::rational_sqrt_above` takes three steps
+  for exactly this reason.) Bounding it with outward rounding onto a `2⁻ᵇⁱᵗˢ` grid costs the exact
+  answer when there is one, which is repaired by asking for the **simplest rational in the final
+  bracket** (Stern–Brocot) and testing whether it squares to `k`. (b) An angle that is a whole
+  multiple of 90° had *already* been solved by the quarter-turn reduction, and the code was handing
+  the zero residual to the enclosure machinery and reporting the enclosure floor as if it were
+  error. Fixing it made an SVG rounded rectangle — the flex outline shape — import at `δ = 0`, and
+  broke three tests that had been using 0°/90°/270° arcs to exercise the *snapped* path. Same
+  pattern as the p-curve milestone: **defects caused by the geometry getting better.**
+
+  *`δ = 0` is a statement about the translator, not about the file.* An SVG `<rect rx>` states a
+  **shape** (its corner endpoints are the axis-aligned tangent points, so the arcs are exactly
+  tangent); a DXF bulge states a **curve**, and `tan(Δθ/4)` for a quarter turn is `√2 − 1`, which no
+  file can write. So a real rounded rectangle exported as bulges imports *exactly* — as the curve
+  the file actually contains, whose `r²` sits ~10⁻¹¹ off the quarter-circle its author meant. Saying
+  "exact" without that distinction would be the most misleading true sentence in the milestone.
+
+  Same construction, one level up: a rational-quadratic circular arc needs weight `cos(Δθ/2)`, which
+  is rational exactly when `1 + tan²(Δθ/2)` is a rational square — i.e. at **Pythagorean** angles
+  (`t = 3/4 → w = 4/5`). Those are dense, so exact conic edges in the B-rep are reachable by
+  subdividing at Pythagorean rotations rather than chording. Recorded as the escalation path for
+  IO.3, not taken there.
+
 - **#275: the cross-op σ-end, and why it took a *placement* rather than a mechanism (2026-08-17).**
   §12.2 derives the σ-ends from the union of **every op's** walls, because the two walls closing the
   kept µ̂-interval need not belong to the same cutter. Every fixture closed on the contour's own

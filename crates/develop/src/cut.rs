@@ -101,6 +101,323 @@ pub struct Nappe<B: Backend = Bignum> {
     pub d: Rat<B>,
 }
 
+/// A [`Quadric`] recognized as a **cone of revolution**, in the metric parametrization its
+/// distance has a closed form in.
+///
+/// The general quadric arm bounds the distance to `{F = 0}` by inflating a box around the traced
+/// point until a first-order bound closes ([`quadric_distance_on`]). That is the honest thing to do
+/// for a surface with no metric parametrization — but a *circular* cone has one, and then the
+/// distance is as elementary as a cylinder's: in the meridian half-plane through the point, the
+/// nappe is the ray from the apex at angle α to the axis, and the distance to a ray is either the
+/// perpendicular drop or the distance to its endpoint. Recognizing the case is worth a great deal,
+/// because it moves the certificate from a box bound (which loses the σ↔µ̂ correlation, and so
+/// needs a far finer split for the same ε) to a **symbolic residual in σ**, which does not.
+///
+/// A normal cut — the disc cutter whose generatrix runs along the sheet's own normal — is exactly
+/// this case, and it is the cut a physical trim actually makes.
+///
+/// Recognition is a *verified* proposal, not a classification: [`RevCone::recognize`] extracts the
+/// candidate `(apex, axis, α)` and then checks the equality `F ≡ (X−p)ᵀS(X−p)` exactly over ℚ.
+/// Nothing is certified on a guess, and anything that fails falls back to the general arm.
+#[derive(Clone)]
+pub struct RevCone<B: Backend = Bignum> {
+    /// The apex.
+    pub apex: [Rat<B>; 3],
+    /// The axis direction — **not** unit, and oriented into the authored [`Nappe`].
+    pub axis: [Rat<B>; 3],
+    /// `cos²α` for the half-angle `α`, strictly between `0` and `1`. Squared because that is what
+    /// stays rational: `72/65` is a rational *slope*, never a rational cosine.
+    pub cos2: Rat<B>,
+}
+
+impl<B: Backend> RevCone<B> {
+    /// Recognize `q` as a cone of revolution, or `None`.
+    ///
+    /// The extraction is linear algebra over ℚ on the symmetric part `S`. A cone of revolution has
+    /// `S = r·I + ν·a aᵀ` — eigenvalue `r` twice across the axis, once along it — so:
+    ///
+    /// 1. `r` is the **double root** of the characteristic cubic, and a double root of a rational
+    ///    cubic is rational (an irrational one would drag its conjugate in and need degree 4), so
+    ///    the closed form `(e₁e₂ − 9e₃)/(2(e₁² − 3e₂))` gives it without any root-finding;
+    /// 2. `S − r·I` must then be exactly **rank one**, which pins the axis as any nonzero column;
+    /// 3. the apex solves `S·p = −b/2`, and the constant must come out at `c = pᵀSp`.
+    ///
+    /// Each step is checked, not assumed: the rank-one identity, the apex solve and the constant
+    /// are exact rational equalities, and `cos²α ∈ (0, 1)` rejects the degenerate ends (a line at
+    /// `α = 0`, a plane pair at `α = 90°`). An elliptic cone fails step 2; a hyperboloid fails
+    /// step 3; a **cylinder** of revolution passes steps 1 and 2 — its eigenvalues are `λ, λ, 0`, so
+    /// the double root is `λ`, not `0` — and fails at `cos²α = 1`, which is the right place for it:
+    /// a cylinder is the `α → 0` limit with the apex gone to infinity. [`RevCylinder`] is its
+    /// recognizer, and the two are exhaustive over surfaces of revolution a sketch can sweep.
+    pub fn recognize(q: &Quadric<B>) -> Option<Self> {
+        let half = Rat::new(1, 2);
+        let s: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
+            core::array::from_fn(|j| q.m[i][j].add(&q.m[j][i]).mul(&half))
+        });
+
+        // det(S − t·I) = −t³ + e₁t² − e₂t + e₃.
+        let e1 = s[0][0].add(&s[1][1]).add(&s[2][2]);
+        let minor = |i: usize, j: usize| s[i][i].mul(&s[j][j]).sub(&s[i][j].mul(&s[j][i]));
+        let e2 = minor(0, 1).add(&minor(0, 2)).add(&minor(1, 2));
+        let den = e1.mul(&e1).sub(&e2.mul(&Rat::from_i128(3)));
+        if den.is_zero() {
+            // A triple root: `S` is a multiple of the identity — a sphere or a point, not a cone.
+            return None;
+        }
+        let e3 = det3(&s);
+        let r = e1
+            .mul(&e2)
+            .sub(&e3.mul(&Rat::from_i128(9)))
+            .div(&den.mul(&Rat::from_i128(2)));
+        if r.is_zero() {
+            // The across-axis eigenvalue is the half-angle; zero makes `S` singular, which is a
+            // cylinder (or worse), not a cone with an apex.
+            return None;
+        }
+
+        // `S − r·I = a aᵀ / w` exactly, with `a` a nonzero column and `w` its diagonal entry. The
+        // identity is checked on every entry — it is what makes the rest sound.
+        let rr: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
+            core::array::from_fn(|j| {
+                if i == j {
+                    s[i][j].sub(&r)
+                } else {
+                    s[i][j].clone()
+                }
+            })
+        });
+        let j = (0..3).find(|&j| !rr[j][j].is_zero())?;
+        let w = rr[j][j].clone();
+        let a: [Rat<B>; 3] = core::array::from_fn(|i| rr[i][j].clone());
+        for (i, row) in rr.iter().enumerate() {
+            for (l, entry) in row.iter().enumerate() {
+                if !entry.mul(&w).sub(&a[i].mul(&a[l])).is_zero() {
+                    return None;
+                }
+            }
+        }
+
+        // The along-axis eigenvalue exceeds `r` by `Λ = |a|²/w`, and `cos²α = −r/Λ`.
+        let a2 = dot3(&a, &a);
+        let cos2 = r.neg().mul(&w).div(&a2);
+        if cos2.sign() <= 0 || cos2.sub(&Rat::from_i128(1)).sign() >= 0 {
+            return None;
+        }
+
+        // The apex kills the linear term, and the constant must then vanish with it.
+        let rhs: [Rat<B>; 3] = core::array::from_fn(|i| q.b[i].mul(&half).neg());
+        let apex = solve3(&s, &rhs)?;
+        if !q.c.add(&dot3(&q.b, &apex).mul(&half)).is_zero() {
+            return None;
+        }
+
+        // Which of the two nappes is the authored one. The selector plane passes through the apex
+        // and strictly separates them, so the sign of `n·a` names the nappe — and `n·a = 0` (a
+        // cylinder's vacuous selector, or a selector that cannot tell them apart) declines.
+        let sgn = dot3(&q.nappe.n, &a).sign();
+        if sgn == 0 {
+            return None;
+        }
+        let axis = if sgn > 0 {
+            a
+        } else {
+            core::array::from_fn(|i| a[i].neg())
+        };
+        Some(RevCone { apex, axis, cos2 })
+    }
+
+    /// `√((1 − cos²α)/|axis|²)` — the constant the distance formula scales `(X−p)·axis` by, so that
+    /// `t̂·sin α` needs no unit axis. Enclosed once per certificate, not once per sub-interval.
+    fn sin_scaled(&self, cfg: &DevConfig<B>) -> RatIv<B> {
+        let a2 = dot3(&self.axis, &self.axis);
+        sqrt(&Rat::from_i128(1).sub(&self.cos2).div(&a2), &cfg.sqrt_eps)
+    }
+
+    /// An upper bound on the distance from an enclosed point to the **authored nappe**, given the
+    /// three scalars the formula needs already enclosed: `n2 = |X−p|²`, `ta = (X−p)·axis`, and
+    /// `s2 = n2 − ta²/|axis|²` (the squared distance to the axis).
+    ///
+    /// With `t̂ = ta/|axis|` and `s = √s2` the meridian coordinates, the nappe is the ray
+    /// `{(t̂, s) : s = t̂·tan α, t̂ ≥ 0}`, whose distance is the perpendicular drop
+    /// `|s·cos α − t̂·sin α|` while the foot stays on the ray — which `t̂ ≥ 0` guarantees, since
+    /// `s ≥ 0` makes the projection at least `t̂·cos α`. Where the enclosure cannot rule out
+    /// `t̂ < 0` the nearest point may be the apex, and `|X − p|` bounds *that* case and every other
+    /// one at once (the apex is on the ray), so the fallback is sound rather than a refusal.
+    ///
+    /// Both radicands stay rational — `k·s2` and `((1−k)/|axis|²)·ta²` — which is the whole point:
+    /// the irrational half-angle never has to be represented.
+    fn dist_hi(
+        &self,
+        n2: &RatIv<B>,
+        ta: &RatIv<B>,
+        s2: &RatIv<B>,
+        sin_scaled: &RatIv<B>,
+        cfg: &DevConfig<B>,
+    ) -> Rat<B> {
+        if ta.lo().sign() < 0 {
+            return sqrt_on(n2, &cfg.sqrt_eps).hi().clone();
+        }
+        let perp = sqrt_on(&s2.mul(&RatIv::point(self.cos2.clone())), &cfg.sqrt_eps)
+            .sub(&sin_scaled.mul(ta))
+            .rounded();
+        abs_on(&perp).hi().clone()
+    }
+}
+
+/// A [`Quadric`] recognized as a **cylinder of revolution** — the same move [`RevCone`] makes, for
+/// the apex that went to infinity.
+///
+/// A sketch swept from a *direction* rather than a point (`Apex::direction`, the straight drill) is
+/// one of the two apex kinds any profile can be cut with, and its circle clears to a
+/// [`CutSurface::Quadric`] just as a finite apex's does. The general quadric arm then bounds
+/// distance by inflating a box — which measured **ε 5.56 against 1.53** for the same Ø 8 bore on the
+/// acceptance device, purely as a change of instrument. `CutSurface::Cylinder` has had the closed
+/// form all along; all that was missing was noticing that the quadric *is* one. Without this, the
+/// two apex kinds cost seven orders of magnitude differently for no geometric reason.
+///
+/// Like [`RevCone`], recognition is a verified proposal: every step below is an exact rational
+/// equality, and anything that fails falls back to the general arm.
+#[derive(Clone)]
+pub struct RevCylinder<B: Backend = Bignum> {
+    /// A point on the axis — any one; the axis is a line, and the certificate only needs it as a
+    /// line.
+    pub axis_point: [Rat<B>; 3],
+    /// The axis direction, **not** unit.
+    pub axis_dir: [Rat<B>; 3],
+    /// The squared radius.
+    pub r2: Rat<B>,
+}
+
+impl<B: Backend> RevCylinder<B> {
+    /// Recognize `q` as a cylinder of revolution, or `None`.
+    ///
+    /// A cylinder's symmetric part is `S = λ·(I − ââᵀ/|â|²)` — eigenvalues `λ, λ, 0` — so:
+    ///
+    /// 1. `det S = 0`, and the double root of the characteristic cubic is `λ ≠ 0` (the same closed
+    ///    form [`RevCone::recognize`] uses, with `e₃ = 0`);
+    /// 2. `N := λI − S` must be exactly **rank one**, which pins the axis direction as any nonzero
+    ///    column `a`, and `|a|² = λ·N_jj` pins the scale — together those two say `S` is a multiple
+    ///    of the projector orthogonal to `a`, and nothing else;
+    /// 3. `S` is singular, so the axis is a *line* of solutions of `S·p = −b/2` rather than a point.
+    ///    `p = −b/(2λ)` is the one on the plane through the origin normal to the axis, and checking
+    ///    `b + 2S·p = 0` is what rejects a parabolic cylinder, whose `b` has a component along `a`
+    ///    that no `p` can absorb;
+    /// 4. `R² = −(b·p/2 + c)/λ` must come out strictly positive — an imaginary or degenerate
+    ///    cylinder is not a surface a cut can lie on.
+    ///
+    /// **The selector must be vacuous.** A quadric carrying a live [`Nappe`] describes *half* a
+    /// surface, and the distance to a whole cylinder is not an upper bound for the distance to half
+    /// of one — it is a lower bound, which is the unsound direction. A direction apex sets
+    /// `τ = −w·N = 0`, so `nappe.n = 0` is exactly the case with no second sheet to choose, and it
+    /// is the only case accepted here.
+    pub fn recognize(q: &Quadric<B>) -> Option<Self> {
+        if q.nappe.n.iter().any(|c| !c.is_zero()) {
+            return None;
+        }
+        let half = Rat::new(1, 2);
+        let s: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
+            core::array::from_fn(|j| q.m[i][j].add(&q.m[j][i]).mul(&half))
+        });
+
+        if !det3(&s).is_zero() {
+            return None; // no zero eigenvalue: not a cylinder
+        }
+        let e1 = s[0][0].add(&s[1][1]).add(&s[2][2]);
+        let minor = |i: usize, j: usize| s[i][i].mul(&s[j][j]).sub(&s[i][j].mul(&s[j][i]));
+        let e2 = minor(0, 1).add(&minor(0, 2)).add(&minor(1, 2));
+        let den = e1.mul(&e1).sub(&e2.mul(&Rat::from_i128(3)));
+        if den.is_zero() {
+            return None; // a triple root, i.e. `S = 0`: a plane or nothing
+        }
+        let lam = e1.mul(&e2).div(&den.mul(&Rat::from_i128(2)));
+        if lam.is_zero() {
+            return None;
+        }
+
+        // `N = λI − S` is `λ·a aᵀ/|a|²`: rank one, and of that one scale.
+        let n: [[Rat<B>; 3]; 3] = core::array::from_fn(|i| {
+            core::array::from_fn(|j| {
+                if i == j {
+                    lam.sub(&s[i][j])
+                } else {
+                    s[i][j].neg()
+                }
+            })
+        });
+        let j = (0..3).find(|&j| !n[j][j].is_zero())?;
+        let w = n[j][j].clone();
+        let a: [Rat<B>; 3] = core::array::from_fn(|i| n[i][j].clone());
+        for (i, row) in n.iter().enumerate() {
+            for (l, entry) in row.iter().enumerate() {
+                if !entry.mul(&w).sub(&a[i].mul(&a[l])).is_zero() {
+                    return None;
+                }
+            }
+        }
+        if !dot3(&a, &a).sub(&lam.mul(&w)).is_zero() {
+            return None;
+        }
+
+        // The axis point, and the check that the linear term is one an axis can absorb.
+        let p: [Rat<B>; 3] =
+            core::array::from_fn(|i| q.b[i].neg().div(&lam.mul(&Rat::from_i128(2))));
+        for (row, bi) in s.iter().zip(&q.b) {
+            let sp = row
+                .iter()
+                .zip(&p)
+                .fold(Rat::from_i128(0), |acc, (m, pk)| acc.add(&m.mul(pk)));
+            if !bi.add(&sp.mul(&Rat::from_i128(2))).is_zero() {
+                return None;
+            }
+        }
+
+        // `F(p) = −λR²`, and `pᵀSp = −b·p/2` because `S·p = −b/2`.
+        let r2 = dot3(&q.b, &p).mul(&half).add(&q.c).neg().div(&lam);
+        if r2.sign() <= 0 {
+            return None;
+        }
+        Some(RevCylinder {
+            axis_point: p,
+            axis_dir: a,
+            r2,
+        })
+    }
+
+    /// The equivalent [`CutSurface::Cylinder`] — the same point set, in the representation whose
+    /// distance is a symbolic residual in σ.
+    pub fn as_cut_surface(&self) -> CutSurface<B> {
+        CutSurface::Cylinder {
+            axis_point: self.axis_point.clone(),
+            axis_dir: self.axis_dir.clone(),
+            r2: self.r2.clone(),
+        }
+    }
+}
+
+/// The determinant of an exact 3×3.
+fn det3<B: Backend>(m: &[[Rat<B>; 3]; 3]) -> Rat<B> {
+    let cof = |i: usize, j: usize, k: usize, l: usize| m[i][j].mul(&m[k][l]);
+    m[0][0]
+        .mul(&cof(1, 1, 2, 2).sub(&cof(1, 2, 2, 1)))
+        .sub(&m[0][1].mul(&cof(1, 0, 2, 2).sub(&cof(1, 2, 2, 0))))
+        .add(&m[0][2].mul(&cof(1, 0, 2, 1).sub(&cof(1, 1, 2, 0))))
+}
+
+/// The exact solution of `M·x = rhs` by Cramer's rule. `None` when `M` is singular.
+fn solve3<B: Backend>(m: &[[Rat<B>; 3]; 3], rhs: &[Rat<B>; 3]) -> Option<[Rat<B>; 3]> {
+    let d = det3(m);
+    if d.is_zero() {
+        return None;
+    }
+    Some(core::array::from_fn(|c| {
+        let mut sub: [[Rat<B>; 3]; 3] = m.clone();
+        for (row, r) in sub.iter_mut().zip(rhs) {
+            row[c] = r.clone();
+        }
+        det3(&sub).div(&d)
+    }))
+}
+
 impl<B: Backend> CutSurface<B> {
     /// The implicit residual at a point — **negative strictly inside** the solid cutter, zero on the
     /// surface. `None` only for malformed surface data (a zero cylinder axis).
@@ -1814,6 +2131,256 @@ fn max_rat<B: Backend>(a: Rat<B>, b: Rat<B>) -> Rat<B> {
     }
 }
 
+/// `a`, or `b` when `b` is present and smaller — "take the tighter of two sound upper bounds".
+fn min_opt<B: Backend>(a: Rat<B>, b: Option<Rat<B>>) -> Rat<B> {
+    match b {
+        Some(b) if b.cmp(&a) == core::cmp::Ordering::Less => b,
+        _ => a,
+    }
+}
+
+/// One sub-interval's bound, refined **only where it needs to be**.
+///
+/// `ε` is the max over sub-intervals and the gate is `ε < clearance/2`, so a sub-interval whose own
+/// bound already clears the gate cannot be what decides the verdict — asking the second arm about it
+/// buys a smaller number nobody reads. Skipping it is sound (a larger-but-still-Verified `ε` is
+/// still an upper bound) and it is what keeps the second opinion free: on a part where the first arm
+/// is comfortable everywhere, the second is never evaluated at all.
+fn tighten<B: Backend>(d: Rat<B>, half: &Rat<B>, sig: &RatIv<B>, refine: Refine<'_, B>) -> Rat<B> {
+    if d.cmp(half) == core::cmp::Ordering::Less {
+        return d;
+    }
+    min_opt(d, refine(sig))
+}
+
+/// A second opinion on one σ-sub-interval: another sound upper bound on the same distance, or
+/// `None` where that arm has nothing to say. See [`traced_cut_fit`].
+type Refine<'a, B> = &'a dyn Fn(&RatIv<B>) -> Option<Rat<B>>;
+
+/// The reciprocal of an interval **bounded away from zero**, either sign — `None` when it
+/// straddles.
+fn recip_away<B: Backend>(x: &RatIv<B>) -> Option<RatIv<B>> {
+    if x.lo().sign() > 0 {
+        x.recip_pos()
+    } else if x.hi().sign() < 0 {
+        Some(x.neg().recip_pos()?.neg())
+    } else {
+        None
+    }
+}
+
+/// **SPIKE (#292) — the wall certificate measured in the chart instead of in 3-D.**
+///
+/// [`cut_fit`] builds the rail's 3-D point and asks how far it is from the surface. For a plane or
+/// a cylinder that is a closed form; for a general quadric it is a first-order ball bound, which
+/// loses the `σ ↔ µ̂` cancellation and — measured on the device's imported bore — does not converge
+/// at any subdivision. That made [`RevCone`] recognition a *capability* gate rather than an
+/// optimization, which is the defect: whether a cut can be performed must not depend on a
+/// classification.
+///
+/// This arm needs no classification. Distance to a surface is an **upper bound** problem, so any
+/// point of the surface will serve, and the chart already knows one exactly: the resolver computes
+/// every wall's µ̂-pullback `a(σ)µ̂² + b(σ)µ̂ + c(σ)` ([`cut_mu_form`]) to decide the shadow at all,
+/// and its roots are where **this very ruling** meets the wall. So
+///
+/// ```text
+///     dist(C(σ), wall) ≤ |µ̂_fit(σ) − µ̂*(σ)| · |ruling(σ)|
+/// ```
+///
+/// with `µ̂*` the nearer root **on the authored nappe**. Everything is rational but two `√`
+/// enclosures (the root and the ruling speed), there is no ball and no gradient, and the nappe
+/// question becomes *which root* — decided at a point rather than over an inflated box, so a wall
+/// with millimetres of headroom can never read as a crossing.
+///
+/// It is exact when the ruling meets the wall perpendicularly and overestimates by `1/sin θ` for a
+/// crossing angle `θ`, so it degrades where the ruling runs **tangent** to the wall — exactly the
+/// windows [`tangent_events`] already isolates and the p-curve arm already owns.
+pub fn ruling_cut_fit<B: Backend>(
+    chart: &Chart<B>,
+    cert: &CutFitCert<B>,
+) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
+    use core::cmp::Ordering;
+    let (lo, hi) = (&cert.span.lo, &cert.span.hi);
+    if lo.cmp(hi) != Ordering::Less {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let Some(form) = cut_mu_form(chart, &cert.surface, &cert.w) else {
+        return Verdict::Refuted(CutFitFault::DegenerateSurface);
+    };
+    // Only a quadric carries a live selector; a plane and a cylinder are whole surfaces.
+    let nappe = match &cert.surface {
+        CutSurface::Quadric(q) if q.nappe.n.iter().any(|k| !k.is_zero()) => Some(&q.nappe),
+        _ => None,
+    };
+    let (pedal, ruling, normal) = (chart.pedal(), chart.ruling(), chart.normal());
+    // The rail's own residual in the pullback, as a rational function of σ — **exact**, so its
+    // enclosure over a piece is tight. This is where the `σ ↔ µ̂` cancellation is kept: subtracting
+    // two independently-enclosed µ̂ values would inherit the full swing of each across the piece
+    // (measured: `5.5e-1` where the rail is exact to `6.3e-8`), while `s` itself is that `6.3e-8`.
+    let s = form
+        .a
+        .mul(&cert.mu_hat)
+        .add(&form.b)
+        .mul(&cert.mu_hat)
+        .add(&form.c)
+        .reduce();
+    let n_sub = cert.subdiv.max(1);
+    let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
+    let half = cert.clearance.mul(&Rat::new(1, 2));
+    let mut eps = Rat::from_i128(0);
+    for k in 0..n_sub {
+        crate::counters::bump_cut_eval();
+        let sig = subiv(lo, &width, k);
+        let Some(d) = chart_bound_on(
+            &sig,
+            &form,
+            &s,
+            &cert.mu_hat,
+            nappe,
+            (pedal, ruling, normal),
+            &cert.w,
+            &cert.cfg,
+        ) else {
+            return Verdict::Refuted(CutFitFault::DegenerateSurface);
+        };
+        eps = max_rat(eps, d);
+    }
+    if eps.cmp(&half) == Ordering::Less {
+        Verdict::Verified(ValidCutFit {
+            span: cert.span.clone(),
+            eps,
+            clearance: cert.clearance.clone(),
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
+/// The chart bound on **one** σ-sub-interval — `None` where this arm has nothing to say.
+///
+/// It declines in exactly two places, and both are statements about the sub-interval rather than
+/// about the rail: a pole in one of the evaluated fields, and a ruling with no crossing on the
+/// authored nappe. [`traced_cut_fit`] answers there instead, which is why this returns an option
+/// rather than a verdict.
+#[allow(clippy::too_many_arguments)]
+fn chart_bound_on<B: Backend>(
+    sig: &RatIv<B>,
+    form: &MuCut<B>,
+    s: &RatFunc<B>,
+    mu_hat: &RatFunc<B>,
+    nappe: Option<&Nappe<B>>,
+    fields: (&Vec3Rat<B>, &Vec3Rat<B>, &Vec3Rat<B>),
+    w: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Option<Rat<B>> {
+    use core::cmp::Ordering;
+    let (pedal, ruling, normal) = fields;
+    let (two, four) = (
+        RatIv::point(Rat::from_i128(2)),
+        RatIv::point(Rat::from_i128(4)),
+    );
+    let (Some(mu), Some(a), Some(b), Some(c), Some(r)) = (
+        eval_ratfunc_on(mu_hat, sig),
+        eval_ratfunc_on(&form.a, sig),
+        eval_ratfunc_on(&form.b, sig),
+        eval_ratfunc_on(&form.c, sig),
+        vec3_on(ruling, sig),
+    ) else {
+        return None;
+    };
+    {
+        // Where this ruling meets the wall. An identically-affine section (a plane through the
+        // apex) has one crossing; a genuine quadratic has two, and none at all where the ruling
+        // misses the wall — which is not a fit this arm can certify.
+        let mut roots: Vec<RatIv<B>> = Vec::new();
+        if a.lo().is_zero() && a.hi().is_zero() {
+            if let Some(inv) = recip_away(&b) {
+                roots.push(c.neg().mul(&inv));
+            }
+        } else {
+            // The discriminant is formed **symbolically** and enclosed by the **centred** form, and
+            // both halves matter. `b² − 4ac` from three separate enclosures throws away a
+            // cancellation the polynomial never has to make; Horner over the symbolic polynomial
+            // then still pays repeated-σ dependency, which on a sub-millimetre wall is enough on its
+            // own. Measured on the device's tab fillets, the naive reading came back
+            // `[−3.0227e2, +5.8864e2]` around a modest positive number — no sign, no crossing, no
+            // certificate (#292).
+            let disc = match crate::interval::eval_ratfunc_on_centred(&form.disc(), sig) {
+                Some(d) => d,
+                None => b.mul(&b).sub(&four.mul(&a).mul(&c)),
+            };
+            if disc.lo().sign() > 0
+                && let Some(inv) = recip_away(&two.mul(&a))
+            {
+                let sq = sqrt_on(&disc, &cfg.sqrt_eps);
+                roots.push(b.neg().sub(&sq).mul(&inv));
+                roots.push(b.neg().add(&sq).mul(&inv));
+            }
+        }
+        if roots.is_empty() {
+            return None;
+        }
+        let r2 = r[0].mul(&r[0]).add(&r[1].mul(&r[1])).add(&r[2].mul(&r[2]));
+        let speed = sqrt_on(&r2, &cfg.sqrt_eps);
+        let s_iv = eval_ratfunc_on(s, sig)?;
+        // The nearest crossing that is on the authored nappe — an exact question at a point.
+        let mut best: Option<Rat<B>> = None;
+        for root in &roots {
+            if let Some(nap) = nappe {
+                let (Some(p), Some(nv)) = (vec3_on(pedal, sig), vec3_on(normal, sig)) else {
+                    return None;
+                };
+                let mut sel = RatIv::point(nap.d.clone()).neg();
+                for i in 0..3 {
+                    let y = p[i].add(&root.mul(&r[i])).add(&nv[i].scale(w));
+                    sel = sel.add(&y.scale(&nap.n[i]));
+                }
+                if sel.lo().sign() <= 0 {
+                    continue;
+                }
+            }
+            // Two sound readings of `|µ̂_fit − µ̂*|`, and the tighter one wins.
+            //
+            // The direct difference is honest but inherits both enclosures' swing. The mean-value
+            // form `|s| / |∂s/∂µ̂|` divides a **tight** numerator by a lower bound on the slope over
+            // a µ̂-range containing both points — and a lower bound is exactly the quantity a loose
+            // root enclosure cannot spoil. `∂s/∂µ̂ = 2aµ̂ + b` vanishes only at a tangent ruling,
+            // which is the case this arm hands to the p-curve.
+            let direct = abs_on(&mu.sub(root)).mul(&speed).hi().clone();
+            let hull = RatIv::new(
+                if mu.lo().cmp(root.lo()) == Ordering::Less {
+                    mu.lo().clone()
+                } else {
+                    root.lo().clone()
+                },
+                if mu.hi().cmp(root.hi()) == Ordering::Greater {
+                    mu.hi().clone()
+                } else {
+                    root.hi().clone()
+                },
+            );
+            let slope = two.mul(&a).mul(&hull).add(&b);
+            let d = match recip_away(&slope) {
+                Some(inv) => {
+                    // `inv` carries the slope's sign; the distance does not.
+                    let mv = abs_on(&s_iv.mul(&inv)).mul(&speed).hi().clone();
+                    if mv.cmp(&direct) == Ordering::Less {
+                        mv
+                    } else {
+                        direct
+                    }
+                }
+                None => direct,
+            };
+            best = Some(match best {
+                Some(x) if x.cmp(&d) != Ordering::Greater => x,
+                _ => d,
+            });
+        }
+        best
+    }
+}
+
 /// Certify the cut-fit obligation `sup_σ dist(C(σ, μ̂(σ)), {F=0}) ≤ ε` and gate it by
 /// the DRC `ε < clearance/2`.
 ///
@@ -1838,6 +2405,47 @@ pub fn cut_fit<B: Backend>(
         .pedal()
         .add(&chart.ruling().scale(&cert.mu_hat))
         .add(&chart.normal().scale_rat(&cert.w));
+    // **The chart arm as a refinement, and the tighter of the two wins.**
+    //
+    // Neither dominates. The chart bound measures *along the ruling*, so it overestimates by
+    // `1/sin θ` at an oblique crossing; the 3-D bound measures perpendicular but re-derives from an
+    // inflated ball what the chart holds exactly. Measured: the chart arm is `10²`–`10¹²` tighter on
+    // the device's trims and resolves a rail the ball cannot, and *looser* on the flex panel, where
+    // using it alone broke a pinned ε budget. Both are upper bounds on the same distance, so the
+    // minimum is sound and is the tightest available.
+    //
+    // Composed this way round — the ball arm asking the chart for a second opinion, rather than the
+    // reverse — because the ball arm's own reading is per-variant and symbolic in σ, and rebuilding
+    // that from the outside is how two earlier attempts silently lost the `RevCylinder`
+    // substitution and the σ↔µ̂ correlation.
+    let (pedal, ruling, normal) = (chart.pedal(), chart.ruling(), chart.normal());
+    let chart_arm = cut_mu_form(chart, &cert.surface, &cert.w).map(|form| {
+        let s = form
+            .a
+            .mul(&cert.mu_hat)
+            .add(&form.b)
+            .mul(&cert.mu_hat)
+            .add(&form.c)
+            .reduce();
+        (form, s)
+    });
+    let nappe = match &cert.surface {
+        CutSurface::Quadric(q) if q.nappe.n.iter().any(|k| !k.is_zero()) => Some(&q.nappe),
+        _ => None,
+    };
+    let refine = |sig: &RatIv<B>| -> Option<Rat<B>> {
+        let (form, s) = chart_arm.as_ref()?;
+        chart_bound_on(
+            sig,
+            form,
+            s,
+            &cert.mu_hat,
+            nappe,
+            (pedal, ruling, normal),
+            &cert.w,
+            &cert.cfg,
+        )
+    };
     traced_cut_fit(
         &c,
         &cert.surface,
@@ -1845,6 +2453,7 @@ pub fn cut_fit<B: Backend>(
         cert.subdiv,
         &cert.clearance,
         &cert.cfg,
+        &refine,
     )
 }
 
@@ -1878,6 +2487,11 @@ pub fn pcurve_cut_fit<B: Backend>(
     let n_sub = subdiv.max(1);
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
     let half = clearance.mul(&Rat::new(1, 2));
+    // Recognition is a property of the surface, so it happens once and not per sub-interval.
+    let rev = match surface {
+        CutSurface::Quadric(q) => RevCone::recognize(q),
+        _ => None,
+    };
     let mut eps = Rat::from_i128(0);
     for k in 0..n_sub {
         crate::counters::bump_cut_eval();
@@ -1898,7 +2512,7 @@ pub fn pcurve_cut_fit<B: Backend>(
             Some(x) => x,
             None => return Verdict::Refuted(CutFitFault::PoleInEval),
         };
-        let dist = match surface_distance_on(surface, &x, &half, cfg) {
+        let dist = match surface_distance_on(surface, rev.as_ref(), &x, &half, cfg) {
             DistOn::Bound(d) | DistOn::Loose(d) => d,
             DistOn::Fault(f) => return Verdict::Refuted(f),
         };
@@ -1970,6 +2584,7 @@ enum DistOn<B: Backend> {
 /// radius of the ball its first-order bound is allowed to search — see [`quadric_distance_on`].
 fn surface_distance_on<B: Backend>(
     surface: &CutSurface<B>,
+    rev: Option<&RevCone<B>>,
     x: &[RatIv<B>; 3],
     radius: &Rat<B>,
     cfg: &DevConfig<B>,
@@ -1978,8 +2593,25 @@ fn surface_distance_on<B: Backend>(
         Some(d) => DistOn::Bound(d),
         None => DistOn::Fault(CutFitFault::DegenerateSurface),
     };
-    match surface {
-        CutSurface::Quadric(q) => quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, x, radius, cfg),
+    match (surface, rev) {
+        // Recognized as a cone of revolution: the closed-form distance, on the box the caller
+        // enclosed. Still a box — a p-curve is parametrized over its own `t`, so there is no
+        // symbolic residual in σ to be had — but the bound is the geometric distance itself rather
+        // than a first-order estimate inside an inflated ball, and no ball means no apex clearance
+        // to trip over.
+        (CutSurface::Quadric(_), Some(cone)) => {
+            let a2 = dot3(&cone.axis, &cone.axis);
+            let v: [RatIv<B>; 3] =
+                core::array::from_fn(|i| x[i].sub(&RatIv::point(cone.apex[i].clone())));
+            let sum = |f: &dyn Fn(usize) -> RatIv<B>| f(0).add(&f(1)).add(&f(2));
+            let n2 = sum(&|i| v[i].mul(&v[i]));
+            let ta = sum(&|i| v[i].mul(&RatIv::point(cone.axis[i].clone())));
+            let s2 = n2.sub(&ta.mul(&ta).mul(&RatIv::point(a2.recip())));
+            DistOn::Bound(cone.dist_hi(&n2, &ta, &s2, &cone.sin_scaled(cfg), cfg))
+        }
+        (CutSurface::Quadric(q), None) => {
+            quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, x, radius, cfg)
+        }
         _ => closed_form(metric_distance_on(surface, x, cfg)),
     }
 }
@@ -2105,18 +2737,23 @@ fn quadric_distance_on<B: Backend>(
         core::array::from_fn(|i| RatIv::new(x[i].lo().sub(r), x[i].hi().add(r)))
     };
 
-    // The nappe condition is a statement about the *authored geometry*, not about this bound's
-    // working precision, so it is checked at the full working radius however small a ball the
-    // bound below ends up needing: a cut is required to clear the apex by `clearance/2`, since
-    // nearer than that "inside" is not a settled question.
-    if dot_iv(&nappe.n, &inflate(radius))
-        .sub(&RatIv::point(nappe.d.clone()))
-        .lo()
-        .sign()
-        <= 0
-    {
-        return DistOn::Fault(CutFitFault::NappeCrossed);
-    }
+    // The nappe condition, at **the ball this bound actually uses**.
+    //
+    // The lemma places a zero of `F` within `e ≤ r` of the traced point, so the statement that has
+    // to hold is "the ball of radius `r` lies on the authored nappe's side" — no larger. It used to
+    // be checked once at the full working radius `clearance/2`, which bundled a DRC cushion into a
+    // soundness gate, and the cushion is what refused real geometry: measured on the device's
+    // imported bore, the selector clears at `r/2` and at every smaller ball and fails **only** at
+    // the constant. Both §4.1 conditions still bite — a trace that genuinely reaches the mirror
+    // nappe, or the apex on the selector's own boundary plane, fails at every radius including the
+    // smallest, and that is still [`CutFitFault::NappeCrossed`].
+    let nappe_ok = |r: &Rat<B>| {
+        dot_iv(&nappe.n, &inflate(r))
+            .sub(&RatIv::point(nappe.d.clone()))
+            .lo()
+            .sign()
+            > 0
+    };
 
     // `|F|` over the box itself — the lemma is applied at each of its points, so this is the only
     // quantity that does not depend on the ball.
@@ -2136,8 +2773,16 @@ fn quadric_distance_on<B: Backend>(
     // way to `Unresolved`.
     const STEPS: u32 = 4;
     let mut widest = None;
+    let mut on_nappe = false;
     for k in (0..=STEPS).rev() {
         let r = radius.mul(&Rat::new(1, 1i128 << k));
+        // A ball that reaches the mirror nappe cannot carry the claim, whatever it bounds. The
+        // sequence grows, so once one fails so does every later one — but `continue` rather than
+        // `break` keeps the loop's shape independent of that.
+        if !nappe_ok(&r) {
+            continue;
+        }
+        on_nappe = true;
         let ball = inflate(&r);
         // `g`: a lower bound on `|∇F| = |(M + Mᵀ)Y + b|` over the ball. A component whose enclosure
         // straddles zero contributes nothing, which is the sound reading.
@@ -2164,6 +2809,11 @@ fn quadric_distance_on<B: Backend>(
             return DistOn::Bound(e);
         }
         widest = Some(e);
+    }
+    // Not even the smallest ball stays on the authored nappe: the trace reaches the mirror sheet or
+    // the apex, which no amount of refinement fixes.
+    if !on_nappe {
+        return DistOn::Fault(CutFitFault::NappeCrossed);
     }
     // Nothing certified. Report at least `radius`, so a caller folding this into `ε` and applying
     // the `ε < radius` DRC gate cannot mistake it for a bound.
@@ -2192,6 +2842,7 @@ fn traced_cut_fit<B: Backend>(
     subdiv: usize,
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
+    refine: Refine<'_, B>,
 ) -> Verdict<ValidCutFit<B>, CutFitFault, Rat<B>> {
     use core::cmp::Ordering;
     let (lo, hi) = (&span.lo, &span.hi);
@@ -2202,27 +2853,67 @@ fn traced_cut_fit<B: Backend>(
     let width = hi.sub(lo).div(&Rat::from_i128(n_sub as i128));
     let half = clearance.mul(&Rat::new(1, 2));
 
+    // A quadric that *is* a cylinder of revolution is measured as one. Recognition sits here, where
+    // the certificate is computed, rather than where the wall is built — so a hand-authored
+    // `Cylinder` and a swept profile circle take the same arm without the builders having to agree
+    // on a normal form. [`RevCone`] does the same one arm down; between them they cover both apex
+    // kinds a sketch can be swept from.
+    let recognized = match surface {
+        CutSurface::Quadric(q) => RevCylinder::recognize(q).map(|c| c.as_cut_surface()),
+        _ => None,
+    };
+    let surface = recognized.as_ref().unwrap_or(surface);
+
     let eps = match surface {
-        // No closed-form distance, so this arm cannot enclose a symbolic residual the way the two
-        // below do: the first-order bound works on a 3-D ball around the traced point, so the point
-        // itself has to be enclosed first. The price is the lost cancellation — a symbolic residual
-        // benefits from the surface equation collapsing against the chart fields, and a box does
-        // not — which shows up as needing more `subdiv` for the same ε, not as a weaker claim.
-        CutSurface::Quadric(q) => {
-            let mut eps = Rat::from_i128(0);
-            for k in 0..n_sub {
-                let sig = subiv(lo, &width, k);
-                let x = match vec3_on(traced, &sig) {
-                    Some(x) => x,
-                    None => return Verdict::Refuted(CutFitFault::PoleInEval),
-                };
-                match quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, &x, &half, cfg) {
-                    DistOn::Bound(d) | DistOn::Loose(d) => eps = max_rat(eps, d),
-                    DistOn::Fault(f) => return Verdict::Refuted(f),
+        // A cone of revolution *does* have a closed-form distance, so it joins the two arms below
+        // rather than paying the general quadric's box price — same certificate, one recognition
+        // step ([`RevCone`]) ahead of it. A general quadric has no such parametrization: its
+        // first-order bound works on a 3-D ball around the traced point, so the point itself has to
+        // be enclosed first, and the lost σ↔µ̂ cancellation shows up as needing far more `subdiv`
+        // for the same ε — not as a weaker claim.
+        CutSurface::Quadric(q) => match RevCone::recognize(q) {
+            Some(cone) => {
+                let v = traced.sub(&const_vec3(&cone.apex)); // X − p
+                let ax = const_vec3(&cone.axis);
+                let a2 = dot3(&cone.axis, &cone.axis);
+                let n2 = v.dot(&v).reduce(); // |X − p|²
+                let ta = v.dot(&ax).reduce(); // (X − p)·a
+                // s2 = |v|² − (v·a)²/|a|², the squared distance to the axis.
+                let s2 = n2.sub(&ta.mul(&ta).scale(&a2.recip())).reduce();
+                let sin_scaled = cone.sin_scaled(cfg);
+                let mut eps = Rat::from_i128(0);
+                for k in 0..n_sub {
+                    let sig = subiv(lo, &width, k);
+                    let (Some(n2v), Some(tav), Some(s2v)) = (
+                        eval_ratfunc_on(&n2, &sig),
+                        eval_ratfunc_on(&ta, &sig),
+                        eval_ratfunc_on(&s2, &sig),
+                    ) else {
+                        return Verdict::Refuted(CutFitFault::PoleInEval);
+                    };
+                    let d = cone.dist_hi(&n2v, &tav, &s2v, &sin_scaled, cfg);
+                    eps = max_rat(eps, tighten(d, &half, &sig, refine));
                 }
+                eps
             }
-            eps
-        }
+            None => {
+                let mut eps = Rat::from_i128(0);
+                for k in 0..n_sub {
+                    let sig = subiv(lo, &width, k);
+                    let x = match vec3_on(traced, &sig) {
+                        Some(x) => x,
+                        None => return Verdict::Refuted(CutFitFault::PoleInEval),
+                    };
+                    match quadric_distance_on(&q.m, &q.b, &q.c, &q.nappe, &x, &half, cfg) {
+                        DistOn::Bound(d) | DistOn::Loose(d) => {
+                            eps = max_rat(eps, tighten(d, &half, &sig, refine))
+                        }
+                        DistOn::Fault(f) => return Verdict::Refuted(f),
+                    }
+                }
+                eps
+            }
+        },
         CutSurface::Plane { n, d } => {
             let norm = sqrt(&dot3(n, n), &cfg.sqrt_eps); // |n| enclosure
             let inv_norm = match norm.recip_pos() {
@@ -2243,7 +2934,7 @@ fn traced_cut_fit<B: Backend>(
                 };
                 // distance = |residual| / |n|
                 let dist = abs_on(&res).mul(&inv_norm);
-                eps = max_rat(eps, dist.hi().clone());
+                eps = max_rat(eps, tighten(dist.hi().clone(), &half, &sig, refine));
             }
             eps
         }
@@ -2275,7 +2966,7 @@ fn traced_cut_fit<B: Backend>(
                 };
                 let rho = sqrt_on(&p2, &cfg.sqrt_eps); // √perp2 = distance to axis
                 let dist = abs_on(&rho.sub(&r)); // |ρ − R|
-                eps = max_rat(eps, dist.hi().clone());
+                eps = max_rat(eps, tighten(dist.hi().clone(), &half, &sig, refine));
             }
             eps
         }
@@ -2308,6 +2999,211 @@ mod tests {
             lo: Q::from_i128(lo),
             hi: Q::from_i128(hi),
         }
+    }
+
+    /// The `(3, 4, 5)` cone: apex at the origin, axis `+z`, `tan α = 3/4` — so `cos²α = 16/25` and
+    /// every quantity the recognizer must recover is exactly rational.
+    fn cone345() -> Quadric<Bignum> {
+        let q = Q::from_i128;
+        let wall = crate::extrude::ellipse_wall(
+            &[q(0), q(0), q(4)],                              // the circle of radius 3 …
+            &[q(3), q(0), q(0)],                              // … as the unit circle of this frame,
+            &[q(0), q(3), q(0)],                              // … at height 4,
+            &crate::extrude::Apex::point([q(0), q(0), q(0)]), // cast from the origin.
+        )
+        .expect("a real cone");
+        match wall {
+            CutSurface::Quadric(b) => *b,
+            _ => panic!("a circle cast from a point sweeps a quadric"),
+        }
+    }
+
+    /// An upper bound on the distance from an exact point to a recognized cone's authored nappe.
+    fn cone_dist(cone: &RevCone<Bignum>, x: [Q; 3], cfg: &DevConfig<Bignum>) -> Q {
+        let v: [Q; 3] = core::array::from_fn(|i| x[i].sub(&cone.apex[i]));
+        let a2 = dot3(&cone.axis, &cone.axis);
+        let n2 = dot3(&v, &v);
+        let ta = dot3(&v, &cone.axis);
+        let s2 = n2.sub(&ta.mul(&ta).div(&a2));
+        cone.dist_hi(
+            &RatIv::point(n2),
+            &RatIv::point(ta),
+            &RatIv::point(s2),
+            &cone.sin_scaled(cfg),
+            cfg,
+        )
+    }
+
+    /// **A cone of revolution is recovered from its coefficients exactly, and nothing else is.**
+    ///
+    /// The recognizer is what moves a normal cut off the general quadric's box bound, so what it
+    /// accepts has to be right in both directions: it must find the apex, axis and half-angle of a
+    /// circular cone as exact rationals, and it must decline every quadric that only looks like one.
+    /// The three negatives are the three ways the extraction can fail — an oblique cast gives an
+    /// *elliptic* cone (the rank-one step fails), a cast from infinity gives a cylinder (the double
+    /// eigenvalue is zero), and shifting the constant gives a hyperboloid of one sheet, which has
+    /// the same `M` and `b` as the cone it is asymptotic to and differs only in the last check.
+    ///
+    /// The cylinder declines at `cos²α = 1`, not at the double root — its eigenvalues are `λ, λ, 0`,
+    /// so the closed form returns `λ`, and what gives it away is the *half-angle* going to zero with
+    /// the apex at infinity. [`RevCylinder`] picks it up from there.
+    #[test]
+    fn a_cone_of_revolution_is_recognized_exactly_and_its_look_alikes_are_not() {
+        let q = Q::from_i128;
+        let cone = RevCone::recognize(&cone345()).expect("a right circular cone");
+        assert!(cone.cos2.sub(&Q::new(16, 25)).is_zero(), "cos²α = (4/5)²");
+        for i in 0..3 {
+            assert!(cone.apex[i].is_zero(), "the apex is the cast point");
+        }
+        // The axis is `+z` up to a positive scale, and points into the authored nappe (`z > 0`).
+        assert!(cone.axis[0].is_zero() && cone.axis[1].is_zero());
+        assert!(cone.axis[2].sign() > 0, "oriented into the authored nappe");
+
+        let quadric_of = |wall: CutSurface<Bignum>| match wall {
+            CutSurface::Quadric(b) => *b,
+            _ => panic!("expected a quadric wall"),
+        };
+        let oblique = quadric_of(
+            crate::extrude::ellipse_wall(
+                &[q(0), q(0), q(4)],
+                &[q(3), q(0), q(0)],
+                &[q(0), q(3), q(0)],
+                &crate::extrude::Apex::point([q(1), q(0), q(0)]), // off the circle's axis
+            )
+            .expect("a real cone"),
+        );
+        assert!(
+            RevCone::recognize(&oblique).is_none(),
+            "an oblique cast is elliptic, not a cone of revolution"
+        );
+        let cylinder = quadric_of(
+            crate::extrude::ellipse_wall(
+                &[q(0), q(0), q(4)],
+                &[q(3), q(0), q(0)],
+                &[q(0), q(3), q(0)],
+                &crate::extrude::Apex::direction([q(0), q(0), q(1)]).expect("a direction"),
+            )
+            .expect("a real cylinder"),
+        );
+        assert!(
+            RevCone::recognize(&cylinder).is_none(),
+            "a cast from infinity has no apex to find"
+        );
+        let mut hyperboloid = cone345();
+        hyperboloid.c = hyperboloid.c.sub(&q(1));
+        assert!(
+            RevCone::recognize(&hyperboloid).is_none(),
+            "the same asymptotic cone, and not a cone"
+        );
+    }
+
+    /// **A cylinder of revolution is recovered too, and it is the sweep an imported outline uses.**
+    ///
+    /// A plan-view drawing has to be swept *straight down* to land where it was drawn, so the
+    /// straight drill is not an exotic apex kind — it is the default for a cut file. Its circle
+    /// clears to a quadric all the same, and without this the certificate falls to the box bound:
+    /// measured **ε 5.56 against 1.53** for the same Ø 8 bore on the acceptance device, the whole
+    /// difference being which arm ran.
+    ///
+    /// The negatives are the three ways the extraction can fail, and each fails at a different
+    /// step: a *cone* has no zero eigenvalue at all; a **half**-cylinder (a live nappe selector) is
+    /// declined outright, because the distance to a whole cylinder is a *lower* bound for the
+    /// distance to half of one and a certificate may not be optimistic; and an **elliptic**
+    /// cylinder — a circle in a frame whose axes are not orthonormal — fails the rank-one identity.
+    #[test]
+    fn a_cylinder_of_revolution_is_recognized_exactly_and_carries_the_closed_form() {
+        let q = Q::from_i128;
+        let quadric_of = |wall: CutSurface<Bignum>| match wall {
+            CutSurface::Quadric(b) => *b,
+            _ => panic!("expected a quadric wall"),
+        };
+        let straight = quadric_of(
+            crate::extrude::ellipse_wall(
+                &[q(0), q(0), q(4)],
+                &[q(3), q(0), q(0)],
+                &[q(0), q(3), q(0)],
+                &crate::extrude::Apex::direction([q(0), q(0), q(1)]).expect("a direction"),
+            )
+            .expect("a real cylinder"),
+        );
+        let cyl = RevCylinder::recognize(&straight).expect("a cylinder of revolution");
+        assert!(cyl.r2.sub(&q(9)).is_zero(), "r² = 3²");
+        assert!(
+            cyl.axis_dir[0].is_zero() && cyl.axis_dir[1].is_zero() && !cyl.axis_dir[2].is_zero(),
+            "the axis is ±z"
+        );
+        // Any point of the axis will do, and this one is on the plane through the origin normal to
+        // it — but what matters is that it *is* on the axis, which the residual is the test of.
+        assert!(cyl.axis_point[0].is_zero() && cyl.axis_point[1].is_zero());
+
+        // The recognized surface is the same point set: on it, off it, and by how much.
+        let surface = cyl.as_cut_surface();
+        for (x, y, z, want) in [(3, 0, 0, 0), (0, 3, 7, 0), (5, 0, 0, 16), (0, 0, 2, -9)] {
+            let p = [q(x), q(y), q(z)];
+            assert_eq!(
+                surface.residual(&p).expect("a real axis"),
+                q(want),
+                "at ({x}, {y}, {z})"
+            );
+            assert_eq!(straight.nappe.n.iter().filter(|c| !c.is_zero()).count(), 0);
+        }
+
+        assert!(
+            RevCylinder::recognize(&cone345()).is_none(),
+            "a cone has no zero eigenvalue"
+        );
+        let mut half = straight.clone();
+        half.nappe = Nappe {
+            n: [q(0), q(0), q(1)],
+            d: q(0),
+        };
+        assert!(
+            RevCylinder::recognize(&half).is_none(),
+            "half a cylinder is not a cylinder — the whole one's distance would be optimistic"
+        );
+        let elliptic = quadric_of(
+            crate::extrude::ellipse_wall(
+                &[q(0), q(0), q(4)],
+                &[q(3), q(0), q(0)],
+                &[q(0), q(5), q(0)], // a longer v axis: the profile circle is an ellipse
+                &crate::extrude::Apex::direction([q(0), q(0), q(1)]).expect("a direction"),
+            )
+            .expect("a real cylinder"),
+        );
+        assert!(
+            RevCylinder::recognize(&elliptic).is_none(),
+            "an elliptic cylinder has no single radius"
+        );
+    }
+
+    /// **The recognized cone's bound is the geometric distance, on both sides of the apex.**
+    ///
+    /// On the `(3, 4, 5)` cone the two witnesses are exact: `(0, 0, 5)` on the axis drops
+    /// perpendicular to the generatrix at `5·sin α = 3`, and its mirror `(0, 0, −5)` is behind the
+    /// apex, where the nearest point of the authored nappe *is* the apex, at `5`. The second is the
+    /// case the general quadric arm cannot express at all — it bounds the distance to `{F = 0}`,
+    /// which includes the mirror nappe, and so has to refuse rather than answer.
+    #[test]
+    fn the_cone_distance_is_the_geometric_one_on_either_side_of_the_apex() {
+        let q = Q::from_i128;
+        let cfg = DevConfig {
+            terms: 14,
+            sqrt_eps: Q::new(1, 1_000_000_000),
+        };
+        let cone = RevCone::recognize(&cone345()).expect("a right circular cone");
+        let tol = Q::new(1, 1_000_000);
+        let close = |got: Q, want: i128| {
+            let d = got.sub(&q(want));
+            assert!(
+                d.cmp(&tol) == core::cmp::Ordering::Less
+                    && d.cmp(&tol.neg()) == core::cmp::Ordering::Greater,
+                "expected {want}, got {}",
+                to_f64(&got)
+            );
+        };
+        close(cone_dist(&cone, [q(3), q(0), q(4)], &cfg), 0); // on the cone
+        close(cone_dist(&cone, [q(0), q(0), q(5)], &cfg), 3); // 5·sin α
+        close(cone_dist(&cone, [q(0), q(0), q(-5)], &cfg), 5); // behind the apex
     }
 
     /// **The arc turns around the tangent, which is precisely what a graph cannot do.**
@@ -2911,7 +3807,7 @@ mod tests {
                         }
                         let half = Q::new(1, 2);
                         if let DistOn::Bound(d) | DistOn::Loose(d) =
-                            surface_distance_on(&surface, &x, &half, &cfg)
+                            surface_distance_on(&surface, None, &x, &half, &cfg)
                         {
                             dd = dd.max(dig(&d));
                         }
@@ -3359,6 +4255,123 @@ mod tests {
         assert!(
             matches!(probe(0), DistOn::Fault(CutFitFault::NappeCrossed)),
             "nor does the apex, where inside inverts"
+        );
+    }
+
+    /// **The chart arm agrees with the closed form, and is tighter.** A cone of revolution is the
+    /// one wall both arms can measure — [`cut_fit`] through [`RevCone`]'s closed form,
+    /// [`ruling_cut_fit`] through the µ̂-pullback — so it is where the two can be compared, and the
+    /// comparison is the whole point of #292: the chart arm needs no recognition, so it must not
+    /// cost anything to give recognition up.
+    ///
+    /// It does not. Both certify the same exactly-on-the-wall rail, and the chart arm's bound is
+    /// *smaller*, because the rail's residual `s(σ)` is an exact rational function while the 3-D
+    /// arm re-derives the same quantity from an inflated ball. Measured on the device the gap is
+    /// 10²–10¹²; here it is enough to state the direction and that neither undercuts zero.
+    #[test]
+    fn the_chart_arm_certifies_what_the_closed_form_does_and_no_looser() {
+        let chart = cone();
+        // The exact offset-plane rail `plane_cut_rail_verifies_near_zero` uses: a rail that lies on
+        // its wall identically, so both arms are measuring the same zero by different routes.
+        let n = [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)]; // the z = 1 plane
+        let d = Q::from_i128(1);
+        let cert = CutFitCert {
+            mu_hat: plane_cut_rail(&chart, &n, &d),
+            w: Q::from_i128(0),
+            surface: CutSurface::Plane { n, d },
+            span: ivl(1, 3),
+            subdiv: 8,
+            clearance: Q::new(1, 100),
+            cfg: DevConfig::tight(),
+        };
+        let three_d = match cut_fit(&chart, &cert) {
+            Verdict::Verified(v) => v.eps,
+            v => panic!(
+                "the 3-D arm must certify this rail, got {}",
+                verdict_tag(&v)
+            ),
+        };
+        let chartwise = match ruling_cut_fit(&chart, &cert) {
+            Verdict::Verified(v) => v.eps,
+            v => panic!("the chart arm must certify it too, got {}", verdict_tag(&v)),
+        };
+        assert!(
+            chartwise.sign() >= 0,
+            "a distance bound is never negative: {}",
+            to_f64(&chartwise)
+        );
+        assert!(
+            chartwise.cmp(&three_d) != core::cmp::Ordering::Greater,
+            "the chart arm ({}) must not be looser than the closed form ({})",
+            to_f64(&chartwise),
+            to_f64(&three_d)
+        );
+    }
+
+    /// **The nappe condition is a statement about the ball, not about the DRC.** The same point,
+    /// the same cone, the same authored nappe — only the *working radius* differs. At a radius
+    /// wide enough to swallow the apex plane the selector cannot hold; at the radii the first-order
+    /// bound actually closes on, it can, and the certificate is the same one it always was.
+    ///
+    /// This is what refuses a real cut when the two are conflated: the device's imported bore sits
+    /// `3.61 mm` above its drafted cutter's apex plane and was checked against a fixed
+    /// `clearance/2 = 3.5 mm`, so a wall with millimetres of headroom read as
+    /// [`CutFitFault::NappeCrossed`] (#292). The loop tries `radius/16 … radius`, so a point this
+    /// far out certifies on one of the smaller balls.
+    #[test]
+    fn a_wide_working_radius_does_not_by_itself_cross_the_nappe() {
+        let (o, i) = (Q::from_i128(0), Q::from_i128(1));
+        let m = [
+            [i.clone(), o.clone(), o.clone()],
+            [o.clone(), i.clone(), o.clone()],
+            [o.clone(), o.clone(), Q::from_i128(-1)],
+        ];
+        let nappe = Nappe {
+            n: [o.clone(), o.clone(), i.clone()],
+            d: o.clone(),
+        };
+        let cfg = DevConfig::tight();
+        // On the authored nappe, 4 above the apex plane — and 1/10 off the cone in x.
+        let p = [Q::new(41, 10), Q::from_i128(0), Q::from_i128(4)];
+        let x: [RatIv<Bignum>; 3] = core::array::from_fn(|k| RatIv::point(p[k].clone()));
+        let probe = |radius: Q| {
+            quadric_distance_on(
+                &m,
+                &[o.clone(), o.clone(), o.clone()],
+                &o,
+                &nappe,
+                &x,
+                &radius,
+                &cfg,
+            )
+        };
+        assert!(
+            matches!(probe(Q::new(1, 10)), DistOn::Bound(_)),
+            "a snug radius certifies"
+        );
+        assert!(
+            matches!(probe(Q::from_i128(16)), DistOn::Bound(_)),
+            "and so does a radius whose own ball reaches past the apex plane, because the ball the \
+             bound closes on does not"
+        );
+        // The genuine case still bites: 16 subdivided four times is still 1, and the point sits 4
+        // above the plane, so a point *at* the plane fails at every radius offered.
+        let at_plane: [RatIv<Bignum>; 3] =
+            core::array::from_fn(|k| RatIv::point([i.clone(), o.clone(), o.clone()][k].clone()));
+        assert!(
+            matches!(
+                quadric_distance_on(
+                    &m,
+                    &[o.clone(), o.clone(), o.clone()],
+                    &o,
+                    &nappe,
+                    &at_plane,
+                    &Q::from_i128(16),
+                    &cfg
+                ),
+                DistOn::Fault(CutFitFault::NappeCrossed)
+            ),
+            "a point on the selector plane crosses at every radius"
         );
     }
 

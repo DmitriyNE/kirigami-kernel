@@ -14,7 +14,7 @@
 //! `Unresolved` there, never a wrong `Verified`; no float touches a certificate.
 
 use crate::approx::{f64_to_rat, rat_to_f64, vec3_to_f64};
-use develop::cut::{CutSurface, plane_cut_rail};
+use develop::cut::{CutSurface, cut_mu_form, plane_cut_rail};
 use geom::chart::Chart;
 use lattice::{Backend, Interval, Poly, Rat, RatFunc};
 
@@ -46,11 +46,42 @@ pub fn fit_cut_rail<B: Backend>(
     bits: u32,
 ) -> Option<RatFunc<B>> {
     match surface {
-        // A graph rail `µ̂ = f(σ)` cannot follow a wall that turns around in σ, which a general
-        // quadric wall routinely does, so this oracle declines rather than fitting half of one. The
-        // general path for those is `develop::cut::quadric_cut_loop` — it walks both branches of the
-        // µ̂-quadratic through their tangent rulings and needs no fit at all.
-        CutSurface::Quadric(_) => None,
+        // A general quadric wall routinely **turns around** in σ, and a graph rail `µ̂ = f(σ)`
+        // cannot follow one that does — the path for those is `develop::cut::quadric_cut_loop`,
+        // which walks both branches through their tangent rulings and needs no fit at all.
+        //
+        // But "routinely" is not "always", and this used to decline the whole class. A normal-cut
+        // trim — a disc swept from an apex on the chart's own axis — is a quadric wall whose rail
+        // is *constant* in µ̂, the easiest graph there is, and refusing it here cost the kernel
+        // that entire construction (task #288).
+        //
+        // Declining was never a soundness requirement. This oracle is the **search**; `cut_fit`
+        // is the certificate, and it re-checks the proposed rail against the real surface over the
+        // whole span. A rail fitted across a turning point simply fails to certify. So propose the
+        // branch, and let the certificate decide — the MAP.1 search/certificate split, applied
+        // where it had not been.
+        CutSurface::Quadric(_) => {
+            let form = cut_mu_form(chart, surface, &Rat::from_i128(0))?;
+            let (lo, hi) = (rat_to_f64(&span.lo), rat_to_f64(&span.hi));
+            let n_nodes = degree + 1;
+            let mut xs = Vec::with_capacity(n_nodes);
+            let mut ys = Vec::with_capacity(n_nodes);
+            for k in 0..n_nodes {
+                let node = cheb_node(lo, hi, k, n_nodes);
+                let sq = f64_to_rat::<B>(node, bits);
+                let (a, b, c) = (
+                    rat_to_f64(&form.a.eval(&sq)?),
+                    rat_to_f64(&form.b.eval(&sq)?),
+                    rat_to_f64(&form.c.eval(&sq)?),
+                );
+                xs.push(rat_to_f64(&sq));
+                ys.push(pick_root(a, b, c, pick)?);
+            }
+            let coeffs_f = interpolate(&xs, &ys, degree)?;
+            let coeffs_q: Vec<Rat<B>> =
+                coeffs_f.iter().map(|&c| f64_to_rat::<B>(c, bits)).collect();
+            Some(RatFunc::from_poly(Poly::from_coeffs(coeffs_q)))
+        }
         CutSurface::Plane { n, d } => Some(plane_cut_rail(chart, n, d)),
         CutSurface::Cylinder {
             axis_point,
@@ -125,7 +156,14 @@ fn solve_cut_quadratic(
     let a = uu - ua * ua / a2;
     let b = 2.0 * v0u - 2.0 * v0a * ua / a2;
     let c = v0v0 - v0a * v0a / a2 - rr;
+    pick_root(a, b, c, pick)
+}
 
+/// The picked real root of `a µ̂² + b µ̂ + c = 0`, or `None` if the cut is not real here.
+///
+/// Shared by every surface the oracle samples, so "which branch is `Lower`" has one definition:
+/// the numerically smaller `µ̂`, degenerating to the single linear root when `a` vanishes.
+fn pick_root(a: f64, b: f64, c: f64, pick: RootPick) -> Option<f64> {
     if a.abs() < 1e-30 {
         if b.abs() < 1e-30 {
             return None;

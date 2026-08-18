@@ -16,7 +16,12 @@
 //! assert!(matches!(part.develop(), certify_core::Verdict::Verified(_)));
 //! ```
 
+pub mod lapped;
 pub mod measure;
+
+pub use lapped::{
+    Azimuth, GapPolicy, LapFault, Lapped, LappedCone, OnTop, RampProfile, SideAngles, lapped_cone,
+};
 
 use arrange2d::profile::Profile;
 use author::construct;
@@ -24,7 +29,7 @@ use author::part::{Cutter, Part, SupportFn};
 use develop::cone::DevConfig;
 use develop::extrude::{Apex, Frame};
 use export::trim::RailFit;
-use fixtures::devices::{cone, cone_wrap};
+use fixtures::devices::cone;
 use geom::content::Edge;
 use lattice::{Bignum, Rat};
 
@@ -40,8 +45,8 @@ fn qi(n: i128) -> Q {
 /// The **self-lapping cone**: the driving-demo geometry.
 ///
 /// The wrapping chart `ψ = (260/97)·arctan σ` sweeps more than one full 3-D turn in a finite
-/// window, and three piecewise-support regions ride it — body `[−5/4, 1/2]` at `h ≡ 0`, a
-/// smoothstep ramp `[1/2, 1]` climbing `0 → D = 1/10`, and a tail plateau `[1, 5/4]` at `h ≡ D`.
+/// window, and three piecewise-support regions ride it — body `[−5/4, 4/7]` at `h ≡ 0`, a
+/// smoothstep ramp `[4/7, 1]` climbing `0 → Δ = 1/4`, and a tail plateau `[1, 5/4]` at `h ≡ Δ`.
 /// The excess sweep *is* the lap: the tail passes over the head. Two solid cutters bound the
 /// annulus (concentric outer, apex-containing inner) and, with `with_drill`, one seam-drill
 /// cylinder pierces the sheet **twice** — once in the head, once in the lapping tail flap — so a
@@ -73,29 +78,35 @@ pub fn self_lapping_cone_with(
     with_drill: bool,
     feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
 ) -> Part<Bignum> {
-    let d = q(1, 10);
-    // A witness on the kept sheet: the σ = 0 ruling's point at z = −3 (mid-annulus). The wrap
-    // chart keeps material on both sheets of the double cover — the antipodal ray crosses the
-    // disks too — so the recipe must designate the component rather than leave it to a rule.
-    let rz0 = cone_wrap()
-        .ruling()
-        .comp(2)
-        .eval(&qi(0))
-        .expect("the wrap chart's ruling is regular at σ = 0");
-    let mu_w = q(-3, 1).div(&rz0);
-    let witness = cone_wrap()
-        .surface(&mu_w, &qi(0))
-        .eval(&qi(0))
-        .expect("the mid-annulus witness point is regular");
-    let mut part = construct::from_chart::<Bignum>(&cone_wrap())
-        .region_sigma(q(-5, 4), q(1, 2), SupportFn::constant(qi(0)))
-        .region_sigma(q(1, 2), qi(1), SupportFn::smoothstep(qi(0), d.clone()))
-        .region_sigma(qi(1), q(5, 4), SupportFn::constant(d))
-        .keep_near(witness)
-        .intersect(Cutter::vertical_cylinder(qi(0), qi(0), q(471, 50)))
-        .subtract(Cutter::vertical_cylinder(qi(0), q(1, 2), qi(4)))
-        .clearance(qi(1))
-        .thickness(q(1, 20))
+    self_lapping_cone_from(
+        &self_lapping_spec(),
+        segments,
+        support_panels,
+        with_drill,
+        feature,
+    )
+}
+
+/// The device's **ops and resolution knobs over a caller's own recipe**.
+///
+/// [`self_lapping_cone_with`] is this at [`self_lapping_spec`]. It exists so that a test varying
+/// one recipe parameter — a ramp profile, a ramp width — does not have to restate the off-axis
+/// inner bound, the clearance, the fit and the budget alongside it. A restated op chain is how a
+/// test quietly stops measuring the device.
+pub fn self_lapping_cone_from(
+    spec: &lapped::LappedCone,
+    segments: usize,
+    support_panels: usize,
+    with_drill: bool,
+    feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
+) -> Part<Bignum> {
+    let mut part = lapped::lapped_cone(spec)
+        .expect("the device recipe is valid")
+        .part
+        // The DRC keep-out is a length in the part's own unit, so it rides the part's scale. Left
+        // where it was it would be a *relatively* tighter budget on a larger part — a silent
+        // re-tightening of the acceptance bar disguised as a re-proportioning.
+        .clearance(qi(7))
         .fit(RailFit {
             degree: 4,
             subdiv: 160,
@@ -108,7 +119,11 @@ pub fn self_lapping_cone_with(
             sqrt_eps: q(1, 1_000_000_000),
         });
     if with_drill {
-        part = part.subtract(Cutter::vertical_cylinder(q(-1, 2), q(27, 10), q(1, 40)));
+        // From [`seam_drill_axis`], not restated beside it: the round-trip check reads that
+        // function to fold the holes back onto the *same* cylinder, so a second copy here is a
+        // silent way for the two to drift apart — and did, when the annulus was re-proportioned.
+        let (cx, cy, r2) = seam_drill_axis();
+        part = part.subtract(Cutter::vertical_cylinder(cx, cy, r2));
     }
     if let Some((apex, profile)) = feature {
         part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
@@ -116,11 +131,132 @@ pub fn self_lapping_cone_with(
     part
 }
 
+/// The self-lapping device **as parameters** — the recipe [`self_lapping_cone_with`] is one point
+/// of.
+///
+/// Every number here used to be written down; all that survives is the ones a product engineer
+/// would state — **and since 2026-08-17 they are the physical device's**, in the kernel's unit,
+/// the millimetre (`interchange::unit`).
+///
+/// | quantity | value | where it comes from |
+/// |---|---|---|
+/// | half-angle β | `sin β = 65/97` → 42.07° | the Pythagorean `(72, 65, 97)`, exact |
+/// | stack `t` | `6/25` mm = 240 µm | 4-layer flex, `w ∈ ±120 µm` about the midplane |
+/// | ramp step `Δ` | `1/4` mm | **pinned**: certified SHEAR `δ = Δ·cot β = Δ·72/65 = 18/65` |
+/// | seam gap `g` | `1/100` mm = 10 µm | `Δ − t`; the ACF bondline, since `SEP ≡ ACF gap` |
+/// | annulus | Ø 8 → Ø 21.5 mm | the trimmed sheet, cut **normal to itself** at both radii |
+/// | ramp width | ≈ 61° of azimuth | the ≈60° degree-1 seam ramp |
+///
+/// The seam centreline sits `t/2 + g/2 = 1/8` off the base sheet's mid-surface — the value at
+/// which one ramp vanishes exactly, so the clockwise end never leaves the base cone and the device
+/// has a single ramp. The supports `0`, `0 → 1/4`, `1/4` are *derived* from those three numbers
+/// rather than authored, and the ramp's height is `Δ` by construction.
+///
+/// The azimuths are given in σ because they must be: on the wrapping chart `σ = tan(φ/4)`, so no
+/// rational direction names `±5/4`, and this is the spelling that keeps the re-expression exact —
+/// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on. `ramp_start = 4/7` is
+/// `φ = 118.98°`, so the ramp spans `61.02°` — the nearest small rational to the authored 60°.
+///
+/// The pick is **derived** now: both trim radii live in the recipe, so `lapped_cone`'s own
+/// mid-annulus point at `ρ = (4 + 43/4)/2 = 59/8` is in material by construction. It had to be
+/// named while the inner bound was an off-axis cylinder applied afterwards, which the recipe could
+/// not see.
+pub fn self_lapping_spec() -> lapped::LappedCone {
+    let sigma = |n: i128, d: i128| lapped::Azimuth::Sigma(q(n, d));
+    lapped::LappedCone {
+        // The Pythagorean (72, 65, 97): sin β = 65/97, the 42° device, exact.
+        apex: (qi(72), qi(65)),
+        thickness: q(6, 25),
+        gap: q(1, 100),
+        on_top: lapped::OnTop::Ccw,
+        seam_offset: q(1, 8),
+        ccw: lapped::SideAngles {
+            ramp_start: sigma(4, 7),
+            ramp_end: sigma(1, 1),
+            sheet_end: sigma(5, 4),
+        },
+        cw: lapped::SideAngles::flat(sigma(-5, 4)),
+        outer_r: q(43, 4),
+        inner_r: Some(qi(4)),
+        // **Not yet the drawing.** `inner_cut_profile()` is the bore this device is meant to have —
+        // the file reads exactly and the recipe carries it. What the resolver cannot yet place is
+        // the tab, and only where it crosses the **ramp**: there the ruling's plan projection
+        // misses the axis by up to 0.481 mm against a tab 0.35 mm half-wide, so one ruling runs
+        // across the tab instead of along it and the kept material becomes two µ̂-intervals at one
+        // σ — `PartFault::SectionNotSimple`, the one-interval boundary model's own frontier. On the
+        // base cone (`h′ = 0`, plan miss exactly 0) the same tab certifies, which is the controlled
+        // half of the measurement: the drawing's tab passes the chart twice and only the ramp pass
+        // splits. Task #291 carries it; `author/tests/rim_notch.rs` pins it. Left `None` so the
+        // pinned device stays the object every V&V number was taken on, rather than a refusal.
+        inner_profile: None,
+        // The physical edge: cut **normal to the sheet**, not vertically. Both bounds are cones,
+        // and both are recognized as cones of revolution (`develop::cut::RevCone`), so they carry
+        // the same closed-form distance a cylinder does and cost the same split.
+        trim: lapped::TrimStyle::NormalCut,
+        // The bending-neutral mid-plane: what `seam_offset` is measured against.
+        neutral: q(1, 2),
+        // The cubic, because every pinned measurement on this device was taken on it.
+        // `EvenCurvature` halves nothing here but the fold-line swing; see `RampProfile`.
+        ramp_profile: lapped::RampProfile::Smoothstep,
+        // The ramp deliberately descends *inside* the lap here, so the gap closes over part of the
+        // seam and `Constant` would refuse it. What it actually reaches is BONDED's to report.
+        policy: lapped::GapPolicy::MinDistance,
+        pick: None,
+    }
+}
+
+/// **The device's inner cut, as the drawing states it** — `data/inner-cut.dxf`, verbatim.
+///
+/// Embedded rather than read from disk so the device is the same object wherever it is built, and
+/// kept as *text* so that the file, not a transcription of it, is the definition. Everything that
+/// consumes the device — the demos, the V&V pins, the benchmark, `tests/imported_outline.rs` —
+/// reads this one string.
+pub const INNER_CUT_DXF: &str = include_str!("../data/inner-cut.dxf");
+
+/// The unit [`INNER_CUT_DXF`] is read in.
+///
+/// The file carries `$MEASUREMENT 1` (metric) but no `$INSUNITS`, and those are different claims:
+/// `$MEASUREMENT` picks a linetype table, it does not say millimetre rather than centimetre. So the
+/// reader refuses to infer — an inferred unit is a 10× or 25.4× part — and the unit is supplied
+/// here, where it is a statement about *this* drawing rather than a default.
+pub const INNER_CUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// The inner cut's outline, read out of [`INNER_CUT_DXF`].
+///
+/// Eight `ARC`/`LINE` entities on layer `VISIBLE` forming one closed loop: the Ø 8 hole with a 10°
+/// tab reaching in to Ø 4, filleted R 0.25 at the root and R 0.15 at the tip. Four of its junctions
+/// are **arc to arc**, which is the case `interchange::element` had written down and left unbuilt
+/// until a real file needed it.
+///
+/// The read is exact to `δ = 2.6e-14` — the drawing's own `ARC` entities over-determine their
+/// endpoints, and the junction re-gauge charges what it moves — over a closure gap of `2.3e-10`,
+/// which is the file's own sloppiness and lands entirely on the two `LINE` endpoints, where moving
+/// costs nothing.
+///
+/// Panics only on a file this repository ships, so a failure is a broken commit rather than a
+/// runtime condition; `tests/imported_outline.rs` is what names it.
+pub fn inner_cut_profile() -> Vec<Edge<Bignum>> {
+    let opts = interchange::dxf::DxfOptions::<Bignum> {
+        assume_unit: Some(INNER_CUT_UNIT),
+        ..Default::default()
+    };
+    interchange::dxf::read_dxf::<Bignum>(INNER_CUT_DXF, &opts)
+        .expect("data/inner-cut.dxf is a readable outline")
+        .profile()
+        .into_edges()
+}
+
 /// The centre of the self-lapping device's seam drill, `(x, y, r²)` — the 3-D cylinder both
 /// derived holes must fold back onto. Exposed so a round-trip check tests the *same* cylinder the
 /// part was cut with instead of restating its numbers.
+///
+/// The **direction** is the design choice — `(−7, 25)` puts it on the lapped wedge at `az ≈ 100.6°`,
+/// and azimuth is what fixes which σ, which region and which ramp height the hole lands at. The
+/// **radius** only has to be in the annulus, and this one sits mid-way: `ρ = 7.63` in `[4, 10.75]`.
+/// So a re-proportioning scales this vector and leaves every σ-pinned measurement alone, which is
+/// exactly what the Ø 43 → Ø 21.5 correction did (`×3/5`).
 pub fn seam_drill_axis() -> (Q, Q, Q) {
-    (q(-1, 2), q(27, 10), q(1, 40))
+    (q(-7, 5), q(15, 2), q(9, 16))
 }
 
 /// The **lap slot**: the L-shaped feature [`self_lapping_cone_with`] is stressed with — arm `1/4`,
@@ -136,23 +272,25 @@ pub fn seam_drill_axis() -> (Q, Q, Q) {
 ///   one cutter pierces **both sheets**: a ruling meets its footprint on the near sheet and again on
 ///   the far one. That is the wrap chart's own version of the multi-stretch problem, and no gore can
 ///   pose it.
-/// * **On the ramp.** The far sheet lands at `σ ∈ [0.857, 0.914]` — strictly inside the smoothstep
-///   band `[1/2, 1]` — so that hole is traced over a **nonzero flat directrix**, while its twin on
-///   the body is traced at `γ ≡ 0`. One cutter, both development tiers, and the difference between
-///   the two holes is attributable to `γ` and to nothing else.
-/// * **Clear of the joins.** The near sheet lands at `σ ∈ [−1.168, −1.094]`, ~0.08 from the body's
-///   far end; neither footprint crosses a region boundary, which is refused
+/// * **On the ramp.** The far sheet lands strictly inside the smoothstep band `[4/7, 1]` — the
+///   test probes it at `σ = 7/8`, where `|γ| = 0.477` — so that hole is traced over a **nonzero
+///   flat directrix**, while its twin on the body is traced at `γ ≡ 0` (probed at `σ = −1/2`). One
+///   cutter, both development tiers, and the difference between the two holes is attributable to
+///   `γ` and to nothing else. `self_lapping_slot.rs` pins the far hole's normal offset to
+///   `0.6 Δ … 0.98 Δ`, i.e. on the ramp and hugging neither end of it.
+/// * **Clear of the joins.** Neither footprint crosses a region boundary, which is refused
 ///   ([`PartFault::HoleCrossesRegions`](author::part::PartFault::HoleCrossesRegions)) rather than
 ///   realized.
-/// * **Inside the annulus.** Its radii `[2.61, 2.96]` sit between the eccentric inner cut (`≈2.47`
-///   there) and the outer cylinder (`≈3.07`), so it is an interior hole and not a rim bite.
+/// * **Inside the annulus.** Its radii sit around `ρ ≈ 7.6`, between the inner bound at `4` and the
+///   outer at `10.75`, so it is an interior hole and not a rim bite. Like the seam drill it is
+///   placed by *direction*, and re-proportioning scales the vector rather than re-authoring it.
 ///
 /// The axes are turned for the same reason [`ell_slot`]'s are: the rulings project to radial rays,
 /// so an L whose arms lie along the radius is met once and its footprint is an ordinary band. Here
 /// the local radial direction resolves to `(−0.63, +0.78)` in `(u, v)` — opposite signs, so a ray
 /// leaves one arm, crosses the notch and re-enters the other. `(3, 4, 5)` keeps every vertex exact.
 pub fn lap_slot() -> Vec<Edge<Bignum>> {
-    let (cx, cy, a, t) = (q(1, 2), q(109, 40), q(1, 4), q(1, 8));
+    let (cx, cy, a, t) = (q(7, 5), q(15, 2), q(7, 6), q(7, 12));
     let (ux, uy) = (q(3, 5), q(-4, 5));
     let (vx, vy) = (q(4, 5), q(3, 5));
     let p = |su: &Q, sv: &Q| {
@@ -338,7 +476,7 @@ pub fn ring_slot() -> Vec<Edge<Bignum>> {
 /// doctest cone, `r = w/5` needs 384 segments to certify at all, while `r = 2w/5` certifies at 48
 /// and converges `5.4e-2 → 4.0e-2 → 1.7e-2` over `48 → 96 → 192`. Too *large* fails the other way —
 /// at `r = 3w/5` the corners consume the sides and the footprint stops being one µ̂-interval per
-/// ruling (`AmbiguousRegion`, §12.5).
+/// ruling (`SectionNotSimple`, §12.5).
 pub fn rounded_outline(cx: Q, cy: Q, w: Q, h: Q, r: Q) -> Vec<Edge<Bignum>> {
     let (wi, hi) = (w.sub(&r), h.sub(&r));
     let r2 = r.mul(&r);

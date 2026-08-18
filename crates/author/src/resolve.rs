@@ -1187,7 +1187,9 @@ pub(crate) fn sweep<B: Backend>(
         }
     }
 
-    // Derive roles; an op both holing and bounding is beyond this resolver — fault, don't guess.
+    // Derive roles. An op that both *carves a gap* and *bounds* is the one-interval model's own
+    // frontier, not an ambiguity — see [`PartFault::SectionNotSimple`] for what it means and why
+    // merging the two stretches anyway would ship the wrong pattern.
     let mut roles = vec![OpRole::Inactive; part.ops.len()];
     let mut holes: Vec<(usize, usize, Interval<B>)> = Vec::new();
     for (op, _) in part.ops.iter().enumerate() {
@@ -1196,7 +1198,7 @@ pub(crate) fn sweep<B: Backend>(
         let holed = recs.iter().any(|r| r.hole_ops.contains(&op));
         roles[op] = if holed {
             if bounds_lower || bounds_upper {
-                return Err(PartFault::AmbiguousRegion { op });
+                return Err(PartFault::SectionNotSimple { op });
             }
             // Every disc-positive window of this op with a hole-active sample inside it is one
             // through-hole (a wrapped chart's drill can pierce the kept sheet more than once).

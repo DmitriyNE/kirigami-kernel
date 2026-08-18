@@ -1,0 +1,30 @@
+[package]
+name = "interchange"
+description = "The file boundary: DXF/SVG in and out. A decimal literal is a rational, so most of an import is exact; the constructions that cannot be carry a certified backward error (shell tier)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lattice.workspace = true
+geom.workspace = true
+arrange2d.workspace = true
+develop.workspace = true
+
+# The whole third-party surface of the interchange boundary lives here, and nowhere else in the
+# workspace: no certified path acquires a file-format dependency.
+#
+# SVG only. XML is a real grammar and the SVG path mini-language is genuinely fiddly (implicit
+# repeats, the flag-packing in `A`), so those are worth a dependency — 8 crates.
+#
+# **DXF is deliberately NOT a dependency.** `dxf 0.6` costs 27 crates (`image`, `chrono`, `uuid`,
+# `serde`, `moxcms`, `getrandom`, `libc`) to read five entity types whose entire ASCII grammar is
+# "pairs of lines", and it hands coordinates over as `f64` — which throws away the file's own
+# decimal text and with it the exact number bridge. Reading the text ourselves is both smaller and
+# *more exact*. See `docs/interchange-design.md` §8.
+roxmltree = "0.21"
+svgtypes = "0.16"
+
+[dev-dependencies]
+certify-core.workspace = true

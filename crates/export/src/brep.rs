@@ -203,6 +203,68 @@ impl<B: Backend> Brep<B> {
         self.add_face(FaceSurface::Plane, wire)
     }
 
+    /// Absorb another B-rep, re-indexing its tables onto this one's — the **compound** operation.
+    ///
+    /// Watertightness here is by identity: two faces meet along an edge exactly when both wires
+    /// name the same edge id. So shifting `other`'s ids wholesale keeps every seam it already had
+    /// and creates none with this one — a closed shell absorbed into another stays closed, and two
+    /// bodies that never touched stay two bodies. That is the difference between this and a sew:
+    /// nothing here inspects a coordinate, so nothing here can decide that two shells *should*
+    /// have met.
+    ///
+    /// Consuming rather than borrowing because the geometry moves: an exact Bézier carrier is
+    /// large and there is no reason to copy one to put two shells in one file.
+    ///
+    /// ```
+    /// use export::brep::{Brep, EdgeGeom};
+    /// use lattice::{Bignum, Rat, Surd};
+    ///
+    /// let tri = || {
+    ///     let r = |v: i128| Surd::<Bignum>::from_rat(Rat::from_i128(v));
+    ///     let mut b = Brep::<Bignum>::new();
+    ///     let (v0, v1, v2) = (b.add_vertex([r(0), r(0), r(0)]),
+    ///                         b.add_vertex([r(1), r(0), r(0)]),
+    ///                         b.add_vertex([r(0), r(1), r(0)]));
+    ///     let e = [b.add_edge(v0, v1, EdgeGeom::Line),
+    ///              b.add_edge(v1, v2, EdgeGeom::Line),
+    ///              b.add_edge(v2, v0, EdgeGeom::Line)];
+    ///     b.add_plane(e.iter().map(|&i| (i, false)).collect());
+    ///     b
+    /// };
+    /// let mut compound = tri();
+    /// compound.absorb(tri());
+    /// assert_eq!(compound.faces().len(), 2);
+    /// assert_eq!(compound.verts().len(), 6, "the two triangles share no vertex");
+    /// assert_eq!(compound.free_edges(), 6, "…and no edge: both stay open on their own");
+    /// ```
+    pub fn absorb(&mut self, other: Brep<B>) {
+        let (dv, de) = (self.verts.len(), self.edges.len());
+        self.verts.extend(other.verts);
+        self.edges.extend(other.edges.into_iter().map(|e| BEdge {
+            start: e.start + dv,
+            end: e.end + dv,
+            geom: e.geom,
+        }));
+        self.faces.extend(other.faces.into_iter().map(|f| {
+            Face {
+                // A ruled face names its base curve by edge id, which moved with the rest.
+                surface: match f.surface {
+                    FaceSurface::LinearExtrusion { base, dir } => FaceSurface::LinearExtrusion {
+                        base: base + de,
+                        dir,
+                    },
+                    s => s,
+                },
+                wire: f.wire.into_iter().map(|(e, r)| (e + de, r)).collect(),
+                holes: f
+                    .holes
+                    .into_iter()
+                    .map(|h| h.into_iter().map(|(e, r)| (e + de, r)).collect())
+                    .collect(),
+            }
+        }));
+    }
+
     /// The vertex table.
     pub fn verts(&self) -> &[Vertex<B>] {
         &self.verts

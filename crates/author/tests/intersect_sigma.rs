@@ -442,14 +442,21 @@ fn a_traced_contour_bounds_a_solid_where_no_rail_band_can() {
             on_it += 1;
         }
     }
+    // **Where the lids sit, pinned from the cone's own invariant.** The developed surface is the
+    // stack's mid-plane (`Part::neutral`, default `1/2`), so the two lids are at `w = ∓t/2`. The
+    // cutter is a *vertical* cylinder and the sheet's normal is tilted by `n·ẑ = 65/97`, so a lid
+    // vertex is displaced radially off the authored cylinder by exactly `(t/2)·|n_xy| =
+    // (t/2)·(72/97)`. Asserting that two-sided pins the placement; the old `[0, t]` window could
+    // not pass it, since its far lid was a whole thickness out — the centring halves the envelope.
+    //
+    // Worth stating plainly: with the developed surface at mid-stack, **no** lid lies on the
+    // authored cutter. The footprint is exact where the cut meets the developed surface and the
+    // walls are ruled along `n` from there, so the error is `±t/2` either side instead of `0..t`.
+    let want = th / 2.0 * (72.0 / 97.0);
     assert!(
-        worst < th + 5e-3,
-        "no vertex may sit more than a thickness off the authored contour: worst {worst:.3e}"
-    );
-    assert!(
-        on_it * 4 >= brep.verts().len(),
-        "the w = 0 lid must lie ON the contour, and it is half the vertices: only {on_it} of {} \
-         are within 5e-3",
+        (worst - want).abs() < 5e-3,
+        "every vertex sits (t/2)·|n_xy| ≈ {want:.4} off the authored cylinder — worst {worst:.4e}, \
+         {on_it} of {} within 5e-3 of it",
         brep.verts().len()
     );
 }
@@ -514,17 +521,24 @@ fn a_rail_out_and_an_arc_back_is_a_solid_too() {
         let dc = ((x * x + (y - cyf).powi(2)).sqrt() - rf).abs();
         let dp = (z - 3.0).abs();
         worst = worst.max(dc.min(dp));
-        if dc < eps {
+        // The developed surface is the stack's mid-plane, so a lid vertex is offset from the
+        // surface it was cut by, along `n`, by `t/2`: radially by `(t/2)·|n_xy| = (t/2)·(72/97)`
+        // off the vertical cylinder, and in `z` by `(t/2)·(n·ẑ) = (t/2)·(65/97)` off the plane.
+        // Both are far smaller than the distance to the *other* surface, so the classification
+        // still separates cleanly — it is the threshold that moved, not the shape of the claim.
+        if dc < th / 2.0 * (72.0 / 97.0) + eps {
             on_cyl += 1;
         }
-        if dp < eps {
+        if dp < th / 2.0 * (65.0 / 97.0) + eps {
             on_plane += 1;
         }
     }
     assert!(
-        worst < th + eps,
-        "every vertex must sit within a thickness of the cylinder or the plane: worst {worst:.3e} \
-         against a thickness {th} and a certified {eps:.3e}"
+        worst < th / 2.0 + eps,
+        "every vertex must sit within HALF a thickness of the cylinder or the plane — the envelope \
+         the mid-plane developed surface earns: worst {worst:.3e} against t/2 {} and a certified \
+         {eps:.3e}",
+        th / 2.0
     );
     // **Both** surfaces must be represented, and that is the assertion the wire earns: a solid whose
     // boundary was all arc would put nothing on the plane, and one that lost the arc would put

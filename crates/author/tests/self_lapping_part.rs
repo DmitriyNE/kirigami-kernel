@@ -200,23 +200,44 @@ fn the_chord_golden_rejects_a_bridged_hole() {
 ///
 /// | stage   | measured  | budget | headroom |
 /// |---------|-----------|--------|----------|
-/// | develop | 4.1481e-1 | 0.45   | 1.08×    |
-/// | fold    | 1.3878e-1 | 0.2    | 1.44×    |
-/// | refold  | 5.9975e-3 | 0.01   | 1.67×    |
-/// | solid   | 5.7663e-2 | 0.1    | 1.73×    |
+/// | develop | 1.5266e0  | 13/8   | 1.06×    |
+/// | fold    | 3.3975e-1 | 7/20   | 1.03×    |
+/// | refold  | 7.57e-2   | 1/8    | 1.65×    |
+/// | solid   | 1.6214e-1 | 1/5    | 1.23×    |
 ///
 /// `develop` gets the least headroom because it has the least to give: the DRC gate is
-/// `clearance/2 = 1/2`, so at 4.15e-1 this device already certifies at **83% of its ceiling** and
-/// a 21% degradation would stop certifying at all. That is worth knowing on its own — it is why
-/// `segments(12)` on the demo device returns `Unresolved` (see the OPT.0 entry in the engineering
-/// log) — and it means `develop` has no room to absorb a bound-loosening optimization.
+/// `clearance/2 = 7/2`, so at 1.53e0 this device certifies at **44% of its ceiling** — the
+/// re-proportioning to Ø 21.5 halved the ε while the clearance stayed put, so what used to be the
+/// binding constraint now has room. `fold` is the tight one at 1.03×, and it is the bound to watch
+/// before optimizing anything the fold leg touches.
 #[test]
 fn the_certified_bounds_stay_within_budget() {
     // Pinned bounds. Raise ONLY with a recorded reason; lower freely when a change earns it.
-    let develop_max = q(45, 100);
-    let solid_max = q(1, 10);
-    let fold_max = q(1, 5);
-    let refold_max = q(1, 100);
+    //
+    // Re-pinned 2026-08-17 with the outer diameter's correction, Ø 43 → Ø 21.5 mm. Three of the
+    // four moved, each for one reason:
+    //
+    //   * `develop 13/4 → 13/8`. Exactly halved, because the measurement did: 3.053e0 → 1.527e0
+    //     against an outer radius of 21.5 → 10.75. It is a length on a shorter part and nothing
+    //     more, which is what one wants a re-scaling to look like. The headroom is deliberately the
+    //     same 1.06× it was — `develop` has the least room to give (see the table above).
+    //   * `solid 1/3 → 1/5`. 2.715e-1 → 1.621e-1, a factor 0.60 rather than 0.50, because the
+    //     solid's ε is set by the σ-slice chords as much as by the radial extent and the azimuthal
+    //     sampling did not change.
+    //   * `refold 1/20 → 1/8`, and it is now a **radius**, not a squared radius. The old metric was
+    //     `|ρ² − r²|`, which is `≈ 2r` times the quantity anyone reading it would assume, and a
+    //     budget on a squared residual scales with the square of everything. As a length it went
+    //     2.28e-2 → 7.57e-2, a factor 3.3: the drill rode inward with the annulus (`ρ = 12.72 →
+    //     7.63`) and the same 1.5 mm hole now sits on a patch with 1.67× the curvature, which the
+    //     sagitta squares to ≈2.8.
+    //
+    // `fold` stays at 7/20 and still clears it — 3.398e-1, against 3.316e-1 before. It does not
+    // track the radius: the fold works in the flat pattern's own frame. It is also the *tightest*
+    // of the four at 1.03×, which is worth knowing before optimizing anything it touches.
+    let develop_max = q(13, 8);
+    let solid_max = q(1, 5);
+    let fold_max = q(7, 20);
+    let refold_max = q(1, 8);
 
     let part = device(true);
     let flat = match part.develop() {
@@ -247,7 +268,13 @@ fn the_certified_bounds_stay_within_budget() {
 
     // The round trip that actually matters to the device: the two flat drill holes, far apart in
     // the pattern, must fold back onto the ONE drill cylinder they were cut from.
-    let (dcx, dcy, dr2) = (-0.5f64, 2.7f64, 1.0 / 40.0);
+    // Read from the part's own recipe, never restated: a copied constant here silently measures
+    // the round trip against a cylinder the device is no longer cut with.
+    let (dcx, dcy, dr2) = {
+        let (x, y, r2) = acceptance::seam_drill_axis();
+        (rat_to_f64(&x), rat_to_f64(&y), rat_to_f64(&r2))
+    };
+    let r_drill = dr2.sqrt();
     let mut refold = 0.0f64;
     for hole in flat.holes() {
         let hv = &hole.vertices;
@@ -257,7 +284,10 @@ fn the_certified_bounds_stay_within_budget() {
                 Verdict::Verified(w) => {
                     let p = &w.points[0];
                     let (px, py) = (rat_to_f64(&p[0].mid()), rat_to_f64(&p[1].mid()));
-                    let d = ((px - dcx).powi(2) + (py - dcy).powi(2) - dr2).abs();
+                    // How far off the drill's *surface* the folded point landed — a length in the
+                    // part's own unit, so it is comparable to every other ε here. (It was
+                    // `|ρ² − r²|`, which is `≈ 2r` times this and scales as a square.)
+                    let d = ((px - dcx).hypot(py - dcy) - r_drill).abs();
                     refold = refold.max(d);
                 }
                 Verdict::Unresolved(e) => panic!("refold unresolved at ε ≈ {:.3e}", rat_to_f64(&e)),

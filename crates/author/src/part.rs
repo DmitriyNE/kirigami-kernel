@@ -568,6 +568,41 @@ pub enum PartFault {
         /// The offending op.
         op: usize,
     },
+    /// The **kept material** meets some ruling in more than one stretch, and the op that separates
+    /// them is the same op that bounds it. The resolver models a region as one µ̂-interval per σ —
+    /// a lower rail and an upper rail, both graphs over σ — plus interior holes; two stretches
+    /// separated by their own bound is a *bay in the boundary*, which that model cannot express.
+    ///
+    /// It is not an ambiguity, and merging the stretches would not be conservative: the gap opens
+    /// into the exterior at one end of its σ-band, so emitting it as a hole would ship a flat
+    /// pattern with a closed island where the part has an open bay. The refusal is the right answer
+    /// until the boundary is traced as a loop rather than fitted as two rails.
+    ///
+    /// **The two ways an author reaches it**, both measured on the self-lapping device:
+    ///
+    /// - *A cut that bays into the material.* A tab reaching in from a bore is entered and left by
+    ///   one ruling wherever the ruling runs **across** the tab instead of along it — the tab's own
+    ///   material and the sheet beyond it are then two stretches with a sliver of cut between them.
+    ///   Whether that happens is a statement about the ruling and the flank together, and the
+    ///   device shows both halves of it: where `h′ = 0` the ruling's plan projection passes exactly
+    ///   through the axis, so a *radially* flanked tab is entered once and left once and certifies;
+    ///   across a **ramp** the same ruling misses the axis by up to 0.48 mm — against a tab 0.35 mm
+    ///   half-wide at its root — and the same tab is crossed sideways. A tab whose flanks are not
+    ///   radial (a straight-sided slot) splits the section on either sheet. Placing the feature
+    ///   clear of the ramp is what was measured to remove it.
+    /// - *A ramp steep enough to drag its fold line through the sheet.* The edge of regression
+    ///   sweeps `≈0.9·max|h|/Δσ²` along the ruling; once it enters the kept material it separates
+    ///   the material into two stretches at the same σ. Widen the ramp (its **slope** is the
+    ///   constraint, not its height) — `docs/engineering-log.md`.
+    ///
+    /// Companion to [`ProfileNotSimple`](PartFault::ProfileNotSimple), which is the same sentence
+    /// about a *cutter's* footprint rather than about the material.
+    SectionNotSimple {
+        /// The op whose gap splits the material — the cut that bays in, or the trim the ramp's
+        /// fold line crossed. It is the op the *structure* names, which need not be the op an
+        /// author has to change: a ramp's fold line is reported against the trim it crossed.
+        op: usize,
+    },
     /// The exact flat boolean disagreed with the resolved structure (faces/holes counts) — the
     /// realization is refused rather than shipped inconsistent.
     TopologyMismatch {
@@ -601,6 +636,9 @@ pub enum PartFault {
     /// flat sector exceeds 360°): two σ-disjoint preimages both certify, so no sound choice
     /// exists. Author the feature outside the lap wedge.
     AmbiguousPreimage,
+    /// [`neutral`](Part::neutral) is outside `[0, 1]`, which puts the developed surface outside the
+    /// material. The flat pattern would then be the pattern of a surface the part does not have.
+    NeutralOutsideStack,
 }
 
 /// One declared σ-region: the (snapped) band, its support recipe, and the requested azimuth
@@ -624,6 +662,7 @@ pub struct Part<B: Backend = Bignum> {
     pub(crate) pick: Option<RegionPick<B>>,
     pub(crate) clearance: Rat<B>,
     pub(crate) thickness: Rat<B>,
+    pub(crate) neutral: Rat<B>,
     pub(crate) cfg: DevConfig<B>,
     pub(crate) fit: RailFit,
     pub(crate) segments: usize,
@@ -631,6 +670,17 @@ pub struct Part<B: Backend = Bignum> {
 }
 
 impl<B: Backend> Part<B> {
+    /// The part's material ops, in authoring order — each an [`OpKind`] and the [`Cutter`] it
+    /// applies.
+    ///
+    /// A read-only window on the recipe, for anything that has to reason about *what was asked
+    /// for* rather than what came out: the diagnostic sketch dump ([`crate::dump`]) walks it to
+    /// place each cutter's frame in 3-D. Deliberately an accessor over the general list rather
+    /// than a dump-shaped `extrusions()` — a second consumer should not need a second method.
+    pub fn cutters(&self) -> impl Iterator<Item = (OpKind, &Cutter<B>)> {
+        self.ops.iter().map(|(k, c)| (*k, c))
+    }
+
     /// The bare recipe over a chart frame (the [`construct`](crate::construct) entry points call
     /// this; not part of the public surface).
     pub(crate) fn from_frame(q: [Poly<B>; 4], base_support: RatFunc<B>) -> Self {
@@ -644,6 +694,7 @@ impl<B: Backend> Part<B> {
             pick: None,
             clearance: Rat::from_i128(1),
             thickness: Rat::new(1, 8),
+            neutral: Rat::new(1, 2),
             cfg: DevConfig::tight(),
             fit: RailFit::default(),
             segments: 48,
@@ -745,11 +796,51 @@ impl<B: Backend> Part<B> {
         self
     }
 
-    /// The sheet thickness — the normal-offset window `[0, t]` the solid evaluator extrudes
-    /// through (a physical product quantity).
+    /// The sheet thickness — the width of the normal-offset window the solid evaluator extrudes
+    /// through (a physical product quantity). Where that window sits relative to the developed
+    /// surface is [`neutral`](Part::neutral)'s business.
+    /// The DRC keep-out this part carries — the budget every certificate is measured against.
+    ///
+    /// Exposed so a test can state "under this part's own gate" instead of restating the number,
+    /// which is how a gate quietly stops tracking the part it guards.
+    pub fn drc_clearance(&self) -> &Rat<B> {
+        &self.clearance
+    }
+
     pub fn thickness(mut self, t: Rat<B>) -> Self {
         self.thickness = t;
         self
+    }
+
+    /// **Where the stack sits relative to the developed surface** — the fraction of the thickness
+    /// lying *below* it (on the `−n` side). The window is `[−f·t, (1−f)·t]`.
+    ///
+    /// The default is `1/2`, and the reason is mechanical rather than aesthetic. The chart surface
+    /// is what [`develop`](Part::develop) unrolls **isometrically**, so it is the surface the flat
+    /// pattern is true for — which for a bent laminate is its **bending-neutral axis**, mid-stack.
+    /// Putting the stack entirely on one side would make the developed pattern the pattern of a
+    /// *face*, wrong by roughly `(t/2)·κ` against the sheet it is supposed to cut.
+    ///
+    /// `0` puts the developed surface on the stack's lower face (material entirely on the `+n`
+    /// side) and `1` on its upper; anything between is a laminate whose neutral axis is off-centre,
+    /// which a real asymmetric stackup has. Values outside `[0, 1]` put the developed surface
+    /// outside the material entirely and are refused as [`PartFault::NeutralOutsideStack`].
+    pub fn neutral(mut self, fraction: Rat<B>) -> Self {
+        self.neutral = fraction;
+        self
+    }
+
+    /// The thickness window `[−f·t, (1−f)·t]`, or `None` when the neutral fraction is outside
+    /// `[0, 1]` (the developed surface would not be in the material).
+    pub(crate) fn thickness_window(&self) -> Option<Interval<B>> {
+        let (zero, one) = (Rat::from_i128(0), Rat::from_i128(1));
+        if self.neutral < zero || self.neutral > one {
+            return None;
+        }
+        Some(Interval {
+            lo: self.neutral.mul(&self.thickness).neg(),
+            hi: one.sub(&self.neutral).mul(&self.thickness),
+        })
     }
 
     /// Expert hatch: the develop enclosure budget (series terms + `√` bisection).
@@ -1013,6 +1104,13 @@ impl<B: Backend> PartSolid<B> {
     /// The exact boundary representation (shared vertex/edge tables, curved rail Béziers).
     pub fn brep(&self) -> &export::brep::Brep<B> {
         &self.brep
+    }
+    /// The same, taken by value — for a caller assembling a **compound** with
+    /// [`Brep::absorb`](export::brep::Brep::absorb), which moves the geometry rather than copying
+    /// an exact Bézier carrier per face. Drops the certified ε with the rest of the wrapper, which
+    /// is the intended reading: what comes out is geometry, and the verdict stayed behind.
+    pub fn into_brep(self) -> export::brep::Brep<B> {
+        self.brep
     }
     /// The max certified rail bound of the STEP re-fit.
     pub fn eps(&self) -> &Rat<B> {

@@ -647,6 +647,66 @@ pub fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
     acc
 }
 
+/// The same enclosure by the **mean-value form**, intersected with [`eval_poly_on`]'s.
+///
+/// Interval Horner evaluates every term independently, so a value that is a *small difference of
+/// large terms* comes back with an enclosure the size of the terms rather than of the value. That is
+/// not a rounding effect and it does not shrink with precision: measured on the device's tab-fillet
+/// walls, the µ̂-discriminant `b² − 4ac` — a modest positive number — enclosed to
+/// `[−3.0227e2, +5.8864e2]`, straddling zero, and every certificate that needed its **sign** was
+/// lost (#292). Writing the same quantity as one polynomial and Horner-ing that does not help: the
+/// cancellation moves into the coefficients and the dependency is in the arithmetic either way.
+///
+/// The mean-value form breaks it by evaluating the centre **exactly**:
+///
+/// ```text
+///     p(X) ⊆ p(m) + p′(X)·(X − m),      m = mid X
+/// ```
+///
+/// `p(m)` is a point — an exact rational, zero width, cancellation and all — and the dependency is
+/// confined to `p′(X)`, where it is multiplied by the radius. So the enclosure width becomes `O(r)`
+/// in the sub-interval radius instead of `O(‖terms‖)`, and refinement actually buys something.
+///
+/// Both forms are sound, so their **intersection** is too, and neither is uniformly tighter: Horner
+/// wins on a wide interval where `p′` is badly behaved, the mean-value form wins wherever there is
+/// cancellation to lose. Taking both costs one extra Horner pass over the derivative.
+pub fn eval_poly_on_centred<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
+    let plain = eval_poly_on(p, x);
+    let m = x.mid();
+    let centre = p.eval(&m);
+    let radius = x.hi().sub(x.lo()).mul(&Rat::new(1, 2));
+    let slope = eval_poly_on(&p.derivative(), x);
+    // `p′(X)·(X − m)` ⊆ `p′(X)·[−r, r]`, then shifted by the exact centre value.
+    let spread = slope.mul(&RatIv::new(radius.neg(), radius)).rounded();
+    let mv = RatIv::point(centre).add(&spread).rounded();
+    let lo = if plain.lo().cmp(mv.lo()) == core::cmp::Ordering::Greater {
+        plain.lo().clone()
+    } else {
+        mv.lo().clone()
+    };
+    let hi = if plain.hi().cmp(mv.hi()) == core::cmp::Ordering::Less {
+        plain.hi().clone()
+    } else {
+        mv.hi().clone()
+    };
+    RatIv::new(lo, hi)
+}
+
+/// [`eval_ratfunc_on`] through [`eval_poly_on_centred`] — the cancellation-resistant reading.
+///
+/// `None` on the same condition: a denominator enclosure that straddles zero is a possible pole and
+/// the caller refines or refuses. Note the centred form makes that *less* likely to fire spuriously,
+/// since a denominator whose Horner enclosure straddles zero by cancellation alone no longer does.
+pub fn eval_ratfunc_on_centred<B: Backend>(f: &RatFunc<B>, x: &RatIv<B>) -> Option<RatIv<B>> {
+    let den = eval_poly_on_centred(f.den(), x);
+    let inv = if den.lo().sign() > 0 || den.hi().sign() < 0 {
+        RatIv::new(den.hi().recip(), den.lo().recip())
+    } else {
+        return None;
+    };
+    Some(eval_poly_on_centred(f.num(), x).mul(&inv).rounded())
+}
+
 /// A certified enclosure of `f(x) = num(x)/den(x)` for an *interval* argument `x`,
 /// or `None` when `den(x)`'s enclosure straddles zero (a possible pole on the
 /// sub-interval — the caller refines or refuses rather than risk an unbounded
@@ -823,6 +883,57 @@ mod tests {
     use lattice::Bignum;
 
     type Q = Rat<Bignum>;
+
+    /// **The mean-value form is `O(r)` where Horner is not, and it is never looser.**
+    ///
+    /// Two things are worth keeping straight, because conflating them cost a wrong first attempt at
+    /// this test. Interval Horner's error on a polynomial in *monomial form* is **repeated-`x`
+    /// dependency** — the coefficients are already combined, so there are no terms left to cancel —
+    /// and it scales with the interval's powers rather than its width. The other problem, the one
+    /// that actually loses the µ̂-discriminant's sign on the device's tab fillets (#292), is
+    /// combining the enclosures of `a`, `b` and `c` *separately*: that throws away a cancellation
+    /// the polynomial form never had to make. Forming the expression symbolically fixes the second;
+    /// this form fixes the first.
+    ///
+    /// A high-degree polynomial far from the origin is where the difference shows.
+    #[test]
+    fn the_centred_form_is_first_order_in_the_interval_width() {
+        // (x − 3)⁶ expanded — big alternating coefficients, evaluated near x = 3 where they cancel.
+        let mut p = Poly::from_coeffs(vec![Q::from_i128(1)]);
+        let root = Poly::from_coeffs(vec![Q::from_i128(-3), Q::from_i128(1)]);
+        for _ in 0..6 {
+            p = p.mul(&root);
+        }
+        let at = |w: i128| RatIv::new(Q::from_i128(3).sub(&Q::new(1, w)), Q::from_i128(3));
+
+        for w in [1024i128, 4096] {
+            let x = at(w);
+            let (horner, centred) = (eval_poly_on(&p, &x), eval_poly_on_centred(&p, &x));
+            // Sound, and never looser than Horner — the intersection guarantees the second.
+            let truth = p.eval(&x.mid());
+            assert!(horner.contains(&truth), "Horner must enclose the truth");
+            assert!(
+                centred.contains(&truth),
+                "the centred form must enclose it too"
+            );
+            assert!(
+                centred.width().cmp(&horner.width()) != core::cmp::Ordering::Greater,
+                "at width 1/{w}: centred {} should not exceed Horner {}",
+                to_f64(&centred.width()),
+                to_f64(&horner.width())
+            );
+        }
+        // And it is first order: quartering the interval quarters the width, up to a factor of two
+        // of slack for the derivative enclosure's own dependency.
+        let coarse = eval_poly_on_centred(&p, &at(1024)).width();
+        let fine = eval_poly_on_centred(&p, &at(4096)).width();
+        assert!(
+            fine.mul(&Q::from_i128(2)).cmp(&coarse) == core::cmp::Ordering::Less,
+            "quartering the interval must more than halve the centred width: {} vs {}",
+            to_f64(&fine),
+            to_f64(&coarse)
+        );
+    }
 
     fn close(iv: &RatIv<Bignum>, v: f64, tol: f64) -> bool {
         let lo = to_f64(iv.lo());

@@ -21,3 +21,6 @@ export.workspace = true
 [dev-dependencies]
 fixtures.workspace = true
 acceptance.workspace = true
+# Demos and tests read the device's own cut file. Dev-only: the certified library never sees a
+# file format.
+interchange.workspace = true

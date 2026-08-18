@@ -13,6 +13,7 @@
 //! is a typed fault, never a guess.
 
 pub mod construct;
+pub mod dump;
 pub mod part;
 
 pub(crate) mod realize;

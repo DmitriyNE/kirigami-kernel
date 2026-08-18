@@ -15,3 +15,10 @@ geom.workspace = true
 arrange2d.workspace = true
 export.workspace = true
 fixtures.workspace = true
+
+# The device's inner cut is a **file** (`data/inner-cut.dxf`), so the catalogue that owns the device
+# owns the read of it. This is the one edge into the file boundary, and it points the safe way:
+# `interchange` sits *below* here and *above* nothing certified, so no crate in the trusted path
+# acquires a file-format dependency. The acceptance test that used to live in `interchange/tests`
+# moved here with it (`tests/imported_outline.rs`) rather than being kept alive by a dev-dep cycle.
+interchange.workspace = true

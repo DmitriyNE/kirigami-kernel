@@ -80,7 +80,7 @@ fn folded(part: &Part<Bignum>, p: [Q; 2]) -> [f64; 3] {
 /// `72·√(x² + y²) + 65·z = 0`, along that cone's own unit normal `(72/97 radial, 65/97 axial)`.
 ///
 /// The device's three regions ride one cone: the body sits **on** it (`h ≡ 0`), the ramp climbs
-/// `0 → 1/10` across the lap and the tail plateau stays there. So this reads off the artifact which
+/// `0 → Δ = 1/4` across the lap and the tail plateau stays there. So this reads off the artifact which
 /// region a hole was cut in, without asking the recipe.
 fn sheet_offset(p: [f64; 3]) -> f64 {
     (72.0 * p[0].hypot(p[1]) + 65.0 * p[2]) / 97.0
@@ -165,7 +165,7 @@ fn derived_holes(part: &Part<Bignum>, flat: &author::part::FlatPattern<Bignum>) 
 ///
 /// The taper varies across a footprint, so the ratio of two holes' areas reflects a mean rather than
 /// any one point — and on this device a single vertex is off by enough to matter (the body sheet's
-/// vertices span `z ∈ [−3.09, −2.98]`).
+/// vertices span `z ∈ [−5.15, −4.97]`).
 fn mean_sheet_z(part: &Part<Bignum>, hole: &develop::unroll::FlatOutline<Bignum>) -> f64 {
     let v = &hole.vertices;
     let step = v.len().div_ceil(8).max(1);
@@ -269,10 +269,18 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         "the slot's near hole is cut in the body, on the base cone: offset {:+.5}",
         near.offset
     );
+    // Stated as a fraction of the ramp's own height, not as an absolute window: the claim is
+    // "strictly between the body and the plateau, and not hugging either", which is a property of
+    // where the slot sits in the seam — not of what Δ happens to be this week.
+    let plateau = rat_to_f64(
+        &acceptance::self_lapping_spec()
+            .thickness
+            .add(&acceptance::self_lapping_spec().gap),
+    );
     assert!(
-        far.offset > 0.06 && far.offset < 0.098,
-        "the slot's far hole must land on the *ramp*, between the body (0) and the plateau (1/10): \
-         offset {:+.5}",
+        far.offset > 0.6 * plateau && far.offset < 0.98 * plateau,
+        "the slot's far hole must land on the *ramp*, between the body (0) and the plateau \
+         (Δ = {plateau:.5}): offset {:+.5}",
         far.offset
     );
 
@@ -323,9 +331,10 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         "…and have the same perimeter: {pn:.6} vs {pf:.6}"
     );
 
-    // **VV.2** — measured 4.1481e-1 develop (identical to the featureless device: the panel
-    // boundary dominates ε, which is exactly why the checks above are shape measurements and not
-    // verdicts) and a slot cut bound of 4.1712e-3 (2026-08-16).
+    // **VV.2** — develop ε tracks the featureless device (the panel boundary dominates it, which
+    // is exactly why the checks above are shape measurements and not verdicts). Both the ε and the
+    // gate are read rather than restated: the gate is half the part's own `clearance`, so the pair
+    // survives a re-proportioning instead of silently drifting apart from the device it guards.
     let cut = flat.report().ops[3]
         .cut_eps
         .clone()
@@ -335,14 +344,19 @@ fn the_lap_slot_pierces_both_sheets_of_the_wrap() {
         rat_to_f64(flat.eps()),
         rat_to_f64(&cut)
     );
+    let gate = part.drc_clearance().div(&qi(2)); // half the device's own DRC keep-out
     assert!(
-        flat.eps().cmp(&q(1, 2)) == core::cmp::Ordering::Less,
-        "develop ε {:.4e} is not under the DRC gate 5.0000e-1",
-        rat_to_f64(flat.eps())
+        flat.eps().cmp(&gate) == core::cmp::Ordering::Less,
+        "develop ε {:.4e} is not under the DRC gate {:.4e}",
+        rat_to_f64(flat.eps()),
+        rat_to_f64(&gate)
     );
     assert!(
-        cut.cmp(&q(1, 100)) == core::cmp::Ordering::Less,
-        "the traced cut certified to {:.4e}, above its 1.0000e-2 budget",
+        // 1.949e-2 measured. Re-pinned from 1e-2 when the annulus became Ø 8 → Ø 43 and the slot
+        // was re-placed at its middle with 2.8× the arm: a traced cut's bound is a length on the
+        // feature, so it grew with the feature and not with anything about the tracer.
+        cut.cmp(&q(1, 40)) == core::cmp::Ordering::Less,
+        "the traced cut certified to {:.4e}, above its 2.5000e-2 budget",
         rat_to_f64(&cut)
     );
 
@@ -448,22 +462,38 @@ fn a_ruling_meets_the_traced_footprint_twice_on_each_sheet() {
 
 /// **The taper tells the two sheets apart — a faithfulness check no single-sheet gore can make.**
 ///
-/// One cutter, two holes, at two different heights: measured `z = −3.059` on the body and `z =
-/// −2.939` on the flap that laps over it. Swept **parallel** the cutter is a prism, so the two holes
-/// come out the same size. Swept from a **cast point** at `z = 12` it is a cone, so the higher sheet
-/// — nearer the apex — gets the smaller hole, by exactly the ratio the two folded heights predict:
+/// One cutter, two holes, at two different heights: measured `z = −7.940` on the body and `z =
+/// −7.670` on the flap that laps over it. Swept **parallel** the cutter is a prism, so the two holes
+/// come out the same size. Swept from a **cast point** at `z = 50.4` it is a cone, so the higher
+/// sheet — nearer the apex — gets the smaller hole, by exactly the ratio the two folded heights
+/// predict:
 ///
 /// ```text
-/// (12 − z_flap)² / (12 − z_body)²  =  0.9842        measured  0.9837
+/// (50.4 − z_flap)² / (50.4 − z_body)²  =  0.99077        measured  0.99119
 /// ```
 ///
 /// Everything else cancels. The two holes ride the same panel, the same rails and the same `ε`, and
 /// differ only in which sheet they were cut on — so the residual after dividing them is the draft
 /// and nothing else. A cutter that ignored its apex, or applied the taper at one nominal height for
-/// the whole part, passes every certificate and fails this by 1.6%.
+/// the whole part, passes every certificate and fails this by 0.9%.
+///
+/// That margin is set by the sheet separation `z_flap − z_body ≈ 0.27`, which is the ramp step `Δ`
+/// laid over by the lap — a **thickness**, so it stays where it is when the annulus is
+/// re-proportioned while the apex distance scales. Shrinking the device therefore weakens this
+/// signal unless the apex comes in with it, which is why it does.
 #[test]
 fn the_taper_tells_the_two_sheets_apart() {
-    let z_apex = 12.0;
+    // The apex is a point in the device's own coordinates, so it moves whenever the device does —
+    // `(27/40, 27/10, 12)` → `(9/8, 9/2, 20)` at the physical dimensioning → `(7/2, 25/2, 84)` when
+    // the annulus first grew → `×3/5` with the whole device when Ø 43 was corrected to Ø 21.5.
+    // Scaling it *with* the device is not a convenience: the cast is a similarity, so the same
+    // scale on apex and slot keeps the footprint's size and its place in the annulus where they
+    // were, and only the sheet separation — set by the ramp step `Δ`, a thickness that does not
+    // scale — changes what the draft resolves. Left behind, the sweep misses the sheets and the
+    // test fails by finding no slot holes at all rather than by measuring a wrong taper; brought
+    // too close (`z = 30` was tried) it widens the footprint until it crosses a region boundary and
+    // is refused as `HoleCrossesRegions`.
+    let z_apex = 50.4;
     let run = |apex: Apex<Bignum>, name: &str| {
         let part = slotted(16, apex);
         let flat = develop_or_panic(&part, name);
@@ -471,7 +501,7 @@ fn the_taper_tells_the_two_sheets_apart() {
     };
     let (part_p, flat_p) = run(parallel(), "the parallel slot");
     let (part_d, flat_d) = run(
-        Apex::point([q(27, 40), q(27, 10), qi(12)]),
+        Apex::point([q(21, 10), q(15, 2), q(252, 5)]),
         "the drafted slot",
     );
     let (hp, hd) = (
@@ -515,8 +545,8 @@ fn the_taper_tells_the_two_sheets_apart() {
          {predicted:.5}"
     );
     // …and both drafted holes are larger than their parallel twins: this surface sits *below* the
-    // sketch plane, so a cone from `z = 12` has widened by the time it reaches it (the flat panel's
-    // own draft test measures the same effect with the opposite sign, at z ≈ 2.4).
+    // sketch plane, so a cone from `z = 50.4` has widened by the time it reaches it (the flat
+    // panel's own draft test measures the same effect with the opposite sign, above the plane).
     println!(
         "[taper] drafted/parallel: body {:.5}, flap {:.5}",
         db / pb,
@@ -531,20 +561,27 @@ fn the_taper_tells_the_two_sheets_apart() {
 /// **The chord golden on a traced footprint: chord spacing, not a bridge.**
 ///
 /// The VV.3 metric — longest emitted edge as a fraction of the ring's own size — scores this slot at
-/// **28.6%** at `segments(16)`, inside the 30–48% band that the metric was built to catch a real
+/// **28.8%** at `segments(16)`, inside the 30–48% band that the metric was built to catch a real
 /// defect in (a closed cut split into two `µ̂ = f(σ)` graphs and bridged across the tangent rulings).
 /// A gate alone could not tell the two apart, so this measures the property that does: **a bridge is
-/// structural and a chord is not**. Doubling the resolution leaves a bridge where it was and halves
-/// a chord.
+/// structural and a chord is not** — refinement leaves a bridge where it was and shrinks a chord.
 ///
-/// Measured 28.6% → 18.0% → 9.0% at `segments` 16 → 32 → 64 (2026-08-16), against the seam drill's
-/// 9.4% → 4.7% → 2.4% on the same runs. The slot scores worse than the drill at every resolution for
-/// a reason that is also not a defect: an L's own straight sides are legitimately a large fraction of
-/// its bounding box, and where the drill's ring is a p-curve chorded uniformly by `segments`, the
-/// traced loop's vertices come from the σ-event partition and are not evenly spread.
+/// Measured 28.8% → 22.6% → 10.3% at `segments` 16 → 32 → 64, against the seam drill's
+/// 9.6% → 4.8% → 2.4% on the same runs. Two things in that row are worth reading:
+///
+/// * the slot scores worse than the drill at every resolution, and that is not a defect — an L's own
+///   straight sides are legitimately a large fraction of its bounding box, and where the drill's
+///   ring is a p-curve chorded uniformly by `segments`, the traced loop's vertices come from the
+///   σ-event partition;
+/// * **one doubling is not yet a refinement of this ring.** The emitted point count goes 103 → 105 →
+///   171: at `segments(16)` the loop is already event-dominated, so the first doubling barely adds
+///   a vertex and the golden barely moves. So the comparison spans 16 → 64, where the sampling
+///   genuinely does refine, and the point count is asserted alongside the fraction — otherwise a
+///   ratio that "failed to shrink" could mean the resolution knob never reached this loop rather
+///   than that the edge is structural.
 #[test]
 fn the_slots_chord_golden_is_spacing_and_not_a_bridge() {
-    let golden = |segments: usize| -> (f64, f64) {
+    let golden = |segments: usize| -> (f64, f64, usize) {
         let part = slotted(segments, parallel());
         let flat = develop_or_panic(&part, "the lap slot");
         let holes = derived_holes(&part, &flat);
@@ -555,16 +592,22 @@ fn the_slots_chord_golden_is_spacing_and_not_a_bridge() {
                 .map(|h| measure::longest_edge_fraction(&h.ring))
                 .fold(0.0, f64::max)
         };
+        let points = holes
+            .iter()
+            .filter(|h| !h.on_drill)
+            .map(|h| h.ring.len())
+            .max()
+            .unwrap_or(0);
         let (slot, drill) = (worst(false), worst(true));
         println!(
-            "[golden] segments {segments}: slot {:.1}%, drill {:.1}%",
+            "[golden] segments {segments}: slot {:.1}% ({points} pts), drill {:.1}%",
             slot * 100.0,
             drill * 100.0
         );
-        (slot, drill)
+        (slot, drill, points)
     };
-    let (coarse, coarse_drill) = golden(16);
-    let (fine, fine_drill) = golden(32);
+    let (coarse, coarse_drill, coarse_pts) = golden(16);
+    let (fine, fine_drill, fine_pts) = golden(64);
 
     assert!(
         coarse < 0.35,
@@ -572,18 +615,24 @@ fn the_slots_chord_golden_is_spacing_and_not_a_bridge() {
         coarse * 100.0
     );
     assert!(
-        fine < 0.75 * coarse,
-        "doubling the resolution took the slot's chord golden {:.1}% → {:.1}%, barely moving it — \
-         an edge that survives refinement is a bridge across the tangent rulings, not chord spacing",
+        fine_pts > coarse_pts,
+        "the resolution knob must actually reach this loop before its golden means anything: \
+         {coarse_pts} → {fine_pts} emitted points"
+    );
+    assert!(
+        fine < 0.5 * coarse,
+        "quadrupling the resolution took the slot's chord golden {:.1}% → {:.1}%, barely moving it \
+         — an edge that survives refinement is a bridge across the tangent rulings, not chord \
+         spacing",
         coarse * 100.0,
         fine * 100.0
     );
     // The metric control on the same runs: the drill's p-curve ring chords at exactly 1/n, which is
     // what "refinement works here" looks like when the sampling is uniform.
     assert!(
-        fine_drill < 0.6 * coarse_drill,
-        "the drill's golden {:.1}% → {:.1}% did not halve, so the comparison above is measuring the \
-         resolution knob rather than the loop",
+        fine_drill < 0.3 * coarse_drill,
+        "the drill's golden {:.1}% → {:.1}% did not fall with the split, so the comparison above is \
+         measuring the resolution knob rather than the loop",
         coarse_drill * 100.0,
         fine_drill * 100.0
     );
