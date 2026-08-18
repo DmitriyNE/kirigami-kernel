@@ -768,6 +768,75 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The device drawing develops (2026-08-18) — the §12.4 mid-chain splice, and three more enclosure
+  walls behind it.** #294's localization run named the four `RailSpanShort` segments at once: every
+  one a **flank crossing** — the drawing's radial flank is collinear with a ruling, both fillets are
+  tangent to it, so both their µ̂-windows end at the *same* isolated discriminant root and the two
+  graph rails never cross. The junction refinement was bisecting a root that does not exist and
+  landing on a midpoint outside one rail's certificate; `covered` refused, correctly. The lift is
+  general, not tab-shaped: a run corner between two same-op quadric walls whose window brackets
+  overlap inside the corner's gap, with an affine wall between them in the profile cycle, becomes a
+  [`Corner::Gap`] and a `Splice` owns the stretch — each fillet's own `quadric_cut_loop` walked from
+  the rail's certified edge into its tangent vertex (`turn_tail`, half a `tangent_turn_arc`), an
+  exactly-vertical connector along the flank plus an exactly-horizontal micro-piece (both certified
+  against the flank wall by `pcurve_cut_fit`; emitted as `Cap`/`Rail` arcs, which the unroll carries
+  exactly — the *diagonal* between the vertices reads several mm through the generic chord bound
+  however true it is). The solid path takes one certified chord between the rails' own endpoint
+  values instead: the builder wants contiguous graphs, the chord's steep wall *is* the flank, and
+  the µm-fine tails would not survive STEP thinning anyway.
+
+  **Behind the splice sat three more instances of the enclosure disease, each measured before
+  fixed.** (1) The fillet loops' pieces all stuck at exactly `clearance/2` — the ball bound's
+  sentinel — because `quadric_distance_on`'s `|F|` was interval-accumulated: ~4·10² where the true
+  value is ~10⁻². Fixed by the centre: `|F| ≤ |F(m)| + Σ sup|∇Fᵢ|·hwᵢ`, `F(m)` exact, min with the
+  plain form. (2) Still stuck: the 3-D boxes themselves were **~1 mm wide for ~µm sub-pieces** —
+  `vec3_on` evaluated the degree-24 chart fields by plain Horner, and one level of the mean-value
+  form did not help because the *derivative* carries the same cancellation. `eval_poly_on_centred`
+  is now **nested** (`CENTRED_DEPTH = 8` levels of slope-by-its-own-centre), which returns the box
+  to the piece's own scale. (3) Still stuck at the sentinel: the ball search's floor `radius/16 ≈
+  0.22` is as large as the R 0.25 fillet itself — over such a ball the gradient's direction sweeps
+  every component's enclosure through zero and `g` collapses at *every* radius, however tight the
+  box. `STEPS 4 → 20`, with two monotone early-exits (`g` non-increasing and nappe once-failed in
+  the radius) so the walk costs one iteration on healthy paths. (4) Last: the steep fillet rails'
+  unroll chords read ~4–9 at `edge_subdiv = 4` where the true chord error is ~3 µm — σ↔µ̂ correlation,
+  not cancellation, so a **per-edge subdiv ladder** `[4, 16, 64]` (each rung a sound bound, running
+  minimum, escalate only while the gate fails) certifies them and costs shallow edges nothing.
+
+  Result: `rim_notch::the_drawings_tab_develops_and_its_flanks_land_on_the_drawing` — the drawing
+  `Verified`, and checked against the drawing rather than only green: the four flank cap edges (two
+  per pass) found by cast-computed length, their endpoints folded back to 3-D and pulled through
+  the drafted-apex cast onto the sketch plane, landing 0.0000–0.051 mm off the drawing's own flank
+  segments (base pass exact to 4 decimals; the offset pass carries the splice vertices' tangent
+  gaps), while the nearest same-length decoy misses by 2.6 mm. The whole seven-step verdict chain
+  (`NappeCrossed → … → Verified`) is the test's doc table. The **solid builds too** — measured once
+  (`author/examples/probe_solid_drawing.rs`): `VERIFIED, 74 faces, 0 free edges, 129 s`; pinning it
+  belongs to #290's acceptance.
+  *2026-08-18 · resolved · `author/src/realize.rs` (`Splice`, `flank_splice`), `develop/src/cut.rs`
+  (`turn_tail`, `rev_chord`, `quadric_distance_on`, `vec3_on`), `develop/src/interval.rs`
+  (`CENTRED_DEPTH`), `develop/src/unroll.rs` (edge ladder)*
+
+- **The resolver's sampled runs skip the tip arc on one pass of the tab (2026-08-18).** The run
+  structure is a sampled sweep (uniform grid + 3 targeted stations per disc-positive window), and
+  the drawing's tip arc — a coaxial arc, so **no** tangent window and no targeted stations of its
+  own — subtends 0.018 in σ against a 0.028 grid. On the σ > 0 pass two grid samples land inside
+  and the boundary reads `…fillet, tip arc, fillet…`; on the σ < 0 pass none do (the neighbouring
+  windows' targeted stations bracket the stretch and miss by 2·10⁻⁴) and the runs hand the two tip
+  fillets *directly* to each other, junction at their below-the-arc graph crossing. Not a refusal
+  and not caught by any certificate — each rail is certified against its own wall, which holds even
+  where that wall is not the true boundary — so the emitted boundary dips ~4 µm deep over ~2° of
+  azimuth, silently. The honest completion is to put the run structure on the op's **event
+  partition** (`structure_events` — AUTH.2a built it, the σ-end locator already uses it): one
+  sample per event gap is exact where any grid is phase-lucky. Deferred from #294's splice work;
+  same family as #291's traced-boundary milestone.
+  *2026-08-18 · open · `author/src/resolve.rs` (`sweep`), measured on the pinned device*
+
+- **The drawing's develop costs ~275 s where the plain bore costs ~4 s (2026-08-18).** Not a pure
+  regression — the run does strictly more than any part before it (8 splice loops with 64-subdiv
+  piece certificates, ladder-escalated edge bounds on eight steep rails, deeper ball walks on the
+  paths that fail) — but the deepened `STEPS` and the ladder should be re-profiled against #279's
+  per-stage numbers before the next optimization pass takes aim.
+  *2026-08-18 · watching · #279*
+
 - **#292 adopted, on the third measurement — and the cost objection went away with one line
   (2026-08-18).** With the tab rails certifying, the chart arm has a benefit case at last, so
   min-of-both goes in: `cut_fit` hands `traced_cut_fit` a per-sub-interval `refine`, the ball arm

@@ -1,11 +1,13 @@
-//! **#291 — a tab in the bore splits the material's µ̂-section, and the refusal says so.**
+//! **The device's real drawing against the resolver's boundary model (#291, #293, #294).**
 //!
 //! The device's real inner cut (`acceptance/data/inner-cut.dxf`) is the Ø 8 bore with a 10° tab
-//! reaching in to Ø 4. Cutting the device with it is refused, and *which* refusal it earns is the
-//! whole content of these tests: the resolver models a region as **one µ̂-interval per σ** — a
-//! lower rail and an upper rail, both graphs over σ — plus interior holes, and a tab that a ruling
-//! crosses sideways makes the material two intervals at one σ. That is
-//! [`PartFault::SectionNotSimple`], not an ambiguity and not a degenerate wall.
+//! reaching in to Ø 4. On the pinned device — where the tab sits under the seam ramp — it is
+//! refused, and *which* refusal it earns matters: the resolver models a region as **one
+//! µ̂-interval per σ** — a lower rail and an upper rail, both graphs over σ — plus interior holes,
+//! and a tab that a ruling crosses sideways makes the material two intervals at one σ. That is
+//! [`PartFault::SectionNotSimple`], not an ambiguity and not a degenerate wall. With the ramp
+//! moved off the tab the section stays simple, and the drawing **develops** — through the flank
+//! splices and the enclosure fixes the third test's doc chronicles.
 //!
 //! **Measured on the pinned device, and this is why the name matters.** The tab appears *twice* on
 //! the 410.7° chart, at the same plan azimuth:
@@ -29,7 +31,7 @@ use arrange2d::profile::Profile;
 use author::part::{Part, PartFault};
 use certify_core::Verdict;
 use geom::content::Edge;
-use lattice::{Bignum, Rat};
+use lattice::{Bignum, Rat, Surd};
 
 type Q = Rat<Bignum>;
 
@@ -47,7 +49,11 @@ fn device_with(profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
 fn fault(v: Verdict<author::part::FlatPattern<Bignum>, PartFault, Q>) -> String {
     match v {
         Verdict::Verified(_) => "Verified".to_string(),
-        Verdict::Unresolved(_) => "Unresolved".to_string(),
+        Verdict::Unresolved(e) => {
+            let (n, d) = e.numer_denom_decimal();
+            let fl = n.parse::<f64>().unwrap_or(f64::NAN) / d.parse::<f64>().unwrap_or(f64::NAN);
+            format!("Unresolved({fl:.4e})")
+        }
         Verdict::Refuted(f) => format!("{f:?}"),
     }
 }
@@ -66,44 +72,135 @@ fn the_device_drawing_splits_the_material_section_and_is_refused_by_name() {
     );
 }
 
-/// **#293 — a wall that bounds twice is fitted twice.** Move the ccw ramp off the tab and the
-/// section stops splitting, so the drawing gets past [`PartFault::SectionNotSimple`] and the *next*
-/// thing it meets is the rail fitting. Two fields differ from the pinned device, which is what
-/// keeps this a measurement of that device rather than a restated one.
-///
-/// The tab's root fillet bounds the material in **two disjoint σ-runs** — the 410.7° chart passes
-/// its azimuth twice — and a single hull over both spanned 60°+ of azimuth for a fillet subtending
-/// 7.6°, on which the float oracle rightly declined (`disc < 0`). One rail per run fixes it.
-///
-/// **Where the drawing now stops, and it is three fixes further on.** The chain, each step pinned
-/// by a measurement rather than inferred:
+/// **#293 → #294 — the drawing develops.** Move the ccw ramp off the tab and the section stops
+/// splitting, so the drawing gets past [`PartFault::SectionNotSimple`] — and then the whole chain
+/// of certificate walls behind it, each step pinned by a measurement rather than inferred:
 ///
 /// | | the drawing reported |
 /// |---|---|
 /// | before any of this | `Refuted(NappeCrossed)` — a DRC cushion used as a soundness gate |
 /// | after the per-ball nappe check | `Unresolved ε 1.1220e1` |
 /// | after #293's rail-per-run | `Unresolved ε 3.5000e0` — exactly `clearance/2`, the ball bound's "nothing certified" sentinel on eight tab rails |
-/// | after the centred discriminant | **`Refuted(RailSpanShort)`** |
+/// | after the centred discriminant | `Refuted(RailSpanShort)` — the rails certify, and the boundary needs them past their windows |
+/// | after the flank splice (§12.4 mid-chain) | `Unresolved ε 1.2e1` — the splice's own fillet loops could not be certified |
+/// | after the nested-centred chart fields + the ball floor | `Unresolved ε 8.9e0` — the loops certify, the steep fillet rails' unroll chords do not |
+/// | after the per-edge subdiv ladder | **`Verified`** |
 ///
-/// The last step is the interesting one and the reason `Refuted` here is *progress*, not
-/// regression: [`PartFault::RailSpanShort`] is only reachable once a rail **has** a certificate and
-/// the boundary needs it over σ the certificate does not cover. The eight rails on the tab's
-/// sub-millimetre walls — R 0.25 root fillets, R 0.15 tip fillets, the flanks — could not be
-/// certified *at all* while the µ̂-discriminant's enclosure straddled zero. They can now, and what
-/// is left is §12.4's p-curve end: a graph rail cannot reach a tangent ruling, and the turn arc has
-/// to own that stretch.
+/// Each wall was the same disease at a different layer: an interval enclosure blind to the scale
+/// of a sub-millimetre feature — the µ̂-discriminant's cancellation, the chart fields' cancellation,
+/// a ball floor as large as the fillet itself, a fixed chord subdivision on a rail that dives half
+/// a µ̂-unit across its window.
+///
+/// **And the result is checked against the drawing, not just `Verified`.** A flank crossing's
+/// splice ends with a cap along the flank's own ruling, so the flat pattern must contain the four
+/// flank edges (two per tab pass) at the length the cast dictates — computed here from the spec's
+/// apex and the profile's own flank segments, not restated — and folding each such edge's
+/// endpoints back to 3-D must land, through the drafted-apex cast, on the drawing's flank lines
+/// (the cut-file-is-the-cutter's-sketch ruling: the cast's radial displacement is the tool).
 #[test]
-fn the_drawings_tab_rails_certify_and_what_is_left_is_the_p_curve_end() {
+fn the_drawings_tab_develops_and_its_flanks_land_on_the_drawing() {
     let mut spec = self_lapping_spec();
     spec.ccw.ramp_start = acceptance::lapped::Azimuth::Sigma(Q::new(1, 10));
     spec.ccw.ramp_end = acceptance::lapped::Azimuth::Sigma(Q::new(1, 2));
     spec.inner_profile = Some(acceptance::inner_cut_profile());
-    let v = self_lapping_cone_from(&spec, 8, 8, false, None).develop();
+    let part = self_lapping_cone_from(&spec, 8, 8, false, None);
+    let flat = match part.develop() {
+        Verdict::Verified(fl) => fl,
+        v => panic!("the device drawing must develop, got {}", fault(v)),
+    };
 
-    assert!(
-        matches!(v, Verdict::Refuted(PartFault::RailSpanShort { op: 1 })),
-        "the tab's rails should certify and leave the p-curve end, got {}",
-        fault(v)
+    // — The cast, in floats, straight from the spec (`acceptance::lapped::normal_cut`'s own
+    //   construction): the profile plane at z_r, the drafted apex below it, the neutral cone
+    //   z = −(c/s)·ρ. The gauge radius is its fixed point, which pins the sign conventions. —
+    let f = |r: &Q| -> f64 {
+        let (n, d) = r.numer_denom_decimal();
+        n.parse::<f64>().unwrap() / d.parse::<f64>().unwrap()
+    };
+    let (c, s) = (f(&spec.apex.0), f(&spec.apex.1));
+    let r_gauge = f(spec.inner_r.as_ref().expect("the device has an inner cut"));
+    let z_r = -r_gauge * c / s;
+    let z_a = z_r - r_gauge * s / c;
+    let cast = |x: f64, y: f64| -> [f64; 3] {
+        let rho = x.hypot(y);
+        let t = -z_a / (z_r - z_a + (c / s) * rho);
+        [t * x, t * y, z_a + t * (z_r - z_a)]
+    };
+    let sketch_of = |p: &[f64; 3]| -> (f64, f64) {
+        let u = (z_r - z_a) / (p[2] - z_a);
+        (u * p[0], u * p[1])
+    };
+
+    // The drawing's two flank segments, and the length each cuts on the sheet.
+    let sd = |v: &Surd<Bignum>| -> f64 {
+        let (a, b, d) = v.parts();
+        f(a) + f(b) * f(d).sqrt()
+    };
+    let flanks: Vec<([f64; 2], [f64; 2])> = acceptance::inner_cut_profile()
+        .iter()
+        .filter_map(|e| match e {
+            Edge::Seg(seg) => Some((
+                [sd(&seg.start.x), sd(&seg.start.y)],
+                [sd(&seg.end.x), sd(&seg.end.y)],
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flanks.len(), 2, "the drawing has two flank segments");
+    let dist3 = |a: &[f64; 3], b: &[f64; 3]| {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    let flank_len = {
+        let (p, q) = &flanks[0];
+        dist3(&cast(p[0], p[1]), &cast(q[0], q[1]))
+    };
+
+    // — Find the flat edges of that length, fold their endpoints back, and pull each through the
+    //   cast to the sketch plane: they must lie on a flank segment of the drawing. —
+    let verts = &flat.outline().vertices;
+    let n = verts.len();
+    let mut on_flank = 0usize;
+    for i in 0..n {
+        let (ax, ay) = verts[i].center();
+        let (bx, by) = verts[(i + 1) % n].center();
+        let len = (f(&ax) - f(&bx)).hypot(f(&ay) - f(&by));
+        if (len - flank_len).abs() > flank_len / 10.0 {
+            continue;
+        }
+        let wire = match part.fold(&[[ax, ay], [bx, by]], &Q::from_i128(0)) {
+            Verdict::Verified(w) => w,
+            v => panic!(
+                "a candidate flank edge's endpoints must fold back, got {}",
+                match v {
+                    Verdict::Unresolved(_) => "Unresolved".to_string(),
+                    Verdict::Refuted(fa) => format!("{fa:?}"),
+                    Verdict::Verified(_) => unreachable!(),
+                }
+            ),
+        };
+        // Tolerance measured, not derived: across the four true flank edges the pulled-back
+        // endpoints sit 0.0000–0.051 off the drawing (the offset-sheet pass carries the splice
+        // vertices' tangent gaps; the base pass is exact to 4 decimals), while the nearest decoy —
+        // a rim chord of accidentally matching length — misses by 2.6. So 0.1 splits signal from
+        // decoy by a factor of 26 and stays 15× under the drawing's smallest fillet.
+        let near_a_flank = wire.points.iter().all(|p| {
+            let p3 = [f(&p[0].mid()), f(&p[1].mid()), f(&p[2].mid())];
+            let (sx, sy) = sketch_of(&p3);
+            flanks.iter().any(|(a, b)| {
+                // Distance from (sx, sy) to the segment a→b.
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let t =
+                    (((sx - a[0]) * dx + (sy - a[1]) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                let (px, py) = (a[0] + t * dx, a[1] + t * dy);
+                (sx - px).hypot(sy - py) < 0.1
+            })
+        });
+        if near_a_flank {
+            on_flank += 1;
+        }
+    }
+    assert_eq!(
+        on_flank, 4,
+        "two flanks on each of the tab's two passes: four flank edges in the flat pattern"
     );
 }
 
