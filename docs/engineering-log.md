@@ -768,6 +768,36 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The mixed corner splices, and the lug cuts (2026-08-18, #296 closed).** The generalization the
+  entry below asked for: `flank_splice`'s detection is now **per side**. A side **turns** — an
+  isolated discriminant root inside the corner's gap, where its window and its rail's certificate
+  end — or **continues**: no root in the gap, the rail certified straight across (the lug's rim,
+  which the flank meets transversally). At least one side must turn; when both do, #294's
+  overlapping-brackets clause holds unchanged. Construction as before, one `turn_tail` per turning
+  side instead of always two.
+
+  The part that did NOT come out of the analysis, and failed **silently**: where the boundary hands
+  off. The first cut read the continuing side's handoff from its rail piece's **span end**, and
+  three of the four corners declined — a continuing rail's span is hulled out to the neighbouring
+  run's first *sample*, a grid point up to a whole cell past the flank, so `edge_a < edge_b` came
+  out false (the one corner that fired, fired by grid luck: the sample sat 1.5e-4 left of the
+  nose's window inset). The declined corners then fell back to a midpoint `Corner::At` that sat
+  inside **both** rails' certificates — the rim's carrier continues inside the lug, so both rails
+  are genuinely certified there — and the part came back `Verified`, coverage-clean, with the
+  corner cut ~4e-3 in σ off the flank. No certificate caught that and none could have: every rail
+  was true to its own wall. The fold-the-edges-back-onto-the-drawing check caught it (1 flank edge
+  of 4), which is what it is for. The handoff is therefore the **turning wall's own root** at its
+  bracket edge, clamped into the continuing rail's certificate — which is also the flank's own
+  ruling (the σ where the flank plane's `b = n·ruling(σ)` vanishes), so the tangency isolation
+  answers for both claims, and the emitted `Cap` sits within the 2⁻⁴⁰ bracket of the true flank.
+
+  Measured on `ramp_off_the_wedge` + `outer_cut_profile()`: all four corners splice (roots at
+  σ = ∓1.067689, ∓0.936602), each emitting one exactly-vertical `Cap` along its flank; the
+  acceptance criterion — four emitted flank edges folding back onto the drawing's flank lines —
+  passes at tol 0.1 where before the fix it found 1. The pinned `RailSpanShort { op: 0 }` refusal
+  test is deleted, as planned: its failure was the signal the fix had landed.
+  *2026-08-18 · fixed · #296 · `author/src/realize.rs::flank_splice`, design doc §12.4*
+
 - **The rim tab's cap is traversed the wrong way, so the lug is cut as an inward bite
   (2026-08-18, #296) — and my first diagnosis of it was wrong in an instructive way.**
   `outer_profile = outer_cut_profile()` develops **`Verified`** and the tab comes out inverted: over
@@ -823,8 +853,8 @@ fine — this is a log, not a schema.
   flank is tangent to the nose arc at one end and meets the rim **transversally** at the other, so
   the two windows never overlap and the splice does not fire. The boundary genuinely jumps in µ̂ at
   the flank azimuth — a `Cap` along the flank wall, the emission #294 already builds — so what has
-  to grow is the *detection*. That is the rest of #296.
-  *2026-08-18 · partly fixed (the shadow), open (the corner) · #296 ·
+  to grow is the *detection*. That is the rest of #296, closed in the entry above.
+  *2026-08-18 · fixed (the shadow here; the corner in the entry above) · #296 ·
   `author/src/resolve.rs::extruded_shadow`*
 
 - **Both of the device's boundaries now come out of the drawing (2026-08-18, #295).** The outer

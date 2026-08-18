@@ -294,23 +294,26 @@ fn the_drawings_tab_develops_and_its_flanks_land_on_the_drawing() {
 /// — so it moves the upper rail and closes nothing in σ. The exclusion is about contours that have
 /// to say where material starts and stops, and a rim is not one.
 ///
-/// **This is the acceptance criterion and it does not hold yet — #296.** The lug is now *kept*
-/// (the shadow's abutting patches are coalesced, so an `Intersect` no longer fragments a non-convex
-/// kept region — see `resolve::extruded_shadow`), and what stops it is a named refusal:
-/// `RailSpanShort { op: 0 }`, §12.4's p-curve end at the lug's **mixed corner**. The bore's tab has
-/// a *tangency at each end of its flank*, which is the shape #294's `flank_splice` detects; the
-/// lug's flank is tangent to the nose arc at one end and meets the rim **transversally** at the
-/// other, so the two windows never overlap and the splice does not fire. The boundary genuinely
-/// jumps in µ̂ at the flank azimuth — a `Cap` along the flank wall, the same emission #294 already
-/// builds — and it is the *detection* that has to grow.
+/// **The acceptance criterion for #296 — the mixed corner.** The bore's tab has a *tangency at
+/// each end of its flank*, which is the shape #294's `flank_splice` was written to; the lug's
+/// flank is tangent to the nose arc at one end and meets the rim **transversally** at the other,
+/// so requiring a tangency of *both* walls missed it. The general statement is per side: a side
+/// **turns** (an isolated discriminant root inside the corner's gap, where its window and its
+/// rail's certificate end) or **continues** (no root — the rim's rail is certified straight across
+/// the gap, and the handoff is the *turning* wall's own root, at its bracket edge). The emission
+/// is #294's, one `turn_tail` instead of two.
 ///
-/// Until then this refuses rather than lying, which is the whole difference from before: it used to
-/// come back `Verified` with the tab cut *inward* as a bite, the emitted rim dipping to `15.884`
-/// where the drawing wants `17.78`.
-///
-/// Kept as written rather than weakened, because it is the statement that has to become true.
+/// Two ways this failed before it passed, both worth keeping:
+/// - the lug used to come back `Verified` with the tab cut *inward* as a bite — the shadow
+///   fragmented the non-convex kept region and the pick kept one piece (fixed in
+///   `resolve::extruded_shadow`, patches coalesced);
+/// - with detection lifted but the handoff read from the continuing rail's **span end**, three of
+///   the four corners still returned `None` (the span is hulled to the neighbouring run's first
+///   *sample* — a grid point on the wrong side of the flank — so the edges came out of order), and
+///   the un-spliced corners silently fell back to a midpoint `Corner::At` inside both rails'
+///   certificates: green, `covered`-clean, and cutting the corner by ~4e-3 in σ. Only THIS check —
+///   fold the emitted edges back onto the drawing — caught that; no certificate did.
 #[test]
-#[ignore = "#296: the lug's mixed corner needs the §12.4 splice — the criterion, not a pass"]
 fn the_drawings_rim_lug_develops_and_its_flanks_land_on_the_drawing() {
     let mut spec = ramp_off_the_wedge();
     spec.outer_profile = Some(acceptance::outer_cut_profile());
@@ -331,32 +334,6 @@ fn the_drawings_rim_lug_develops_and_its_flanks_land_on_the_drawing() {
     assert_eq!(
         on_flank, 4,
         "two flanks on each of the lug's two passes: four flank edges in the flat pattern"
-    );
-}
-
-/// **What the lug does today, pinned so the next change to it is not silent (#296).**
-///
-/// The criterion above is `#[ignore]`d. This one runs and asserts the current, *honest* behaviour:
-/// the lug is kept, and the boundary it needs cannot be built yet, so the part is refused by name —
-/// `RailSpanShort { op: 0 }`, §12.4's p-curve end at the lug's mixed corner. **When #296 is fixed
-/// this test fails**, which is the point.
-///
-/// It is worth knowing what this replaced. Before the shadow's patches were coalesced, every lug
-/// configuration came back `Verified` with the tab cut *inward* as a bite, and the ramp's position
-/// appeared to matter — `TopologyMismatch` with 2 faces at the pinned ramp, 6 with the ramp over
-/// the whole wedge, `Verified` either side. All of that was downstream of the fragmentation: the
-/// kept region was split at every wall crossing, the component pick kept whichever piece held the
-/// witness, and which piece that was moved with the geometry. None of it was about the ramp. The
-/// ramp variants are gone from this file for that reason — they measured an artifact.
-#[test]
-fn the_rim_lug_refuses_by_name_pending_its_corner_splice() {
-    let mut spec = ramp_off_the_wedge();
-    spec.outer_profile = Some(acceptance::outer_cut_profile());
-    let v = self_lapping_cone_from(&spec, 8, 8, false, None).develop();
-    assert!(
-        matches!(v, Verdict::Refuted(PartFault::RailSpanShort { op: 0 })),
-        "the lug must refuse as the outer op's p-curve end, got {}",
-        fault(v)
     );
 }
 

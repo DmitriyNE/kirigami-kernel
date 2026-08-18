@@ -1072,6 +1072,36 @@ The first version chose the branch by σ alone, which does not determine it — 
 that turns — and the second capped the walk at one lap, which silently made the two-turn case
 unreachable rather than wrong-looking. Neither showed up as bad geometry; both showed up as `None`.
 
+The splice also has a **mid-chain** form (`realize::flank_splice`, #294/#296): a run corner where two
+same-op walls hand the boundary to each other along an *affine* wall between them in the profile
+cycle — a flank. A flank is a plane through the chart's apex, so its µ̂-pullback has `a = 0` and
+crosses µ̂ = 0 identically except at its own azimuth, where the ruling lies **in** the plane: the
+boundary genuinely jumps in µ̂ along that one ruling, and no graph rail spans a jump. The bore tab's
+fillet–flank–fillet corner (#294) is the two-tangency case — each fillet is tangent to the flank, so
+each wall's window ends at an isolated discriminant root inside the corner's gap, and the splice
+joins one `turn_tail` per side with an exactly-vertical connector certified against the flank wall.
+The rim lug's rim–flank–nose corner (#296) is the **mixed** case: the nose arc subtends exactly the
+lug's wedge, so it is tangent to both flanks and turns, but the rim meets the flank *transversally*
+— its discriminant stays positive across the corner and its rail is certified straight through the
+gap. Requiring a tangency of *both* walls was #294 reading its own fixture as the definition; the
+general clause is per side — a side **turns** or **continues** — with at least one turning, and the
+construction unchanged: one tail per turning side, the connector between the handoff points.
+
+Two of #296's failures never showed up as `None` and are the reason the acceptance check folds the
+emitted edges back onto the drawing. First, the shadow used to emit a non-convex kept region as
+**abutting patches** — harmless under `Subtract` (folding over abutting patches is folding over
+their union) but fatal under `Intersect`, where each patch became its own component and the pick
+kept whichever fragment held the witness: the lug came back `Verified` *cut inward as a bite*, and
+which fragment won moved with the geometry, so ramp position looked causal. Consecutive inside
+stretches now coalesce (`resolve::extruded_shadow`). Second, with detection lifted but the handoff
+read from the continuing rail's **span end**, three of four corners still declined — a continuing
+rail's span is hulled out to the neighbouring run's first *sample*, a grid point on the wrong side
+of the flank, so the edges came out of order. The declined corners then fell back to a midpoint
+`Corner::At` that sat inside **both** rails' certificates: green, coverage-clean, and cutting the
+corner by ~4·10⁻³ in σ. The handoff is therefore the **turning wall's own root** at its bracket
+edge (clamped into the continuing rail's certificate) — which is also the flank's own ruling, the
+σ where the flank's `b(σ) = n·ruling(σ)` vanishes, so the tangency isolation answers for both.
+
 `brep_trim_solid_regions` consumes inner/outer chains as **functions of σ** with a lid per slice
 between them **over the region bands**, so a derived extent narrower than them sweeps a solid across
 σ the ops left empty. Clipping each band to `structure.domain` before the builder sees it is the

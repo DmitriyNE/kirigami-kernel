@@ -171,20 +171,28 @@ type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Interval<B>>>>>>;
 ///
 /// The detection is exact, not heuristic, and every clause names a property the construction
 /// needs:
-/// - **same op, distinct quadric walls** whose isolated discriminant-root brackets *overlap*
-///   inside this corner's gap — the two windows abut at one shared tangent ruling, which is the
-///   definition of the crossing;
-/// - **a middle wall between them in the profile cycle, affine in µ̂** — the flank itself, the
-///   edge both fillets are tangent to. It is what the connector is certified against: the true
-///   boundary between the two tangency points runs *along* that wall.
+/// - **same op, distinct walls**, of which at least one **turns**: it has an isolated
+///   discriminant-root bracket inside this corner's gap, where its window ends and its rail's
+///   certificate stops. When both turn (a fillet–flank–fillet corner, #294) the two brackets must
+///   *overlap* — the windows abut at one shared tangent ruling. A side with no root in the gap
+///   **continues** (#296's mixed corner): its wall crosses the flank transversally, its rail is
+///   certified straight across the gap, and its own certified edge is where the connector starts.
+///   The lug's rim against its tangent nose arc is the geometry that forces it.
+/// - **a middle wall between them in the profile cycle, affine in µ̂** — the flank itself. It is
+///   what the connector is certified against: the true boundary between the handoff points runs
+///   *along* that wall. (A flank is a plane through the chart's apex, so its pullback crosses
+///   µ̂ = 0 identically except at its own azimuth, where the ruling lies *in* the plane — which is
+///   where a wall tangent to it turns. The tangency root and the flank's own ruling are the same
+///   σ, which is why one isolation serves both claims.)
 ///
-/// The traced route (`traced`): each wall's own footprint loop over its window
+/// The traced route (`traced`): each **turning** wall's own footprint loop over its window
 /// ([`develop::cut::quadric_cut_loop`] — PC.3's construction), cut at the rail's certified edge
 /// and walked into the tangent vertex ([`develop::cut::turn_tail`]); the connector joins the two
-/// vertices and is certified by [`develop::cut::pcurve_cut_fit`]. The chord route (solid): one
-/// straight piece between the rails' own endpoint values, certified the same way — it deviates
-/// from the true corner by the √-tails the rails could not reach, and the certificate against the
-/// flank wall is exactly a bound on that.
+/// handoff points — a tangent vertex, or a continuing rail's certified endpoint — and is certified
+/// by [`develop::cut::pcurve_cut_fit`]. The chord route (solid): one straight piece between the
+/// rails' own endpoint values, certified the same way — it deviates from the true corner by the
+/// √-tails the rails could not reach, and the certificate against the flank wall is exactly a
+/// bound on that.
 ///
 /// A loop or certificate that comes back `Unresolved` propagates as a loose (refinable) bound; a
 /// structural disagreement (`Refuted`, or a loop `turn_tail` cannot cut) falls back to `None`, so
@@ -218,39 +226,55 @@ fn flank_splice<B: Backend>(
     }) else {
         return Ok(None);
     };
-    let (Some(bl), Some(br)) = (
-        disc_roots[ri][op].get(wl).and_then(|x| x.as_ref()),
-        disc_roots[ri][op].get(wr).and_then(|x| x.as_ref()),
-    ) else {
-        return Ok(None);
-    };
-    // The shared tangent: one isolated root of each wall's discriminant, inside this gap, in
-    // overlapping brackets — the same isolation the windows were clamped to, so "the windows abut"
-    // and "the boundary hands off here" are claims about the same roots.
+    // Which sides **turn**: an isolated root of the wall's discriminant inside this gap — the same
+    // isolation its window was clamped to, so "the window ends here" and "the boundary hands off
+    // here" are claims about the same root. `l`'s window ends at its root and `r`'s begins at its,
+    // so a turning `l` needs the preceding bracket and a turning `r` the following one — a turning
+    // wall missing it has no window to trace a loop over, and stays a refusal (`Err` below). A wall
+    // with no root in the gap **continues** across it and needs no window at all.
     let in_gap = |iv: &Interval<B>| {
         gap_lo.cmp(&iv.lo) != Ordering::Greater && iv.hi.cmp(gap_hi) != Ordering::Greater
     };
-    let (Some(kl), Some(kr)) = (bl.iter().position(in_gap), br.iter().position(in_gap)) else {
+    type Turn<B> = Option<(Interval<B>, Interval<B>)>;
+    let turn_of = |w: usize, needs_preceding: bool| -> Result<Turn<B>, ()> {
+        let Some(b) = disc_roots[ri][op].get(w).and_then(|x| x.as_ref()) else {
+            return Ok(None);
+        };
+        let Some(k) = b.iter().position(&in_gap) else {
+            return Ok(None);
+        };
+        let win = if needs_preceding {
+            if k == 0 {
+                return Err(());
+            }
+            Interval {
+                lo: b[k - 1].hi.clone(),
+                hi: b[k].lo.clone(),
+            }
+        } else {
+            if k + 1 >= b.len() {
+                return Err(());
+            }
+            Interval {
+                lo: b[k].hi.clone(),
+                hi: b[k + 1].lo.clone(),
+            }
+        };
+        Ok(Some((b[k].clone(), win)))
+    };
+    let (Ok(turn_l), Ok(turn_r)) = (turn_of(wl, true), turn_of(wr, false)) else {
         return Ok(None);
     };
-    if bl[kl].lo.cmp(&br[kr].hi) == Ordering::Greater
-        || br[kr].lo.cmp(&bl[kl].hi) == Ordering::Greater
+    // Neither turning is no flank crossing at all: two rails that really cross, refined as ever.
+    if turn_l.is_none() && turn_r.is_none() {
+        return Ok(None);
+    }
+    // Both turning: the two windows must abut at ONE shared tangent ruling — overlapping brackets.
+    if let (Some((rl, _)), Some((rr, _))) = (&turn_l, &turn_r)
+        && (rl.lo.cmp(&rr.hi) == Ordering::Greater || rr.lo.cmp(&rl.hi) == Ordering::Greater)
     {
         return Ok(None);
     }
-    // l's window ends at that root, r's begins there — so l needs the preceding bracket and r the
-    // following one.
-    if kl == 0 || kr + 1 >= br.len() {
-        return Ok(None);
-    }
-    let win_l = Interval {
-        lo: bl[kl - 1].hi.clone(),
-        hi: bl[kl].lo.clone(),
-    };
-    let win_r = Interval {
-        lo: br[kr].hi.clone(),
-        hi: br[kr + 1].lo.clone(),
-    };
     // The connector's own wall: the profile edge between the two, affine in µ̂.
     let walls = part.ops[op]
         .1
@@ -281,7 +305,20 @@ fn flank_splice<B: Backend>(
     ) else {
         return Ok(None);
     };
-    let (edge_a, edge_b) = (pa.span.hi.clone(), pb.span.lo.clone());
+    // A turning side hands off at its rail's certified edge — the window inset just before its
+    // tangency. A continuing side's rail is certified straight ACROSS the gap and past the handoff
+    // (its span is hulled out to the neighbouring run's first sample, a grid point on the wrong
+    // side of the flank), so its span end says nothing about where the boundary turns: the handoff
+    // is the *turning* wall's own root, taken at its bracket edge and clamped into the continuing
+    // rail's certificate.
+    let edge_a = match (&turn_l, &turn_r) {
+        (None, Some((root_r, _))) => rmax(&pa.span.lo, &rmin(&pa.span.hi, &root_r.lo)),
+        _ => pa.span.hi.clone(),
+    };
+    let edge_b = match (&turn_r, &turn_l) {
+        (None, Some((root_l, _))) => rmin(&pb.span.hi, &rmax(&pb.span.lo, &root_l.hi)),
+        _ => pb.span.lo.clone(),
+    };
     if edge_a.cmp(&edge_b) != Ordering::Less {
         return Ok(None);
     }
@@ -312,40 +349,59 @@ fn flank_splice<B: Backend>(
         }
     };
     let curves = if traced {
-        let make_loop =
-            |wi: usize, win: &Interval<B>| -> Result<Option<develop::cut::CutLoop<B>>, RErr<B>> {
-                match develop::cut::quadric_cut_loop(
-                    chart,
-                    &walls[wi],
-                    win,
-                    &zero,
-                    (part.segments / 2).max(8),
-                    &part.clearance,
-                    &part.cfg,
-                ) {
-                    Verdict::Verified(l) => Ok(Some(l)),
-                    Verdict::Unresolved(e) => Err(RErr::Loose(e)),
-                    Verdict::Refuted(_) => Ok(None),
-                }
+        // A turning side contributes its wall's own traced tail — the loop over its window, cut at
+        // the rail's certified edge and walked into the tangent vertex. A continuing side has no
+        // vertex to walk into and contributes nothing: its rail's certified endpoint IS where the
+        // connector starts.
+        let make_tail = |turn: &Turn<B>,
+                         wi: usize,
+                         edge: &Rat<B>,
+                         val: &Rat<B>,
+                         vertex_is_max: bool,
+                         eps: &mut Rat<B>|
+         -> Result<Option<Vec<develop::pcurve::PCurve<B>>>, RErr<B>> {
+            let Some((_, win)) = turn else {
+                return Ok(Some(Vec::new()));
             };
-        let Some(loop_l) = make_loop(wl, &win_l)? else {
+            match develop::cut::quadric_cut_loop(
+                chart,
+                &walls[wi],
+                win,
+                &zero,
+                (part.segments / 2).max(8),
+                &part.clearance,
+                &part.cfg,
+            ) {
+                Verdict::Verified(l) => {
+                    let Some(t) = develop::cut::turn_tail(&l, edge, val, vertex_is_max) else {
+                        return Ok(None);
+                    };
+                    *eps = rmax(eps, &l.eps);
+                    Ok(Some(t))
+                }
+                Verdict::Unresolved(e) => Err(RErr::Loose(e)),
+                Verdict::Refuted(_) => Ok(None),
+            }
+        };
+        let Some(tail_a) = make_tail(&turn_l, wl, &edge_a, &v_a, true, &mut eps)? else {
             return Ok(None);
         };
-        let Some(loop_r) = make_loop(wr, &win_r)? else {
+        let Some(tail_b) = make_tail(&turn_r, wr, &edge_b, &v_b, false, &mut eps)? else {
             return Ok(None);
         };
-        let Some(tail_a) = develop::cut::turn_tail(&loop_l, &edge_a, &v_a, true) else {
-            return Ok(None);
+        // The connector's endpoints: a turning side's tangent vertex, a continuing side's own
+        // certified rail edge.
+        let va = match tail_a.last() {
+            Some(last) => last
+                .eval(&last.domain.hi)
+                .ok_or(RErr::Fault(PartFault::Pole))?,
+            None => [edge_a.clone(), v_a.clone()],
         };
-        let Some(tail_b) = develop::cut::turn_tail(&loop_r, &edge_b, &v_b, false) else {
-            return Ok(None);
-        };
-        eps = rmax(&eps, &rmax(&loop_l.eps, &loop_r.eps));
-        let last = tail_a.last().expect("turn_tail is nonempty");
-        let first = tail_b.first().expect("turn_tail is nonempty");
-        let (Some(va), Some(vb)) = (last.eval(&last.domain.hi), first.eval(&first.domain.lo))
-        else {
-            return Err(RErr::Fault(PartFault::Pole));
+        let vb = match tail_b.first() {
+            Some(first) => first
+                .eval(&first.domain.lo)
+                .ok_or(RErr::Fault(PartFault::Pole))?,
+            None => [edge_b.clone(), v_b.clone()],
         };
         // The connector, as an exactly-vertical piece plus an exactly-horizontal one rather than
         // the diagonal between the vertices. The two tangent vertices sit on the same ruling to
@@ -727,7 +783,7 @@ fn certify_boundary<B: Backend>(
     // — 3. Refine the run corners on the fitted rails (per changed side). —
     //
     // A corner is normally where the two fitted rails **cross**, refined by exact bisection. A
-    // **flank crossing** is the exception: the two rails' windows abut at a shared tangent ruling
+    // **flank crossing** is the exception: at least one rail's window ends at a tangent ruling
     // and the graphs never cross at all — bisecting a root that does not exist lands on an
     // arbitrary midpoint outside one rail's certificate, which `covered` then (correctly) refuses.
     // There the corner is a [`Corner::Gap`] and a [`Splice`] owns the stretch between the two
