@@ -768,6 +768,66 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Tangential contact was the kernel's thinnest layer — the G1 drawing revision hit five distinct
+  defects at once (2026-08-19, TANG.A–D).** The user's new cut files made every junction of both
+  profiles tangential (fillets G1 to flanks and rims, caps G1 to flanks), which the drawings are
+  entitled to: tangency is a diffeomorphism invariant, the cast and the unroll are smooth away from
+  the apex, so a kink in the flat pattern is always a kernel defect — and one no distance
+  certificate can see, because **ε bounds distance, not direction**. The lug refused
+  (`RailSpanShort { op: 0 }`) and both parts' caps kinked ~50° at their flank junctions. Five
+  causes, each fixed at its own layer:
+
+  1. **Mixed-profile station starvation** (resolver): a quadric+affine profile probed targeted
+     stations only through its bounding-circle proxy, so the R 0.3 root fillet's ~1.2-cell window
+     got a boundary run by grid luck (one pass: never → the boundary jumped rim→nose with two walls
+     between, the splice's exactly-one-wall precondition failed, and the midpoint fallback overran
+     the nose's certificate → the `RailSpanShort`). Quadric walls now get their own q1/mid/q3
+     stations; hole-attribution *windows* stay the proxy's alone, or a subtract's loops would trace
+     twice.
+  2. **The fit ladder** (realize step 2): how much tangent inset a certifiable rail fit needs is a
+     property of the sheet, not a constant — the same fillet certified at ε 0.12 behind the 1/200
+     inset on the base pass and read ε 9.2–12.7 on the offset pass. Two rungs, `(1/200, ×1)` then
+     `(1/16, subdiv ×2)`; rung 1 is bit-identical to the old single attempt, and a middle
+     `(1/48, ×1)` rung was measured useless (ε 12.7 → 9.9, while rung 2 took the four fillet fits
+     to ε 0.02–0.04). Plus the **fidelity escalation**: a Verified fit with `ε > sweep/6` climbs
+     anyway, keeping the earlier rung as the floor — a cap rail Verified at ε 0.109 on a 0.42 µ̂
+     sweep met its own traced tail 29° off-direction with a 52 µm end residual; its mirror pass at
+     ε 0.218 escalated and joined cleanly, which is what places the bar at a sixth.
+  3. **The wrong-pass fallback** (splice + coverage): with a pass's own fit deferred, `find_piece`'s
+     last-resort arm returned the same wall's rail from the chart's *other pass* half a turn away
+     (#293's hulled-span sibling), and the splice did arithmetic on it
+     (`edges-out-of-order a=1.067 b=−0.936`). The splice now requires each piece to be certified at
+     this corner — per side: a continuing span covers the gap edge, a turning span overlaps the
+     window its turn opens — and `covered` reports the recorded fit reason instead of
+     `RailSpanShort` when the fallback piece doesn't reach the segment.
+  4. **Tangential corners parked at the gap midpoint** (corner refinement): two rails meeting
+     tangentially (rim–fillet) have no sign change for `bisect_root`, and `unwrap_or(mid)` silently
+     placed the corner up to half a cell off the contact. The difference's σ-derivative crosses
+     zero at the touch, so it is bisected the same way; measured, the corners moved from the grid
+     artifact 0.921875 to the exactly mirrored ±0.923387 / ±1.082006 across both passes.
+  5. **√-branch chordization** (emission): all remaining kinks were uniform sampling against
+     `µ̂ − µ̂_t ∝ √(σ − σ_t)`. The turn tail is now its own engine primitive
+     (`develop::cut::quadric_tail`): the branch from the rail's certified edge into the tangent
+     vertex, √-graded toward the vertex **only** — equal-turn chords at every `segments`. (Its two
+     predecessors are recorded on the function: cutting the tail out of the full-window loop gave it
+     `n·√f` of n pieces — three chords carrying ~50° — and a padded sub-window loop inherited the
+     loop's both-end grading, leaving the coarsest piece at the junction.) And the chain assembly
+     √-grades a rail's own chords into a spliced end (`g = span/4`, matching the bulk's last uniform
+     chord to the graded stretch at every `segments`) — the nose rail used to bunch 53° into its
+     last chord at the handoff, a visible facet on a cap the drawing draws G1.
+
+  The acceptance criterion grew the shape-valued check this class needs
+  (`rim_notch::cap_turns`): each emitted flank edge must join its arcs under 15° and its cap
+  neighbourhood must turn under 20° per real edge, where "real" excludes sub-5µm micro-caps *and*
+  **jogs** — short edges parallel to the flank, the fit's actual end residual bridged along the
+  ruling where two certified carriers meet. A jog is a translation artifact whose size is what the
+  certificates bound (measured 52 µm against ε 0.109); reading its direction as turning would call
+  every ε-wide step a 90° kink. Both drawing tests now pass with tails at 1.1–4°/chord and
+  junctions at 0.3–2°. Remaining artifact class, accepted and bounded: the ε-scale ruling-directed
+  jog at each splice handoff (lug: ~0.03 flat units against nose ε 0.43).
+  *2026-08-19 · fixed · TANG.A–D (#298–#301) · `author/src/{resolve,realize}.rs`,
+  `develop/src/cut.rs::quadric_tail`, `author/tests/rim_notch.rs`*
+
 - **The mixed corner splices, and the lug cuts (2026-08-18, #296 closed).** The generalization the
   entry below asked for: `flank_splice`'s detection is now **per side**. A side **turns** — an
   isolated discriminant root inside the corner's gap, where its window and its rail's certificate

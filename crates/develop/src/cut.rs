@@ -1552,6 +1552,175 @@ pub fn quadric_cut_loop<B: Backend>(
     }
 }
 
+/// A certified **tail**: the pieces of one branch of a quadric cut from a given σ into the
+/// tangent vertex bounding its window, σ-ascending, with the certified bounds that make it
+/// usable (the [`CutLoop`] currency, on an open stretch).
+pub struct CutTail<B: Backend = Bignum> {
+    /// The tail's pieces, head-to-tail, σ-ascending.
+    pub pieces: Vec<crate::pcurve::PCurve<B>>,
+    /// The certified `sup dist(·, {F=0})` over every piece — includes `tangent_gap`.
+    pub eps: Rat<B>,
+    /// The half-width still open at the vertex (see [`CutLoop::tangent_gap`]).
+    pub tangent_gap: Rat<B>,
+}
+
+/// The certified tail of a quadric wall's branch: from `from` (a rail's certified edge) into the
+/// **tangent vertex** bounding `window` on the `vertex_is_max` side — the stretch of boundary
+/// between where a fitted graph must stop and where the boundary actually turns (§12.4's
+/// mid-chain handoff).
+///
+/// This is [`quadric_cut_loop`]'s construction restricted to the one branch and the one end a
+/// flank splice needs, with the grading that stretch needs: nodes at `σ = vertex ∓ (k/n)²·span`,
+/// √-graded toward the **vertex only**, make the chords equal-turn on a branch behaving like
+/// `µ̂ − µ̂_t ∝ √(σ − σ_t)`. Tracing the full loop and cutting it at `from` (the first shape of
+/// this) inherited the loop's grading toward *both* window ends — right for a closed footprint,
+/// wrong for a tail: the cut landed among the loop's coarsest mid-window pieces, and the junction
+/// chord carried tens of degrees of turn however fine the budget (measured: 36° in one chord
+/// beside seven 1.25° ones).
+///
+/// The branch is the one whose µ̂ at `from` lies nearer `at_value` — the same fitted-rail value
+/// the chain hands off with, exactly [`turn_tail`]'s rule. The `from` node is kept **exact** (it
+/// is the rail's own rational span end, and the junction must chain exactly); every other emitted
+/// coordinate is snapped as the loop snaps. The vertex end walks inward to the first real ruling
+/// as the loop does, and `tangent_gap` (folded into `eps`) is the certified distance from that
+/// vertex to the true tangent point. Every piece is certified against the true surface by
+/// [`pcurve_cut_fit`], so the grading buys tightness, never soundness.
+#[allow(clippy::too_many_arguments)]
+pub fn quadric_tail<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    window: &Interval<B>,
+    from: &Rat<B>,
+    at_value: &Rat<B>,
+    vertex_is_max: bool,
+    segments: usize,
+    w: &Rat<B>,
+    clearance: &Rat<B>,
+    cfg: &DevConfig<B>,
+) -> Verdict<CutTail<B>, CutFitFault, Rat<B>> {
+    use core::cmp::Ordering;
+    let mc = match cut_mu_form(chart, surface, w) {
+        Some(m) => m,
+        None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+    };
+    let n = segments.max(2);
+    // The loop's grid discipline (see [`quadric_cut_loop`]): snapped surds, walked-in ends.
+    const BITS: u32 = 30;
+    const MAX_NUDGE: usize = 64;
+    const PIECE_SUBDIV: usize = 64;
+    let vertex_raw = if vertex_is_max {
+        window.hi.clone()
+    } else {
+        window.lo.clone()
+    };
+    let inside_window = |s: &Rat<B>| {
+        window.lo.cmp(s) != Ordering::Greater && s.cmp(&window.hi) != Ordering::Greater
+    };
+    if !inside_window(from) {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let branch = |s: &Rat<B>| {
+        mc.branch_at(s, &cfg.sqrt_eps)
+            .map(|(m, h)| (crate::pcurve::snap(&m, BITS), crate::pcurve::snap(&h, BITS)))
+    };
+    // The vertex end can land a grid step outside the cut (a bisected root snapped to the grid);
+    // walk inward until it is real, exactly as the loop walks its window ends in.
+    let unit = Rat::new(1, 1i128 << BITS);
+    let mut vertex = crate::pcurve::snap(&vertex_raw, BITS);
+    let (v_mid, tangent_gap) = {
+        let mut found = None;
+        for _ in 0..MAX_NUDGE {
+            if let Some((m, h)) = branch(&vertex) {
+                found = Some((m, h));
+                break;
+            }
+            vertex = if vertex_is_max {
+                vertex.sub(&unit)
+            } else {
+                vertex.add(&unit)
+            };
+        }
+        match found {
+            Some((m, h)) => (m, h),
+            None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+        }
+    };
+    let span = vertex.sub(from);
+    if (vertex_is_max && span.sign() <= 0) || (!vertex_is_max && span.sign() >= 0) {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    // The branch the boundary is on: nearer `at_value` at `from`.
+    let (m0, h0) = match branch(from) {
+        Some(x) => x,
+        None => return Verdict::Refuted(CutFitFault::DegenerateSurface),
+    };
+    let (up, dn) = (m0.add(&h0), m0.sub(&h0));
+    let upper = abs_rat(&up.sub(at_value)).cmp(&abs_rat(&dn.sub(at_value))) != Ordering::Greater;
+    // Nodes √-graded toward the vertex; the `from` node exact, the rest snapped (dedup keeps the
+    // list strictly monotone where snapping collides).
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = vec![(from.clone(), if upper { up } else { dn })];
+    for k in (1..n).rev() {
+        let f = Rat::new(k as i128, n as i128);
+        let s = crate::pcurve::snap(&vertex.sub(&span.mul(&f).mul(&f)), BITS);
+        if pts
+            .last()
+            .map(|(p, _)| p.cmp(&s) == Ordering::Equal)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some((m, h)) = branch(&s) {
+            pts.push((s, if upper { m.add(&h) } else { m.sub(&h) }));
+        }
+    }
+    pts.push((vertex, v_mid));
+    if pts.len() < 2 {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    // σ-ascending, as the splice assembly consumes them.
+    if !vertex_is_max {
+        pts.reverse();
+    }
+    let mut pieces = Vec::with_capacity(pts.len() - 1);
+    let mut eps = tangent_gap.clone();
+    for pair in pts.windows(2) {
+        if pair[0].0.cmp(&pair[1].0) == Ordering::Equal
+            && pair[0].1.cmp(&pair[1].1) == Ordering::Equal
+        {
+            continue;
+        }
+        let piece = segment(&pair[0], &pair[1]);
+        match pcurve_cut_fit(chart, &piece, surface, w, PIECE_SUBDIV, clearance, cfg) {
+            Verdict::Verified(v) => {
+                if v.eps.cmp(&eps) == Ordering::Greater {
+                    eps = v.eps;
+                }
+            }
+            Verdict::Unresolved(e) => {
+                if e.cmp(&eps) == Ordering::Greater {
+                    eps = e;
+                }
+            }
+            Verdict::Refuted(f) => return Verdict::Refuted(f),
+        }
+        pieces.push(piece);
+    }
+    if pieces.is_empty() {
+        return Verdict::Refuted(CutFitFault::DegenerateSpan);
+    }
+    let eps = crate::pcurve::snap_up(&eps, BITS);
+    let drc = clearance.mul(&Rat::new(1, 2));
+    if eps.cmp(&drc) == Ordering::Less {
+        Verdict::Verified(CutTail {
+            pieces,
+            eps,
+            tangent_gap,
+        })
+    } else {
+        Verdict::Unresolved(eps)
+    }
+}
+
 /// Which wall of a multi-walled cutter, and which of its roots, produced a µ̂ value:
 /// `(wall index, upper root)`. The mirror of the resolver's `BranchSide::Wall`.
 pub type WallRoot = (usize, bool);

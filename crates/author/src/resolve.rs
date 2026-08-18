@@ -1064,11 +1064,21 @@ pub(crate) fn sweep<B: Backend>(
             } else {
                 None
             };
-            let probes: Vec<&CutSurface<B>> = match &bound {
-                Some(b) => vec![b],
-                None => quadric.iter().map(|wi| &walls[*wi]).collect(),
+            // Stations and hole-attribution windows are two different obligations, and only the
+            // proxy case separates them. **Stations** must reach every wall a boundary can hand
+            // off to: a mixed profile's quadric wall bounds only inside its own tangent window,
+            // and the drawing's R 0.3 root fillet subtends ~1.2 cells — probed through the proxy
+            // alone it gets a run only by grid luck, and a corner missing its run cannot splice
+            // (the two-walls-between refusal). **Windows** are what a subtract's hole loops are
+            // attributed to and traced over, so the mixed case must keep exactly the proxy's — a
+            // second, per-arc window over the same bore would trace the same hole twice.
+            let probes: Vec<(&CutSurface<B>, bool)> = match &bound {
+                Some(b) => core::iter::once((b, true))
+                    .chain(quadric.iter().map(|wi| (&walls[*wi], false)))
+                    .collect(),
+                None => quadric.iter().map(|wi| (&walls[*wi], true)).collect(),
             };
-            for wall in probes {
+            for (wall, record_window) in probes {
                 // The probe's **own** pullback decides which of its root brackets are real windows.
                 // Reading a wall-indexed form instead was right only while the proxy appeared for
                 // all-affine profiles alone: with a mixed one it filtered the proxy's brackets by
@@ -1096,7 +1106,9 @@ pub(crate) fn sweep<B: Backend>(
                     samples.push((ri, q1));
                     samples.push((ri, mid));
                     samples.push((ri, q3));
-                    windows[op].push((ri, t1.clone(), t2.clone()));
+                    if record_window {
+                        windows[op].push((ri, t1.clone(), t2.clone()));
+                    }
                 }
             }
         }
@@ -1226,7 +1238,6 @@ pub(crate) fn sweep<B: Backend>(
             }),
         }
     }
-
     // Derive roles. An op that both *carves a gap* and *bounds* is the one-interval model's own
     // frontier, not an ambiguity — see [`PartFault::SectionNotSimple`] for what it means and why
     // merging the two stretches anyway would ship the wrong pattern.
