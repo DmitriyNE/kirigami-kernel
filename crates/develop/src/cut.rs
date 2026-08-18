@@ -2445,18 +2445,23 @@ fn quadric_distance_on<B: Backend>(
         core::array::from_fn(|i| RatIv::new(x[i].lo().sub(r), x[i].hi().add(r)))
     };
 
-    // The nappe condition is a statement about the *authored geometry*, not about this bound's
-    // working precision, so it is checked at the full working radius however small a ball the
-    // bound below ends up needing: a cut is required to clear the apex by `clearance/2`, since
-    // nearer than that "inside" is not a settled question.
-    if dot_iv(&nappe.n, &inflate(radius))
-        .sub(&RatIv::point(nappe.d.clone()))
-        .lo()
-        .sign()
-        <= 0
-    {
-        return DistOn::Fault(CutFitFault::NappeCrossed);
-    }
+    // The nappe condition, at **the ball this bound actually uses**.
+    //
+    // The lemma places a zero of `F` within `e ≤ r` of the traced point, so the statement that has
+    // to hold is "the ball of radius `r` lies on the authored nappe's side" — no larger. It used to
+    // be checked once at the full working radius `clearance/2`, which bundled a DRC cushion into a
+    // soundness gate, and the cushion is what refused real geometry: measured on the device's
+    // imported bore, the selector clears at `r/2` and at every smaller ball and fails **only** at
+    // the constant. Both §4.1 conditions still bite — a trace that genuinely reaches the mirror
+    // nappe, or the apex on the selector's own boundary plane, fails at every radius including the
+    // smallest, and that is still [`CutFitFault::NappeCrossed`].
+    let nappe_ok = |r: &Rat<B>| {
+        dot_iv(&nappe.n, &inflate(r))
+            .sub(&RatIv::point(nappe.d.clone()))
+            .lo()
+            .sign()
+            > 0
+    };
 
     // `|F|` over the box itself — the lemma is applied at each of its points, so this is the only
     // quantity that does not depend on the ball.
@@ -2476,8 +2481,16 @@ fn quadric_distance_on<B: Backend>(
     // way to `Unresolved`.
     const STEPS: u32 = 4;
     let mut widest = None;
+    let mut on_nappe = false;
     for k in (0..=STEPS).rev() {
         let r = radius.mul(&Rat::new(1, 1i128 << k));
+        // A ball that reaches the mirror nappe cannot carry the claim, whatever it bounds. The
+        // sequence grows, so once one fails so does every later one — but `continue` rather than
+        // `break` keeps the loop's shape independent of that.
+        if !nappe_ok(&r) {
+            continue;
+        }
+        on_nappe = true;
         let ball = inflate(&r);
         // `g`: a lower bound on `|∇F| = |(M + Mᵀ)Y + b|` over the ball. A component whose enclosure
         // straddles zero contributes nothing, which is the sound reading.
@@ -2504,6 +2517,11 @@ fn quadric_distance_on<B: Backend>(
             return DistOn::Bound(e);
         }
         widest = Some(e);
+    }
+    // Not even the smallest ball stays on the authored nappe: the trace reaches the mirror sheet or
+    // the apex, which no amount of refinement fixes.
+    if !on_nappe {
+        return DistOn::Fault(CutFitFault::NappeCrossed);
     }
     // Nothing certified. Report at least `radius`, so a caller folding this into `ε` and applying
     // the `ε < radius` DRC gate cannot mistake it for a bound.
@@ -3941,6 +3959,73 @@ mod tests {
         assert!(
             matches!(probe(0), DistOn::Fault(CutFitFault::NappeCrossed)),
             "nor does the apex, where inside inverts"
+        );
+    }
+
+    /// **The nappe condition is a statement about the ball, not about the DRC.** The same point,
+    /// the same cone, the same authored nappe — only the *working radius* differs. At a radius
+    /// wide enough to swallow the apex plane the selector cannot hold; at the radii the first-order
+    /// bound actually closes on, it can, and the certificate is the same one it always was.
+    ///
+    /// This is what refuses a real cut when the two are conflated: the device's imported bore sits
+    /// `3.61 mm` above its drafted cutter's apex plane and was checked against a fixed
+    /// `clearance/2 = 3.5 mm`, so a wall with millimetres of headroom read as
+    /// [`CutFitFault::NappeCrossed`] (#292). The loop tries `radius/16 … radius`, so a point this
+    /// far out certifies on one of the smaller balls.
+    #[test]
+    fn a_wide_working_radius_does_not_by_itself_cross_the_nappe() {
+        let (o, i) = (Q::from_i128(0), Q::from_i128(1));
+        let m = [
+            [i.clone(), o.clone(), o.clone()],
+            [o.clone(), i.clone(), o.clone()],
+            [o.clone(), o.clone(), Q::from_i128(-1)],
+        ];
+        let nappe = Nappe {
+            n: [o.clone(), o.clone(), i.clone()],
+            d: o.clone(),
+        };
+        let cfg = DevConfig::tight();
+        // On the authored nappe, 4 above the apex plane — and 1/10 off the cone in x.
+        let p = [Q::new(41, 10), Q::from_i128(0), Q::from_i128(4)];
+        let x: [RatIv<Bignum>; 3] = core::array::from_fn(|k| RatIv::point(p[k].clone()));
+        let probe = |radius: Q| {
+            quadric_distance_on(
+                &m,
+                &[o.clone(), o.clone(), o.clone()],
+                &o,
+                &nappe,
+                &x,
+                &radius,
+                &cfg,
+            )
+        };
+        assert!(
+            matches!(probe(Q::new(1, 10)), DistOn::Bound(_)),
+            "a snug radius certifies"
+        );
+        assert!(
+            matches!(probe(Q::from_i128(16)), DistOn::Bound(_)),
+            "and so does a radius whose own ball reaches past the apex plane, because the ball the \
+             bound closes on does not"
+        );
+        // The genuine case still bites: 16 subdivided four times is still 1, and the point sits 4
+        // above the plane, so a point *at* the plane fails at every radius offered.
+        let at_plane: [RatIv<Bignum>; 3] =
+            core::array::from_fn(|k| RatIv::point([i.clone(), o.clone(), o.clone()][k].clone()));
+        assert!(
+            matches!(
+                quadric_distance_on(
+                    &m,
+                    &[o.clone(), o.clone(), o.clone()],
+                    &o,
+                    &nappe,
+                    &at_plane,
+                    &Q::from_i128(16),
+                    &cfg
+                ),
+                DistOn::Fault(CutFitFault::NappeCrossed)
+            ),
+            "a point on the selector plane crosses at every radius"
         );
     }
 

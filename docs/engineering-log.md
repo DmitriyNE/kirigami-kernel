@@ -768,6 +768,56 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **Recognition must never be a capability gate — and the general arm is not yet good enough to make
+  that true (2026-08-18, → #292).** The user rejected backward-error recognition as the fix for the
+  entry below, in two sentences worth keeping verbatim in spirit: *"I really don't understand how it
+  can be controlled and at which level the near-miss should convert to intent. Technically if we
+  have an exact intent, we can build exact geometry inside the kernel without resorting to import."*
+  And: *"even if we'll fix it by snapping to an exact coax cone, the next authored curve can be
+  intentionally not a coax cone and this will fail again."* Both are right, and together they name
+  the actual architectural defect: **whether a cut can be performed at all must not depend on a
+  classification.** A tolerance that decides *meaning* has no principled setting, and a fallback
+  that only works for the shapes the classifier recognizes is not a fallback.
+
+  **First half, fixed and measured.** The refusal was not even about the eccentricity. The general
+  quadric arm's nappe condition — "the ball in which the first-order lemma places a zero must lie on
+  the authored nappe's side" — was checked once at a **fixed** `clearance/2 = 3.5 mm`, deliberately,
+  to bundle a DRC cushion into a soundness gate. The device's imported bore clears its drafted
+  cutter's apex plane by `r·tan β = 3.61 mm`, so the cushion had ~0.1 mm of headroom and the ℓ¹
+  inflation ate it. Instrumented, the selector **holds at `r/2`, `r/4`, `r/8`, `r/16` and fails only
+  at the constant**. Checking it at the ball the bound actually closes on is strictly sufficient for
+  the lemma's own conclusion, and both §4.1 conditions still bite — a trace that genuinely reaches
+  the mirror nappe or the apex fails at every radius, `NappeCrossed` as before. Result on the
+  two-ramp device with the drawing: `Refuted(CutUnresolved)` → **`Unresolved`**, a refinable
+  looseness rather than a fault. 783/783 green.
+
+  **Second half, open, and the more interesting one.** Refinable is not the same as convergent.
+  Sweeping the rail fit: `subdiv 160 → ε 1.1220e1`, `320 → 3.7633e0`, `1280 → 7.0000e0`,
+  `5120 → 7.0000e0`. Non-monotone, then pinned at the clearance. So the general quadric arm is not
+  merely *slower* than the closed forms — on this wall it does not converge at all, and 32× the
+  subdivision buys nothing. That is why recognition became load-bearing in the first place: it was
+  never an optimization, it was the only arm that worked.
+
+  **The proposal that removes recognition from the capability question altogether.** The general arm
+  measures distance in 3-D: enclose the traced point in a box, inflate to a ball, bound `|F|/|∇F|`.
+  It pays for that with the lost `σ ↔ µ̂` cancellation, which is exactly what saturates. But the
+  chart already has the quantity we want, exactly and rationally: the resolver computes every wall's
+  **µ̂-pullback** `a(σ)µ̂² + b(σ)µ̂ + c(σ)` (`cut_mu_form`) to decide the shadow at all. Distance to a
+  surface is an *upper* bound problem, so any point on the surface will do — take the point on the
+  **same ruling** at the wall's own root `µ̂*`, and
+
+      dist(X(σ), wall) ≤ |µ̂_fit(σ) − µ̂*(σ)| · |r(σ)|
+
+  is sound, needs one `sqrt` enclosure for the root and one for the ruling speed, and is tight
+  wherever the ruling meets the wall transversally. No ball, no gradient, no recognition — and the
+  nappe question becomes "which root", which `BranchSide`/`RootPick` already carry exactly. It
+  degrades near a tangent ruling (the two roots collide), and those windows are already isolated
+  exactly by `tangent_events`, which is where the p-curve arm takes over. If this holds up,
+  `RevCone`/`RevCylinder` become a pure speed/tightness optimization — which is all a recognizer
+  should ever be — and an *intentionally* non-coaxial cut certifies through the same door.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
 - **A circle 2.3e-14 mm off-axis is not a cone of revolution, and that is enough to refuse the cut
   (2026-08-18, → #292).** The user checked the entry below against *their* test device — the two-ramp
   recipe in `crates/author/examples/lapped_cone.rs` — where the drawing's tab lands on conical sheet
