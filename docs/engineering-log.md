@@ -768,6 +768,33 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#292 adoption attempt, reverted — the arm policy is settled, the blocker is a duplicated
+  implementation (2026-08-18).** Two things came out of trying to make the chart arm the default,
+  and the first settles a question the spike had left open.
+
+  **Neither arm dominates, so the policy is `min` of both.** The chart bound measures *along the
+  ruling*, overestimating the true distance by `1/sin θ` for a crossing angle `θ`; the 3-D bound
+  measures perpendicular but re-derives from an inflated ball what the chart holds exactly. On the
+  lapped device the chart arm is `10²`–`10¹²` tighter; on the **flex panel** it is *looser*, and
+  chart-first alone raised that fixture's develop `ε` to `4.3611e-1` against a pinned budget of
+  `3.0000e-1`. Both are upper bounds on the same distance, so the minimum is sound and is the
+  tightest available. Spike-tightness measured on one device is not a policy.
+
+  **The blocker: `develop::cut` has two different 3-D distance implementations.** `traced_cut_fit`
+  is whole-span with its own per-variant closed forms *and* the `RevCylinder::recognize`
+  substitution; `surface_distance_on` is per-point, takes a `RevCone`, and is what `pcurve_cut_fit`
+  uses. They are not interchangeable, and wiring the chart arm's fallback to the second silently
+  dropped the `RevCylinder` substitution — flex panel `Unresolved` at `ε 7.5e-1`. A subtler second
+  version of the same mistake: enclosing `pedal`, `ruling` and µ̂ separately and combining them
+  drops the `σ ↔ µ̂` correlation inside a piece, which is exactly why `cut_fit` composes the rail
+  point as **one** `Vec3Rat` first — doing it the other way also cost that budget.
+
+  So adoption is gated on a refactor that has nothing to do with the chart arm: factor
+  `traced_cut_fit`'s per-sub-interval core out so both arms call the same code, and prove *that* a
+  no-op first. Reverted rather than shipped half-done; #292 carries the order.
+
+  *2026-08-18 · open(#292) · `crates/develop/src/cut.rs`*
+
 - **#293 landed on attempt 2, and the fix was the step ordering, not the grouping (2026-08-18).**
   Attempt 1 changed `hull_of` and failed three green fixtures; the entry below has the transcript.
   What made attempt 2 work was reading `certify_boundary` end to end *first* and writing down the
