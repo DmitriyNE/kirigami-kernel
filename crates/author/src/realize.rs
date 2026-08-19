@@ -124,11 +124,12 @@ struct Splice<B: Backend> {
     v_a: Rat<B>,
     /// The right rail's fitted value at `edge_b` (the other).
     v_b: Rat<B>,
-    /// The flat path's traced route across the gap, σ-ascending: the left wall's tail into its
-    /// tangent vertex, the connector along the flank, the right wall's tail out. Empty when built
-    /// for the solid, which takes the single chord `(edge_a, v_a) → (edge_b, v_b)` instead — the
-    /// µm-fine tails would not survive the STEP thinning, and the flat pattern is the artifact
-    /// that is actually manufactured.
+    /// The traced route across the gap, σ-ascending: the left wall's tail into its tangent
+    /// vertex, the connector along the flank, the right wall's tail out. The flat pattern draws it
+    /// piece-by-piece; the solid chords it at the export sagitta budget ([`splice_chain`]) — it
+    /// used to take the single chord `(edge_a, v_a) → (edge_b, v_b)` instead, which was #305 once
+    /// splices grew from µm-fine tails into whole caps and domes. Empty only when built with
+    /// `traced_splices: false`, which then degenerates the solid's stretch to that single chord.
     curves: Vec<develop::pcurve::PCurve<B>>,
     /// The certified bound over whichever route was built (folded into the boundary's ε).
     eps: Rat<B>,
@@ -523,6 +524,69 @@ fn rmax<B: Backend>(a: &Rat<B>, b: &Rat<B>) -> Rat<B> {
     } else {
         a.clone()
     }
+}
+
+/// Append a [`Splice`]'s stretch of a solid chain: the **traced route** across the gap — the same
+/// tails-and-connector the flat pattern draws — chorded at the export sagitta budget
+/// ([`chord_pcurve`]) into contiguous affine `(band, rail)` pieces, the only currency the solid
+/// builder takes.
+///
+/// This replaces the single certified chord per splice, which was #305: splices had grown from
+/// µm-fine tails into whole caps and domes while the solid still hulled each one, so the device's
+/// lug came out with sides 15° off their rulings and a flat top at the two rails' shared level
+/// where the drawing has a dome. The µm-fine-tail concern that motivated the chord is handled
+/// where it belongs instead: interior route points snap to the STEP dyadic grid, and a piece
+/// narrower than the export profile's step (`2⁻²⁰`, `export::trim`'s `MIN_STEP`) folds into its
+/// neighbour, so nothing below OCCT's vertex tolerance is emitted.
+///
+/// The chain is a µ̂(σ) graph, so an exactly-vertical stretch (the connector's elbow — a drawn
+/// radial flank) cannot be a piece of it: the walk keeps only σ-advancing points, and a vertical
+/// drop is absorbed into the next advancing piece's slope — the hull of the *unrepresentable
+/// stretch alone*, no longer of the whole splice. Both ends stay pinned to the rails' own
+/// `(edge, value)` corners, so the chain stays contiguous with its rail pieces exactly as before.
+/// A splice carrying no route (`curves` empty) degenerates to the old single chord by
+/// construction — the walk emits just the pinned end-to-end piece.
+fn splice_chain<B: Backend>(sp: &Splice<B>, out: &mut Chain<B>) -> Result<(), PartFault> {
+    use core::cmp::Ordering;
+    let affine = |a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)| {
+        let slope = b.1.sub(&a.1).div(&b.0.sub(&a.0));
+        (
+            Interval {
+                lo: a.0.clone(),
+                hi: b.0.clone(),
+            },
+            RatFunc::from_poly(lattice::Poly::from_coeffs(vec![
+                a.1.sub(&slope.mul(&a.0)),
+                slope,
+            ])),
+        )
+    };
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    for curve in &sp.curves {
+        if chord_pcurve(curve, &mut pts).is_none() {
+            return Err(PartFault::Pole);
+        }
+    }
+    let min_w = Rat::<B>::new(1, 1i128 << 20);
+    let mut cur = (sp.edge_a.clone(), sp.v_a.clone());
+    for (s, m) in pts {
+        let s = snap30(&s);
+        // Interior, σ-advancing, and at least an export step wide on both sides.
+        if s.sub(&cur.0).cmp(&min_w) != Ordering::Greater {
+            continue;
+        }
+        if sp.edge_b.sub(&s).cmp(&min_w) != Ordering::Greater {
+            break;
+        }
+        let p = (s, m);
+        out.push(affine(&cur, &p));
+        cur = p;
+    }
+    let end = (sp.edge_b.clone(), sp.v_b.clone());
+    if end.0.cmp(&cur.0) == Ordering::Greater {
+        out.push(affine(&cur, &end));
+    }
+    Ok(())
 }
 
 /// The pieces of `[a, b]` split at region joins: `(from, to, region index)` in ascending σ.
@@ -2084,14 +2148,15 @@ pub(crate) fn solid_brep<B: Backend>(
         subdiv: part.fit.subdiv.max(RailFit::occt_low().subdiv),
         ..RailFit::occt_low()
     };
-    let boundary = bail!(certify_boundary(part, built, &structure, fit, true, false));
+    let boundary = bail!(certify_boundary(part, built, &structure, fit, true, true));
     let mut eps_all = boundary.eps.clone();
 
     // The chains: per-side segments split at region joins, as ordered (band, rail) pieces. A
-    // flank crossing's splice becomes its certified **chord** here — one affine piece between the
-    // two rails' own endpoint values, spanning the gap the certificates cannot: the builder wants
-    // contiguous graph pieces, the chord's steep wall *is* the flank, and the µm-fine traced tails
-    // would not survive the STEP thinning anyway (the flat pattern keeps those).
+    // flank crossing's splice contributes its **traced route** — the same tails-and-connector the
+    // flat pattern draws — chorded into contiguous affine pieces ([`splice_chain`]). It used to
+    // contribute one certified chord, and that was #305: the splices had grown from µm-fine tails
+    // into whole caps and domes, and hulling each one printed a lug with sides 15° off their
+    // rulings and a flat top where the drawing has a dome.
     let chain =
         |segs: &[(Rat<B>, Rat<B>, Label)], splices: &[Splice<B>]| -> Result<Chain<B>, PartFault> {
             use core::cmp::Ordering;
@@ -2103,19 +2168,7 @@ pub(crate) fn solid_brep<B: Backend>(
                     out.push((Interval { lo: plo, hi: phi }, piece.mu.clone()));
                 }
                 if let Some(sp) = splices.iter().find(|s| s.edge_a.cmp(b) == Ordering::Equal) {
-                    let width = sp.edge_b.sub(&sp.edge_a);
-                    let slope = sp.v_b.sub(&sp.v_a).div(&width);
-                    let mu = RatFunc::from_poly(lattice::Poly::from_coeffs(vec![
-                        sp.v_a.sub(&slope.mul(&sp.edge_a)),
-                        slope,
-                    ]));
-                    out.push((
-                        Interval {
-                            lo: sp.edge_a.clone(),
-                            hi: sp.edge_b.clone(),
-                        },
-                        mu,
-                    ));
+                    splice_chain(sp, &mut out)?;
                 }
             }
             Ok(out)

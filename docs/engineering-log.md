@@ -768,6 +768,29 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **The solid's boundary chain now walks the traced splices — the lug/tab sides are radial and the
+  caps tangent in the STEP (2026-08-19, #305 fixed).** Two changes in `realize.rs`: the solid's
+  `certify_boundary` call now requests `traced_splices` (the `false` there was a stale economy from
+  the era when the STEP thinning would have eaten µm-fine tails), and `splice_chain` replaces the
+  one-affine-bridge-per-splice with a monotone hull walk over `chord_pcurve` samples of `sp.curves`
+  — σ-advancing points ≥ 2⁻²⁰ apart become affine pieces, vertical elbow stretches fold into the
+  next advancing piece, endpoints pinned to the rails' `(edge, value)` corners, empty `curves`
+  degenerating to the old single chord. Measured on the two-ramp device STEP (same instrument as
+  the defect): the lug's long flank edges go **15–16° off radial → ≤ 0.4°**, the tab's **4–5.7° →
+  ≤ 0.1°**, and the cap–side junctions **60–84° corners → tangent at render scale** (the dome was
+  already a true rational Bézier; only its approaches were bridged). Both suites and the demo are
+  green (develop ε 3.396, solid ε 1.242, OCCT ok, 0 free edges). Two honest caveats. *Cost*: every
+  splice-chain piece spawns a station (full ruling + both shells), so the solid grew 94 → 446 faces,
+  7 582 → 35 110 STEP entities, 484 → 557 s — growth shape O(features × chords-per-cap), fine at
+  this scale, watch it on feature-dense parts. *Method*: a chord-vs-chord turn metric first showed
+  "66° corners" in the fixed solid; both legs were secants of fast-turning curves at different
+  scales — the dome Bézier's own secant at the matched 0.2°-azimuth scale is the same 25°, so the
+  positions are sagitta-bounded and the kink is sampling, not geometry. Same lesson as the ziggurat,
+  one level up: **a turn angle between chords of curved edges is not a tangent break; compare
+  secants at matched scale, or pull the true end tangents.**
+
+  *2026-08-19 · resolved (device verified; before/after renders in the session scratchpad) · #305*
+
 - **One-vertex-per-piece in the solid's hole/wire channels — fixed with a sagitta-budget chorder;
   and the device's "tip steps" turned out to be the lap's two sheets, not a defect (2026-08-19,
   #304).** Two findings that started as one, separated by measurement.
@@ -798,15 +821,24 @@ fine — this is a log, not a schema.
   nested quads are the **two lap sheets** the tab is cut through. A top-view render of the emitted
   edges shows smooth nested cap arcs. The first diagnosis read 8 vertices as "2 flat strips per
   face" without extracting the curves between them — **vertex positions alone cannot distinguish a
-  ziggurat from a curved wall; pull the edge geometry before calling something faceted.** What
-  remains genuinely open on the device's solid: the cap edges sit ~0.1–0.3 inward of a hand-derived
-  expectation, but the support offset (h = −1/4 region), the w-datum, and the per-sheet cast
-  interact there — settling it needs the exact-overlay instrument built for the flat (expected 3-D
-  cut curves per sheet/face vs emitted edges), plus #303's tail-pass offset which is real either
-  way.
+  ziggurat from a curved wall; pull the edge geometry before calling something faceted.**
 
-  *2026-08-19 · chorder landed (hole/wire channels); device-tip claim retracted on curve
-  extraction · #304*
+  The user then re-asserted their two original observations — caps not tangent to sides, outer
+  sides not along rulings — and per-edge tangent measurement on the STEP **confirms both** (#305):
+  the lug's sides are 15–16° off radial (missing the axis by ~3 mm), the tab's 4–5°, each sweeping
+  exactly ~1.08° of azimuth; the caps are nearly-µ̂-constant shallow arcs at the wrong level (the
+  lug's top flat at r* 11.70 across 13° of azimuth where the true dome runs 11.30→11.92→11.30)
+  meeting the sides at 60–80° corners. The flat from the *same run* overlays the exact cast to
+  ≤ 0.03, so this is the **third channel** diverging: `realize.rs chain()` gives the solid one
+  affine bridge per splice (the 1.08° = the fit-inset gap between certified rail segments, crossed
+  diagonally where the flat traces `sp.curves` through it) and selects a cap piece the flat
+  demonstrably does not render. So the retraction above was itself half-wrong: the tip *walls* are
+  smoothly curved, but the curve they follow is the wrong one. The lesson compounds: **judge an
+  emitted boundary only against the exact expected curve — smoothness is not faithfulness** — and
+  the user's eye on the assembled view beat two rounds of structural forensics.
+
+  *2026-08-19 · chorder landed (hole/wire channels); device defect re-confirmed and re-localized
+  to the boundary-chain channel · #304, #305*
 
 - **The emitted cut features lie ON the exact cast+develop curve — the "invalid-looking" lug is
   the ruled semantics, not an emission bug (2026-08-19).** The user judged the two-ramp pattern
