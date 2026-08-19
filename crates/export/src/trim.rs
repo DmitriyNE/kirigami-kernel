@@ -770,20 +770,112 @@ pub fn trim_rail_chains<B: Backend>(
 ///
 /// σ are dyadic-snapped as before, so exported Bézier control points stay small-denominator.
 /// `None` if the loop is not a single σ-extreme-to-σ-extreme traversal.
-pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
-    use core::cmp::Ordering::{Equal, Greater, Less};
+/// The dyadic exponent of the solid's **chord-sagitta budget**, `2⁻⁸ ≈ 3.9·10⁻³` part units: how
+/// deep a solid wall may cut the corner of a curved boundary piece. Twelve orders above the snap
+/// grid (`2⁻³⁰`), an order and a half under the smallest drawn feature the device carries (the
+/// `r = 0.3` fillets), so a cap or fillet reads as its curve while a straight flank still costs
+/// one chord.
+const CHORD_SAGITTA_BITS: u32 = 8;
+
+/// How often [`chord_pcurve`] may bisect one piece: `2⁵ = 32` chords caps the cost of a piece
+/// however curved, and a `195°` cap already reads smooth at a quarter of that.
+const CHORD_MAX_DEPTH: u32 = 5;
+
+/// Chord one curved boundary piece for the solid: push the `(σ, µ̂)` **start points** of enough
+/// sub-chords that none cuts the curve's corner deeper than the sagitta budget — the piece's end
+/// point is the next piece's start and is *not* pushed. A straight piece costs exactly one point;
+/// a cap or fillet costs what its turning costs, capped at [`CHORD_MAX_DEPTH`] bisections.
+///
+/// This is the #304 fix. The solid's loops are traced coarse on purpose (a hole's σ-stations
+/// drive its face count), and each traced piece used to become **one** chord — so the device's
+/// round tab cap, two pieces at the solid's trace resolution, shipped as a two-step ziggurat. The
+/// piece still carries its true [`PCurve`](develop::pcurve::PCurve), so fidelity is recovered here
+/// at conversion, where the curve is consumed, rather than by raising the trace resolution and
+/// paying for stations the straight stretches never needed.
+///
+/// The sagitta test is exact rational — `cross² > budget²·|chord|²` — with the plain midpoint
+/// distance standing in when the chord's ends coincide (a piece that leaves and returns would
+/// otherwise divide by zero). `None` if the curve fails to evaluate (a pole in the domain).
+pub fn chord_pcurve<B: Backend>(
+    curve: &develop::pcurve::PCurve<B>,
+    out: &mut Vec<(Rat<B>, Rat<B>)>,
+) -> Option<()> {
+    type End<B> = (Rat<B>, [Rat<B>; 2]);
+    fn go<B: Backend>(
+        curve: &develop::pcurve::PCurve<B>,
+        b2: &Rat<B>,
+        a: End<B>,
+        b: End<B>,
+        depth: u32,
+        out: &mut Vec<(Rat<B>, Rat<B>)>,
+    ) -> Option<()> {
+        let ((t0, p0), (t1, p1)) = (a, b);
+        if depth > 0 {
+            let tm = t0.add(&t1).mul(&Rat::new(1, 2));
+            let pm = curve.eval(&tm)?;
+            let (dx, dy) = (p1[0].sub(&p0[0]), p1[1].sub(&p0[1]));
+            let (ex, ey) = (pm[0].sub(&p0[0]), pm[1].sub(&p0[1]));
+            let len2 = dx.mul(&dx).add(&dy.mul(&dy));
+            let bent = if len2.sign() > 0 {
+                let cross = dx.mul(&ey).sub(&dy.mul(&ex));
+                cross.mul(&cross).cmp(&b2.mul(&len2)) == core::cmp::Ordering::Greater
+            } else {
+                ex.mul(&ex).add(&ey.mul(&ey)).cmp(b2) == core::cmp::Ordering::Greater
+            };
+            if bent {
+                let mid = (tm, pm);
+                go(curve, b2, (t0, p0), mid.clone(), depth - 1, out)?;
+                return go(curve, b2, mid, (t1, p1), depth - 1, out);
+            }
+        }
+        out.push((p0[0].clone(), p0[1].clone()));
+        Some(())
+    }
+    let budget = Rat::<B>::new(1, 1i128 << CHORD_SAGITTA_BITS);
+    let p_lo = curve.eval(&curve.domain.lo)?;
+    let p_hi = curve.eval(&curve.domain.hi)?;
+    go(
+        curve,
+        &budget.mul(&budget),
+        (curve.domain.lo.clone(), p_lo),
+        (curve.domain.hi.clone(), p_hi),
+        CHORD_MAX_DEPTH,
+        out,
+    )
+}
+
+/// A developed loop's `(σ, µ̂)` vertex sequence at **solid fidelity**: every piece's start point
+/// plus the interior chord points [`chord_pcurve`] owes the sagitta budget, consecutive
+/// sub-[`min_export_step`] vertices merged. σ is snapped to the `2⁻³⁰` dyadic grid (the loop's
+/// own corners already are); µ̂ is left exact — [`hole_rail`] wants the raw rail intercepts, and
+/// [`hole_poly`] snaps it itself. The one sequence both consume, so the band channel and the
+/// polygon channel cannot disagree about what the loop looks like. `None` if a piece is not a
+/// [`BoundaryArc::Curve`].
+fn loop_chords<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
     let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
-    // The loop's corners in traversal order.
-    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len() * 2);
     for arc in &hole.arcs {
         match arc {
             BoundaryArc::Curve { curve, .. } => {
-                let [sg, m] = curve.eval(&curve.domain.lo)?;
-                pts.push((snap(&sg), m));
+                let mut raw: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+                chord_pcurve(curve, &mut raw)?;
+                for (sg, m) in raw {
+                    let p = (snap(&sg), m);
+                    if pts.last().is_none_or(|q| export_apart(q, &p)) {
+                        pts.push(p);
+                    }
+                }
             }
             _ => return None,
         }
     }
+    Some(pts)
+}
+
+pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
+    use core::cmp::Ordering::{Equal, Greater, Less};
+    // The loop's corners in traversal order, chorded at the solid's sagitta budget.
+    let pts: Vec<(Rat<B>, Rat<B>)> = loop_chords(hole)?;
     if pts.len() < 4 {
         return None;
     }
@@ -886,8 +978,10 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
 /// opposed to [`hole_rail`]'s near/far band.
 ///
 /// Every loop is expressible this way, including the ones that turn around in σ and therefore have
-/// no near/far split at all: the pieces are straight in `(σ, µ̂)` and this is simply their vertex
-/// sequence. `None` if a piece is not a straight segment.
+/// no near/far split at all. A **curved** piece (the p-curve rails cuts have carried since PC.4)
+/// is chorded against the solid's sagitta budget by [`chord_pcurve`] — one vertex per piece was
+/// the #304 ziggurat: the device's round tab cap, two traced pieces at the solid's resolution,
+/// shipped as two flat steps. `None` if a piece is not a [`BoundaryArc::Curve`].
 ///
 /// **Vertices closer together than the export profile can carry are merged**, and the reason is not
 /// tidiness. The tracer samples one grid step (`2⁻³⁰`) inside each cell end — that is what keeps a
@@ -905,17 +999,13 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
 /// that device, so the merge is invisible to the certified bound and decisive for the exporter.
 pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
     let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
-    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
-    for arc in &hole.arcs {
-        match arc {
-            BoundaryArc::Curve { curve, .. } => {
-                let [sg, m] = curve.eval(&curve.domain.lo)?;
-                let p = (snap(&sg), snap(&m));
-                if pts.last().is_none_or(|q| export_apart(q, &p)) {
-                    pts.push(p);
-                }
-            }
-            _ => return None,
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len() * 2);
+    for (sg, m) in loop_chords(hole)? {
+        // `loop_chords` snaps σ and keeps µ̂ exact for the band channel; the polygon is emitted
+        // geometry, so µ̂ takes the same grid — and the merge re-runs on the re-snapped pair.
+        let p = (sg, snap(&m));
+        if pts.last().is_none_or(|q| export_apart(q, &p)) {
+            pts.push(p);
         }
     }
     // The wrap-around pair too — the loop closes on its first vertex, and a last vertex within a
@@ -1742,5 +1832,95 @@ mod tests {
             Verdict::Refuted(w) => format!("Refuted({w:?})"),
             Verdict::Unresolved(_) => "Unresolved".into(),
         }
+    }
+
+    /// A p-curve `t ↦ (t, µ̂(t))` over `[lo, hi]` with polynomial µ̂ — the chorder's test subject.
+    fn pcurve_graph(mu_coeffs: &[i128], lo: i128, hi: i128) -> develop::pcurve::PCurve<Bignum> {
+        develop::pcurve::PCurve {
+            sigma: RatFunc::from_poly(Poly::from_coeffs(vec![Q::from_i128(0), Q::from_i128(1)])),
+            mu: RatFunc::from_poly(Poly::from_coeffs(
+                mu_coeffs.iter().map(|&c| Q::from_i128(c)).collect(),
+            )),
+            domain: Interval {
+                lo: Q::from_i128(lo),
+                hi: Q::from_i128(hi),
+            },
+        }
+    }
+
+    /// [`chord_pcurve`] — the #304 fix. A straight piece stays one chord; a curved piece is
+    /// subdivided until every chord's midpoint sagitta is inside the `2⁻⁸` budget (checked against
+    /// the true curve, not against the chorder's own criterion); a violently curved piece is
+    /// capped at `2⁵` chords. Every emitted point lies **on** the curve — the chorder samples, it
+    /// never approximates.
+    #[test]
+    fn chord_pcurve_meets_the_sagitta_budget() {
+        // Straight: µ̂ = 2t over [0, 1] — one chord, its start point only.
+        let mut pts: Vec<(Q, Q)> = Vec::new();
+        chord_pcurve(&pcurve_graph(&[0, 2], 0, 1), &mut pts).unwrap();
+        assert_eq!(pts.len(), 1, "a straight piece costs exactly one chord");
+
+        // Curved: µ̂ = t² over [-1, 1] — the single chord's sagitta is 1/2, 128× the budget.
+        let parabola = pcurve_graph(&[0, 0, 1], -1, 1);
+        let mut pts: Vec<(Q, Q)> = Vec::new();
+        chord_pcurve(&parabola, &mut pts).unwrap();
+        assert!(
+            pts.len() >= 8,
+            "the parabola must subdivide, got {} chords",
+            pts.len()
+        );
+        // Emitted points are curve *samples*: µ̂ = σ² exactly.
+        for (s, m) in &pts {
+            assert_eq!(m.cmp(&s.mul(s)), core::cmp::Ordering::Equal);
+        }
+        // The realized polyline stays inside the budget against the true curve, measured densely
+        // (for a parabola the worst chord deviation is at the parameter midpoint, which is the
+        // chorder's own probe — so the budget is met exactly, not just approximately).
+        let budget = 1.0 / 256.0;
+        let mut poly: Vec<(f64, f64)> = pts.iter().map(|(s, m)| (f(s), f(m))).collect();
+        poly.push((1.0, 1.0)); // the piece's end point (the next piece's start in a loop)
+        for k in 0..=400 {
+            let t = -1.0 + 2.0 * (k as f64) / 400.0;
+            let (px, py) = (t, t * t);
+            let d = poly
+                .windows(2)
+                .map(|w| {
+                    let (ax, ay, bx, by) = (w[0].0, w[0].1, w[1].0, w[1].1);
+                    let (dx, dy) = (bx - ax, by - ay);
+                    let len2 = dx * dx + dy * dy;
+                    let u = (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0);
+                    let (ex, ey) = (ax + u * dx - px, ay + u * dy - py);
+                    (ex * ex + ey * ey).sqrt()
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                d <= budget * 1.001,
+                "curve point at t = {t} is {d:.2e} off the polyline (budget {budget:.2e})"
+            );
+        }
+
+        // Violently curved, uniform: the radius-8 half-circle `t ↦ 8·(1−t², 2t)/(1+t²)` wants
+        // ~2⁶ chords everywhere at once (sagitta is curvature-uniform, unlike the parabola's
+        // steep flanks, which flatten *perpendicular* sagitta and legitimately stop early), so
+        // every branch runs into the cap: exactly 2⁵ chords.
+        let one_plus_t2 =
+            Poly::from_coeffs(vec![Q::from_i128(1), Q::from_i128(0), Q::from_i128(1)]);
+        let circle = develop::pcurve::PCurve {
+            sigma: RatFunc::new(
+                Poly::from_coeffs(vec![Q::from_i128(8), Q::from_i128(0), Q::from_i128(-8)]),
+                one_plus_t2.clone(),
+            ),
+            mu: RatFunc::new(
+                Poly::from_coeffs(vec![Q::from_i128(0), Q::from_i128(16)]),
+                one_plus_t2,
+            ),
+            domain: Interval {
+                lo: Q::from_i128(-1),
+                hi: Q::from_i128(1),
+            },
+        };
+        let mut pts: Vec<(Q, Q)> = Vec::new();
+        chord_pcurve(&circle, &mut pts).unwrap();
+        assert_eq!(pts.len(), 32, "the depth cap bounds a piece at 2⁵ chords");
     }
 }

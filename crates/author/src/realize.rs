@@ -30,8 +30,8 @@ use export::brep::Brep;
 use export::brep_build::{HoleRail, WirePoint, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
-    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_poly,
-    hole_rail, shadow_hole_loops, surface_hole_loop,
+    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, chord_pcurve,
+    flat_to_poly, hole_poly, hole_rail, shadow_hole_loops, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
 
@@ -2148,17 +2148,20 @@ pub(crate) fn solid_brep<B: Backend>(
             WirePoint::OnOuter(outer[0].0.lo.clone()),
             WirePoint::OnOuter(outer[outer.len() - 1].0.hi.clone()),
         ];
-        // …then the arc back, **skipping its first sample**: that one sits on the junction the rail
-        // vertex above already carries, and to within the ε-wide ruling gap it is the same point.
-        // Keeping both would put a sub-ε radial edge in the wall (the shape #267 refused in STEP),
-        // and asking `inside_band` whether a junction point is strictly inside the rail it lies on
-        // is a question with no right answer.
-        for piece in arc.iter().skip(1) {
-            let p = match piece.eval(&piece.domain.lo) {
-                Some(v) => v,
-                None => return Verdict::Refuted(PartFault::Pole),
-            };
-            wire.push(WirePoint::At(snap30(&p[0]), snap30(&p[1])));
+        // …then the arc back — each piece chorded at the solid's sagitta budget (one chord per
+        // piece was #304's ziggurat) — **skipping its first point**: that one sits on the junction
+        // the rail vertex above already carries, and to within the ε-wide ruling gap it is the
+        // same point. Keeping both would put a sub-ε radial edge in the wall (the shape #267
+        // refused in STEP), and asking `inside_band` whether a junction point is strictly inside
+        // the rail it lies on is a question with no right answer.
+        let mut arc_pts: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+        for piece in arc.iter() {
+            if chord_pcurve(piece, &mut arc_pts).is_none() {
+                return Verdict::Refuted(PartFault::Pole);
+            }
+        }
+        for (sg, m) in arc_pts.into_iter().skip(1) {
+            wire.push(WirePoint::At(snap30(&sg), snap30(&m)));
         }
         let eps = eps_all.clone();
         return wire_solid(part, built, structure, wire, Some(outer), eps);
@@ -2209,7 +2212,9 @@ pub(crate) fn solid_brep<B: Backend>(
 /// σ-station, so segment count drives the solid's face count directly (48 segments cost ~770 faces
 /// on the doctest panel, 16 cost ~250). The solid is already emitted at the low-degree STEP profile,
 /// so it takes the coarser loop; the flat pattern — the artifact that is actually manufactured —
-/// keeps the fine one.
+/// keeps the fine one. The coarse trace is a *station* economy, not a shape one: each curved piece
+/// is chorded against the sagitta budget at conversion (`export::trim::chord_pcurve`, #304), so a
+/// cap still reads as its curve while its stations stay few.
 #[allow(clippy::type_complexity)]
 fn solid_holes<B: Backend>(
     part: &Part<B>,

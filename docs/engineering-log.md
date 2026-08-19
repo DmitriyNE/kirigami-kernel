@@ -768,6 +768,73 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **One-vertex-per-piece in the solid's hole/wire channels — fixed with a sagitta-budget chorder;
+  and the device's "tip steps" turned out to be the lap's two sheets, not a defect (2026-08-19,
+  #304).** Two findings that started as one, separated by measurement.
+
+  The real defect: `export::trim::hole_poly` emitted **one vertex per `BoundaryArc` piece** and
+  silently chorded curved pieces — its own doc asserted "the pieces are straight in (σ, µ̂)", stale
+  since the p-curve milestone made cut rails quadric; `hole_rail`'s chains are affine-only
+  (`intercept + slope`), and the mixed-boundary end-arc wire sampled one point per piece
+  (`realize.rs`). So in the channels those feed — interior holes (drills, traced footprints, the
+  L-slot class), `outline_solid` contours, mixed-boundary arcs — a cap-sized feature quantizes to
+  piece-count chords no matter what `--segments` says, invisibly to every certificate (chord
+  sagitta ≪ the solid ε): the [faithfulness-is-monotone] class. Fixed by
+  `export::trim::chord_pcurve`: exact-rational bisection of a piece until every chord's
+  *perpendicular* (σ,µ̂) sagitta is under `2⁻⁸`, capped at `2⁵` chords/piece; `loop_chords` is the
+  one vertex sequence `hole_poly` and `hole_rail` now both consume, and the end-arc wire chords
+  through the same helper. Straight pieces still cost one chord, so the station economy stands.
+  Unit-tested (straight → 1 chord; parabola → within budget against the *true curve*; a rational
+  half-circle → exactly the cap). One method note: the criterion measures perpendicular sagitta,
+  so a steep stretch legitimately stops subdividing early — a first test expecting the cap on
+  `100·t²` was wrong, the code was right.
+
+  The retraction: the two-ramp device's STEP is **bit-identical** under this fix, because the
+  device has **no interior holes** — both cut files are its *boundary chains* (fitted rational
+  rails + splices), a third channel. And the viewer's "two steps at the tab tip" are not
+  quantization at all: extracting the STEP's actual edge geometry shows each tip curve is a
+   12-control-point rational B-spline dipping mid-tab (a correctly *curved* cap wall), the straight
+  side edges run exactly along the surface normal with |Δ| = the sheet thickness, and the two
+  nested quads are the **two lap sheets** the tab is cut through. A top-view render of the emitted
+  edges shows smooth nested cap arcs. The first diagnosis read 8 vertices as "2 flat strips per
+  face" without extracting the curves between them — **vertex positions alone cannot distinguish a
+  ziggurat from a curved wall; pull the edge geometry before calling something faceted.** What
+  remains genuinely open on the device's solid: the cap edges sit ~0.1–0.3 inward of a hand-derived
+  expectation, but the support offset (h = −1/4 region), the w-datum, and the per-sheet cast
+  interact there — settling it needs the exact-overlay instrument built for the flat (expected 3-D
+  cut curves per sheet/face vs emitted edges), plus #303's tail-pass offset which is real either
+  way.
+
+  *2026-08-19 · chorder landed (hole/wire channels); device-tip claim retracted on curve
+  extraction · #304*
+
+- **The emitted cut features lie ON the exact cast+develop curve — the "invalid-looking" lug is
+  the ruled semantics, not an emission bug (2026-08-19).** The user judged the two-ramp pattern
+  visually wrong: the outer lug's round cap looks non-tangent to its sides, and the lug's sides do
+  not run along rulings the way the inner tab's do. Overlaying the *closed-form ideal map* on the
+  emitted SVG (the drafted-apex cast per the 2026-08-17 cut-file ruling — perpendicular-to-slant
+  gauge, apex on the axis at `z_g + r_g·tanβ`, so `r* = t·r_s` with `t = tanβ·z_A/(r_s +
+  tanβ(z_A−z_g))`, then `R = r*/sinβ`, `θ = φ·sinβ`) shows the head-pass images match to **0.028
+  (lug) / 0.011 (tab)** flat units — including the exact radial extents (predicted lug tip 17.785
+  vs measured 17.80; tab cap bottom 4.119 vs 4.121). Both drawn flanks *are* radial in the pattern
+  (0.5–0.6° off the apex ray) on the outer cut too. What the eye objects to is the map itself: the
+  outer cast is **anisotropic** (radial ×0.50 vs azimuthal ×0.87 at the lug tip, 1.5→1.7:1 over the
+  feature), so the drawn 1.01-long flanks develop to 0.62-unit stubs and the visible "sides" are
+  the cap's shoulders; and the r=1.5875 cap develops with radius of curvature **0.59 at the flank
+  junction vs 2.33 at the top** — G1 is preserved exactly (diffeomorphism invariant), but a 4:1
+  curvature spike at the junction reads as a corner. The inner tab sits where the same map is
+  near-isotropic (1.08–1.14:1), which is why it looks like the drawing. Method note: the ideal-map
+  overlay is the cheap decisive faithfulness instrument — a per-feature, shape-valued comparison
+  that took one script, where per-vertex turn angles drowned in the SVG's 3-decimal quantization.
+
+  One genuine defect fell out (#303): the **tail-pass** images are systematically ~0.05–0.08 off
+  the ideal (lug 0.078; tab 0.055 plus a −0.64° rotation) where the head pass is ≤0.03. The two
+  passes are isometric images of the same physical hole and must be congruent; suspects are the
+  σ'=−1/σ re-centered chart / the tail-pass anchor. Within certified ε 3.46 — invisible to every
+  certificate, caught only by the overlay.
+
+  *2026-08-19 · assessed, no fix applied (user is weighing a reengineering pass) · #303*
+
 - **A gap between two tangent rulings is not a window until its sign says so — and the outermost
   stretch is a window too (2026-08-19, #302).** The two-ramp `lapped_cone` demo — the only device
   carrying *both* cut files — reported `develop Unresolved at ε 7.000e0` and `solid Unresolved at
