@@ -338,18 +338,79 @@ fn trim_surf<B: Backend>(
 fn stitched_poly_chain<B: Backend>(
     chain: &[(Interval<B>, RatFunc<B>)],
 ) -> Vec<(Interval<B>, RatFunc<B>)> {
-    let mut v: Vec<(Interval<B>, RatFunc<B>)> = chain
-        .iter()
-        .map(|(iv, mu)| (iv.clone(), poly_rail(mu)))
-        .collect();
+    let mut v = poly_chain(chain);
+    stitch_chain(&mut v);
+    v
+}
+
+/// The stitch of [`stitched_poly_chain`] on an already-polynomial chain, made **local**: the
+/// boundary residual is absorbed by an affine ramp on the right piece that vanishes at its far
+/// end, instead of a constant shift. A constant would carry the residual into every piece
+/// downstream — harmless at the bisection-precision residuals the stitch was built for
+/// (O(1e-18)), but a boundary [`snap_chain_bounds`] moved across a steep piece hands the stitch a
+/// residual of `slope · step` (measured 2.7e-3 on the device's tab window), and dragging the
+/// whole rest of the boundary by that much to fix one handoff is the tail wagging the dog. The
+/// ramp keeps the piece's far end bit-exact, so nothing propagates — which is also what keeps
+/// every later vertex on its rail (a propagated shift pulled rails off their vertices and OCCT
+/// refused the edge).
+fn stitch_chain<B: Backend>(v: &mut [(Interval<B>, RatFunc<B>)]) {
+    use core::cmp::Ordering;
     for i in 1..v.len() {
         let b = v[i].0.lo.clone();
+        let far = v[i].0.hi.clone();
         if let (Some(p), Some(cur)) = (v[i - 1].1.eval(&b), v[i].1.eval(&b)) {
-            let shift = p.sub(&cur);
-            v[i].1 = v[i].1.add(&RatFunc::from_poly(Poly::constant(shift)));
+            let d = p.sub(&cur);
+            if d.sign() == 0 {
+                continue;
+            }
+            if far.cmp(&b) == Ordering::Greater {
+                // d · (far − σ) / (far − b): d at the boundary, 0 at the far end.
+                let denom = far.sub(&b);
+                let slope = Rat::from_i128(0).sub(&d.div(&denom));
+                let icept = d.mul(&far).div(&denom);
+                v[i].1 = v[i]
+                    .1
+                    .add(&RatFunc::from_poly(Poly::from_coeffs(vec![icept, slope])));
+            } else {
+                v[i].1 = v[i].1.add(&RatFunc::from_poly(Poly::constant(d)));
+            }
         }
     }
-    v
+}
+
+/// Move every interior piece boundary of `chain` that lies within [`min_export_step`] of a
+/// **surviving** station onto that station (widths stay positive; the boundary's own σ was pushed
+/// into the station set, so after [`thin_stations`] a survivor is always within a step).
+///
+/// This is what makes station thinning sound for the *rails* and not only the lids: two chains'
+/// boundaries may land within the thinning gap of each other (the device's tab and lug flanks are
+/// radially aligned by design), and once the pair is thinned to one station, the slice beside it
+/// would straddle the other chain's piece boundary — its lid evaluating one piece across a
+/// boundary the neighbour's lid respects, an exact cross-ring mismatch the builder refuses (#309).
+/// Snapping the boundary to the survivor moves the handoff by at most a step (`2⁻²⁰` of σ), and
+/// the stitch that runs **after** it re-establishes bit-exact C0 at the moved boundary.
+fn snap_chain_bounds<B: Backend>(chain: &mut [(Interval<B>, RatFunc<B>)], stations: &[Rat<B>]) {
+    use core::cmp::Ordering::Less;
+    let step = crate::trim::min_export_step::<B>();
+    for i in 1..chain.len() {
+        let b = chain[i].0.lo.clone();
+        let gap = |st: &Rat<B>| {
+            let d = st.sub(&b);
+            if d.sign() < 0 { d.neg() } else { d }
+        };
+        let near = stations
+            .iter()
+            .filter(|st| gap(st).cmp(&step) != core::cmp::Ordering::Greater)
+            .min_by(|a, b| gap(a).cmp(&gap(b)));
+        if let Some(st) = near
+            && st.cmp(&b) != core::cmp::Ordering::Equal
+            && chain[i - 1].0.lo.cmp(st) == Less
+            && st.cmp(&chain[i].0.hi) == Less
+        {
+            chain[i - 1].0.hi = st.clone();
+            chain[i].0.lo = st.clone();
+        }
+    }
 }
 
 /// Whether the rational Bézier over `[a, b]` with denominator `den` has **sign-definite weights** —
@@ -2193,10 +2254,11 @@ pub fn brep_trim_solid_regions<B: Backend>(
     // **negative constant** denominator (an inward-facing profile edge — a sign convention, not a
     // geometry) makes the raw anchor's denominator negative throughout, so `sigma_splits` refuses a
     // range every emitted patch is perfectly well-conditioned over. `poly_rail` divides that
-    // constant out, which is what the patches see.
-    let inner = stitched_poly_chain(inner);
-    let outer = stitched_poly_chain(outer);
-    let (inner, outer) = (&inner[..], &outer[..]);
+    // constant out, which is what the patches see. The **stitch** waits until after the stations
+    // are thinned and the piece boundaries snapped onto the survivors ([`snap_chain_bounds`]) —
+    // C0 must be re-established exactly at the boundaries the slices actually evaluate.
+    let mut inner = poly_chain(inner);
+    let mut outer = poly_chain(outer);
 
     // The piece of a piecewise boundary covering a σ.
     // The region chart covering σ (by containment).
@@ -2224,8 +2286,8 @@ pub fn brep_trim_solid_regions<B: Backend>(
     let mut stations = Vec::new();
     for (iv, ch) in charts {
         let rmid = iv.lo.add(&iv.hi).mul(&Rat::new(1, 2));
-        let in_p = piece_at(inner, &rmid)?.clone();
-        let out_p = piece_at(outer, &rmid)?.clone();
+        let in_p = piece_at(&inner, &rmid)?.clone();
+        let out_p = piece_at(&outer, &rmid)?.clone();
         stations.extend(sigma_stations(ch, iv, w, &in_p, &out_p)?);
         stations.push(iv.lo.clone());
         stations.push(iv.hi.clone());
@@ -2236,6 +2298,13 @@ pub fn brep_trim_solid_regions<B: Backend>(
     }
     stations.sort();
     let stations = thin_stations(stations, &sigma.hi);
+    // Piece handoffs happen where the surviving stations are, exactly (see [`snap_chain_bounds`]);
+    // C0 is then re-established bit-exactly at the moved boundaries.
+    snap_chain_bounds(&mut inner, &stations);
+    snap_chain_bounds(&mut outer, &stations);
+    stitch_chain(&mut inner);
+    stitch_chain(&mut outer);
+    let (inner, outer) = (&inner[..], &outer[..]);
     let nst = stations.len();
     if nst < 2 {
         return None;

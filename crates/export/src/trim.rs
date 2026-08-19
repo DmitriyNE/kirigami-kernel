@@ -1146,8 +1146,10 @@ pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>
 
 /// The dyadic exponent of [`hole_poly`]'s minimum emitted step, `2⁻²⁰ ≈ 9.5·10⁻⁷`: coarse enough
 /// that every emitted edge clears OCCT's `10⁻⁷` vertex tolerance by an order, fine enough to sit
-/// far below any certified cut bound.
-pub(crate) const MIN_STEP_BITS: u32 = 20;
+/// far below any certified cut bound. Public because a chain producer must not emit piece
+/// boundaries closer than this: the solid builder's station thinning merges such a pair, and the
+/// slice then straddles a rail-piece boundary its lids evaluate only one side of.
+pub const MIN_STEP_BITS: u32 = 20;
 
 /// [`MIN_STEP_BITS`] as a rational — the smallest `(σ, µ̂)` step the export profile can carry.
 pub(crate) fn min_export_step<B: Backend>() -> Rat<B> {

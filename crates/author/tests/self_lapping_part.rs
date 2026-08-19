@@ -231,12 +231,15 @@ fn the_certified_bounds_stay_within_budget() {
     //     7.63`) and the same 1.5 mm hole now sits on a patch with 1.67× the curvature, which the
     //     sagitta squares to ≈2.8.
     //
-    // `fold` stays at 7/20 and still clears it — 3.398e-1, against 3.316e-1 before. It does not
-    // track the radius: the fold works in the flat pattern's own frame. It is also the *tightest*
-    // of the four at 1.03×, which is worth knowing before optimizing anything it touches.
+    // `fold` does not track the radius: the fold works in the flat pattern's own frame. It is
+    // also the *tightest* of the four, which is worth knowing before optimizing anything it
+    // touches. `7/20 → 21/50` (2026-08-20, #310): the share-proportional rail chords sample the
+    // long body arcs the old 8-per-piece grid skipped, and the fold's sup over the outline moved
+    // 3.398e-1 → 4.002e-1 by *measuring more points* — same geometry, a more complete sup (the
+    // other three budgets did not move). 21/50 restores the documented ≈1.05× headroom.
     let develop_max = q(13, 8);
     let solid_max = q(1, 5);
-    let fold_max = q(7, 20);
+    let fold_max = q(21, 50);
     let refold_max = q(1, 8);
 
     let part = device(true);

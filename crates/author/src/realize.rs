@@ -529,14 +529,24 @@ fn rmax<B: Backend>(a: &Rat<B>, b: &Rat<B>) -> Rat<B> {
 /// The σ-advance floor between splice-chain stations, `2⁻¹²`. Every chain piece end becomes a
 /// builder **station** — a full ruling with wall faces on both shells — so two stations closer
 /// than this made micron-wide sliver faces the STEP translators choke on (measured: 2·10⁻⁴-long
-/// edges where the connector's elbow spanned only its root brackets, ~10⁻⁶ in σ). Points inside
-/// the floor fold into the next advancing piece; the near-vertical stretch that results deviates
-/// from the true boundary by at most the neighbours' µ̂-variation over the floor — budget-class,
-/// since the floor is chosen well under the [`chord_pcurve`] sagitta budget's σ-scale.
+/// edges where the connector's elbow spanned only its root brackets, ~10⁻⁶ in σ). The floor is
+/// *not* licence to drop geometry: a sub-floor stretch whose µ̂ moves (a drawn radial flank) is a
+/// **cliff** and keeps its full µ̂-travel as a steep affine piece over exactly one floor-wide
+/// window (see [`splice_nodes`]). Folding such a stretch into a neighbouring piece was #309: the
+/// piece cut a diagonal across the flank (a razor-thin wedge in the sheet), and where the fold
+/// landed inside a merged interpolant the boundary oscillated 0.5 where the drawing has a dome.
 const SPLICE_SLICE_BITS: u32 = 12;
 
-/// Cap on the points one merged splice piece may interpolate (see [`splice_chain`]).
+/// Cap on the nodes one merged splice piece may interpolate (see [`splice_chain`]).
 const SPLICE_MERGE_MAX: usize = 12;
+
+/// One station candidate of a splice walk: a route point that survives the floor thinning,
+/// anchored to the route index it stands for (the coverage anchor for [`splice_fits_route`]).
+struct SpliceNode<B: Backend> {
+    s: Rat<B>,
+    m: Rat<B>,
+    idx: usize,
+}
 
 /// Append a [`Splice`]'s stretch of a solid chain: the **traced route** across the gap — the same
 /// tails-and-connector the flat pattern draws — as few, curved `(band, rail)` pieces.
@@ -546,60 +556,297 @@ const SPLICE_MERGE_MAX: usize = 12;
 /// lug came out with sides 15° off their rulings and a flat top at the two rails' shared level
 /// where the drawing has a dome.
 ///
-/// Three disciplines shape the walk (#306):
-/// - **Station floor.** Only points at least [`SPLICE_SLICE_BITS`] of σ apart survive — a piece
-///   end is a builder station, and closer pairs made sliver faces. A vertical stretch (the
-///   connector's elbow — a drawn radial flank) is unrepresentable in a µ̂(σ) graph anyway and
-///   folds into the next advancing piece's slope, now with a legal width.
-/// - **Merged curved pieces.** Runs of surviving points are interpolated by one low-degree
-///   polynomial piece (Newton form through up to 4 spread nodes), adopted only where it passes
-///   through every skipped point within the [`chord_pcurve`] sagitta budget — the same trust
-///   class as the chords it replaces (exact interpolation of certified route points). A steep
-///   flank breaks the run and stays its own affine piece. This is what keeps the station count
-///   near the pre-#305 economy while the boundary follows the drawn curves.
-/// - **Pinned ends.** With the #307 rail-end pin the route's first and last points *are* the
-///   rails' `(edge, value)` corners; the walk still pins both ends so an empty route degenerates
-///   to the old single chord.
+/// The walk ([`splice_nodes`]) thins the route to station nodes at least one floor apart, and the
+/// merge ([`splice_merge`]) coalesces runs of nodes into low-degree interpolants — every piece
+/// checked against the whole stretch of certified route it covers ([`splice_fits_route`]), not
+/// merely its own interpolation nodes. A drawn radial flank is the node-to-node chord containing
+/// its climb: at most two floors wide, so the climb sits within the sagitta budget's own
+/// σ-equivalent of where the drawing puts it, and no station pair goes sub-floor (#309 — folding
+/// such a stretch into an unchecked neighbour was how the tab got a razor wedge). The route's
+/// first and last points are the rails' `(edge, value)` corners (the #307 pin), carried
+/// bit-exactly. A route the floor-scale graph model cannot carry — a σ-overhang, a sub-floor
+/// feature no piece can honour — falls back to [`splice_fallback`]'s station-per-chord chain:
+/// subdivided, but never distorted.
 fn splice_chain<B: Backend>(sp: &Splice<B>, out: &mut Chain<B>) -> Result<(), PartFault> {
     use core::cmp::Ordering;
-    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    let start = (sp.edge_a.clone(), sp.v_a.clone());
+    let end = (sp.edge_b.clone(), sp.v_b.clone());
+    if end.0.cmp(&start.0) != Ordering::Greater {
+        return Ok(());
+    }
+    let mut raw: Vec<(Rat<B>, Rat<B>)> = Vec::new();
     for curve in &sp.curves {
-        if chord_pcurve(curve, &mut pts).is_none() {
+        if chord_pcurve(curve, &mut raw).is_none() {
             return Err(PartFault::Pole);
         }
     }
-    // The station-floor walk: strictly σ-ascending survivors, ends pinned to the rail corners.
-    let floor = Rat::<B>::new(1, 1i128 << SPLICE_SLICE_BITS);
-    let start = (sp.edge_a.clone(), sp.v_a.clone());
-    let end = (sp.edge_b.clone(), sp.v_b.clone());
-    let mut kept: Vec<(Rat<B>, Rat<B>)> = vec![start];
-    for (s, m) in pts {
+    // The route: the pinned corners around the traced points strictly between them.
+    let mut route: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(raw.len() + 2);
+    route.push(start.clone());
+    for (s, m) in raw {
         let s = snap30(&s);
-        if s.sub(&kept.last().expect("non-empty").0).cmp(&floor) != Ordering::Greater {
-            continue;
+        if s.cmp(&start.0) == Ordering::Greater && end.0.cmp(&s) == Ordering::Greater {
+            route.push((s, m));
         }
-        if end.0.sub(&s).cmp(&floor) != Ordering::Greater {
-            break;
-        }
-        kept.push((s, m));
     }
-    if end.0.cmp(&kept.last().expect("non-empty").0) == Ordering::Greater {
-        kept.push(end);
-    } else if kept.len() > 1 {
-        *kept.last_mut().expect("non-empty") = end;
-    } else {
+    route.push(end);
+    let floor = Rat::<B>::new(1, 1i128 << SPLICE_SLICE_BITS);
+    let budget = Rat::<B>::new(1, 1i128 << 8);
+    if let Some(nodes) = splice_nodes(&route, &floor, &budget)
+        && let Some(chain) = splice_merge(&route, &nodes, &budget, &floor)
+    {
+        out.extend(chain);
         return Ok(());
     }
-    // The merge pass: greedily extend each run while one interpolating piece passes through
-    // every interior point within the sagitta budget.
-    let budget = Rat::<B>::new(1, 1i128 << 8);
+    splice_fallback(&route, out)
+}
+
+/// The station nodes of a splice route: one per cluster of route points whose σ-hull stays
+/// within a floor (its first point), the pinned end appended last.
+///
+/// A cluster whose µ̂-jump exceeds the sagitta budget — a drawn radial flank — and whose interior
+/// stays inside its endpoints' µ̂-range (± budget) gets a **window pair** instead, one floor wide
+/// around its hull, so the climb survives as its own steep affine piece rather than smearing
+/// across the whole gap to the next node; but only where there is **room** (a floor beyond the
+/// window on each side, a pinned corner anchoring its own side). Where there is no room the
+/// stretch is dense, node gaps are floor-scale anyway, and [`splice_fits_route`]'s horizontal
+/// escape carries the climb without a window — that measured split is what keeps windows from
+/// crowding each other on fillet chains (#309's second round).
+///
+/// Two nodes closer than a floor merge their clusters (a window demotes to a plain node first)
+/// and the walk re-emits; a merged cluster's σ-hull is capped at two floors so a folded point
+/// never sits farther than that from the boundary that carries its µ̂-travel.
+///
+/// `None` — for [`splice_fallback`] — when σ retreats beyond the floor (an overhang: not a µ̂(σ)
+/// graph) or crowding merges grow a cluster past the hull cap.
+fn splice_nodes<B: Backend>(
+    route: &[(Rat<B>, Rat<B>)],
+    floor: &Rat<B>,
+    budget: &Rat<B>,
+) -> Option<Vec<SpliceNode<B>>> {
+    use core::cmp::Ordering::{Greater, Less};
+    let last = route.len() - 1;
+    // Clusters, as inclusive route-index ranges over `route[..last]`; the pinned end is its own
+    // final node.
+    let mut clusters: Vec<(usize, usize)> = Vec::new();
+    let mut c0 = 0usize;
+    let mut hull_lo = route[0].0.clone();
+    let mut hull_hi = route[0].0.clone();
+    for (k, (s, _)) in route.iter().enumerate().take(last).skip(1) {
+        let lo = if s.cmp(&hull_lo) == Less { s } else { &hull_lo };
+        let hi = if s.cmp(&hull_hi) == Greater {
+            s
+        } else {
+            &hull_hi
+        };
+        if hi.sub(lo).cmp(floor) == Greater {
+            if s.cmp(&hull_hi) != Greater {
+                return None; // σ retreats beyond the floor: an overhang, not a graph
+            }
+            clusters.push((c0, k - 1));
+            c0 = k;
+            hull_lo = s.clone();
+            hull_hi = s.clone();
+        } else {
+            hull_lo = lo.clone();
+            hull_hi = hi.clone();
+        }
+    }
+    clusters.push((c0, last - 1));
+
+    let half = Rat::<B>::new(1, 1i128 << (SPLICE_SLICE_BITS + 1));
+    let hull_cap = floor.add(floor);
+    let mut demoted = vec![false; clusters.len()];
+    loop {
+        let mut nodes: Vec<SpliceNode<B>> = Vec::new();
+        let mut owner: Vec<usize> = Vec::new();
+        for (ci, (a, b)) in clusters.iter().cloned().enumerate() {
+            let (mut c_lo, mut c_hi) = (route[a].0.clone(), route[a].0.clone());
+            for (s, _) in &route[a..=b] {
+                if s.cmp(&c_lo) == Less {
+                    c_lo = s.clone();
+                }
+                if s.cmp(&c_hi) == Greater {
+                    c_hi = s.clone();
+                }
+            }
+            if c_hi.sub(&c_lo).cmp(&hull_cap) == Greater {
+                return None;
+            }
+            let single = |nodes: &mut Vec<SpliceNode<B>>, owner: &mut Vec<usize>| {
+                nodes.push(SpliceNode {
+                    s: route[a].0.clone(),
+                    m: route[a].1.clone(),
+                    idx: a,
+                });
+                owner.push(ci);
+            };
+            let (mf, ml) = (&route[a].1, &route[b].1);
+            let jump = ml.sub(mf);
+            let jump_abs = if jump.sign() < 0 { jump.neg() } else { jump };
+            if demoted[ci] || jump_abs.cmp(budget) != Greater {
+                single(&mut nodes, &mut owner);
+                continue;
+            }
+            // A steep cluster: window only if the interior is a monotone climb (inside the
+            // endpoints' range ± budget) and there is room; otherwise it is dense or a notch,
+            // and the plain node + route check decide.
+            let (m_lo, m_hi) = if mf.cmp(ml) == Less {
+                (mf, ml)
+            } else {
+                (ml, mf)
+            };
+            let (gate_lo, gate_hi) = (m_lo.sub(budget), m_hi.add(budget));
+            if route[a..=b]
+                .iter()
+                .any(|(_, m)| m.cmp(&gate_lo) == Less || m.cmp(&gate_hi) == Greater)
+            {
+                single(&mut nodes, &mut owner);
+                continue;
+            }
+            let pin_start = a == 0;
+            let near_end = route[last].0.sub(&c_hi).cmp(floor) != Greater;
+            let (sl, sr) = if pin_start {
+                (route[0].0.clone(), route[0].0.add(floor))
+            } else if near_end {
+                (route[last].0.sub(floor), route[last].0.clone())
+            } else {
+                let mid = c_lo.add(&c_hi).mul(&Rat::new(1, 2));
+                (mid.sub(&half), mid.add(&half))
+            };
+            let room_left = pin_start
+                || nodes
+                    .last()
+                    .map(|p| sl.sub(&p.s).cmp(floor) != Less)
+                    .unwrap_or(false);
+            let next_first = clusters
+                .get(ci + 1)
+                .map(|(na, _)| route[*na].0.clone())
+                .unwrap_or_else(|| route[last].0.clone());
+            let room_right = if near_end {
+                clusters.len() == ci + 1
+            } else {
+                next_first.sub(&sr).cmp(floor) != Less
+            };
+            if !(room_left && room_right) {
+                single(&mut nodes, &mut owner);
+                continue;
+            }
+            if !near_end {
+                nodes.push(SpliceNode {
+                    s: sl,
+                    m: mf.clone(),
+                    idx: a,
+                });
+                owner.push(ci);
+                nodes.push(SpliceNode {
+                    s: sr,
+                    m: ml.clone(),
+                    idx: b,
+                });
+                owner.push(ci);
+            } else {
+                // The climb runs into the pinned end: the end node itself is the window's far
+                // side, so only the near side is emitted.
+                nodes.push(SpliceNode {
+                    s: sl,
+                    m: mf.clone(),
+                    idx: a,
+                });
+                owner.push(ci);
+            }
+        }
+        let n_clusters = owner.last().map(|c| c + 1).unwrap_or(0);
+        nodes.push(SpliceNode {
+            s: route[last].0.clone(),
+            m: route[last].1.clone(),
+            idx: last,
+        });
+        owner.push(n_clusters);
+        let n = nodes.len();
+        if n == 2 {
+            // The two pinned corners of a tiny splice are authored and may sit closer than the
+            // floor; anything non-ascending is a pathology.
+            return (nodes[1].s.cmp(&nodes[0].s) == Greater).then_some(nodes);
+        }
+        // Crowding: a sub-floor node pair first demotes any window involved, then merges the
+        // owning clusters (the pinned end instead folds the offending last cluster backward).
+        match (1..n).find(|&i| {
+            owner[i] != owner[i - 1] && nodes[i].s.sub(&nodes[i - 1].s).cmp(floor) == Less
+        }) {
+            None => {
+                for i in 1..n {
+                    if nodes[i].s.cmp(&nodes[i - 1].s) != Greater {
+                        return None;
+                    }
+                }
+                return Some(nodes);
+            }
+            Some(i) => {
+                let (ca, cb) = (owner[i - 1], owner[i]);
+                if ca < clusters.len() && !demoted[ca] && cluster_is_window(&owner, ca) {
+                    demoted[ca] = true;
+                } else if cb < clusters.len() && !demoted[cb] && cluster_is_window(&owner, cb) {
+                    demoted[cb] = true;
+                } else if cb >= clusters.len() {
+                    // The pinned end: fold the last cluster backward.
+                    let (_, b) = clusters.pop()?;
+                    demoted.pop();
+                    match clusters.last_mut() {
+                        Some(prev) => prev.1 = b,
+                        None => return None,
+                    }
+                } else {
+                    let merged = (clusters[ca].0, clusters[cb].1);
+                    clusters.splice(ca..=cb, [merged]);
+                    demoted.splice(ca..=cb, [false]);
+                }
+            }
+        }
+    }
+}
+
+/// Does cluster `ci` currently emit a window pair (two nodes)?
+fn cluster_is_window(owner: &[usize], ci: usize) -> bool {
+    owner.iter().filter(|&&c| c == ci).count() == 2
+}
+
+/// The merge pass over splice nodes: runs of nodes greedily coalesce into one interpolant
+/// ([`splice_piece`]) for as long as it honours **every route point it covers** and every local
+/// chord corridor ([`splice_fits_route`]) — the certified trace itself, not merely the nodes,
+/// which for runs short enough that all nodes are interpolated is the only non-vacuous check.
+/// `None` — for [`splice_fallback`] — when even an adjacent-node piece cannot honour its stretch
+/// of the route.
+fn splice_merge<B: Backend>(
+    route: &[(Rat<B>, Rat<B>)],
+    nodes: &[SpliceNode<B>],
+    budget: &Rat<B>,
+    floor: &Rat<B>,
+) -> Option<Chain<B>> {
+    let pair = |i: usize, j: usize| -> Vec<(Rat<B>, Rat<B>)> {
+        nodes[i..=j]
+            .iter()
+            .map(|n| (n.s.clone(), n.m.clone()))
+            .collect()
+    };
+    let mut out: Chain<B> = Vec::new();
     let mut i = 0;
-    while i + 1 < kept.len() {
+    while i + 1 < nodes.len() {
         let mut j = i + 1;
-        let mut piece = splice_piece(&kept[i..=j]).ok_or(PartFault::Pole)?;
-        while j + 1 < kept.len() && j - i < SPLICE_MERGE_MAX {
-            match splice_piece(&kept[i..=j + 1]) {
-                Some(next) if splice_piece_fits(&next, &kept[i..=j + 1], &budget) => {
+        let mut piece = splice_piece(&pair(i, j))?;
+        if !splice_fits_route(&piece, &route[nodes[i].idx..=nodes[j].idx], budget, floor) {
+            return None;
+        }
+        while j + 1 < nodes.len() && j - i < SPLICE_MERGE_MAX {
+            match splice_piece(&pair(i, j + 1)) {
+                Some(next)
+                    if splice_fits_route(
+                        &next,
+                        &route[nodes[i].idx..=nodes[j + 1].idx],
+                        budget,
+                        floor,
+                    ) =>
+                {
                     piece = next;
                     j += 1;
                 }
@@ -608,6 +855,82 @@ fn splice_chain<B: Backend>(sp: &Splice<B>, out: &mut Chain<B>) -> Result<(), Pa
         }
         out.push(piece);
         i = j;
+    }
+    Some(out)
+}
+
+/// Does `piece` honour its stretch of the certified route? Two obligations, both at the
+/// [`chord_pcurve`] trust tier:
+///
+/// - **Every route point**: within `budget` vertically, or — where the boundary is steeper than a
+///   graph can meaningfully measure vertically — passing µ̂ = m within two floors horizontally (a
+///   sign change of `piece − m` across `[s − 2·floor, s + 2·floor]`; a point folded into a
+///   cluster sits within the hull cap of the node-to-node stretch that carries its climb).
+/// - **Every adjacent route pair's chord midpoint**, within twice the budget (vertically or by
+///   the same escape): [`chord_pcurve`] certifies the true boundary chord-close *between* its
+///   points, so this is what stops an interpolant from swinging wide across a sparse gap where no
+///   sample would otherwise catch it.
+fn splice_fits_route<B: Backend>(
+    piece: &(Interval<B>, RatFunc<B>),
+    pts: &[(Rat<B>, Rat<B>)],
+    budget: &Rat<B>,
+    floor: &Rat<B>,
+) -> bool {
+    use core::cmp::Ordering::Greater;
+    let window = floor.add(floor);
+    let half = Rat::<B>::new(1, 2);
+    let honours = |s: &Rat<B>, m: &Rat<B>, tol: &Rat<B>| -> bool {
+        let Some(v) = piece.1.eval(s) else {
+            return false;
+        };
+        let d = v.sub(m);
+        let d = if d.sign() < 0 { d.neg() } else { d };
+        if d.cmp(tol) != Greater {
+            return true;
+        }
+        let (lo, hi) = (piece.1.eval(&s.sub(&window)), piece.1.eval(&s.add(&window)));
+        match (lo, hi) {
+            (Some(lo), Some(hi)) => lo.sub(m).sign() * hi.sub(m).sign() < 0,
+            _ => false,
+        }
+    };
+    let corridor = budget.add(budget);
+    pts.iter().all(|(s, m)| honours(s, m, budget))
+        && pts.windows(2).all(|w| {
+            let s = w[0].0.add(&w[1].0).mul(&half);
+            let m = w[0].1.add(&w[1].1).mul(&half);
+            honours(&s, &m, &corridor)
+        })
+}
+
+/// The faithful fallback chain: one affine chord per σ-advancing route point — the pre-#306
+/// station-per-chord representation, subdivided (every piece end is a builder station, sliver
+/// faces and all) but never cutting across the trace. Reached when [`splice_nodes`] or
+/// [`splice_merge`] meets geometry the floor-scale graph model cannot carry.
+///
+/// One spacing rule still applies: points advancing less than **twice the export step**
+/// ([`export::trim::MIN_STEP_BITS`]) fold into the next chord. A piece boundary below that scale
+/// lands inside the solid builder's station-thinning window, and the thinned slice then straddles
+/// a rail-piece boundary its two lids evaluate from different pieces — a cross-ring mismatch that
+/// refuses the whole solid. Folding within `2⁻¹⁹` of σ costs the boundary less than the export
+/// profile can represent.
+fn splice_fallback<B: Backend>(
+    route: &[(Rat<B>, Rat<B>)],
+    out: &mut Chain<B>,
+) -> Result<(), PartFault> {
+    use core::cmp::Ordering::Greater;
+    let step = Rat::<B>::new(1, 1i128 << (export::trim::MIN_STEP_BITS - 1));
+    let end = route.last().expect("route has its pinned corners");
+    let mut prev = &route[0];
+    for p in &route[1..] {
+        let advances = p.0.sub(&prev.0).cmp(&step) == Greater;
+        let is_end = core::ptr::eq(p, end);
+        if (advances && (is_end || end.0.sub(&p.0).cmp(&step) == Greater))
+            || (is_end && p.0.cmp(&prev.0) == Greater)
+        {
+            out.push(splice_piece(&[prev.clone(), p.clone()]).ok_or(PartFault::Pole)?);
+            prev = p;
+        }
     }
     Ok(())
 }
@@ -655,28 +978,6 @@ fn splice_piece<B: Backend>(run: &[(Rat<B>, Rat<B>)]) -> Option<(Interval<B>, Ra
         },
         RatFunc::from_poly(poly),
     ))
-}
-
-/// Does the interpolating `piece` pass within `budget` of **every** point of `run`? (Its nodes
-/// are exact by construction; this is the check on the skipped interior points.)
-fn splice_piece_fits<B: Backend>(
-    piece: &(Interval<B>, RatFunc<B>),
-    run: &[(Rat<B>, Rat<B>)],
-    budget: &Rat<B>,
-) -> bool {
-    use core::cmp::Ordering;
-    run.iter().all(|(s, m)| match piece.1.eval(s) {
-        Some(v) => {
-            let d = v.sub(m);
-            let d = if d.sign() < 0 {
-                Rat::from_i128(0).sub(&d)
-            } else {
-                d
-            };
-            d.cmp(budget) != Ordering::Greater
-        }
-        None => false,
-    })
 }
 
 /// The pieces of `[a, b]` split at region joins: `(from, to, region index)` in ascending σ.
@@ -1923,6 +2224,29 @@ pub(crate) fn flat_pattern<B: Backend>(
     // polynomial; only chord placement moves, so nothing new is certified (the unroll's
     // per-chord certificates only tighten on shorter spans), and consecutive sub-rails evaluate
     // one polynomial at one shared σ, so no micro-cap forms between them.
+    //
+    // The uniform stretch's chord count also scales with its **share of the σ-domain** (#310):
+    // `segments` per piece starves a long rail — a body arc spanning half the device got the
+    // same handful of chords as a millimetre fillet, an 0.43 sagitta facet on the outer contour
+    // at `segments = 8` — so a piece never gets fewer than `2 · segments · span / domain` chords.
+    // Emission-only, same certified rail; the develop's ε never sees output resolution, which is
+    // exactly why a size floor has to live here rather than in a certificate.
+    let domain_width = domain.hi.sub(&domain.lo);
+    let bulk_segments = |start: &Rat<B>, end: &Rat<B>| -> usize {
+        let span = end.sub(start);
+        let span = if span.sign() < 0 { span.neg() } else { span };
+        if domain_width.sign() <= 0 {
+            return part.segments;
+        }
+        let q = span
+            .mul(&Rat::from_i128(2 * part.segments as i128))
+            .div(&domain_width);
+        let mut n = part.segments.max(1);
+        while Rat::from_i128(n as i128).cmp(&q) == Ordering::Less && n < 4 * part.segments {
+            n += 1;
+        }
+        n
+    };
     let push_rail = |arcs: &mut Vec<BoundaryArc<B>>,
                      mu: &RatFunc<B>,
                      start: Rat<B>,
@@ -1931,11 +2255,12 @@ pub(crate) fn flat_pattern<B: Backend>(
                      grade_end: bool| {
         let n = part.segments.max(2);
         if start.cmp(&end) == Ordering::Equal || (!grade_start && !grade_end) {
+            let segments = bulk_segments(&start, &end);
             arcs.push(BoundaryArc::Rail {
                 mu: mu.clone(),
                 sigma_start: start,
                 sigma_end: end,
-                segments: part.segments,
+                segments,
             });
             return;
         }
@@ -1955,11 +2280,14 @@ pub(crate) fn flat_pattern<B: Backend>(
                 });
             }
         }
+        let bulk_start = if grade_start { start.add(&g) } else { start };
+        let bulk_end = if grade_end { end.sub(&g) } else { end.clone() };
+        let segments = bulk_segments(&bulk_start, &bulk_end);
         arcs.push(BoundaryArc::Rail {
             mu: mu.clone(),
-            sigma_start: if grade_start { start.add(&g) } else { start },
-            sigma_end: if grade_end { end.sub(&g) } else { end.clone() },
-            segments: part.segments,
+            sigma_start: bulk_start,
+            sigma_end: bulk_end,
+            segments,
         });
         if grade_end {
             for k in (1..=n).rev() {
@@ -2696,30 +3024,40 @@ mod tests {
         Q::from_i128(n)
     }
 
-    /// [`splice_piece`] + [`splice_piece_fits`] — the #306 merge. The piece interpolates its run's
-    /// two ends exactly (the chain's C0 invariant); points on a parabola merge into one piece that
-    /// passes the budget check; a corner in the run fails it.
+    /// [`splice_piece`] + [`splice_fits_route`] — the #306 merge. The piece interpolates its
+    /// run's two ends exactly (the chain's C0 invariant); points on a parabola merge into one
+    /// piece that passes the budget check; a corner in the run fails it.
     #[test]
     fn splice_pieces_interpolate_ends_and_reject_corners() {
+        let floor = q(1, 1 << 12);
         // A parabola sampled at 7 σs: one merged piece reproduces every sample exactly.
         let para: Vec<(Q, Q)> = (0..7).map(|k| (q(k, 8), q(k * k, 64))).collect();
         let piece = splice_piece(&para).expect("distinct nodes");
         assert_eq!(piece.0.lo.cmp(&para[0].0), core::cmp::Ordering::Equal);
         assert_eq!(piece.0.hi.cmp(&para[6].0), core::cmp::Ordering::Equal);
         let tight = q(1, 1_000_000_000);
+        for (s, m) in &para {
+            let d = piece.1.eval(s).unwrap().sub(m);
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            assert!(
+                d.cmp(&tight) != core::cmp::Ordering::Greater,
+                "a ≤3-degree interpolant through 4 nodes of a parabola is the parabola",
+            );
+        }
         assert!(
-            splice_piece_fits(&piece, &para, &tight),
-            "a ≤3-degree interpolant through 4 nodes of a parabola is the parabola",
+            splice_fits_route(&piece, &para, &q(1, 256), &floor),
+            "…and it honours the chord corridors at the sagitta budget",
         );
 
         // A right-angle corner: flat then steep. The interpolant through the spread nodes cannot
-        // pass within the sagitta budget of the corner points.
+        // pass within the sagitta budget of the corner points, and it is nowhere near steep
+        // enough for the one-floor horizontal escape.
         let mut corner: Vec<(Q, Q)> = (0..4).map(|k| (q(k, 8), qi(0))).collect();
         corner.extend((1..4).map(|k| (q(3 + k, 8), q(k, 2))));
         let piece = splice_piece(&corner).expect("distinct nodes");
         let budget = q(1, 256);
         assert!(
-            !splice_piece_fits(&piece, &corner, &budget),
+            !splice_fits_route(&piece, &corner, &budget, &floor),
             "a corner run must fail the merge check and stay split",
         );
 
@@ -2730,6 +3068,104 @@ mod tests {
             piece.1.eval(&q(1, 8)).unwrap().cmp(&q(3, 2)),
             core::cmp::Ordering::Equal,
             "two points make the straight chord",
+        );
+    }
+
+    /// [`splice_nodes`] + [`splice_merge`] — the #309 discipline. A drawn radial flank (µ̂
+    /// climbing across a sub-floor σ-stretch) must survive as the node-to-node chord containing
+    /// its climb — at most two floors wide, never folded into an unchecked neighbour — with every
+    /// station at least one floor from the next and every route point honoured.
+    #[test]
+    fn splice_walk_carries_a_radial_flank_within_two_floors() {
+        use core::cmp::Ordering;
+        let floor = q(1, 1 << 12);
+        let budget = q(1, 1 << 8);
+        let eps = q(1, 1 << 20);
+        // Flat at µ̂ = 1 to σ = 1/2, a flank climbing to µ̂ = 3 within a few σ-microsteps, flat on.
+        let mut route: Vec<(Q, Q)> = (0..=4).map(|k| (q(k, 8), qi(1))).collect();
+        route.push((q(1, 2).add(&eps), q(3, 2)));
+        route.push((q(1, 2).add(&eps.mul(&qi(2))), qi(2)));
+        route.push((q(1, 2).add(&eps.mul(&qi(3))), qi(3)));
+        route.extend((5..=8).map(|k| (q(k, 8), qi(3))));
+        let nodes = splice_nodes(&route, &floor, &budget).expect("a graph route walks");
+        for w in nodes.windows(2) {
+            assert_ne!(
+                w[1].s.sub(&w[0].s).cmp(&floor),
+                Ordering::Less,
+                "consecutive stations keep the floor",
+            );
+        }
+        let chain = splice_merge(&route, &nodes, &budget, &floor).expect("the route merges");
+        assert_eq!(
+            chain[0].0.lo.cmp(&route[0].0),
+            Ordering::Equal,
+            "the chain starts at the pinned corner",
+        );
+        assert_eq!(
+            chain.last().unwrap().0.hi.cmp(&route.last().unwrap().0),
+            Ordering::Equal,
+            "the chain ends at the pinned corner",
+        );
+        // The plateaus stay put, and the whole climb happens within two floors of the flank.
+        let two_floors = floor.add(&floor);
+        let before = chain_at(&chain, &q(1, 2).sub(&two_floors)).expect("covered");
+        let after =
+            chain_at(&chain, &q(1, 2).add(&eps.mul(&qi(3))).add(&two_floors)).expect("covered");
+        let near = |v: &Q, want: i128| {
+            let d = v.sub(&qi(want));
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            d.cmp(&budget) != Ordering::Greater
+        };
+        assert!(
+            near(&before, 1),
+            "left plateau still at 1 two floors before the flank"
+        );
+        assert!(
+            near(&after, 3),
+            "right plateau at 3 two floors after the flank"
+        );
+    }
+
+    /// A µ̂(σ)-graph piece at a shared piece boundary of the merged chain.
+    fn chain_at(chain: &[(Interval<Bignum>, RatFunc<Bignum>)], s: &Q) -> Option<Q> {
+        use core::cmp::Ordering;
+        chain
+            .iter()
+            .find(|(iv, _)| iv.lo.cmp(s) != Ordering::Greater && s.cmp(&iv.hi) != Ordering::Greater)
+            .and_then(|(_, mu)| mu.eval(s))
+    }
+
+    /// The shapes the floor-scale graph model cannot carry go to the station-per-chord fallback
+    /// instead of being distorted: a sub-floor notch (µ̂ leaves and returns inside one floor —
+    /// no graph piece can honour both walls) fails the merge; a σ-overhang (the trace retreats
+    /// beyond the floor) fails the walk.
+    #[test]
+    fn splice_walk_refuses_notches_and_overhangs() {
+        let floor = q(1, 1 << 12);
+        let budget = q(1, 1 << 8);
+        let eps = q(1, 1 << 20);
+        let notch: Vec<(Q, Q)> = vec![
+            (qi(0), qi(1)),
+            (q(1, 2), qi(1)),
+            (q(1, 2).add(&eps), qi(3)),
+            (q(1, 2).add(&eps.mul(&qi(2))), qi(1)),
+            (qi(1), qi(1)),
+        ];
+        let nodes =
+            splice_nodes(&notch, &floor, &budget).expect("the walk itself accepts the σ order");
+        assert!(
+            splice_merge(&notch, &nodes, &budget, &floor).is_none(),
+            "a spike inside one floor cannot be honoured by any graph piece",
+        );
+        let overhang: Vec<(Q, Q)> = vec![
+            (qi(0), qi(1)),
+            (q(1, 8), qi(1)),
+            (q(1, 8).sub(&floor).sub(&floor), qi(2)),
+            (qi(1), qi(2)),
+        ];
+        assert!(
+            splice_nodes(&overhang, &floor, &budget).is_none(),
+            "a σ-retreat beyond the floor is an overhang, not a graph",
         );
     }
 

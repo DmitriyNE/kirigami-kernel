@@ -768,8 +768,96 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#310: the flat pattern's arc resolution was a per-piece constant, so long rails starved
+  (2026-08-20).** The user: *"svg contour resolution on cone part got very low"*. Measured: the
+  outer body arc — one rail piece spanning more than half the device — was emitted at
+  `part.segments` uniform chords like every other piece, a **0.43 sagitta** facet at the demo's
+  `--segments 8` (the debug-cycle invocations had been shipping that setting's artifacts). Two
+  fixes: the uniform stretch's chord count now scales with the piece's **share of the σ-domain**
+  (`n = max(segments, ceil(2·segments·span/domain))` — emission-only, the same certified rail,
+  per-chord unroll certificates only tighten), and the demo artifacts regenerate at the example
+  default 16 — worst arc sagitta **0.426 → 0.069**, outline 454 → 770 points, develop ε 3.408 →
+  3.412 (the denser sup honestly measured), develop +2 min, solid unchanged.
+
+  The one budget that moved is the *measurement-completeness* lesson in miniature: the
+  self-lapping part's fold ε rose 3.398e-1 → 4.002e-1 **with unchanged geometry** — the new
+  points on the big arcs are where its fold residual peaks, and the old budget (7/20, documented
+  at 1.03× headroom, the tightest of its four) was calibrated to the sparser sup. Raised to
+  21/50 with the dating note in the fixture. The deeper emission-resolution question — a sagitta
+  budget instead of counts, like the solid's `chord_pcurve` — is the [`faithfulness is
+  monotone`] "pin a size budget beside every ε budget" doctrine applied to *output* fidelity;
+  left on the task.
+
+  *2026-08-20 · resolved (suite 824/824; demo11 measured) · #310*
+
+- **#309: the de-subdivided splice chains cut across near-vertical flanks — the walk is now
+  measured, and it surfaced two general builder hazards (2026-08-20).** The user's report: the
+  solid "broken now, spurious jogs, the worst a razor-thin artifact on an internal edge". The
+  measurement: a wedge face 11 long whose bottom edge was a **0.6-long diagonal** cutting across
+  the tab flank between two stations 1.1·10⁻⁴ of σ apart. The mechanism: #306's station-floor
+  walk **dropped** every route point advancing σ by less than the floor — its own doc claimed the
+  fold-in was "budget-class", but the deviation is the dropped stretch's µ̂-travel, which for a
+  drawn radial flank is the flank *height* — and a merged piece of ≤ 4 nodes interpolated all of
+  them, so the fits check was vacuously exact while the interpolant swung freely in between.
+
+  ⚠️ **One accusation retracted.** The "lug boundary oscillating 0.5 where the drawing has a
+  dome" (this entry as first drafted, and the #309 task title) was my measurement's model error,
+  not geometry: the deviation was judged against an `r = const` arc's sagitta, but the drawing's
+  lug cap *bulges* (crown r 11.68 → 12.00 → 11.70), and the emitted boundary lies **exactly** on
+  the cone (r-vs-z affine fit residual 0.0000, slope −65/72 to 4 digits). Second retraction of
+  this shape in the milestone (the DD "ziggurat" was the two lap sheets): *judge a curved edge
+  against the drawing's own construction, never against an assumed primitive.*
+
+  The walk (`author::realize::{splice_nodes, splice_merge, splice_fits_route}`) is now built
+  from measured classification, third design standing after two were killed by route data:
+  1. **Windows only where measurement demands and room allows.** Clusters (σ-hull ≤ one floor)
+     thin to one node each; a cluster whose µ̂-jump exceeds the sagitta budget becomes a
+     floor-wide steep affine **window** only when a floor of room exists on each side (a pinned
+     corner anchors its side). Threshold-classified cliffs died on the data: fillet chains pass
+     through every slope band on the way to radial, their windows crowded each other, and the
+     crowding merges swallowed plateaus until nothing fit (7 of 8 routes fell back). Where
+     there is no room the stretch is dense, node gaps are floor-scale, and the climb rides the
+     node-to-node chord — within two floors of σ, the budget's own horizontal equivalent.
+  2. **The honesty predicate covers the whole certified trace.** A merged piece must honour
+     every covered route point — within budget vertically, or crossing µ̂ = m within ±2 floors
+     (a steep boundary is horizontally measurable, not vertically) — **and** every adjacent
+     route pair's chord midpoint within 2× budget: `chord_pcurve` certifies the true boundary
+     chord-close *between* its points, so the corridor check stops an interpolant from swinging
+     across a sparse gap no sample would catch. No thresholds, no vacuous ≤ 4-node passes.
+  3. **The fallback keeps the export's own floor.** Station-per-chord, but points advancing
+     less than `2⁻¹⁹` fold into the next chord — a piece boundary below the thinning scale is
+     exactly the hazard below.
+
+  The two **builder** hazards (`export::brep_build`), both pre-existing and unmasked here:
+  1. **Cross-chain boundary proximity defeats station thinning.** The tab (inner chain) and lug
+     (outer chain) flanks are radially aligned *by design*; their piece boundaries landed
+     4.6·10⁻⁷ of σ apart, `thin_stations` merged the station pair, and the adjacent slice then
+     straddled the other chain's boundary — its lid evaluating one piece across a handoff the
+     neighbour respects, an exact cross-ring mismatch, `SolidRefused`. Fix: `snap_chain_bounds`
+     moves every interior piece boundary onto its surviving station (≤ one export step, `2⁻²⁰`),
+     *then* the stitch re-establishes bit-exact C0.
+  2. **The constant-shift stitch propagates.** Post-snap, the stitch residual at a steep window
+     boundary is `slope · step` ≈ 2.7·10⁻³ — a constant shift dragged the whole rest of the
+     boundary by that much and pulled downstream rails off their vertices (OCCT
+     `MakeEdge(bezier)` refused; the shim's error now reports curve-end and vertex context).
+     Fix: the stitch is **local** — an affine ramp absorbs the residual and dies at the piece's
+     far end, so nothing propagates.
+
+  Measured, device demo before → after: wedge faces **8 → 2**, and the two survivors are
+  *faithful* — their diagonal is the certified node-to-node chord of the drawn fillet (the slab
+  is a partition slice crossing a steep stretch; internal hairline edges only). Faces 154 → 158,
+  STEP 12,506 → 12,770 entities, min edge 1.39e-3 → 1.34e-3, solid ε 1.242 unchanged, develop
+  ε 3.408 unchanged (the flat path never went through any of this — the flat SVG was clean all
+  along, which is what localized the defect to the solid's chain channel).
+
+  *2026-08-20 · resolved (unit tests on the walk; device solid Verified + occt ok) · #309*
+
 - **#307 + #306: the splice-handoff jog is closed at its source (rail-end pinning), and the
-  solid's splice chains are de-subdivided (2026-08-19).** The jog was a *designed-in* micro-cap:
+  solid's splice chains are de-subdivided (2026-08-19).** ⚠️ *Correction (2026-08-20): this
+  entry's claim that "a steep flank breaks the run and stays its own affine piece with a legal
+  station width" described the intent, not the code — the floor walk silently dropped sub-floor
+  stretches and folded their µ̂-travel into unchecked neighbours, which is #309.* The jog was a
+  *designed-in* micro-cap:
   the assembly comments said outright that a splice's traced tail starts at the wall's **true**
   branch value while the rail it follows ends at its **fitted** one, with a ruling-segment cap
   closing the ε-wide difference — visible as the sign-flipping zigzag at every cap tangency.

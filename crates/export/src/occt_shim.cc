@@ -3,6 +3,8 @@
 // Strings only cross the FFI boundary — no OCCT type escapes.
 #include "export/src/occt_shim.h"
 
+#include <cstdio>
+
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -223,7 +225,19 @@ static TopoDS_Shape build_brep_shape(rust::Slice<const double> verts,
           new Geom_BSplineCurve(poles, weights, knots, mults, deg);
       BRepBuilderAPI_MakeEdge me(curve, V[s], V[t]);
       if (!me.IsDone()) {
-        err = "MakeEdge(bezier) failed";
+        const gp_Pnt p0 = poles(1);
+        const gp_Pnt pn = poles(npoles);
+        const gp_Pnt vs = BRep_Tool::Pnt(V[s]);
+        const gp_Pnt vt = BRep_Tool::Pnt(V[t]);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+                      "MakeEdge(bezier) failed: edge %zu deg %d err %d; curve ends "
+                      "(%.9g,%.9g,%.9g)..(%.9g,%.9g,%.9g); verts "
+                      "(%.9g,%.9g,%.9g)..(%.9g,%.9g,%.9g)",
+                      e, deg, static_cast<int>(me.Error()), p0.X(), p0.Y(), p0.Z(),
+                      pn.X(), pn.Y(), pn.Z(), vs.X(), vs.Y(), vs.Z(), vt.X(), vt.Y(),
+                      vt.Z());
+        err = buf;
         return TopoDS_Shape();
       }
       E[e] = me.Edge();
