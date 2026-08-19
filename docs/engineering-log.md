@@ -768,6 +768,94 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **A gap between two tangent rulings is not a window until its sign says so — and the outermost
+  stretch is a window too (2026-08-19, #302).** The two-ramp `lapped_cone` demo — the only device
+  carrying *both* cut files — reported `develop Unresolved at ε 7.000e0` and `solid Unresolved at
+  ε 7.000e0`, and no amount of `--segments` or `subdiv` moved it (the log's own
+  `1280 → 7.0000e0, 5120 → 7.0000e0` saturation was this, unrecognised). **`ε 7.0` was never a
+  certificate**: it is `part.clearance` verbatim, the fail-closed sentinel `certified_rail_surface`
+  returns when `fit_cut_rail` *declines*, so it is not a loose bound and is not refinable. Reading
+  it as one cost a day of refining a number that could not move.
+
+  The declining label was `(1, Wall(3, false))` — and entity 3 of `inner-cut.dxf` is
+  `ARC c=(0,0) r=4.0`, the Ø 8 bore itself. Instrumenting `pick_root` at the node it gave up on
+  showed `b² = 1.8754e5` against `4ac = 1.8789e5`, `disc = −355.6`: a **genuinely** negative
+  discriminant, 10¹²·ε_f64 clear of the cancellation hazard the same expression carries elsewhere.
+  The wall was being asked for a rail over σ where it does not meet the ruling at all.
+
+  Two faults, both in `realize`'s model of a wall's real σ-window, both the same missing concept:
+
+  1. **The outermost stretch had no name.** `window_around` scanned `brackets.windows(2)` only, so
+     `band.lo → first root` and `last root → band.hi` were unnameable. A wall real from the band's
+     edge up to its one tangent ruling — which is where a derived σ-end puts the bore's rail — got
+     `window = None`, which loses the clamp *and* silently degrades the TANG.B fit ladder to its
+     single unclamped rung. `hulls_of` then handed the oracle a hull reaching past the tangency.
+  2. **A root gap was assumed disc-positive.** `disc` alternates sign across simple roots, so half
+     the gaps are stretches where the cut is *not real*, and clamping into one is worse than not
+     clamping: `(0, Wall(3, true))` got a perfectly well-formed window `(−1.0677, −0.0463)` that was
+     the negative side, and declined there too.
+
+  `window_for` now cuts the band at every bracket, keeps the ends' provenance, tests `disc` at each
+  stretch's own midpoint (sound: the brackets isolate every root in the band, so no root is inside),
+  and picks the disc-positive stretch overlapping the raw span most. `flank_splice`'s `turn_of` had
+  the identical blind spot — `k == 0` and `k + 1 >= b.len()` were hard refusals — and now falls back
+  to the band end, which is the same window; the `Result<_, ()>` it needed for that refusal is gone.
+
+  A third, smaller one fell out: **the inset is a stand-off from a tangent ruling**, the √-branch
+  endpoint a graph fit cannot follow. A window end that is the band's own edge is no such thing, and
+  insetting there only shortened the rail short of the σ the boundary needed — `covered` then read
+  `SHORT` at `σ = −1.125`, the domain end. `Window` carries `lo_is_tangent`/`hi_is_tangent` so the
+  ladder insets only where there is something to stand off from.
+
+  Result on the demo (`--segments 8 --panels 1`): `develop Verified ε 3.396e0`,
+  `solid Verified ε 1.242e0, 94 faces, free 0, non-manifold 0` — both better than the last recorded
+  good run on this driver (`develop ε 3.413`, `solid ε 3.496`, same 94 faces).
+
+  **Two method notes worth carrying.** *First*, this was **not** a TANG regression: the pre-TANG
+  commit `eaba5d8`, run against the same new drawings in a worktree, gives the identical
+  `develop Unresolved at ε 7.000e0`. TANG.A–D fixed the two `rim_notch` fixtures, which use
+  `self_lapping_spec` with the ramp slid off the wedge; this device was never in that verified set.
+  *Second*, and the reason it stayed invisible: `author/tests/lapped_cone.rs` certified the
+  **recipe** and the BONDED seam and never once called `.develop()`. A green suite over a device's
+  parameters says nothing about its geometry. The test now there develops it and asserts a
+  shape-valued property — both drawings' main arcs are coaxial with the axis, so each develops to a
+  circular arc about the **developed apex**, one shared point. Measured at both resolutions: fitted
+  centres 2.3e-2 (8 segments) / 1.9e-2 (32) flat units apart, radii 5.95 and 16.04, ratio 2.695 and
+  2.696 against the drawing's 10.75/4 = 2.6875 — the ~0.3% being the normal-cut drafted-apex
+  displacement, which the cut-file ruling says is the tool and not an error. Two radii sharing a
+  centre is a fact about the part's shape that no ε can fake, which is the point: **a rail off its
+  own wall is a wrong curve, not a loose one, and a distance certificate cannot tell them apart.**
+
+  One trap in writing that check, worth the sentence: ranking the candidate circular runs by
+  **point count** looks equivalent to ranking by arc length and is not. The outline samples per
+  σ-station, so `--segments 32` multiplies every feature's vertices alike and an R 0.39 cap
+  overtakes the Ø 21.5 rim on count while staying two orders shorter — the check then compares two
+  fillets to each other and passes for the wrong reason. Rank by arc length.
+
+  *2026-08-19 · fixed · `crates/author/src/realize.rs` (`Window`, `window_for`, `turn_of`),
+  `crates/acceptance/src/lib.rs` (`two_ramp_spec`), `crates/author/tests/lapped_cone.rs` · #302*
+
+- **The G1 revision left two `imported_outline` pins red on `main`'s branch tip, and one of them was
+  a real semantic change (2026-08-19).** Found while gating #302: `acceptance::imported_outline`
+  had two failures **already present at `086bfda`** — the TANG commit landed with them red, because
+  that campaign's gate ran `-p author` and never the `acceptance` crate. Both are the revised
+  drawings speaking:
+
+  - **Entity counts.** Each file is now six entities — two flanks, two R 0.3 root fillets, the gauge
+    arc, a nose arc — where the pins said four (rim) and eight (bore). The G1 revision *added* the
+    outer's root fillets and *removed* the inner's coaxial tip cap, and they met in the middle: the
+    two profiles are now the same shape entity for entity, which is worth knowing.
+  - **The rim's gauge stopped being exact, for a reason.** `outer-cut.dxf`'s rim arc no longer
+    imports at `r² == 1849/16` on the nose; it lands 1.59e-12 high, a radius moved by 7.4e-14 mm.
+    That is the importer's re-gauge doing its job: a root fillet at each end made the rim's
+    junctions **arc-to-arc**, where both sides own their endpoints and neither may move, so the rim
+    is the side that gets re-gauged. Before the fillets it met `LINE` endpoints, which slide for
+    free, and kept its stated radius bit-for-bit. The pin is now `|r² − 1849/16| < 22·δ` against the
+    importer's **own** reported δ — a strictly better claim than the equality it replaces, since a
+    gauge that really drifted cannot pass by the importer admitting a larger error.
+
+  *2026-08-19 · fixed · `crates/acceptance/tests/imported_outline.rs`*
+
 - **Tangential contact was the kernel's thinnest layer — the G1 drawing revision hit five distinct
   defects at once (2026-08-19, TANG.A–D).** The user's new cut files made every junction of both
   profiles tangential (fillets G1 to flanks and rims, caps G1 to flanks), which the drawings are

@@ -54,8 +54,19 @@ fn mu_form_opens_up<B: Backend>(
     }
 }
 
-/// A per-op exact σ-extent within one region (the two-tangent clamp), or `None` (no extent).
-type Extent<B> = Option<(Rat<B>, Rat<B>)>;
+/// One wall's real σ-window within a region: the stretch between consecutive tangent rulings on
+/// which its µ̂-quadratic has roots at all, and **which ends are tangent rulings**.
+///
+/// The distinction is not bookkeeping. A fit stands off from a window end because the branch has a
+/// √-tail with unbounded slope there — which is true of a tangent ruling and false of the band's
+/// own edge. Insetting at a band edge buys nothing and costs reach: it shortens the rail by the
+/// inset at exactly the σ where a derived σ-end puts the boundary, and the segment then has no
+/// certified rail under it.
+struct Window<B: lattice::Backend> {
+    span: Interval<B>,
+    lo_is_tangent: bool,
+    hi_is_tangent: bool,
+}
 
 /// One piecewise boundary chain: ordered contiguous `(σ-band, rail)` pieces (the
 /// `brep_trim_solid_regions` currency).
@@ -76,7 +87,9 @@ macro_rules! bail {
         match $e {
             Ok(v) => v,
             Err(RErr::Fault(f)) => return Verdict::Refuted(f),
-            Err(RErr::Loose(e)) => return Verdict::Unresolved(e),
+            Err(RErr::Loose(e)) => {
+                return Verdict::Unresolved(e);
+            }
         }
     };
 }
@@ -162,9 +175,14 @@ fn domain_segment<B: Backend>(a: &[Rat<B>; 2], b: &[Rat<B>; 2]) -> develop::pcur
     }
 }
 
-/// Per region, per op, per wall: the brackets isolating the wall's tangent rulings, or `None`
-/// where the wall is affine and has no windows.
-type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Interval<B>>>>>>;
+/// Per region, per op, per wall: the wall's µ̂-discriminant together with the brackets isolating
+/// its tangent rulings, or `None` where the wall is affine and has no windows.
+///
+/// The discriminant rides along because the brackets alone do not say **which** of the stretches
+/// they cut the band into the wall is real on. A gap between two consecutive tangent rulings is
+/// disc-positive or disc-negative depending on the wall, and a rail clamped into the negative one
+/// is a rail over σ where the cut does not exist.
+type DiscRoots<B> = Vec<Vec<Vec<Option<(RatFunc<B>, Vec<Interval<B>>)>>>>;
 
 /// Detect and build the [`Splice`] at one run corner, or `None` where the corner is not a flank
 /// crossing (the ordinary case — the caller then refines it as a rail crossing, as ever).
@@ -229,42 +247,43 @@ fn flank_splice<B: Backend>(
     // Which sides **turn**: an isolated root of the wall's discriminant inside this gap — the same
     // isolation its window was clamped to, so "the window ends here" and "the boundary hands off
     // here" are claims about the same root. `l`'s window ends at its root and `r`'s begins at its,
-    // so a turning `l` needs the preceding bracket and a turning `r` the following one — a turning
-    // wall missing it has no window to trace a loop over, and stays a refusal (`Err` below). A wall
-    // with no root in the gap **continues** across it and needs no window at all.
+    // so a turning `l` takes the stretch before its root and a turning `r` the stretch after. A
+    // wall with no root in the gap **continues** across it and needs no window at all.
+    //
+    // When the root is the wall's *first* (or *last*) tangent ruling in this band, the stretch is
+    // bounded by the band itself — the same outermost window `window_for` names. Demanding a
+    // neighbouring bracket instead refused exactly the walls that are real from the band's edge up
+    // to their one tangent ruling, which is where a derived σ-end puts the bore's rail (#302).
     let in_gap = |iv: &Interval<B>| {
         gap_lo.cmp(&iv.lo) != Ordering::Greater && iv.hi.cmp(gap_hi) != Ordering::Greater
     };
     type Turn<B> = Option<(Interval<B>, Interval<B>)>;
-    let turn_of = |w: usize, needs_preceding: bool| -> Result<Turn<B>, ()> {
-        let Some(b) = disc_roots[ri][op].get(w).and_then(|x| x.as_ref()) else {
-            return Ok(None);
-        };
-        let Some(k) = b.iter().position(&in_gap) else {
-            return Ok(None);
-        };
+    let turn_of = |w: usize, needs_preceding: bool| -> Turn<B> {
+        let (_, b) = disc_roots[ri][op].get(w).and_then(|x| x.as_ref())?;
+        let k = b.iter().position(&in_gap)?;
         let win = if needs_preceding {
-            if k == 0 {
-                return Err(());
-            }
             Interval {
-                lo: b[k - 1].hi.clone(),
+                lo: if k == 0 {
+                    bands[ri].lo.clone()
+                } else {
+                    b[k - 1].hi.clone()
+                },
                 hi: b[k].lo.clone(),
             }
         } else {
-            if k + 1 >= b.len() {
-                return Err(());
-            }
             Interval {
                 lo: b[k].hi.clone(),
-                hi: b[k + 1].lo.clone(),
+                hi: if k + 1 >= b.len() {
+                    bands[ri].hi.clone()
+                } else {
+                    b[k + 1].lo.clone()
+                },
             }
         };
-        Ok(Some((b[k].clone(), win)))
+        Some((b[k].clone(), win))
     };
-    let (Ok(turn_l), Ok(turn_r)) = (turn_of(wl, true), turn_of(wr, false)) else {
-        return Ok(None);
-    }; // Neither turning is no flank crossing at all: two rails that really cross, refined as ever.
+    // Neither turning is no flank crossing at all: two rails that really cross, refined as ever.
+    let (turn_l, turn_r) = (turn_of(wl, true), turn_of(wr, false));
     if turn_l.is_none() && turn_r.is_none() {
         return Ok(None);
     }
@@ -688,7 +707,9 @@ fn certify_boundary<B: Backend>(
                 let form = develop::cut::cut_mu_form(&built.charts[ri], wall, &Rat::from_i128(0));
                 per_wall.push(match form {
                     Some(f) if !f.a.is_zero() => {
-                        develop::cut::tangent_events(&f, band, &crate::resolve::tangent_tol()).ok()
+                        develop::cut::tangent_events(&f, band, &crate::resolve::tangent_tol())
+                            .ok()
+                            .map(|roots| (f.disc(), roots))
                     }
                     _ => None,
                 });
@@ -697,15 +718,73 @@ fn certify_boundary<B: Backend>(
         }
         disc_roots.push(row);
     }
-    let window_around = |ri: usize, op: usize, wall: usize, at: &Rat<B>| -> Extent<B> {
-        let brackets = disc_roots[ri][op].get(wall)?.as_ref()?;
-        for w in brackets.windows(2) {
-            let (lo, hi) = (&w[0].hi, &w[1].lo);
-            if lo.cmp(at) == Ordering::Less && at.cmp(hi) == Ordering::Less {
-                return Some((lo.clone(), hi.clone()));
+    // **The wall's real σ-window**: the maximal stretch between consecutive tangent rulings on
+    // which the µ̂-quadratic actually has roots — the only σ where a branch of this wall exists to
+    // be fitted at all. Chosen as the disc-positive stretch overlapping `raw` most, so the clamp
+    // follows the span the boundary asks about rather than whichever side of a tangency a midpoint
+    // happens to fall on.
+    //
+    // Two things the brackets alone do not give, and both cost the demo a rail (#302):
+    //
+    // - **The outermost stretches count.** Reading only the gaps *between* consecutive brackets
+    //   leaves `band.lo → first root` and `last root → band.hi` unnameable, and a wall real only up
+    //   to its first tangent ruling has its entire rail in exactly one of those. With no window the
+    //   fit ladder loses its clamp *and* its second rung, and the oracle is handed a raw hull that
+    //   runs off the end of the wall.
+    // - **A gap is not a window until its sign says so.** `disc` alternates sign across simple
+    //   roots, so half the gaps are stretches where the cut is *not real*; clamping into one is
+    //   worse than not clamping. The sign is read at the stretch's own midpoint, which decides the
+    //   whole stretch because the brackets isolate every root in the band — no root lies inside.
+    let window_for = |ri: usize, op: usize, wall: usize, raw: &Interval<B>| -> Option<Window<B>> {
+        let (disc, brackets) = disc_roots[ri][op].get(wall)?.as_ref()?;
+        let band = &bands[ri];
+        let mut stretches: Vec<Window<B>> = Vec::with_capacity(brackets.len() + 1);
+        let mut lo = band.lo.clone();
+        let mut lo_is_tangent = false;
+        for b in brackets {
+            stretches.push(Window {
+                span: Interval {
+                    lo,
+                    hi: b.lo.clone(),
+                },
+                lo_is_tangent,
+                hi_is_tangent: true,
+            });
+            lo = b.hi.clone();
+            lo_is_tangent = true;
+        }
+        stretches.push(Window {
+            span: Interval {
+                lo,
+                hi: band.hi.clone(),
+            },
+            lo_is_tangent,
+            hi_is_tangent: false,
+        });
+        let mut best: Option<(Rat<B>, Window<B>)> = None;
+        for w in stretches {
+            if w.span.lo.cmp(&w.span.hi) != Ordering::Less {
+                continue;
+            }
+            let (ov_lo, ov_hi) = (rmax(&w.span.lo, &raw.lo), rmin(&w.span.hi, &raw.hi));
+            if ov_lo.cmp(&ov_hi) != Ordering::Less {
+                continue;
+            }
+            let mid = w.span.lo.add(&w.span.hi).div(&Rat::from_i128(2));
+            match disc.eval(&mid) {
+                Some(d) if d.sign() > 0 => {}
+                _ => continue,
+            }
+            let width = ov_hi.sub(&ov_lo);
+            let better = match &best {
+                Some((w0, _)) => w0.cmp(&width) == Ordering::Less,
+                None => true,
+            };
+            if better {
+                best = Some((width, w));
             }
         }
-        None
+        best.map(|(_, w)| w)
     };
     // **Certify what the boundary uses, not what it might use.**
     //
@@ -730,8 +809,7 @@ fn certify_boundary<B: Backend>(
                     lo: span_lo,
                     hi: span_hi,
                 };
-                let mid = raw.lo.add(&raw.hi).mul(&Rat::new(1, 2));
-                let window = window_around(ri, label.0, crate::resolve::wall_of(label), &mid);
+                let window = window_for(ri, label.0, crate::resolve::wall_of(label), &raw);
                 let walls = part.ops[label.0]
                     .1
                     .walls()
@@ -764,11 +842,23 @@ fn certify_boundary<B: Backend>(
                     Err(PartFault::CutUnresolved { op: label.0 });
                 for (den, subx) in rungs {
                     let span = match &window {
-                        Some((t1, t2)) => {
-                            let inset = t2.sub(t1).div(&Rat::from_i128(*den));
+                        // The inset is a stand-off from a **tangent ruling** — the √-branch
+                        // endpoint the fit cannot follow. A window end that is the band's own edge
+                        // is no such thing: the branch is as smooth there as anywhere, and
+                        // insetting only shortens the rail short of the σ a derived end needs.
+                        Some(w) => {
+                            let inset = w.span.hi.sub(&w.span.lo).div(&Rat::from_i128(*den));
+                            let t1 = match w.lo_is_tangent {
+                                true => w.span.lo.add(&inset),
+                                false => w.span.lo.clone(),
+                            };
+                            let t2 = match w.hi_is_tangent {
+                                true => w.span.hi.sub(&inset),
+                                false => w.span.hi.clone(),
+                            };
                             Interval {
-                                lo: rmax(&raw.lo, &t1.add(&inset)),
-                                hi: rmin(&raw.hi, &t2.sub(&inset)),
+                                lo: rmax(&raw.lo, &t1),
+                                hi: rmin(&raw.hi, &t2),
                             }
                         }
                         None => raw.clone(),
@@ -1527,7 +1617,9 @@ pub(crate) fn flat_pattern<B: Backend>(
         let hole = bail!(contour_outline(part, built, op, part.segments));
         let outline = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Unresolved(e) => {
+                return Verdict::Unresolved(e);
+            }
             Verdict::Refuted(UnrollFault::PoleInEval) => return Verdict::Refuted(PartFault::Pole),
             Verdict::Refuted(_) => return Verdict::Refuted(PartFault::LoopBroken),
         };
@@ -1846,7 +1938,9 @@ pub(crate) fn flat_pattern<B: Backend>(
     // — 5. Unroll the boundary through the connected piecewise development. —
     let outline = match unroll_trim_loop(&built.pw, &arcs, &part.cfg, &part.clearance) {
         Verdict::Verified(o) => o,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Unresolved(e) => {
+            return Verdict::Unresolved(e);
+        }
         Verdict::Refuted(UnrollFault::PoleInEval) => return Verdict::Refuted(PartFault::Pole),
         Verdict::Refuted(_) => return Verdict::Refuted(PartFault::LoopBroken),
     };
@@ -1876,7 +1970,9 @@ fn pattern_from_outline<B: Backend>(
         eps_all = rmax(&eps_all, &hole.eps);
         let flat = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Unresolved(e) => {
+                return Verdict::Unresolved(e);
+            }
             Verdict::Refuted(UnrollFault::PoleInEval) => {
                 return Verdict::Refuted(PartFault::Pole);
             }
@@ -1912,7 +2008,9 @@ fn pattern_from_outline<B: Backend>(
     let expected_holes = hole_polys.len();
     let region = match assemble_flat(&outer_poly, &hole_polys) {
         Verdict::Verified(r) => r,
-        Verdict::Unresolved(()) => return Verdict::Unresolved(part.clearance.clone()),
+        Verdict::Unresolved(()) => {
+            return Verdict::Unresolved(part.clearance.clone());
+        }
         Verdict::Refuted(_) => {
             return Verdict::Refuted(PartFault::TopologyMismatch {
                 expected_holes,

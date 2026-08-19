@@ -225,6 +225,67 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
     }
 }
 
+/// **The two-ramp device, carrying both drawings** — the same 42° cone, stack and annulus as
+/// [`self_lapping_spec`], with the seam centred on the base sheet instead of offset onto one side
+/// of it.
+///
+/// One number differs, `seam_offset = −1/8` against `+1/8`, and it costs a ramp on each side:
+/// the pinned device's clockwise end never leaves the base cone, this one's does. That is what a
+/// board wants when neither end may bulge more than the other — and it is also the configuration
+/// that can carry **both** cut files at once, which the pinned device cannot.
+///
+/// Why this one places them: its ramps sit at `σ ∈ [37/80, 7/8]`, so each drawing's wedge meets
+/// `h′ = 0` sheet on both of its passes, where a ruling's plan projection runs through the axis and
+/// *along* a radial flank rather than across it. On the pinned device the second pass lands on the
+/// ramp and the bore refuses `SectionNotSimple` (#291), which is why `self_lapping_spec` leaves
+/// both profiles `None`.
+///
+/// Both ramps span `Δσ = 7/20`. A ramp's edge of regression sweeps `≈ 0.9·h/Δσ²` along the ruling
+/// and must stay inside the inner bound's `µ̂ ≈ 1.81` or the sheet would have to crease:
+/// `0.9·(1/8)/(7/20)² ≈ 0.92`, clear by about 2×. Narrow them and the recipe is refused, soundly.
+///
+/// Lives here rather than in the driver that runs it because `author/tests/lapped_cone.rs` must
+/// certify the *same* device the demo emits. A test that restated these numbers would keep passing
+/// while the two drifted apart — the failure the `acceptance` crate exists to prevent.
+pub fn two_ramp_spec() -> lapped::LappedCone {
+    let sigma = |n: i128, d: i128| lapped::Azimuth::Sigma(q(n, d));
+    lapped::LappedCone {
+        // The Pythagorean (72, 65, 97): sin β = 65/97, the same 42° device.
+        apex: (qi(72), qi(65)),
+        thickness: q(6, 25),
+        gap: q(1, 100),
+        on_top: lapped::OnTop::Cw,
+        // c = 0 in physical terms: the seam straddles the base cone, so BOTH ends ramp, by
+        // ∓(t/2 + g/2) = ∓1/8.
+        seam_offset: q(-25, 200),
+        ccw: lapped::SideAngles {
+            ramp_start: sigma(37, 80),
+            ramp_end: sigma(7, 8),
+            sheet_end: sigma(9, 8),
+        },
+        cw: lapped::SideAngles::flat(sigma(-9, 8)),
+        outer_r: q(43, 4),
+        // The device's real rim: the Ø 21.5 circle with a lug reaching out to Ø 27.5 on two radial
+        // flanks and a 195° nose arc tangent to both.
+        outer_profile: Some(outer_cut_profile()),
+        inner_r: Some(qi(4)),
+        // The device's real bore: the Ø 8 hole with a 10° tab reaching in to Ø 4.
+        inner_profile: Some(inner_cut_profile()),
+        // Both bounds are cones cut normal to the sheet — a cone of revolution has a closed-form
+        // distance, so `develop::cut::RevCone` puts them on the same certificate arm a cylinder is
+        // on and they cost the same.
+        trim: lapped::TrimStyle::NormalCut,
+        neutral: q(1, 2),
+        // `h''` constant in magnitude, so the bend spreads across the ramp instead of piling up at
+        // its two joins: measured 1.5× less fold-line swing.
+        ramp_profile: lapped::RampProfile::EvenCurvature,
+        // Both ramps finish before the overlap starts (ramp_end 7/8 against the lap's 8/9), so the
+        // gap really is `g` across the whole seam and the strict policy holds.
+        policy: lapped::GapPolicy::Constant,
+        pick: None,
+    }
+}
+
 /// **The device's inner cut, as the drawing states it** — `data/inner-cut.dxf`, verbatim.
 ///
 /// Embedded rather than read from disk so the device is the same object wherever it is built, and

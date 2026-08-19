@@ -14,9 +14,7 @@
 //!
 //! Flags: `--out-dir <dir>` (default `generated-demos/`), `--segments N`, `--panels N`.
 
-use acceptance::lapped::{
-    self, Azimuth, GapPolicy, LappedCone, OnTop, RampProfile, SideAngles, TrimStyle,
-};
+use acceptance::lapped::{self, LappedCone};
 use author::part::Part;
 use certify_core::Verdict;
 use develop::cone::DevConfig;
@@ -32,67 +30,11 @@ fn q(n: i128, d: i128) -> Q {
 fn qi(n: i128) -> Q {
     Q::from_i128(n)
 }
-fn sigma(n: i128, d: i128) -> Azimuth {
-    Azimuth::Sigma(q(n, d))
-}
-
-/// The two-ramp recipe: the same 42° cone and the same **physical** stack as the acceptance
-/// device — 240 µm of 4-layer flex, a 10 µm ACF bondline, Ø 8 → Ø 21.5 mm, all in millimetres — with
-/// the seam centred on the base sheet instead of offset onto one side of it.
-///
-/// [`acceptance::self_lapping_spec`] carries the table of where each number comes from; the only
-/// one that differs here is `seam_offset`.
+/// The two-ramp recipe, from [`acceptance::two_ramp_spec`] — **the real one**, not a copy. The
+/// device this driver emits is the device `author/tests/lapped_cone.rs` certifies; a transcription
+/// here would let the two drift while both kept passing.
 fn spec() -> LappedCone {
-    LappedCone {
-        // The Pythagorean (72, 65, 97) — sin β = 65/97, exact.
-        apex: (qi(72), qi(65)),
-        thickness: q(6, 25),
-        gap: q(1, 100),
-        on_top: OnTop::Cw,
-        // c = 0: the seam straddles the base cone, so BOTH ends ramp, by ∓(t/2 + g/2) = ∓1/8.
-        seam_offset: q(-25, 200),
-        // Both ramps span Δσ = 7/20, symmetrically. A ramp's edge of regression sweeps ≈0.9·h/Δσ²
-        // along the ruling and must stay inside the inner bound's µ̂ ≈ 1.81 or it crosses the
-        // sheet: 0.9·(1/8)/(7/20)² ≈ 0.92, clear by ~2×. Narrow them and the part is refused —
-        // soundly, because the sheet would have to crease. See docs/engineering-log.md.
-        ccw: SideAngles {
-            ramp_start: sigma(37, 80),
-            ramp_end: sigma(7, 8),
-            sheet_end: sigma(9, 8),
-        },
-        // cw: SideAngles {
-        //     ramp_start: sigma(-1, 5),
-        //     ramp_end: sigma(-3, 4),
-        //     sheet_end: sigma(-5, 4),
-        // },
-        // ccw: SideAngles::flat(sigma(5, 4)),
-        cw: SideAngles::flat(sigma(-9, 8)),
-        // The device's annulus: inner Ø 8 mm, outer Ø 21.5 mm, cut normal to the sheet.
-        outer_r: q(43, 4),
-        // The device's real rim, read out of `data/outer-cut.dxf` — the Ø 21.5 circle with a lug
-        // reaching out to Ø 27.5 on two radial flanks and a 195° nose arc tangent to both.
-        outer_profile: Some(acceptance::outer_cut_profile()),
-        inner_r: Some(qi(4)),
-        // The device's real bore, read out of `data/inner-cut.dxf` — the Ø 8 hole with a 10° tab
-        // reaching in to Ø 4. This recipe is the one that can carry it: its ramps sit at
-        // `σ ∈ [37/80, 7/8]`, so the tab meets `h′ = 0` sheet on both of its passes, where a
-        // ruling's plan projection passes exactly through the axis and runs *along* the tab's
-        // radial flanks instead of across them. On the pinned device the second pass lands on the
-        // ramp and it refuses `SectionNotSimple` (#291).
-        inner_profile: Some(acceptance::inner_cut_profile()),
-        // The physical edge, and the pinned device's: both bounds are cones cut normal to the
-        // sheet. They cost what a cylinder costs — a cone of revolution has a closed-form distance,
-        // so `develop::cut::RevCone` puts them on the same certificate arm.
-        trim: TrimStyle::NormalCut,
-        neutral: q(1, 2),
-        // The even ramp: `h''` constant in magnitude, so the bend is spread across the ramp
-        // instead of piling up at its two joins. Measured 1.5x less fold-line swing.
-        ramp_profile: RampProfile::EvenCurvature,
-        // Both ramps finish before the overlap starts (ramp_end 3/4 against the lap's 4/5), so the
-        // gap really is `g` across the whole seam and the strict policy holds.
-        policy: GapPolicy::Constant,
-        pick: None,
-    }
+    acceptance::two_ramp_spec()
 }
 
 fn main() {
