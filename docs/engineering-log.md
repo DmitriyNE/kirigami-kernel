@@ -768,6 +768,80 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#307 + #306: the splice-handoff jog is closed at its source (rail-end pinning), and the
+  solid's splice chains are de-subdivided (2026-08-19).** The jog was a *designed-in* micro-cap:
+  the assembly comments said outright that a splice's traced tail starts at the wall's **true**
+  branch value while the rail it follows ends at its **fitted** one, with a ruling-segment cap
+  closing the ε-wide difference — visible as the sign-flipping zigzag at every cap tangency.
+  The fix, `export::trim::pin_rail_ends`: a fitted rail is pinned to the wall's true branch value
+  (snapped on `TRACE_SNAP_BITS`, the exact composition `quadric_tail` gives its from-node) — but
+  only at span ends that are **tangent-ruling insets** (`lo/hi_is_tangent`), the only ends a
+  splice hands off at. The ladder passes those flags; every other caller pins nothing.
+
+  Four defects found on the way, each a finding of its own:
+  1. **Certifying the pinned polynomial through the RevCone symbolic arm inflated its bound six
+     orders on a 2·10⁻¹⁰ perturbation** (7.6e-8 → 5.2e-2, bit-identical for two different tiny
+     perturbations — a structural sensitivity, the [enclosure-cancellation] class again). Dodged,
+     not fought: certify the *raw* fit, then pin, and account `ε ≤ ε_raw + max(|e_lo|,|e_hi|)` by
+     triangle inequality — the correction's sup is attained at an end, so the bound is exact at
+     the pin's own scale, and the sensitive path never sees the perturbed polynomial.
+  2. **A correction applied to ends that never hand off is pure interior distortion.** The
+     circumscribed-disc fixture authors a hole 0.0029 clear of the gore's bore; pinning the
+     bore's *band-edge* ends moved its mid-span and the flat boolean swallowed the hole
+     (`TopologyMismatch`). Hence the tangent-ends-only rule: the ladder passes its
+     `lo/hi_is_tangent` window flags, and only tangent-ruling insets — the ends a flank splice
+     actually meets — are pinned. The defect was invisible on the device and decisive on a
+     fixture packed to 0.003 clearance ([fixture-scaling]-adjacent).
+  3. **A steeper-than-affine decay poisons every downstream enclosure.** A quartic per-end basis
+     (leak `max|e|/8`) looked strictly better — but its coefficients scale as `e/w⁴` (~10³ on a
+     narrow span), and the develop went Verified 3.4 → **Unresolved 6.6 with no single large pin
+     anywhere**: the unroll's chord bounds and every other interval consumer of the deg+4 rail
+     hit the same cancellation wall, one layer downstream. The +4 degree also broke OCCT
+     `MakeEdge` on the emitted Béziers (the G7 finding, materialized). The shipped correction is
+     the plain **affine** interpolant of the two end residuals: coefficients `~e/w`, degree +1,
+     its one vice (whole-span drag on a loose rail) already contained by rule 2.
+  4. The residual after the fix is a *different, smaller* artifact: ~0.003 sign-flip clusters at
+     two of the four cap tangency **vertices** (one pass), the walked-in-vertex/tangent-gap
+     class — logged on the follow-up task, not #307's mechanism.
+
+  #306 rides in `author::realize::splice_chain`: a σ-advance floor of `2⁻¹²` between chain pieces
+  (a piece end is a builder station; the connector elbow's ~10⁻⁶-σ micro-pieces were the 2·10⁻⁴
+  sliver edges OnShape refused), plus greedy merging of chord runs into one interpolating
+  polynomial piece (Newton through ≤ 4 spread nodes, adopted only where it passes every skipped
+  point within the chord sagitta budget — the same trust class as the chords it replaces). A
+  steep flank breaks the run and stays its own affine piece with a legal station width.
+
+  Measured on the two-ramp device, chord-run → this: develop Verified ε 3.396 → **3.408** (the
+  pin's honest 0.012), solid **446 → 154 faces** (94 pre-#305), STEP **6.1 MB / 35k entities →
+  1.1 MB / 12.5k**, min edge **2.1e-4 → 1.4e-3**, OCCT ok (the chord run's `MakeEdge` failure
+  gone), full pipeline ~19.3 → **~16.5 min**, suites 349/349. Flanks ride their rulings and the
+  caps join tangently at render scale on both features; the old handoff zigzag flips are gone
+  from both rail-handoff classes.
+
+  *2026-08-19 · resolved (suite 349/349; device demo8e verified) · #306, #307*
+
+- **#303 closed: the two lap passes SHOULD disagree about the same physical cut — the tail pass
+  rides the offset sheet, and the emitted flat encodes exactly the through-support draft effect
+  (2026-08-19).** The suspect measurement said the tail-pass lap images sit 0.05–0.08 off the
+  exact cast+develop with a −0.64° rotation while the head pass is ≤ 0.03. The resolution is that
+  the *ideal* was wrong, not the pipeline: it cast onto the neutral cone for **both** passes,
+  but the tail sheet sits at support `h = −1/4` (the STEP's own vertices cluster on the face-cones
+  — head faces at ±0.12 normal-units, tail at −0.13/−0.37, with the authored 0.01 bond gap visible
+  between +0.12 and +0.13). Every cast ray passes through the shared drafted apex, so the trace on
+  a face at normal offset δ is the neutral trace **scaled radially by `u = 1 − δ/z_A` at unchanged
+  azimuths** (similar triangles), and the developed image is congruent to that scaled trace up to
+  the connected γ-development's stitching rigid motion across the ramp (which is the "rotation").
+  Measured on the emitted flat, two features with two different apexes: the tab's shoulder width
+  ratio between passes is **0.9530 vs 0.9536 predicted** (inner apex `z_A = 8.0419`), the lug's
+  arc width ratio **0.9820 vs 0.98274 predicted** (outer apex `z_A = 21.6126`) — both at <0.1%.
+  Product-side corollary: on a real lap the tail layer's cut opening genuinely comes out smaller
+  by `u`; the kernel models it, exactly in the spirit of the cut-file ruling ("the cast's radial
+  displacement is the tool, not an error to pre-distort away"). Method note: the confirming
+  instruments were rigid-invariant widths, not radii — a congruence preserves distances while the
+  stitching translation moves every `R`.
+
+  *2026-08-19 · resolved (measurement-model error; pipeline faithful) · #303*
+
 - **The solid's boundary chain now walks the traced splices — the lug/tab sides are radial and the
   caps tangent in the STEP (2026-08-19, #305 fixed).** Two changes in `realize.rs`: the solid's
   `certify_boundary` call now requests `traced_splices` (the `false` there was a stale economy from

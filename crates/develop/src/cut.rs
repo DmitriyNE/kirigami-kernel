@@ -1283,6 +1283,11 @@ pub fn turn_tail<B: Backend>(
     Some(out)
 }
 
+/// The dyadic grid every traced-boundary coordinate is snapped to — the loop's, the tail's and
+/// the shadow tracer's shared discipline. A caller that needs a value to land **exactly** on a
+/// traced vertex (the #307 rail-end pin) must compose the same snap of the same branch data.
+pub const TRACE_SNAP_BITS: u32 = 30;
+
 /// A closed **cut loop** in the domain: the pieces of a solid cutter's intersection with the
 /// sheet, in traversal order, with the certified bounds that make it usable.
 pub struct CutLoop<B: Backend = Bignum> {
@@ -1421,7 +1426,7 @@ pub fn quadric_cut_loop<B: Backend>(
     // the residual polynomials built from them stop being evaluable — the enclosure of a
     // positive denominator straddles zero. Snapping is safe precisely because each piece is
     // certified against the true surface afterwards.
-    const BITS: u32 = 30;
+    const BITS: u32 = TRACE_SNAP_BITS;
     /// How many grid steps an end may be walked inward before the window is judged unreal.
     const MAX_NUDGE: usize = 64;
     /// Sub-intervals per piece for the per-piece certificate. The p-curve bound is first-order in
@@ -1605,7 +1610,7 @@ pub fn quadric_tail<B: Backend>(
     };
     let n = segments.max(2);
     // The loop's grid discipline (see [`quadric_cut_loop`]): snapped surds, walked-in ends.
-    const BITS: u32 = 30;
+    const BITS: u32 = TRACE_SNAP_BITS;
     const MAX_NUDGE: usize = 64;
     const PIECE_SUBDIV: usize = 64;
     let vertex_raw = if vertex_is_max {
@@ -1950,7 +1955,7 @@ where
     use crate::pcurve::snap;
     use core::cmp::Ordering;
     /// The dyadic grid every emitted coordinate is snapped to (as [`quadric_cut_loop`]).
-    const BITS: u32 = 30;
+    const BITS: u32 = TRACE_SNAP_BITS;
     /// Sub-intervals per piece for the per-piece certificate.
     const PIECE_SUBDIV: usize = 64;
 

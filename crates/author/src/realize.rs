@@ -526,67 +526,157 @@ fn rmax<B: Backend>(a: &Rat<B>, b: &Rat<B>) -> Rat<B> {
     }
 }
 
+/// The σ-advance floor between splice-chain stations, `2⁻¹²`. Every chain piece end becomes a
+/// builder **station** — a full ruling with wall faces on both shells — so two stations closer
+/// than this made micron-wide sliver faces the STEP translators choke on (measured: 2·10⁻⁴-long
+/// edges where the connector's elbow spanned only its root brackets, ~10⁻⁶ in σ). Points inside
+/// the floor fold into the next advancing piece; the near-vertical stretch that results deviates
+/// from the true boundary by at most the neighbours' µ̂-variation over the floor — budget-class,
+/// since the floor is chosen well under the [`chord_pcurve`] sagitta budget's σ-scale.
+const SPLICE_SLICE_BITS: u32 = 12;
+
+/// Cap on the points one merged splice piece may interpolate (see [`splice_chain`]).
+const SPLICE_MERGE_MAX: usize = 12;
+
 /// Append a [`Splice`]'s stretch of a solid chain: the **traced route** across the gap — the same
-/// tails-and-connector the flat pattern draws — chorded at the export sagitta budget
-/// ([`chord_pcurve`]) into contiguous affine `(band, rail)` pieces, the only currency the solid
-/// builder takes.
+/// tails-and-connector the flat pattern draws — as few, curved `(band, rail)` pieces.
 ///
 /// This replaces the single certified chord per splice, which was #305: splices had grown from
 /// µm-fine tails into whole caps and domes while the solid still hulled each one, so the device's
 /// lug came out with sides 15° off their rulings and a flat top at the two rails' shared level
-/// where the drawing has a dome. The µm-fine-tail concern that motivated the chord is handled
-/// where it belongs instead: interior route points snap to the STEP dyadic grid, and a piece
-/// narrower than the export profile's step (`2⁻²⁰`, `export::trim`'s `MIN_STEP`) folds into its
-/// neighbour, so nothing below OCCT's vertex tolerance is emitted.
+/// where the drawing has a dome.
 ///
-/// The chain is a µ̂(σ) graph, so an exactly-vertical stretch (the connector's elbow — a drawn
-/// radial flank) cannot be a piece of it: the walk keeps only σ-advancing points, and a vertical
-/// drop is absorbed into the next advancing piece's slope — the hull of the *unrepresentable
-/// stretch alone*, no longer of the whole splice. Both ends stay pinned to the rails' own
-/// `(edge, value)` corners, so the chain stays contiguous with its rail pieces exactly as before.
-/// A splice carrying no route (`curves` empty) degenerates to the old single chord by
-/// construction — the walk emits just the pinned end-to-end piece.
+/// Three disciplines shape the walk (#306):
+/// - **Station floor.** Only points at least [`SPLICE_SLICE_BITS`] of σ apart survive — a piece
+///   end is a builder station, and closer pairs made sliver faces. A vertical stretch (the
+///   connector's elbow — a drawn radial flank) is unrepresentable in a µ̂(σ) graph anyway and
+///   folds into the next advancing piece's slope, now with a legal width.
+/// - **Merged curved pieces.** Runs of surviving points are interpolated by one low-degree
+///   polynomial piece (Newton form through up to 4 spread nodes), adopted only where it passes
+///   through every skipped point within the [`chord_pcurve`] sagitta budget — the same trust
+///   class as the chords it replaces (exact interpolation of certified route points). A steep
+///   flank breaks the run and stays its own affine piece. This is what keeps the station count
+///   near the pre-#305 economy while the boundary follows the drawn curves.
+/// - **Pinned ends.** With the #307 rail-end pin the route's first and last points *are* the
+///   rails' `(edge, value)` corners; the walk still pins both ends so an empty route degenerates
+///   to the old single chord.
 fn splice_chain<B: Backend>(sp: &Splice<B>, out: &mut Chain<B>) -> Result<(), PartFault> {
     use core::cmp::Ordering;
-    let affine = |a: &(Rat<B>, Rat<B>), b: &(Rat<B>, Rat<B>)| {
-        let slope = b.1.sub(&a.1).div(&b.0.sub(&a.0));
-        (
-            Interval {
-                lo: a.0.clone(),
-                hi: b.0.clone(),
-            },
-            RatFunc::from_poly(lattice::Poly::from_coeffs(vec![
-                a.1.sub(&slope.mul(&a.0)),
-                slope,
-            ])),
-        )
-    };
     let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::new();
     for curve in &sp.curves {
         if chord_pcurve(curve, &mut pts).is_none() {
             return Err(PartFault::Pole);
         }
     }
-    let min_w = Rat::<B>::new(1, 1i128 << 20);
-    let mut cur = (sp.edge_a.clone(), sp.v_a.clone());
+    // The station-floor walk: strictly σ-ascending survivors, ends pinned to the rail corners.
+    let floor = Rat::<B>::new(1, 1i128 << SPLICE_SLICE_BITS);
+    let start = (sp.edge_a.clone(), sp.v_a.clone());
+    let end = (sp.edge_b.clone(), sp.v_b.clone());
+    let mut kept: Vec<(Rat<B>, Rat<B>)> = vec![start];
     for (s, m) in pts {
         let s = snap30(&s);
-        // Interior, σ-advancing, and at least an export step wide on both sides.
-        if s.sub(&cur.0).cmp(&min_w) != Ordering::Greater {
+        if s.sub(&kept.last().expect("non-empty").0).cmp(&floor) != Ordering::Greater {
             continue;
         }
-        if sp.edge_b.sub(&s).cmp(&min_w) != Ordering::Greater {
+        if end.0.sub(&s).cmp(&floor) != Ordering::Greater {
             break;
         }
-        let p = (s, m);
-        out.push(affine(&cur, &p));
-        cur = p;
+        kept.push((s, m));
     }
-    let end = (sp.edge_b.clone(), sp.v_b.clone());
-    if end.0.cmp(&cur.0) == Ordering::Greater {
-        out.push(affine(&cur, &end));
+    if end.0.cmp(&kept.last().expect("non-empty").0) == Ordering::Greater {
+        kept.push(end);
+    } else if kept.len() > 1 {
+        *kept.last_mut().expect("non-empty") = end;
+    } else {
+        return Ok(());
+    }
+    // The merge pass: greedily extend each run while one interpolating piece passes through
+    // every interior point within the sagitta budget.
+    let budget = Rat::<B>::new(1, 1i128 << 8);
+    let mut i = 0;
+    while i + 1 < kept.len() {
+        let mut j = i + 1;
+        let mut piece = splice_piece(&kept[i..=j]).ok_or(PartFault::Pole)?;
+        while j + 1 < kept.len() && j - i < SPLICE_MERGE_MAX {
+            match splice_piece(&kept[i..=j + 1]) {
+                Some(next) if splice_piece_fits(&next, &kept[i..=j + 1], &budget) => {
+                    piece = next;
+                    j += 1;
+                }
+                _ => break,
+            }
+        }
+        out.push(piece);
+        i = j;
     }
     Ok(())
+}
+
+/// One interpolating splice piece through `run` (≥ 2 strictly σ-ascending points): the polynomial
+/// through up to 4 spread nodes — always the run's two ends, so consecutive pieces chain exactly.
+/// `None` only if a node σ repeats (the walk's floor forbids it).
+fn splice_piece<B: Backend>(run: &[(Rat<B>, Rat<B>)]) -> Option<(Interval<B>, RatFunc<B>)> {
+    let last = run.len() - 1;
+    let idx: Vec<usize> = match last {
+        1 => vec![0, 1],
+        2 => vec![0, 1, 2],
+        _ => {
+            let a = (last / 3).max(1);
+            let b = ((2 * last) / 3).max(a + 1);
+            vec![0, a, b, last]
+        }
+    };
+    // Newton's divided differences over the chosen nodes, expanded to monomial coefficients.
+    let nodes: Vec<&(Rat<B>, Rat<B>)> = idx.iter().map(|&k| &run[k]).collect();
+    let n = nodes.len();
+    let mut dd: Vec<Rat<B>> = nodes.iter().map(|p| p.1.clone()).collect();
+    for level in 1..n {
+        for k in (level..n).rev() {
+            let denom = nodes[k].0.sub(&nodes[k - level].0);
+            if denom.sign() == 0 {
+                return None;
+            }
+            dd[k] = dd[k].sub(&dd[k - 1]).div(&denom);
+        }
+    }
+    let mut poly = lattice::Poly::constant(dd[n - 1].clone());
+    for k in (0..n - 1).rev() {
+        // poly = poly·(σ − σ_k) + dd_k
+        let shift =
+            lattice::Poly::from_coeffs(vec![Rat::from_i128(0).sub(&nodes[k].0), Rat::from_i128(1)]);
+        poly = poly
+            .mul(&shift)
+            .add(&lattice::Poly::constant(dd[k].clone()));
+    }
+    Some((
+        Interval {
+            lo: run[0].0.clone(),
+            hi: run[last].0.clone(),
+        },
+        RatFunc::from_poly(poly),
+    ))
+}
+
+/// Does the interpolating `piece` pass within `budget` of **every** point of `run`? (Its nodes
+/// are exact by construction; this is the check on the skipped interior points.)
+fn splice_piece_fits<B: Backend>(
+    piece: &(Interval<B>, RatFunc<B>),
+    run: &[(Rat<B>, Rat<B>)],
+    budget: &Rat<B>,
+) -> bool {
+    use core::cmp::Ordering;
+    run.iter().all(|(s, m)| match piece.1.eval(s) {
+        Some(v) => {
+            let d = v.sub(m);
+            let d = if d.sign() < 0 {
+                Rat::from_i128(0).sub(&d)
+            } else {
+                d
+            };
+            d.cmp(budget) != Ordering::Greater
+        }
+        None => false,
+    })
 }
 
 /// The pieces of `[a, b]` split at region joins: `(from, to, region index)` in ascending σ.
@@ -905,6 +995,12 @@ fn certify_boundary<B: Backend>(
                 let mut reason: Result<Rat<B>, PartFault> =
                     Err(PartFault::CutUnresolved { op: label.0 });
                 for (den, subx) in rungs {
+                    // `pin_ends`: a span end that is a tangent-ruling **inset** is where a flank
+                    // splice hands off, so the fit is pinned to the wall's true branch value
+                    // there (#307). A band- or run-edge end has no tail meeting it and stays
+                    // unpinned — pinning it is pure interior distortion (the sketch-gore bore's
+                    // pin leak once swallowed a hole authored 0.003 clear of it).
+                    let mut pin_ends = (false, false);
                     let span = match &window {
                         // The inset is a stand-off from a **tangent ruling** — the √-branch
                         // endpoint the fit cannot follow. A window end that is the band's own edge
@@ -920,6 +1016,10 @@ fn certify_boundary<B: Backend>(
                                 true => w.span.hi.sub(&inset),
                                 false => w.span.hi.clone(),
                             };
+                            pin_ends = (
+                                w.lo_is_tangent && raw.lo.cmp(&t1) != Ordering::Greater,
+                                w.hi_is_tangent && t2.cmp(&raw.hi) != Ordering::Greater,
+                            );
                             Interval {
                                 lo: rmax(&raw.lo, &t1),
                                 hi: rmin(&raw.hi, &t2),
@@ -982,6 +1082,7 @@ fn certify_boundary<B: Backend>(
                         pick,
                         &span,
                         fit,
+                        pin_ends,
                         &part.clearance,
                         &part.cfg,
                     ) {
@@ -2593,6 +2694,43 @@ mod tests {
     }
     fn qi(n: i128) -> Q {
         Q::from_i128(n)
+    }
+
+    /// [`splice_piece`] + [`splice_piece_fits`] — the #306 merge. The piece interpolates its run's
+    /// two ends exactly (the chain's C0 invariant); points on a parabola merge into one piece that
+    /// passes the budget check; a corner in the run fails it.
+    #[test]
+    fn splice_pieces_interpolate_ends_and_reject_corners() {
+        // A parabola sampled at 7 σs: one merged piece reproduces every sample exactly.
+        let para: Vec<(Q, Q)> = (0..7).map(|k| (q(k, 8), q(k * k, 64))).collect();
+        let piece = splice_piece(&para).expect("distinct nodes");
+        assert_eq!(piece.0.lo.cmp(&para[0].0), core::cmp::Ordering::Equal);
+        assert_eq!(piece.0.hi.cmp(&para[6].0), core::cmp::Ordering::Equal);
+        let tight = q(1, 1_000_000_000);
+        assert!(
+            splice_piece_fits(&piece, &para, &tight),
+            "a ≤3-degree interpolant through 4 nodes of a parabola is the parabola",
+        );
+
+        // A right-angle corner: flat then steep. The interpolant through the spread nodes cannot
+        // pass within the sagitta budget of the corner points.
+        let mut corner: Vec<(Q, Q)> = (0..4).map(|k| (q(k, 8), qi(0))).collect();
+        corner.extend((1..4).map(|k| (q(3 + k, 8), q(k, 2))));
+        let piece = splice_piece(&corner).expect("distinct nodes");
+        let budget = q(1, 256);
+        assert!(
+            !splice_piece_fits(&piece, &corner, &budget),
+            "a corner run must fail the merge check and stay split",
+        );
+
+        // Two points: the affine chord, ends exact.
+        let two = [(qi(0), qi(1)), (q(1, 4), qi(2))];
+        let piece = splice_piece(&two).expect("affine");
+        assert_eq!(
+            piece.1.eval(&q(1, 8)).unwrap().cmp(&q(3, 2)),
+            core::cmp::Ordering::Equal,
+            "two points make the straight chord",
+        );
     }
 
     /// `acceptance::flex_panel()`, copied verbatim — `acceptance` depends on `author`, so an
