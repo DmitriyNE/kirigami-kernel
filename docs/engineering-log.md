@@ -788,7 +788,12 @@ fine — this is a log, not a schema.
   monotone`] "pin a size budget beside every ε budget" doctrine applied to *output* fidelity;
   left on the task.
 
-  *2026-08-20 · resolved (suite 824/824; demo11 measured) · #310*
+  0.069 was still too coarse for the design (user), so the shipped artifacts moved to
+  `--segments 48`: worst arc sagitta **0.00765** (the 1/n² law lands exactly: 0.069·(16/48)² =
+  0.0076), outline 770 → 2307 points, solid 170 faces · 0 free · occt ok, both certificates
+  Verified (the SVG/STEP emit only inside the `Verified` arms).
+
+  *2026-08-20 · resolved (suite 824/824; demo12 = segments 48 shipped) · #310*
 
 - **#309: the de-subdivided splice chains cut across near-vertical flanks — the walk is now
   measured, and it surfaced two general builder hazards (2026-08-20).** The user's report: the
