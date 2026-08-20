@@ -2450,6 +2450,82 @@ walls sharing the caps' boundary edges sew a sphere by edge identity alone, whic
 vertex-dropping footprint cannot produce at any ε — a check on the tracer, never a warrant for the
 geometry, and the routing guard above is what keeps it from being read as one.
 
+### BL acceptance criteria (the boundary is a loop — a cut may meet the part's own edge)
+
+The kept material's boundary is modelled as **two µ̂-graphs over σ plus interior hole loops**, and
+that model — not the geometry, and not any certificate — is what refuses a cut that reaches the
+part's edge. The resolver already computes every µ̂-component at every σ (`sample_comps`, AUTH.1e.1);
+`choose_comps` then keeps **one**, and `Run` carries exactly two bounding `Label`s. Three refusals
+follow from that single collapse: an op that carves a gap *and* bounds is `SectionNotSimple`
+(`resolve.rs`'s role assignment is exclusive — there is a `Notch` role and a `Hole` role and no way
+to be both), a second material component is `AmbiguousRegion`, and a hole whose σ-window is not
+strictly interior to a band gets no attribution at all (#311, which reported it as
+`HoleCrossesRegions` on a cut that crosses no region). **A subtract of two solids is always defined**
+— Parasolid cuts these without complaint — so every one of these is a representation to lift, never a
+geometric fact, and the milestone is named for what replaces it: the boundary is traced as a loop.
+
+*The pre-state is pinned by measurement, not by expectation.* Each of these refuses today and is
+expected to flip, or to be reclassified under a fault that names its **own** cause:
+
+| fixture | today |
+|---|---|
+| `acceptance::bat_cutter()` on the seam (#311) | `Refuted(CutUnresolved{op:2})`, 619 s; footprint `σ ∈ [−1.125, −0.7675] ∪ [+0.7675, +1.125]`, reaching **both** band ends |
+| the drawing's tab under the ramp (#291, #287) | `SectionNotSimple` — the ruling crosses the tab sideways, 0.481 mm against a 0.35 mm half-width |
+| the rim lug on the wrapping device (#296) | assembles, but only because the lug **bounds**; a lug that also carved would not |
+| the device's real DXFs as both cuts (#290) | blocked on the above |
+
+*And by the controls that must NOT move.* `bat_cutter_body()` (`Verified ε 3.490`, 1 hole, role
+`Hole`) and the same window narrowed to ±0.6 on the seam (`Verified ε 3.490`, **2 holes** — one
+cutter piercing both lapped sheets) differ from the refusing case in *nothing but width*. They are
+the evidence that the rectangle, the tilted sketch plane, the through-all prism and the wrapping
+chart are all already carried, and they must stay Verified at the same ε through every slice.
+
+*What the loop model must claim, stated before it is built.* The σ-partition is already exact —
+`structure_events` isolates every root of `{disc_µ̂(f_i)} ∪ {Res_µ̂(f_i, f_j)}` over **every** op's
+walls with Sturm brackets at `2⁻⁴⁰`. Inside one cell no rail crosses another, so the µ̂-ordering is
+constant and **one exact evaluation at a rational interior point decides the whole cell's component
+structure**. Boundary loops are then a combinatorial consequence of the cell decomposition, and each
+loop *piece* keeps the rail certificate it already carries. So BL adds **no new arithmetic and no new
+certificate** — the AUTH.2/AUTH.3 precedent, and the reason its TCB row is `N/A · rc-hyp`.
+
+*The slices, each with the gate that makes it non-vacuous:*
+
+- **BL.1 — keep the components.** `Structure` carries every component per cell with its bounding
+  labels; today's one-interval path is *derived* from it. Gate: **byte-identical** ε, SVG and STEP on
+  every existing fixture. That equality proves nothing on its own (a test comparing a computation to
+  itself passes forever), so it ships with a control that must **fail**: a deliberately perturbed
+  device — one op's span moved by one cell — must move those very outputs. The AUTH.3 rule restated.
+- **BL.2 — adjacency and loops.** Link components across consecutive event σ, then trace each
+  region's boundary as a cyclic sequence of rail pieces, reusing the splice/corner handoffs of
+  #294–#296 and #305–#309. Gate: reproduces today's outline and holes exactly; plus the first loop
+  that *alternates* rail and cap pieces, which no current fixture can produce.
+- **BL.3 — roles stop being a classification.** `OpRole` becomes a property of a boundary **piece**,
+  not an exclusive verdict on an op. `SectionNotSimple` narrows to what it names; the orphan branch
+  stops borrowing `HoleCrossesRegions`. Criterion: **every surviving refusal names its own cause** —
+  #311 cost an hour because one did not.
+- **BL.4 — the flat path.** Mostly already loop-shaped (`assemble_flat` takes an outer polygon and
+  hole polygons; `unroll_trim_loop` unrolls a loop). What changes is which loops it is handed.
+- **BL.5 — the solid path.** `brep_trim_solid_regions` takes `(inner, outer)` rails plus `HoleRail`s
+  today; it must take a per-slice list of µ̂-components. This is the milestone's risk: more faces,
+  more sliver opportunities for OCCT's `MakeEdge`, and the min-edge floor (`MIN_STEP_BITS`) starts to
+  bite. It also settles #266 — `HoleRail` is retired here or kept on measured evidence.
+- **BL.6 — acceptance.** The seam window developed, folded and exported; #287/#291 flipped; the full
+  gate. Emission economy is pinned **beside** ε as a growth shape, never a golden: faithfulness
+  assertions are monotone in refinement and so cannot see a boundary that is correct but
+  uneconomical (#281 emitted 33× the vertices with every check green).
+
+*Runtime is a stated cost, measured after rather than guessed before.* The two-ramp device runs
+≈478 s develop / ≈509 s solid at `--segments 16` today. BL increases work per σ (components kept, not
+collapsed), so the slice that lands it reports its own cost, and **OPT.4's preview/certify split is
+decided on that measurement** — optimizing the representation we are replacing is the one sequencing
+error available here.
+
+*Scope exclusions, so the milestone has an edge.* No 3-D booleans and no B-rep kernel — the loop is
+traced in `(σ, µ̂)`, over curves that already carry certificates. No atlas and no new surface classes.
+The wrapping chart's self-overlap stays a *chart* matter: two passes remain two footprints. And a
+part is still **one** kept component unless a pick names one — BL changes what a component's boundary
+may look like, not how many bodies a part may be.
+
 ---
 
 ## 9. Sequencing

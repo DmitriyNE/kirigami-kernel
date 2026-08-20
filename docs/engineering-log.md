@@ -19,6 +19,99 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **BL.2b′ cannot land before the loop model: the partition immediately exposes what the
+  one-interval model must refuse (2026-08-20).** Wiring the event partition into the resolver's
+  sample set works, and the run partition sharpens where it should — the notched fixture's runs move
+  from `0.218750 / 0.656250` (grid) to `0.291498 / 0.548696`, hugging the notch's own extent, with
+  the event-derived middle run unchanged. Then `a_span_cuts_only_the_sheets_it_reaches` **refuses**
+  `SectionNotSimple{op: 2}`: the transverse drill cuts across the rulings, and near its tangent
+  rulings the material's section genuinely splits. The coarse grid never sampled those σ. Finer
+  sampling did not break the fixture; it *found* what was always there.
+
+  So the dependency runs opposite to how BL was sequenced. The partition cannot be a standalone
+  slice underneath the run/role derivation, because the moment it is, honest sampling turns passing
+  parts into refusals the one-interval reading has no way to represent. Two options, and the second
+  is the one to take:
+
+  - land the partition *with* BL.3/BL.4 so the loops absorb what it exposes — a big, unreviewable
+    change;
+  - build the loop model **alongside**: keep `recs`/`runs`/`holes`/`roles` on the grid samples,
+    exactly as they ship, and resolve the partition samples into `cells` only, for the tracer. Today's
+    behaviour stays byte-identical, BL.2b gets its sound cell set, and the switchover happens once
+    the loops are the boundary rather than a second opinion. Costs one extra resolve pass over the
+    partition samples, which is a runtime line to report at BL.6.
+
+  Also worth keeping: the *first* wiring attempt sampled the zone **endpoints** and refused
+  `HoleCrossesRegions` — a bracket endpoint *is* a hole-attribution window boundary and that test is
+  strict, so a hole-active sample sitting exactly there is orphaned. #311's orphan branch again, at
+  window ends I had just created. Gap **midpoints** are strictly inside their cell by construction.
+
+  *2026-08-20 · wiring reverted, finding recorded; BL.2b′ re-planned as alongside-not-underneath · #317*
+
+- **BL.2b stopped on measurement: a boundary tracer needs the event partition, not the sample grid
+  (2026-08-20).** The tracer itself is simple and, given a sound cell set, right: emit all four sides
+  of each adjacency link's trapezoid counter-clockwise, cancel every edge against its reverse (an
+  interior edge appears twice, once each way), chain the survivors by endpoint. One loop per boundary
+  component falls out — outer and holes alike, with no special case for either, and the vertices are
+  symbolic `(cell, component, is_upper)` triples so cancellation is exact identity rather than float
+  proximity. It traced the banded blank correctly.
+
+  It traced the **holed** blank as ONE loop where there must be two, and the mechanism is structural,
+  not a tuning matter. At a split, node `a@w` links to *both* `b1` and `b2` at `w+1`, so both
+  trapezoids claim the whole left interval `[a.lo, a.hi]` and emit the same left cap **in the same
+  direction**. Cancellation kills opposite pairs, so both survive, the cap is walked twice, and the
+  outer and inner boundaries chain into a single walk. Splitting that cap needs the gap's **wedge
+  tip**, whose σ is a tangent-ruling event — and the mid-cell sample grid has no such σ.
+
+  **Why that is a stop and not a patch.** The obvious hack is to collapse the tip onto the left
+  sample. But today's `holes` record already carries the **exact** window from `tangent_events`, so a
+  sample-resolution tracer would be *coarser than what ships* — a regression wearing progress's
+  clothes. The prototype is parked in `scratchpad/resolve-bl2b-tracer.rs` and BL.2b is blocked on
+  **BL.2b′** (#317): build cells on the union event partition, event σ as slab boundaries plus one
+  rational interior sample per gap. That also discharges BL.0's soundness claim *as written* rather
+  than the narrowed grid version BL.2a had to settle for.
+
+  *2026-08-20 · BL.2b blocked on #317, prototype parked, nothing committed · BL.2*
+
+- **BL.2a: the adjacency graph, and what `raw` turned out to contain (2026-08-20).** Linking each
+  sample's components to the next by µ̂-overlap — the same test `choose_comps` already propagates its
+  pick with — gives the material's adjacency graph, and two invariants come out of it. The first is a
+  check the sweep has always *assumed* and never made: **the picked component is connected across
+  σ** (every sample's pick lands in one face). The second is a cross-check between computations that
+  share no code — the face's independent cycles (`edges − nodes + 1`) equal its **hole records**,
+  µ̂-overlap on one side and the merge's `same_sub_op` test on the other. A gap closed on both sides
+  *is* an interior hole; a gap that never rejoins leaves no cycle and is a boundary bite, which is
+  the whole of #311 in graph terms.
+
+  **What the first failing run taught, which was not what I predicted.** The graph reported **2
+  faces** on the notched fixture and I assumed a grid artifact — a feature narrower than a sample
+  cell. The diagnostic said otherwise: face 0 spans `σ ∈ [−3.427, −1.823]` while the notch sits at
+  `σ ≈ 0.35–0.51`, nowhere near it. `cells[].raw` contains components the **region pick discards** —
+  on this chart the mirror nappe — so "how many faces" is a question about the recipe, not about the
+  part. The assertion had to name the *kept* face. Carried into BL.2: the tracer walks the picked
+  face; other components are bodies the recipe excludes, which is BL.0's "a part is still one kept
+  component unless a pick names one" doing real work rather than decorating the exclusions list.
+
+  **A claim in BL.0 needs narrowing, before it is leaned on.** The gate says the σ-partition is
+  exact and that within a cell no rail crosses another. True of the *event* partition; the resolver's
+  samples are a mid-cell grid plus targeted stations, so adjacency is as fine as the grid — the same
+  posture the run-fold it replaces has, which is why BL.2 still changes no certificate, but not the
+  stronger statement. Sharpening it to one sample per event gap is its own slice and is *not* done.
+
+  *2026-08-20 · BL.2a landed (17/17 resolver units); the event-partition sharpening is open · BL.2*
+
+- **BL — the boundary is a loop (the region model's own frontier).** GO-gated 2026-08-20; criteria
+  in `docs/vv-guide.md` §BL, row `[BL]` in `vv-matrix.md`, slices BL.0–BL.6 on the task ledger.
+  Raised by the user's battery window (#311) landing on the seam, and it is the *same* wall as #291's
+  tab and #296's lug: `sample_comps` computes every µ̂-component per σ and `choose_comps` keeps one,
+  so an op that carves a gap **and** bounds is refused rather than represented. BL keeps the
+  components, links them across the (already exact) event partition, and traces boundaries as loops.
+
+  **Sequencing decision, taken with the user:** BL.0 + BL.1 land *before* #279's OPT.4, because BL
+  changes work-per-σ and optimizing the representation we are replacing is the one available
+  sequencing error. The preview/certify split is then decided on a measurement taken on the new
+  representation, not on today's.
+
 - **Certification runtime is product-blocking, and it is no longer a constant-factor problem
   (#279).** Raised by the user while an AUTH.3c probe ran: *"These running times are not acceptable
   for the real-world use."* The numbers that make it a scope item rather than a grumble: after

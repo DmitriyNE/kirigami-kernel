@@ -431,8 +431,35 @@ pub fn bat_sweep() -> Apex<Bignum> {
 
 /// The battery window as a **cutter**: [`bat_cutout_profile`] drawn in [`bat_plane`], swept along
 /// [`bat_sweep`].
+///
+/// This is the authored placement, on the seam. As drawn it is 4.6 mm wide against a lap wedge
+/// 27° (≈2.4 mm) across at that radius, so its footprint runs past the sheet's free radial ends and
+/// the part refuses `CutUnresolved`: a cut that **opens onto the boundary** needs an op to be hole
+/// and notch at once, which `OpRole` cannot express (#291, #311). [`bat_cutter_body`] is the same
+/// drawing where it closes inside the material.
 pub fn bat_cutter() -> Cutter<Bignum> {
     Cutter::extrude(bat_plane(), bat_sweep(), bat_cutout_profile())
+}
+
+/// The same window and the same tilt, **mirrored to the −y side** — plain single-cover body
+/// material at `az ≈ 270°`, clear of the seam, both ramps, the bore's tab and the rim's lug.
+///
+/// The mirrored plane carries its **own** normal: `u × v` flips sign with `v`, so the sweep is
+/// `(0, 1475, −1428)`. Reusing [`bat_sweep`] here would drive the prism obliquely across a plane it
+/// is not perpendicular to — a different cutter, and one whose prism misses the sheet, which the
+/// part reports as `Verified` with the cut simply absent.
+///
+/// Measured at `--segments 8`: footprint `σ ∈ ±0.1313`, one pass, `ρ ∈ [4.60, 6.25]` inside the
+/// `[4, 10.75]` annulus — `Verified ε 3.490`, one hole, op role `Hole`.
+pub fn bat_cutter_body() -> Cutter<Bignum> {
+    let frame = Frame::new(
+        [qi(0), qi(0), qi(0)],
+        [qi(1), qi(0), qi(0)],
+        [qi(0), q(-1428, 2053), q(-1475, 2053)],
+    )
+    .expect("the axes are independent");
+    let sweep = Apex::direction([qi(0), qi(1475), qi(-1428)]).expect("a real sweep direction");
+    Cutter::extrude(frame, sweep, bat_cutout_profile())
 }
 
 /// The centre of the self-lapping device's seam drill, `(x, y, r²)` — the 3-D cylinder both

@@ -108,6 +108,213 @@ impl<B: Backend> Clone for SigmaEnd<B> {
     }
 }
 
+/// One sample's material kept **whole** (BL.1) — every µ̂-component the op algebra leaves, beside
+/// the merged projection the one-interval model reads and the index it kept.
+///
+/// `raw` is the ground truth a boundary loop is traced over; `merged`/`pick` are the lossy view
+/// every consumer uses today. Keeping both is what makes the one-interval path *derived* rather
+/// than the only thing computed — BL.2 walks `raw`, and until it does, nothing reads it, which is
+/// why this slice is gated byte-identical.
+pub(crate) struct Cell<B: Backend> {
+    /// The sample σ.
+    pub sigma: Rat<B>,
+    /// Which region the sample sits in.
+    pub region: usize,
+    /// Every component here, in µ̂ order, gaps and all.
+    pub raw: Vec<Comp>,
+    /// The same material after gaps carved by one subtract op are folded in as holes.
+    pub merged: Vec<MergedComp>,
+    /// The merged component the sweep kept.
+    pub pick: usize,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Cell<B> {
+    fn clone(&self) -> Self {
+        Cell {
+            sigma: self.sigma.clone(),
+            region: self.region,
+            raw: self.raw.clone(),
+            merged: self.merged.clone(),
+            pick: self.pick,
+        }
+    }
+}
+
+/// The material's **adjacency graph** across σ, and the faces it partitions into (BL.2a).
+///
+/// A node is one component at one sample, `(cell, component)`. Two nodes on consecutive samples are
+/// linked when their µ̂-spans overlap — the same test [`choose_comps`] already propagates its pick
+/// with, so this makes no claim the resolver did not already make. A node may have several
+/// successors (a gap opening) or several predecessors (one closing), and it is exactly those
+/// branchings that the one-interval reading flattens into a hole record.
+///
+/// **What this does and does not know.** The samples are the resolver's mid-cell grid plus the
+/// targeted stations, *not* the exact event partition, so adjacency is as fine as the grid — the
+/// same posture as the run-folding it will replace, and the reason BL.2 changes no certificate.
+/// Sharpening it to one sample per event gap is a separate, later question (recorded in the log).
+// BL.2a is built and *tested* here and consumed by BL.2b's loop tracer, so the lib-without-tests
+// build is the only one where these are dead — `cfg_attr(not(test))` silences exactly that build
+// rather than blanket-allowing dead code in the module.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct Adjacency {
+    /// Per cell, the face index of each of its components.
+    pub face_of: Vec<Vec<usize>>,
+    /// How many faces the components fall into.
+    pub faces: usize,
+    /// Links `((cell, comp), (cell + 1, comp))`, in σ order.
+    pub links: Vec<((usize, usize), (usize, usize))>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl Adjacency {
+    /// The same count for **one** face. The graph sees every component the op algebra leaves,
+    /// including the ones the region pick discards (a mirror nappe is a face of its own), so a
+    /// claim about *the part* has to name the part's face rather than the whole graph.
+    pub fn cycles_of(&self, face: usize) -> usize {
+        let nodes = self
+            .face_of
+            .iter()
+            .flatten()
+            .filter(|f| **f == face)
+            .count();
+        let edges = self
+            .links
+            .iter()
+            .filter(|(a, _)| self.face_of[a.0][a.1] == face)
+            .count();
+        (edges + 1).saturating_sub(nodes)
+    }
+}
+
+/// Link every sample's components to the next sample's by µ̂-overlap, then read off the faces.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn adjacency<B: Backend>(cells: &[Cell<B>]) -> Adjacency {
+    let span = |c: &Comp| {
+        (
+            c.lo.expect("bounded component").0,
+            c.hi.expect("bounded component").0,
+        )
+    };
+    // Union-find over the flattened node list.
+    let offset: Vec<usize> = cells
+        .iter()
+        .scan(0usize, |acc, c| {
+            let at = *acc;
+            *acc += c.raw.len();
+            Some(at)
+        })
+        .collect();
+    let total: usize = cells.iter().map(|c| c.raw.len()).sum();
+    let mut parent: Vec<usize> = (0..total).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let mut links = Vec::new();
+    for w in 0..cells.len().saturating_sub(1) {
+        for (a, ca) in cells[w].raw.iter().enumerate() {
+            let (alo, ahi) = span(ca);
+            for (b, cb) in cells[w + 1].raw.iter().enumerate() {
+                let (blo, bhi) = span(cb);
+                if blo < ahi && alo < bhi {
+                    links.push(((w, a), (w + 1, b)));
+                    let (x, y) = (
+                        find(&mut parent, offset[w] + a),
+                        find(&mut parent, offset[w + 1] + b),
+                    );
+                    if x != y {
+                        parent[x] = y;
+                    }
+                }
+            }
+        }
+    }
+    // Number the roots in first-appearance order so the labelling is deterministic.
+    let mut seen: Vec<(usize, usize)> = Vec::new();
+    let mut face_of: Vec<Vec<usize>> = Vec::with_capacity(cells.len());
+    for (w, cell) in cells.iter().enumerate() {
+        let mut row = Vec::with_capacity(cell.raw.len());
+        for a in 0..cell.raw.len() {
+            let root = find(&mut parent, offset[w] + a);
+            let idx = match seen.iter().position(|(r, _)| *r == root) {
+                Some(i) => seen[i].1,
+                None => {
+                    let n = seen.len();
+                    seen.push((root, n));
+                    n
+                }
+            };
+            row.push(idx);
+        }
+        face_of.push(row);
+    }
+    Adjacency {
+        faces: seen.len(),
+        face_of,
+        links,
+    }
+}
+
+/// One σ-zone where the material's stretch structure can change, isolated (BL.2b′).
+///
+/// `at` is an isolating bracket around a single event — a wall's tangent ruling, two walls meeting,
+/// or a form degenerating — merged with any neighbour closer than the tolerance so the zones stay a
+/// partition. Between two consecutive zones **no** event occurs, so the component structure is
+/// constant there and one evaluation anywhere in the gap decides it. That is the property a boundary
+/// tracer needs and the sample grid cannot supply: a gap's wedge tip is an event, and BL.2b measured
+/// what happens without one (the outer and inner boundaries chain into a single walk).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct EventZone<B: Backend> {
+    /// Which region the zone belongs to.
+    pub region: usize,
+    /// The isolating bracket.
+    pub at: Interval<B>,
+    /// What collides here.
+    pub kinds: Vec<develop::cut::EventKind>,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for EventZone<B> {
+    fn clone(&self) -> Self {
+        EventZone {
+            region: self.region,
+            at: self.at.clone(),
+            kinds: self.kinds.clone(),
+        }
+    }
+}
+
+/// Every region's event zones, in σ order — the partition the component structure is constant
+/// between.
+///
+/// Reads each region's **flat** wall list, so events *across* ops are included: two different
+/// cutters' rails crossing changes the stretch structure exactly as one wall's own tangent does,
+/// and a partition that missed those would be a partition of the wrong thing. This is the same
+/// argument list `locate_end` already derives the material's σ-ends from.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn event_zones<B: Backend>(
+    regions: &[RegionForms<B>],
+) -> Result<Vec<EventZone<B>>, PartFault> {
+    let tol = tangent_tol::<B>();
+    let mut out = Vec::new();
+    for (region, rf) in regions.iter().enumerate() {
+        let evs = develop::cut::structure_events(&rf.flat, &rf.band, &tol)
+            .map_err(|_| PartFault::CutUnresolved { op: 0 })?;
+        for e in evs {
+            out.push(EventZone {
+                region,
+                at: e.at,
+                kinds: e.kinds,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
     /// The material's **derived** σ-extent — the sub-interval of the authored domain the ops
@@ -126,6 +333,16 @@ pub(crate) struct Structure<B: Backend> {
     /// µ̂ < 0, `Some(false)` = all µ̂ > 0, `None` = mixed or 0-straddling. The fold's side
     /// convention (derived, never authored — the seam-#3 doctrine).
     pub mu_negative: Option<bool>,
+    /// Every live sample's material, unprojected (BL.1) — the grid samples the one-interval
+    /// reading above is derived from, **plus** one per cell of the event partition (BL.2b′), which
+    /// only the boundary tracer reads.
+    ///
+    /// The two sets are kept in one list on purpose and the asymmetry is deliberate: adding
+    /// partition samples to the *run* derivation turns passing parts into `SectionNotSimple`
+    /// refusals, because honest sampling finds sections the one-interval model cannot hold (measured
+    /// on the transverse-drill fixture). So the loop model is built **alongside** the shipped one
+    /// until the loops are the boundary rather than a second opinion.
+    pub cells: Vec<Cell<B>>,
 }
 
 // Hand-written so `B` need not be `Clone` (the backend markers are not).
@@ -138,6 +355,7 @@ impl<B: Backend> Clone for Structure<B> {
             holes: self.holes.clone(),
             roles: self.roles.clone(),
             mu_negative: self.mu_negative,
+            cells: self.cells.clone(),
         }
     }
 }
@@ -204,9 +422,9 @@ impl Shadow {
 
 /// One kept-material component at one σ: bounds are `None` at ±∞.
 #[derive(Clone, Copy)]
-struct Comp {
-    lo: End,
-    hi: End,
+pub(crate) struct Comp {
+    pub lo: End,
+    pub hi: End,
 }
 
 /// The per-op pullbacks on one region's chart, plus the chart's **singular rail** — the µ̂ where
@@ -543,9 +761,31 @@ fn comp_dist2<B: Backend>(
 /// One merged material component at a sample: its µ̂-ends plus the subtract ops whose interior
 /// gaps were merged **inside it** (its own hole record — a gap in some other component is not a
 /// hole of the part).
-struct MergedComp {
-    comp: Comp,
-    hole_ops: Vec<usize>,
+#[derive(Clone)]
+pub(crate) struct MergedComp {
+    pub comp: Comp,
+    pub hole_ops: Vec<usize>,
+}
+
+/// The material at one sample σ, in **both** readings (BL.1).
+///
+/// `raw` is what the op algebra actually leaves — every µ̂-component, gaps and all. `merged` is the
+/// projection the one-interval model consumes: consecutive components whose gap one subtract op
+/// carved are folded together, that op recorded as a hole of the survivor. The projection is lossy
+/// exactly where BL is: a gap that reaches the material's edge is not a hole, and a component the
+/// pick discards has a boundary the part still owns. Keeping `raw` beside `merged` costs one clone
+/// of a `Copy` list per sample and is what BL.2 traces loops over; every consumer today reads
+/// `merged`, so the derived structure is unchanged.
+struct Section {
+    raw: Vec<Comp>,
+    merged: Vec<MergedComp>,
+}
+
+impl Section {
+    /// Whether this σ carries no material at all — the emptiness the σ-extent is derived from.
+    fn is_empty(&self) -> bool {
+        self.merged.is_empty()
+    }
 }
 
 /// The merged material components at one sample σ within region `ri` (the op-shadow interval
@@ -558,7 +798,7 @@ fn sample_comps<B: Backend>(
     reach: &[Option<Vec<usize>>],
     ri: usize,
     sigma: &Rat<B>,
-) -> Result<Vec<MergedComp>, PartFault> {
+) -> Result<Section, PartFault> {
     let mut comps = vec![Comp { lo: None, hi: None }];
     for (op, (kind, cutter)) in part.ops.iter().enumerate() {
         // An op whose span does not reach this region is not applied here at all — the correct
@@ -592,7 +832,10 @@ fn sample_comps<B: Backend>(
         if had_unbounded {
             return Err(PartFault::UnboundedRegion);
         }
-        return Ok(Vec::new());
+        return Ok(Section {
+            raw: Vec::new(),
+            merged: Vec::new(),
+        });
     }
     comps.sort_by(|a, b| {
         a.lo.as_ref()
@@ -612,6 +855,7 @@ fn sample_comps<B: Backend>(
             _ => None,
         }
     };
+    let raw: Vec<Comp> = comps.clone();
     let mut merged: Vec<MergedComp> = vec![MergedComp {
         comp: comps[0],
         hole_ops: Vec::new(),
@@ -635,7 +879,7 @@ fn sample_comps<B: Backend>(
             });
         }
     }
-    Ok(merged)
+    Ok(Section { raw, merged })
 }
 
 /// Where the material's σ-extent ends on one side, located **exactly** — the AUTH.3a derivation
@@ -817,32 +1061,32 @@ fn locate_end<B: Backend>(
 fn choose_comps<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
-    at: &[(usize, Rat<B>, Vec<MergedComp>)],
+    at: &[(usize, Rat<B>, Section)],
 ) -> Result<Vec<usize>, PartFault> {
     let ends = |m: &MergedComp| -> (f64, f64) {
         (m.comp.lo.as_ref().unwrap().0, m.comp.hi.as_ref().unwrap().0)
     };
-    if at.iter().all(|(_, _, comps)| comps.len() == 1) {
+    if at.iter().all(|(_, _, sec)| sec.merged.len() == 1) {
         return Ok(vec![0; at.len()]);
     }
     let witness = match &part.pick {
         Some(RegionPick::KeepNear(p)) => p,
         None => {
-            let (_, _, comps) = at
+            let (_, _, sec) = at
                 .iter()
-                .find(|(_, _, comps)| comps.len() > 1)
+                .find(|(_, _, sec)| sec.merged.len() > 1)
                 .expect("a multi-component sample exists");
             // Attribute to the op whose rail separates the first two components.
-            let op = comps[0].comp.hi.as_ref().unwrap().1.0;
+            let op = sec.merged[0].comp.hi.as_ref().unwrap().1.0;
             return Err(PartFault::AmbiguousRegion { op });
         }
     };
     // Witness distances per sample, and the seed = the widest-margin sample (single-component
     // samples are perfect anchors).
     let mut dists: Vec<Vec<f64>> = Vec::with_capacity(at.len());
-    for (ri, sigma, comps) in at {
-        let mut row = Vec::with_capacity(comps.len());
-        for m in comps {
+    for (ri, sigma, sec) in at {
+        let mut row = Vec::with_capacity(sec.merged.len());
+        for m in &sec.merged {
             let (lo, hi) = ends(m);
             row.push(
                 comp_dist2(&built.charts[*ri], witness, sigma, lo, hi).ok_or(PartFault::Pole)?,
@@ -882,8 +1126,8 @@ fn choose_comps<B: Backend>(
     // opening) → the witness re-decides among them; **none** → refuse the junction rather than
     // re-trust the raw witness metric far from the witness (the mirror-nappe hazard).
     let step = |chosen: &[usize], from: usize, to: usize| -> Result<usize, PartFault> {
-        let prev = ends(&at[from].2[chosen[from]]);
-        let comps = &at[to].2;
+        let prev = ends(&at[from].2.merged[chosen[from]]);
+        let comps = &at[to].2.merged;
         let overlapping: Vec<usize> = (0..comps.len())
             .filter(|&i| {
                 let (lo, hi) = ends(&comps[i]);
@@ -980,13 +1224,17 @@ fn span_reach<B: Backend>(
 
 /// The in-domain sweep: pull every op back on every region, resolve the sample grid, and fold
 /// the records into the boundary-run structure + hole classification (see the module docs).
-pub(crate) fn sweep<B: Backend>(
+/// Every op pulled back onto every region's chart — the argument list the sweep, the σ-end locator
+/// and the event partition all read.
+///
+/// Extracted so those three share one construction: the resolver built it inline and the tests
+/// rebuilt it by hand, which is two places for a pullback list to drift from the one the part is
+/// actually resolved with.
+pub(crate) fn region_forms<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
-) -> Result<Structure<B>, PartFault> {
+) -> Result<Vec<RegionForms<B>>, PartFault> {
     let zero = Rat::from_i128(0);
-    let reach = span_reach(part, built)?;
-    // Pull each op back on each region's chart.
     let mut regions: Vec<RegionForms<B>> = Vec::with_capacity(part.regions.len());
     for (r, chart) in part.regions.iter().zip(built.charts.iter()) {
         let mut forms = Vec::with_capacity(part.ops.len());
@@ -1011,6 +1259,103 @@ pub(crate) fn sweep<B: Backend>(
             detj_m: dj.mu,
         });
     }
+    Ok(regions)
+}
+
+/// The partition's cells and the zones that define them.
+pub(crate) type Partition<B> = (Vec<Cell<B>>, Vec<EventZone<B>>);
+
+/// The event partition's own cells, **on demand** (BL.2b′).
+///
+/// One sample per cell of the partition, at the gap midpoint, resolved and appended to a copy of
+/// the sweep's grid cells. Two consecutive cells of the result straddle at most one event, which is
+/// the property a boundary tracer stands on and the mid-cell grid cannot state.
+///
+/// **Why a separate call and not part of `sweep`.** Computing these inside the sweep cost the
+/// device tests more than 1740 s each against a ~590 s whole-suite budget: a real device's event set
+/// is `O(walls²)` through the pairwise resultants, so it is a great many extra `sample_comps` calls
+/// — paid on every `develop()` and `solid()`, for cells **nothing in production reads**. Work whose
+/// only consumer is a tracer belongs behind the tracer's own call, not in the path every certificate
+/// takes.
+///
+/// A sample that will not resolve is skipped rather than fatal: these σ are ones the shipped path
+/// never visits, so a `Pole` there must not refuse a part that certifies today.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn partition_cells<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    st: &Structure<B>,
+) -> Result<Partition<B>, PartFault> {
+    let regions = region_forms(part, built)?;
+    let reach = span_reach(part, built)?;
+    let zones = event_zones(&regions)?;
+    let mut cells = st.cells.clone();
+    let half = Rat::new(1, 2);
+    let (lo_end, hi_end) = (st.domain.lo.clone(), st.domain.hi.clone());
+    let mut extra: Vec<(usize, Rat<B>)> = Vec::new();
+    for (ri, rf) in regions.iter().enumerate() {
+        let mut edge = rf.band.lo.clone();
+        for z in zones.iter().filter(|z| z.region == ri) {
+            if edge.cmp(&z.at.lo) == core::cmp::Ordering::Less {
+                extra.push((ri, edge.add(&z.at.lo).mul(&half)));
+            }
+            edge = z.at.hi.clone();
+        }
+        if edge.cmp(&rf.band.hi) == core::cmp::Ordering::Less {
+            extra.push((ri, edge.add(&rf.band.hi).mul(&half)));
+        }
+    }
+    for (ri, sigma) in extra {
+        if sigma.cmp(&lo_end) == core::cmp::Ordering::Less
+            || hi_end.cmp(&sigma) == core::cmp::Ordering::Less
+            || cells
+                .iter()
+                .any(|c| c.sigma.cmp(&sigma) == core::cmp::Ordering::Equal)
+        {
+            continue;
+        }
+        let sec = match sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma) {
+            Ok(sec) if !sec.is_empty() => sec,
+            _ => continue,
+        };
+        let near = cells
+            .iter()
+            .min_by(|a, b| {
+                let da = rat_to_f64(&a.sigma.sub(&sigma)).abs();
+                let db = rat_to_f64(&b.sigma.sub(&sigma)).abs();
+                da.partial_cmp(&db).unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .expect("at least one grid cell");
+        let want = near.merged[near.pick].comp;
+        let (wlo, whi) = (want.lo.expect("bounded").0, want.hi.expect("bounded").0);
+        let pick = sec
+            .merged
+            .iter()
+            .position(|m| {
+                let (l, h) = (m.comp.lo.expect("bounded").0, m.comp.hi.expect("bounded").0);
+                l < whi && wlo < h
+            })
+            .unwrap_or(0);
+        cells.push(Cell {
+            sigma,
+            region: ri,
+            raw: sec.raw,
+            merged: sec.merged,
+            pick,
+        });
+    }
+    cells.sort_by(|a, b| a.sigma.cmp(&b.sigma));
+    Ok((cells, zones))
+}
+
+pub(crate) fn sweep<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+) -> Result<Structure<B>, PartFault> {
+    let zero = Rat::from_i128(0);
+    let reach = span_reach(part, built)?;
+    // Pull each op back on each region's chart.
+    let regions = region_forms(part, built)?;
 
     // The sample grid: mid-cell stations per region, plus targeted stations inside every
     // disc-positive σ-window of each subtract cylinder (so a small hole is never missed between
@@ -1136,10 +1481,12 @@ pub(crate) fn sweep<B: Backend>(
     // Resolve every sample: the component algebra everywhere first, then the seeded
     // continuity-propagated choice (see [`choose_comps`]). A sample may now come back with **no**
     // components — that σ simply carries no material — so the extent is derived before the choice.
-    let mut all: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
+    // BL.1: each sample keeps BOTH readings — `sec.raw` is every component the op algebra leaves,
+    // `sec.merged` the one-interval-plus-holes projection every consumer reads today.
+    let mut all: Vec<(usize, Rat<B>, Section)> = Vec::with_capacity(samples.len());
     for (ri, sigma) in samples {
-        let comps = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
-        all.push((ri, sigma, comps));
+        let sec = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
+        all.push((ri, sigma, sec));
     }
 
     // — The derived σ-extent (AUTH.3a, `docs/cutter-extrude-design.md` §12). —
@@ -1225,8 +1572,16 @@ pub(crate) fn sweep<B: Backend>(
     let at = &all[first..=last];
     let chosen = choose_comps(part, built, at)?;
     let mut recs: Vec<SampleRec<B>> = Vec::with_capacity(at.len());
-    for ((_, sigma, comps), pick) in at.iter().zip(chosen) {
-        let m = &comps[pick];
+    let mut cells: Vec<Cell<B>> = Vec::with_capacity(at.len());
+    for ((ri, sigma, sec), pick) in at.iter().zip(chosen) {
+        cells.push(Cell {
+            sigma: sigma.clone(),
+            region: *ri,
+            raw: sec.raw.clone(),
+            merged: sec.merged.clone(),
+            pick,
+        });
+        let m = &sec.merged[pick];
         let (lo_end, hi_end) = (m.comp.lo.as_ref().unwrap(), m.comp.hi.as_ref().unwrap());
         let mut hole_ops = m.hole_ops.clone();
         hole_ops.sort_unstable();
@@ -1348,6 +1703,7 @@ pub(crate) fn sweep<B: Backend>(
         holes,
         roles,
         mu_negative,
+        cells,
     })
 }
 
@@ -1790,6 +2146,7 @@ mod tests {
         }];
         sample_comps(part, &regions, chart, &reach, 0, sigma)
             .expect("the fixture resolves at every sample")
+            .merged
             .iter()
             .map(|m| {
                 let (lo, hi) = (m.comp.lo.expect("bounded"), m.comp.hi.expect("bounded"));
@@ -2027,5 +2384,424 @@ mod tests {
             matches!(extent(&part), Err(PartFault::DisconnectedRegion)),
             "one contour met twice by a wrapping chart must refuse, not weld or choose"
         );
+    }
+
+    // ── BL.1: the pre-state the component refactor must reproduce ────────────────────────────
+    //
+    // `sweep` collapses every µ̂-component at a σ down to one (`choose_comps`) and records the
+    // survivor's two bounding labels in a `Run`. BL.1 keeps them all and *derives* this, so what
+    // must not move is exactly what a consumer can see: the derived extent, how it ends, the run
+    // partition with its labels, the hole records and the roles. Recorded here **before** the
+    // refactor, on the shipped code, so it is a pre-state rather than a restatement of the new
+    // behaviour — and paired with `the_digest_moves_when_the_part_does`, because an equality
+    // asserted against oneself passes forever.
+
+    /// Everything a consumer reads off a resolved `Structure`, as one line-per-fact string.
+    fn digest(st: &Structure<Bignum>) -> String {
+        let end = |e: &SigmaEnd<Bignum>| match e {
+            SigmaEnd::Band => "Band".to_string(),
+            SigmaEnd::Closed { at, kinds, pinch } => format!(
+                "Closed[{:.6}, {:.6}] {kinds:?} pinch={pinch}",
+                rat_to_f64(&at.lo),
+                rat_to_f64(&at.hi)
+            ),
+        };
+        let mut out = format!(
+            "domain [{:.6}, {:.6}]\nends {} | {}\n",
+            rat_to_f64(&st.domain.lo),
+            rat_to_f64(&st.domain.hi),
+            end(&st.ends[0]),
+            end(&st.ends[1])
+        );
+        for r in &st.runs {
+            out += &format!(
+                "run [{:.6}, {:.6}] lower {}/{:?} upper {}/{:?}\n",
+                rat_to_f64(&r.lo),
+                rat_to_f64(&r.hi),
+                r.lower.0,
+                r.lower.1,
+                r.upper.0,
+                r.upper.1
+            );
+        }
+        for (op, ri, w) in &st.holes {
+            out += &format!(
+                "hole op{op} region{ri} [{:.6}, {:.6}]\n",
+                rat_to_f64(&w.lo),
+                rat_to_f64(&w.hi)
+            );
+        }
+        for (i, role) in st.roles.iter().enumerate() {
+            out += &format!("role op{i} {role:?}\n");
+        }
+        out += &format!("mu_negative {:?}\n", st.mu_negative);
+        out
+    }
+
+    /// The banded blank and the same blank with a drill through it — one shape whose boundary is
+    /// two rails end to end, one that also carries an interior hole.
+    fn pre_state_fixtures() -> Vec<(&'static str, Part<Bignum>)> {
+        let band = || blank(Q::new(-7, 2), Q::new(7, 2));
+        vec![
+            ("banded", band()),
+            (
+                "notched",
+                band().subtract(drilled(disc_edges(
+                    Q::new(-9, 4),
+                    Q::new(9, 4),
+                    Q::new(3, 4),
+                ))),
+            ),
+            (
+                // The `r = 1/5` disc at `(0, 11/5)` — the drill the AUTH.1e differential uses, and
+                // the one placement here that resolves to an interior `Hole` rather than a `Notch`.
+                "holed",
+                band().subtract(drilled(disc_edges(q(0), Q::new(11, 5), Q::new(1, 5)))),
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_resolved_structure_is_pinned_before_the_component_refactor() {
+        let mut got = String::new();
+        for (name, part) in pre_state_fixtures() {
+            got += &format!("== {name}\n");
+            got += &digest(&extent(&part).expect("the fixture resolves"));
+        }
+        assert_eq!(got, PRE_STATE, "\n--- got ---\n{got}");
+    }
+
+    /// The control that makes the pin above non-vacuous: move one op by a hair and the digest must
+    /// move with it. Without this, BL.1 could delete the structure and still "reproduce" it.
+    #[test]
+    fn the_digest_moves_when_the_part_does() {
+        let base = blank(Q::new(-7, 2), Q::new(7, 2));
+        let moved = blank(Q::new(-7, 2), Q::new(27, 8));
+        assert_ne!(
+            digest(&extent(&base).expect("resolves")),
+            digest(&extent(&moved).expect("resolves")),
+            "a part whose band moved by a cell must not digest the same"
+        );
+    }
+
+    /// The three shapes above as the **shipped** resolver leaves them: a boundary of two rails
+    /// end to end, one with a rim bite (`Notch`), one with an interior `Hole`. Every role the
+    /// model has, so BL.1 cannot reproduce the pin by covering only the easy one.
+    const PRE_STATE: &str = "\
+== banded
+domain [-3.500000, 3.500000]
+ends Band | Band
+run [-3.427083, 3.427083] lower 1/Upper upper 0/Plane
+role op0 UpperBound
+role op1 LowerBound
+mu_negative Some(false)
+== notched
+domain [-3.500000, 3.500000]
+ends Band | Band
+run [-3.427083, 0.218750] lower 1/Upper upper 0/Plane
+run [0.350971, 0.510417] lower 1/Upper upper 2/Wall(0, false)
+run [0.656250, 3.427083] lower 1/Upper upper 0/Plane
+role op0 UpperBound
+role op1 LowerBound
+role op2 Notch
+mu_negative Some(false)
+== holed
+domain [-3.500000, 3.500000]
+ends Band | Band
+run [-3.427083, 3.427083] lower 1/Upper upper 0/Plane
+hole op2 region0 [-0.045549, 0.045549]
+role op0 UpperBound
+role op1 LowerBound
+role op2 Hole
+mu_negative Some(false)
+";
+
+    /// **BL.1's own claim: the one-interval view is a projection of what is now kept.** Every merged
+    /// component begins and ends on some raw component's own end, and there are never fewer raw
+    /// components than merged ones — the merge only ever folds, never invents.
+    ///
+    /// Non-vacuous by the second half: the holed fixture must exhibit a σ where the raw list is
+    /// *longer* than the merged one. Without that, `raw` could be a copy of `merged` and the slice
+    /// would have kept nothing at all — which is exactly how a refactor gated on "nothing changed"
+    /// passes while doing nothing.
+    #[test]
+    fn the_merged_view_is_a_projection_of_the_components_kept() {
+        let mut saw_a_fold = false;
+        for (name, part) in pre_state_fixtures() {
+            let st = extent(&part).expect("the fixture resolves");
+            assert!(!st.cells.is_empty(), "{name}: no cells recorded");
+            for cell in &st.cells {
+                assert!(
+                    cell.raw.len() >= cell.merged.len(),
+                    "{name} at σ {:.6}: {} raw < {} merged — the merge invented material",
+                    rat_to_f64(&cell.sigma),
+                    cell.raw.len(),
+                    cell.merged.len()
+                );
+                assert!(cell.pick < cell.merged.len(), "{name}: pick out of range");
+                for m in &cell.merged {
+                    let (lo, hi) = (m.comp.lo.expect("bounded"), m.comp.hi.expect("bounded"));
+                    assert!(
+                        cell.raw.iter().any(|r| r.lo.expect("bounded").0 == lo.0),
+                        "{name} at σ {:.6}: merged lo {:.6} is on no component",
+                        rat_to_f64(&cell.sigma),
+                        lo.0
+                    );
+                    assert!(
+                        cell.raw.iter().any(|r| r.hi.expect("bounded").0 == hi.0),
+                        "{name} at σ {:.6}: merged hi {:.6} is on no component",
+                        rat_to_f64(&cell.sigma),
+                        hi.0
+                    );
+                }
+                saw_a_fold |= cell.raw.len() > cell.merged.len();
+            }
+        }
+        assert!(
+            saw_a_fold,
+            "no sample folded two components into one — `raw` is carrying nothing the merged view \
+             does not already have, so BL.1 kept nothing"
+        );
+    }
+
+    /// **BL.2a: the adjacency graph, and the cycle that a hole record *is*.**
+    ///
+    /// Two claims, both about the face the region pick actually keeps — the graph also sees
+    /// components the pick discards (the mirror nappe on this chart is one), so "how many faces are
+    /// there" is a question about the recipe, not about the part.
+    ///
+    /// 1. **The kept material is one face.** Every sample's picked component belongs to the same
+    ///    face: the pick is connected across σ, which the sweep assumes everywhere and never checks.
+    /// 2. **That face's cycles are its hole records.** Independent cycles (`edges − nodes + 1`)
+    ///    count the times material split and rejoined, and a gap closed on both sides *is* an
+    ///    interior hole. The two numbers come from computations sharing no code — µ̂-overlap here,
+    ///    the merge's `same_sub_op` test there — so agreement is evidence rather than restatement.
+    #[test]
+    fn the_kept_faces_cycles_are_its_hole_records() {
+        for (name, part) in pre_state_fixtures() {
+            let st = extent(&part).expect("the fixture resolves");
+            let adj = adjacency(&st.cells);
+            // The picked component's index within `raw`: the merged component `pick` names, located
+            // by its lower end (the merge folds forward, so a merged component's `lo` is its first
+            // raw component's `lo`).
+            let kept: Vec<usize> = st
+                .cells
+                .iter()
+                .zip(adj.face_of.iter())
+                .map(|(cell, faces)| {
+                    let lo = cell.merged[cell.pick].comp.lo.expect("bounded").0;
+                    let at = cell
+                        .raw
+                        .iter()
+                        .position(|r| r.lo.expect("bounded").0 == lo)
+                        .expect("the kept component is one of the components");
+                    faces[at]
+                })
+                .collect();
+            assert!(
+                kept.windows(2).all(|w| w[0] == w[1]),
+                "{name}: the picked component jumps between faces — the sweep's own continuity \
+                 assumption does not hold on this part"
+            );
+            // The face count is a fact about the RECIPE, pinned because it is the finding: `raw`
+            // carries components the pick discards, and on this chart the mirror nappe is one.
+            // Measured, not predicted: only the notched fixture leaves a second component
+            // bounded (the mirror nappe), and the drill's own shadow unbounds it again. If this
+            // count moves, what `raw` contains has changed and BL.2b's tracer needs to know.
+            let expected_faces = match name {
+                "notched" => 2,
+                _ => 1,
+            };
+            assert_eq!(
+                adj.faces, expected_faces,
+                "{name}: {} face(s) — the components the pick discards are part of this count",
+                adj.faces
+            );
+            let face = kept[0];
+            assert_eq!(
+                adj.cycles_of(face),
+                st.holes.len(),
+                "{name}: face {face} has {} cycle(s) against {} hole record(s) — the graph and the \
+                 merge disagree about what closed",
+                adj.cycles_of(face),
+                st.holes.len()
+            );
+        }
+    }
+
+    /// **The branching the one-interval reading flattens.** The holed fixture's drill opens a gap
+    /// and closes it again, so somewhere a component has two successors and later two predecessors.
+    /// Without that, the graph is a chain and BL.2's tracer would have nothing to do that the run
+    /// fold does not already do.
+    #[test]
+    fn a_drill_makes_the_graph_branch() {
+        let part = pre_state_fixtures()
+            .into_iter()
+            .find(|(n, _)| *n == "holed")
+            .expect("the holed fixture")
+            .1;
+        let st = extent(&part).expect("the fixture resolves");
+        let adj = adjacency(&st.cells);
+        let splits = (0..st.cells.len())
+            .filter(|w| adj.links.iter().filter(|(a, _)| a.0 == *w).count() > 1)
+            .count();
+        let joins = (0..st.cells.len())
+            .filter(|w| adj.links.iter().filter(|(_, b)| b.0 == *w).count() > 1)
+            .count();
+        assert!(
+            splits > 0 && joins > 0,
+            "the drill must split the material and rejoin it — got {splits} split(s), {joins} join(s)"
+        );
+        assert!(
+            st.cells.iter().any(|c| c.raw.len() > 1),
+            "and some sample must actually carry two components"
+        );
+    }
+
+    /// **BL.2b′: the partition, and its two claims.**
+    ///
+    /// *It is a partition.* The zones come out in σ order, disjoint, inside the band — anything else
+    /// and "the structure is constant between consecutive zones" means nothing.
+    ///
+    /// *It is sharp.* Every zone is orders below the resolver's own sample cell (`2⁻⁴⁰` against
+    /// `7/48 ≈ 0.146`), which is what makes the partition exact rather than a refinement of the grid.
+    ///
+    /// And the tie to what already ships: the holed fixture's hole record is a σ-window derived from
+    /// `tangent_events`, so **both of its ends must land in event zones**. If they did not, the
+    /// partition and the hole machinery would be talking about different σ, and BL.2b's tracer would
+    /// place a wedge tip where no hole begins.
+    #[test]
+    fn the_event_partition_is_sharp_and_holds_the_hole_window() {
+        for (name, part) in pre_state_fixtures() {
+            let built = part.build_regions().expect("the regions develop");
+            let st = extent(&part).expect("the fixture resolves");
+            // Rebuild the region forms the sweep used, to ask them for their events.
+            let regions = region_forms(&part, &built).expect("the pullbacks resolve");
+            let zones = event_zones(&regions).expect("the events isolate");
+            // A band can legitimately have NO events: the banded blank's two rails never meet
+            // inside it and the cylinder's tangent rulings fall outside, so the structure is
+            // constant across the whole band and one cell covers it. What must not happen is a
+            // fixture with a hole having no events — the gap has to open somewhere.
+            assert_eq!(
+                zones.is_empty(),
+                st.holes.is_empty() && name == "banded",
+                "{name}: {} zone(s) against {} hole record(s)",
+                zones.len(),
+                st.holes.len()
+            );
+            let cell = Q::new(7, 48 * 2); // the grid's own spacing on a ±3.5 band
+            for w in zones.windows(2) {
+                assert!(
+                    w[0].at.hi.cmp(&w[1].at.lo) != core::cmp::Ordering::Greater,
+                    "{name}: zones overlap — not a partition"
+                );
+            }
+            for z in &zones {
+                let width = z.at.hi.sub(&z.at.lo);
+                assert!(
+                    width.cmp(&cell) == core::cmp::Ordering::Less,
+                    "{name}: a zone is {:.3e} wide against a {:.3e} sample cell — the partition is \
+                     no sharper than the grid it replaces",
+                    rat_to_f64(&width),
+                    rat_to_f64(&cell)
+                );
+            }
+            // Every zone sits inside the band of the region it claims.
+            for z in &zones {
+                let band = &regions[z.region].band;
+                assert!(
+                    band.lo.cmp(&z.at.lo) != core::cmp::Ordering::Greater
+                        && z.at.hi.cmp(&band.hi) != core::cmp::Ordering::Greater,
+                    "{name}: a zone escapes region {}'s band",
+                    z.region
+                );
+            }
+            // A hole's window ends are the drill's own TANGENT rulings, so the zones holding them
+            // must say so. Containment alone would pass on a zone that happens to be nearby for an
+            // unrelated reason — naming the kind is what ties the partition to the gap.
+            for (op, _, window) in &st.holes {
+                for (end, at) in [("lo", &window.lo), ("hi", &window.hi)] {
+                    let holding = zones.iter().find(|z| {
+                        z.at.lo.cmp(at) != core::cmp::Ordering::Greater
+                            && at.cmp(&z.at.hi) != core::cmp::Ordering::Greater
+                    });
+                    let z = holding.unwrap_or_else(|| {
+                        panic!(
+                            "{name}: op {op}'s hole window {end} = {:.6} lies in no event zone — \
+                             the partition and the hole machinery disagree about where the gap opens",
+                            rat_to_f64(at)
+                        )
+                    });
+                    assert!(
+                        z.kinds
+                            .iter()
+                            .any(|k| matches!(k, develop::cut::EventKind::Tangent(_))),
+                        "{name}: the zone at op {op}'s window {end} carries {:?}, not a tangent \
+                         ruling — the gap opens for a different reason than the hole records",
+                        z.kinds
+                    );
+                }
+            }
+        }
+    }
+
+    /// **BL.2b′'s payload: consecutive cells straddle at most one event.**
+    ///
+    /// This is the property a boundary tracer stands on and the mid-cell grid cannot state. If two
+    /// samples have no event between them the stretch structure is constant, so linking their
+    /// components is sound; if they straddle exactly one bracket, that bracket is where the topology
+    /// changes and where a gap's wedge tip lies. Two events between one pair and the tracer would be
+    /// guessing which change it is looking at.
+    ///
+    /// Non-vacuous from the other side: the partition must actually have *added* samples, or the
+    /// property holds trivially because nothing changed.
+    #[test]
+    fn consecutive_cells_straddle_at_most_one_event() {
+        for (name, part) in pre_state_fixtures() {
+            let built = part.build_regions().expect("the regions develop");
+            let base = extent(&part).expect("the fixture resolves");
+            let (cells, zones) =
+                partition_cells(&part, &built, &base).expect("the partition resolves");
+            let st = Structure {
+                cells,
+                ..base.clone()
+            };
+            let grid_only = st
+                .cells
+                .iter()
+                .filter(|c| {
+                    // a mid-cell grid station: (2k+1)/(2·CELLS) of the way across its band
+                    let band = &part.regions[c.region].band;
+                    let w = band.hi.sub(&band.lo);
+                    (0..CELLS).any(|k| {
+                        let t = Rat::new((2 * k as i128) + 1, 2 * CELLS as i128);
+                        band.lo.add(&w.mul(&t)).cmp(&c.sigma) == core::cmp::Ordering::Equal
+                    })
+                })
+                .count();
+            assert!(
+                st.cells.len() > grid_only,
+                "{name}: the partition added no cells ({} of {} are grid stations), so the \
+                 straddle property below holds for free",
+                grid_only,
+                st.cells.len()
+            );
+            for w in st.cells.windows(2) {
+                let between = zones
+                    .iter()
+                    .filter(|z| {
+                        w[0].sigma.cmp(&z.at.hi) == core::cmp::Ordering::Less
+                            && z.at.lo.cmp(&w[1].sigma) == core::cmp::Ordering::Less
+                    })
+                    .count();
+                assert!(
+                    between <= 1,
+                    "{name}: σ {:.6} → {:.6} straddles {between} events — the tracer cannot tell \
+                     which change it is seeing",
+                    rat_to_f64(&w[0].sigma),
+                    rat_to_f64(&w[1].sigma)
+                );
+            }
+        }
     }
 }
