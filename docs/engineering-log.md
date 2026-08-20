@@ -19,6 +19,31 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **BL.2b stopped on measurement: a boundary tracer needs the event partition, not the sample grid
+  (2026-08-20).** The tracer itself is simple and, given a sound cell set, right: emit all four sides
+  of each adjacency link's trapezoid counter-clockwise, cancel every edge against its reverse (an
+  interior edge appears twice, once each way), chain the survivors by endpoint. One loop per boundary
+  component falls out — outer and holes alike, with no special case for either, and the vertices are
+  symbolic `(cell, component, is_upper)` triples so cancellation is exact identity rather than float
+  proximity. It traced the banded blank correctly.
+
+  It traced the **holed** blank as ONE loop where there must be two, and the mechanism is structural,
+  not a tuning matter. At a split, node `a@w` links to *both* `b1` and `b2` at `w+1`, so both
+  trapezoids claim the whole left interval `[a.lo, a.hi]` and emit the same left cap **in the same
+  direction**. Cancellation kills opposite pairs, so both survive, the cap is walked twice, and the
+  outer and inner boundaries chain into a single walk. Splitting that cap needs the gap's **wedge
+  tip**, whose σ is a tangent-ruling event — and the mid-cell sample grid has no such σ.
+
+  **Why that is a stop and not a patch.** The obvious hack is to collapse the tip onto the left
+  sample. But today's `holes` record already carries the **exact** window from `tangent_events`, so a
+  sample-resolution tracer would be *coarser than what ships* — a regression wearing progress's
+  clothes. The prototype is parked in `scratchpad/resolve-bl2b-tracer.rs` and BL.2b is blocked on
+  **BL.2b′** (#317): build cells on the union event partition, event σ as slab boundaries plus one
+  rational interior sample per gap. That also discharges BL.0's soundness claim *as written* rather
+  than the narrowed grid version BL.2a had to settle for.
+
+  *2026-08-20 · BL.2b blocked on #317, prototype parked, nothing committed · BL.2*
+
 - **BL.2a: the adjacency graph, and what `raw` turned out to contain (2026-08-20).** Linking each
   sample's components to the next by µ̂-overlap — the same test `choose_comps` already propagates its
   pick with — gives the material's adjacency graph, and two invariants come out of it. The first is a
