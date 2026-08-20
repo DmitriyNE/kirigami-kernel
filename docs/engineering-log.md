@@ -19,6 +19,18 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **BL — the boundary is a loop (the region model's own frontier).** GO-gated 2026-08-20; criteria
+  in `docs/vv-guide.md` §BL, row `[BL]` in `vv-matrix.md`, slices BL.0–BL.6 on the task ledger.
+  Raised by the user's battery window (#311) landing on the seam, and it is the *same* wall as #291's
+  tab and #296's lug: `sample_comps` computes every µ̂-component per σ and `choose_comps` keeps one,
+  so an op that carves a gap **and** bounds is refused rather than represented. BL keeps the
+  components, links them across the (already exact) event partition, and traces boundaries as loops.
+
+  **Sequencing decision, taken with the user:** BL.0 + BL.1 land *before* #279's OPT.4, because BL
+  changes work-per-σ and optimizing the representation we are replacing is the one available
+  sequencing error. The preview/certify split is then decided on a measurement taken on the new
+  representation, not on today's.
+
 - **Certification runtime is product-blocking, and it is no longer a constant-factor problem
   (#279).** Raised by the user while an AUTH.3c probe ran: *"These running times are not acceptable
   for the real-world use."* The numbers that make it a scope item rather than a grumble: after

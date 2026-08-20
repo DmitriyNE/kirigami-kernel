@@ -41,7 +41,7 @@ fn spec() -> LappedCone {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let (mut out_dir, mut segments, mut panels) = ("generated-demos".to_string(), 16usize, 8usize);
-    let mut bat = false;
+    let mut bat: Option<&str> = None;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -58,7 +58,15 @@ fn main() {
                 i += 2;
             }
             "--bat" => {
-                bat = true;
+                // `--bat` alone is the authored placement (on the seam, refuses today — #311);
+                // `--bat body` is the same drawing mirrored to plain body material, which certifies.
+                bat = match argv.get(i + 1).map(String::as_str) {
+                    Some("body") => {
+                        i += 1;
+                        Some("body")
+                    }
+                    _ => Some("seam"),
+                };
                 i += 1;
             }
             other => panic!("unknown flag {other}"),
@@ -139,11 +147,21 @@ fn main() {
         });
 
     // — the battery window, drawn in a plane through the apex tilted 2° off the cone —
-    if bat {
-        part = part.subtract(acceptance::bat_cutter());
+    if let Some(side) = bat {
+        let body = side == "body";
+        part = part.subtract(if body {
+            acceptance::bat_cutter_body()
+        } else {
+            acceptance::bat_cutter()
+        });
         println!(
-            "window    bat-cutout.dxf   sketch plane through the apex, v = (0, 1428, −1475)/2053 \
-             (44.0725° off the axis)   swept along (0, 1475, 1428)"
+            "window    bat-cutout.dxf   4.6 × 2.7 mm in a sketch plane through the apex, \
+             44.0725° off the axis — {}",
+            if body {
+                "−y side, plain body material"
+            } else {
+                "+y side, on the seam (refuses today, #311)"
+            }
         );
     }
 
