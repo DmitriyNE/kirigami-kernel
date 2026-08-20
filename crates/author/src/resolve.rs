@@ -1547,10 +1547,13 @@ pub(crate) fn sweep<B: Backend>(
             {
                 continue;
             }
-            let sec = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
-            if sec.is_empty() {
-                continue;
-            }
+            // A partition sample that will not resolve is SKIPPED, never fatal. These cells exist
+            // for the tracer alone, so propagating the error would let a σ the shipped path never
+            // samples refuse a part that certifies today — a regression introduced by looking.
+            let sec = match sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma) {
+                Ok(sec) if !sec.is_empty() => sec,
+                _ => continue,
+            };
             // The pick propagates by µ̂-overlap from the nearest cell already resolved — the same
             // continuity `choose_comps` uses, seeded from a cell whose pick is known.
             let near = cells
