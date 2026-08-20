@@ -19,6 +19,35 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **BL.2b′ cannot land before the loop model: the partition immediately exposes what the
+  one-interval model must refuse (2026-08-20).** Wiring the event partition into the resolver's
+  sample set works, and the run partition sharpens where it should — the notched fixture's runs move
+  from `0.218750 / 0.656250` (grid) to `0.291498 / 0.548696`, hugging the notch's own extent, with
+  the event-derived middle run unchanged. Then `a_span_cuts_only_the_sheets_it_reaches` **refuses**
+  `SectionNotSimple{op: 2}`: the transverse drill cuts across the rulings, and near its tangent
+  rulings the material's section genuinely splits. The coarse grid never sampled those σ. Finer
+  sampling did not break the fixture; it *found* what was always there.
+
+  So the dependency runs opposite to how BL was sequenced. The partition cannot be a standalone
+  slice underneath the run/role derivation, because the moment it is, honest sampling turns passing
+  parts into refusals the one-interval reading has no way to represent. Two options, and the second
+  is the one to take:
+
+  - land the partition *with* BL.3/BL.4 so the loops absorb what it exposes — a big, unreviewable
+    change;
+  - build the loop model **alongside**: keep `recs`/`runs`/`holes`/`roles` on the grid samples,
+    exactly as they ship, and resolve the partition samples into `cells` only, for the tracer. Today's
+    behaviour stays byte-identical, BL.2b gets its sound cell set, and the switchover happens once
+    the loops are the boundary rather than a second opinion. Costs one extra resolve pass over the
+    partition samples, which is a runtime line to report at BL.6.
+
+  Also worth keeping: the *first* wiring attempt sampled the zone **endpoints** and refused
+  `HoleCrossesRegions` — a bracket endpoint *is* a hole-attribution window boundary and that test is
+  strict, so a hole-active sample sitting exactly there is orphaned. #311's orphan branch again, at
+  window ends I had just created. Gap **midpoints** are strictly inside their cell by construction.
+
+  *2026-08-20 · wiring reverted, finding recorded; BL.2b′ re-planned as alongside-not-underneath · #317*
+
 - **BL.2b stopped on measurement: a boundary tracer needs the event partition, not the sample grid
   (2026-08-20).** The tracer itself is simple and, given a sound cell set, right: emit all four sides
   of each adjacency link's trapezoid counter-clockwise, cancel every edge against its reverse (an
