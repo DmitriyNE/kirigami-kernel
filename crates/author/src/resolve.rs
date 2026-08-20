@@ -277,6 +277,17 @@ pub(crate) struct EventZone<B: Backend> {
     pub kinds: Vec<develop::cut::EventKind>,
 }
 
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for EventZone<B> {
+    fn clone(&self) -> Self {
+        EventZone {
+            region: self.region,
+            at: self.at.clone(),
+            kinds: self.kinds.clone(),
+        }
+    }
+}
+
 /// Every region's event zones, in σ order — the partition the component structure is constant
 /// between.
 ///
@@ -322,9 +333,20 @@ pub(crate) struct Structure<B: Backend> {
     /// µ̂ < 0, `Some(false)` = all µ̂ > 0, `None` = mixed or 0-straddling. The fold's side
     /// convention (derived, never authored — the seam-#3 doctrine).
     pub mu_negative: Option<bool>,
-    /// Every live sample's material, unprojected (BL.1). `runs`/`holes`/`roles` above are the
-    /// one-interval reading of exactly this; BL.2 traces boundary loops over it instead.
+    /// Every live sample's material, unprojected (BL.1) — the grid samples the one-interval
+    /// reading above is derived from, **plus** one per cell of the event partition (BL.2b′), which
+    /// only the boundary tracer reads.
+    ///
+    /// The two sets are kept in one list on purpose and the asymmetry is deliberate: adding
+    /// partition samples to the *run* derivation turns passing parts into `SectionNotSimple`
+    /// refusals, because honest sampling finds sections the one-interval model cannot hold (measured
+    /// on the transverse-drill fixture). So the loop model is built **alongside** the shipped one
+    /// until the loops are the boundary rather than a second opinion.
     pub cells: Vec<Cell<B>>,
+    /// The σ-zones where the stretch structure can change. Two consecutive cells either lie in one
+    /// partition cell — structure constant, so linking them is sound — or straddle exactly one of
+    /// these brackets, which is where a gap's wedge tip lies.
+    pub zones: Vec<EventZone<B>>,
 }
 
 // Hand-written so `B` need not be `Clone` (the backend markers are not).
@@ -338,6 +360,7 @@ impl<B: Backend> Clone for Structure<B> {
             roles: self.roles.clone(),
             mu_negative: self.mu_negative,
             cells: self.cells.clone(),
+            zones: self.zones.clone(),
         }
     }
 }
@@ -1491,6 +1514,74 @@ pub(crate) fn sweep<B: Backend>(
         });
     }
 
+    // — BL.2b′: the partition's own cells, for the tracer alone —
+    //
+    // One sample per cell of the event partition, at the gap **midpoint** (a zone endpoint is a
+    // hole-attribution window boundary and that test is strict, so a hole-active sample there would
+    // be orphaned — #311's branch, at window ends of our own making). These never reach `recs`, so
+    // `runs`/`holes`/`roles` and every certificate downstream are exactly what they were.
+    let zones = event_zones(&regions)?;
+    {
+        let half = Rat::new(1, 2);
+        let (lo_end, hi_end) = (domain.lo.clone(), domain.hi.clone());
+        let mut extra: Vec<(usize, Rat<B>)> = Vec::new();
+        for (ri, rf) in regions.iter().enumerate() {
+            let mut edge = rf.band.lo.clone();
+            for z in zones.iter().filter(|z| z.region == ri) {
+                if edge.cmp(&z.at.lo) == core::cmp::Ordering::Less {
+                    extra.push((ri, edge.add(&z.at.lo).mul(&half)));
+                }
+                edge = z.at.hi.clone();
+            }
+            if edge.cmp(&rf.band.hi) == core::cmp::Ordering::Less {
+                extra.push((ri, edge.add(&rf.band.hi).mul(&half)));
+            }
+        }
+        for (ri, sigma) in extra {
+            // Only inside the derived extent, and only where a grid cell is not already sitting.
+            if sigma.cmp(&lo_end) == core::cmp::Ordering::Less
+                || hi_end.cmp(&sigma) == core::cmp::Ordering::Less
+                || cells
+                    .iter()
+                    .any(|c| c.sigma.cmp(&sigma) == core::cmp::Ordering::Equal)
+            {
+                continue;
+            }
+            let sec = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
+            if sec.is_empty() {
+                continue;
+            }
+            // The pick propagates by µ̂-overlap from the nearest cell already resolved — the same
+            // continuity `choose_comps` uses, seeded from a cell whose pick is known.
+            let near = cells
+                .iter()
+                .min_by(|a, b| {
+                    let da = rat_to_f64(&a.sigma.sub(&sigma)).abs();
+                    let db = rat_to_f64(&b.sigma.sub(&sigma)).abs();
+                    da.partial_cmp(&db).unwrap_or(core::cmp::Ordering::Equal)
+                })
+                .expect("at least one grid cell");
+            let want = near.merged[near.pick].comp;
+            let (wlo, whi) = (want.lo.expect("bounded").0, want.hi.expect("bounded").0);
+            let pick = sec
+                .merged
+                .iter()
+                .position(|m| {
+                    let (l, h) = (m.comp.lo.expect("bounded").0, m.comp.hi.expect("bounded").0);
+                    l < whi && wlo < h
+                })
+                .unwrap_or(0);
+            cells.push(Cell {
+                sigma,
+                region: ri,
+                raw: sec.raw,
+                merged: sec.merged,
+                pick,
+            });
+        }
+        cells.sort_by(|a, b| a.sigma.cmp(&b.sigma));
+    }
+
     // Fold into runs of constant boundary labels.
     let mut runs: Vec<Run<B>> = Vec::new();
     for rec in &recs {
@@ -1600,6 +1691,7 @@ pub(crate) fn sweep<B: Backend>(
         roles,
         mu_negative,
         cells,
+        zones,
     })
 }
 
@@ -2637,6 +2729,60 @@ mu_negative Some(false)
                         z.kinds
                     );
                 }
+            }
+        }
+    }
+
+    /// **BL.2b′'s payload: consecutive cells straddle at most one event.**
+    ///
+    /// This is the property a boundary tracer stands on and the mid-cell grid cannot state. If two
+    /// samples have no event between them the stretch structure is constant, so linking their
+    /// components is sound; if they straddle exactly one bracket, that bracket is where the topology
+    /// changes and where a gap's wedge tip lies. Two events between one pair and the tracer would be
+    /// guessing which change it is looking at.
+    ///
+    /// Non-vacuous from the other side: the partition must actually have *added* samples, or the
+    /// property holds trivially because nothing changed.
+    #[test]
+    fn consecutive_cells_straddle_at_most_one_event() {
+        for (name, part) in pre_state_fixtures() {
+            let st = extent(&part).expect("the fixture resolves");
+            let grid_only = st
+                .cells
+                .iter()
+                .filter(|c| {
+                    // a mid-cell grid station: (2k+1)/(2·CELLS) of the way across its band
+                    let band = &part.regions[c.region].band;
+                    let w = band.hi.sub(&band.lo);
+                    (0..CELLS).any(|k| {
+                        let t = Rat::new((2 * k as i128) + 1, 2 * CELLS as i128);
+                        band.lo.add(&w.mul(&t)).cmp(&c.sigma) == core::cmp::Ordering::Equal
+                    })
+                })
+                .count();
+            assert!(
+                st.cells.len() > grid_only,
+                "{name}: the partition added no cells ({} of {} are grid stations), so the \
+                 straddle property below holds for free",
+                grid_only,
+                st.cells.len()
+            );
+            for w in st.cells.windows(2) {
+                let between = st
+                    .zones
+                    .iter()
+                    .filter(|z| {
+                        w[0].sigma.cmp(&z.at.hi) == core::cmp::Ordering::Less
+                            && z.at.lo.cmp(&w[1].sigma) == core::cmp::Ordering::Less
+                    })
+                    .count();
+                assert!(
+                    between <= 1,
+                    "{name}: σ {:.6} → {:.6} straddles {between} events — the tracer cannot tell \
+                     which change it is seeing",
+                    rat_to_f64(&w[0].sigma),
+                    rat_to_f64(&w[1].sigma)
+                );
             }
         }
     }
