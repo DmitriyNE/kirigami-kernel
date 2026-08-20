@@ -2028,4 +2028,134 @@ mod tests {
             "one contour met twice by a wrapping chart must refuse, not weld or choose"
         );
     }
+
+    // ── BL.1: the pre-state the component refactor must reproduce ────────────────────────────
+    //
+    // `sweep` collapses every µ̂-component at a σ down to one (`choose_comps`) and records the
+    // survivor's two bounding labels in a `Run`. BL.1 keeps them all and *derives* this, so what
+    // must not move is exactly what a consumer can see: the derived extent, how it ends, the run
+    // partition with its labels, the hole records and the roles. Recorded here **before** the
+    // refactor, on the shipped code, so it is a pre-state rather than a restatement of the new
+    // behaviour — and paired with `the_digest_moves_when_the_part_does`, because an equality
+    // asserted against oneself passes forever.
+
+    /// Everything a consumer reads off a resolved `Structure`, as one line-per-fact string.
+    fn digest(st: &Structure<Bignum>) -> String {
+        let end = |e: &SigmaEnd<Bignum>| match e {
+            SigmaEnd::Band => "Band".to_string(),
+            SigmaEnd::Closed { at, kinds, pinch } => format!(
+                "Closed[{:.6}, {:.6}] {kinds:?} pinch={pinch}",
+                rat_to_f64(&at.lo),
+                rat_to_f64(&at.hi)
+            ),
+        };
+        let mut out = format!(
+            "domain [{:.6}, {:.6}]\nends {} | {}\n",
+            rat_to_f64(&st.domain.lo),
+            rat_to_f64(&st.domain.hi),
+            end(&st.ends[0]),
+            end(&st.ends[1])
+        );
+        for r in &st.runs {
+            out += &format!(
+                "run [{:.6}, {:.6}] lower {}/{:?} upper {}/{:?}\n",
+                rat_to_f64(&r.lo),
+                rat_to_f64(&r.hi),
+                r.lower.0,
+                r.lower.1,
+                r.upper.0,
+                r.upper.1
+            );
+        }
+        for (op, ri, w) in &st.holes {
+            out += &format!(
+                "hole op{op} region{ri} [{:.6}, {:.6}]\n",
+                rat_to_f64(&w.lo),
+                rat_to_f64(&w.hi)
+            );
+        }
+        for (i, role) in st.roles.iter().enumerate() {
+            out += &format!("role op{i} {role:?}\n");
+        }
+        out += &format!("mu_negative {:?}\n", st.mu_negative);
+        out
+    }
+
+    /// The banded blank and the same blank with a drill through it — one shape whose boundary is
+    /// two rails end to end, one that also carries an interior hole.
+    fn pre_state_fixtures() -> Vec<(&'static str, Part<Bignum>)> {
+        let band = || blank(Q::new(-7, 2), Q::new(7, 2));
+        vec![
+            ("banded", band()),
+            (
+                "notched",
+                band().subtract(drilled(disc_edges(
+                    Q::new(-9, 4),
+                    Q::new(9, 4),
+                    Q::new(3, 4),
+                ))),
+            ),
+            (
+                // The `r = 1/5` disc at `(0, 11/5)` — the drill the AUTH.1e differential uses, and
+                // the one placement here that resolves to an interior `Hole` rather than a `Notch`.
+                "holed",
+                band().subtract(drilled(disc_edges(q(0), Q::new(11, 5), Q::new(1, 5)))),
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_resolved_structure_is_pinned_before_the_component_refactor() {
+        let mut got = String::new();
+        for (name, part) in pre_state_fixtures() {
+            got += &format!("== {name}\n");
+            got += &digest(&extent(&part).expect("the fixture resolves"));
+        }
+        assert_eq!(got, PRE_STATE, "\n--- got ---\n{got}");
+    }
+
+    /// The control that makes the pin above non-vacuous: move one op by a hair and the digest must
+    /// move with it. Without this, BL.1 could delete the structure and still "reproduce" it.
+    #[test]
+    fn the_digest_moves_when_the_part_does() {
+        let base = blank(Q::new(-7, 2), Q::new(7, 2));
+        let moved = blank(Q::new(-7, 2), Q::new(27, 8));
+        assert_ne!(
+            digest(&extent(&base).expect("resolves")),
+            digest(&extent(&moved).expect("resolves")),
+            "a part whose band moved by a cell must not digest the same"
+        );
+    }
+
+    /// The three shapes above as the **shipped** resolver leaves them: a boundary of two rails
+    /// end to end, one with a rim bite (`Notch`), one with an interior `Hole`. Every role the
+    /// model has, so BL.1 cannot reproduce the pin by covering only the easy one.
+    const PRE_STATE: &str = "\
+== banded
+domain [-3.500000, 3.500000]
+ends Band | Band
+run [-3.427083, 3.427083] lower 1/Upper upper 0/Plane
+role op0 UpperBound
+role op1 LowerBound
+mu_negative Some(false)
+== notched
+domain [-3.500000, 3.500000]
+ends Band | Band
+run [-3.427083, 0.218750] lower 1/Upper upper 0/Plane
+run [0.350971, 0.510417] lower 1/Upper upper 2/Wall(0, false)
+run [0.656250, 3.427083] lower 1/Upper upper 0/Plane
+role op0 UpperBound
+role op1 LowerBound
+role op2 Notch
+mu_negative Some(false)
+== holed
+domain [-3.500000, 3.500000]
+ends Band | Band
+run [-3.427083, 3.427083] lower 1/Upper upper 0/Plane
+hole op2 region0 [-0.045549, 0.045549]
+role op0 UpperBound
+role op1 LowerBound
+role op2 Hole
+mu_negative Some(false)
+";
 }
