@@ -29,7 +29,7 @@
 //! `generated-demos/`). This is the old 917-line hand-wired demo collapsed onto the facade —
 //! same device, same certificates, structure no longer hand-picked.
 
-use author::part::Part;
+use author::part::{Cutter, Part};
 use certify_core::Verdict;
 use develop::cone::{ConeDevelopment, DevConfig};
 use develop::extrude::Apex;
@@ -51,7 +51,16 @@ fn qi(n: i128) -> Q {
 /// crate) — the same recipe the V&V suite pins at a leaner budget, carrying the lap slot.
 fn device(segments: usize) -> Part<Bignum> {
     let apex = Apex::direction([qi(0), qi(0), qi(1)]).expect("a real sweep direction");
-    acceptance::self_lapping_cone_with(segments, 20, true, Some((apex, acceptance::lap_slot())))
+    acceptance::self_lapping_cone_with(
+        segments,
+        20,
+        true,
+        Some(Cutter::extrude(
+            acceptance::sketch_plane(),
+            apex,
+            acceptance::lap_slot(),
+        )),
+    )
 }
 
 /// The authored L's boundary segments in the `z = 0` sketch plane, as floats.
