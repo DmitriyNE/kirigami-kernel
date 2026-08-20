@@ -343,10 +343,6 @@ pub(crate) struct Structure<B: Backend> {
     /// on the transverse-drill fixture). So the loop model is built **alongside** the shipped one
     /// until the loops are the boundary rather than a second opinion.
     pub cells: Vec<Cell<B>>,
-    /// The σ-zones where the stretch structure can change. Two consecutive cells either lie in one
-    /// partition cell — structure constant, so linking them is sound — or straddle exactly one of
-    /// these brackets, which is where a gap's wedge tip lies.
-    pub zones: Vec<EventZone<B>>,
 }
 
 // Hand-written so `B` need not be `Clone` (the backend markers are not).
@@ -360,7 +356,6 @@ impl<B: Backend> Clone for Structure<B> {
             roles: self.roles.clone(),
             mu_negative: self.mu_negative,
             cells: self.cells.clone(),
-            zones: self.zones.clone(),
         }
     }
 }
@@ -1267,6 +1262,92 @@ pub(crate) fn region_forms<B: Backend>(
     Ok(regions)
 }
 
+/// The partition's cells and the zones that define them.
+pub(crate) type Partition<B> = (Vec<Cell<B>>, Vec<EventZone<B>>);
+
+/// The event partition's own cells, **on demand** (BL.2b′).
+///
+/// One sample per cell of the partition, at the gap midpoint, resolved and appended to a copy of
+/// the sweep's grid cells. Two consecutive cells of the result straddle at most one event, which is
+/// the property a boundary tracer stands on and the mid-cell grid cannot state.
+///
+/// **Why a separate call and not part of `sweep`.** Computing these inside the sweep cost the
+/// device tests more than 1740 s each against a ~590 s whole-suite budget: a real device's event set
+/// is `O(walls²)` through the pairwise resultants, so it is a great many extra `sample_comps` calls
+/// — paid on every `develop()` and `solid()`, for cells **nothing in production reads**. Work whose
+/// only consumer is a tracer belongs behind the tracer's own call, not in the path every certificate
+/// takes.
+///
+/// A sample that will not resolve is skipped rather than fatal: these σ are ones the shipped path
+/// never visits, so a `Pole` there must not refuse a part that certifies today.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn partition_cells<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    st: &Structure<B>,
+) -> Result<Partition<B>, PartFault> {
+    let regions = region_forms(part, built)?;
+    let reach = span_reach(part, built)?;
+    let zones = event_zones(&regions)?;
+    let mut cells = st.cells.clone();
+    let half = Rat::new(1, 2);
+    let (lo_end, hi_end) = (st.domain.lo.clone(), st.domain.hi.clone());
+    let mut extra: Vec<(usize, Rat<B>)> = Vec::new();
+    for (ri, rf) in regions.iter().enumerate() {
+        let mut edge = rf.band.lo.clone();
+        for z in zones.iter().filter(|z| z.region == ri) {
+            if edge.cmp(&z.at.lo) == core::cmp::Ordering::Less {
+                extra.push((ri, edge.add(&z.at.lo).mul(&half)));
+            }
+            edge = z.at.hi.clone();
+        }
+        if edge.cmp(&rf.band.hi) == core::cmp::Ordering::Less {
+            extra.push((ri, edge.add(&rf.band.hi).mul(&half)));
+        }
+    }
+    for (ri, sigma) in extra {
+        if sigma.cmp(&lo_end) == core::cmp::Ordering::Less
+            || hi_end.cmp(&sigma) == core::cmp::Ordering::Less
+            || cells
+                .iter()
+                .any(|c| c.sigma.cmp(&sigma) == core::cmp::Ordering::Equal)
+        {
+            continue;
+        }
+        let sec = match sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma) {
+            Ok(sec) if !sec.is_empty() => sec,
+            _ => continue,
+        };
+        let near = cells
+            .iter()
+            .min_by(|a, b| {
+                let da = rat_to_f64(&a.sigma.sub(&sigma)).abs();
+                let db = rat_to_f64(&b.sigma.sub(&sigma)).abs();
+                da.partial_cmp(&db).unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .expect("at least one grid cell");
+        let want = near.merged[near.pick].comp;
+        let (wlo, whi) = (want.lo.expect("bounded").0, want.hi.expect("bounded").0);
+        let pick = sec
+            .merged
+            .iter()
+            .position(|m| {
+                let (l, h) = (m.comp.lo.expect("bounded").0, m.comp.hi.expect("bounded").0);
+                l < whi && wlo < h
+            })
+            .unwrap_or(0);
+        cells.push(Cell {
+            sigma,
+            region: ri,
+            raw: sec.raw,
+            merged: sec.merged,
+            pick,
+        });
+    }
+    cells.sort_by(|a, b| a.sigma.cmp(&b.sigma));
+    Ok((cells, zones))
+}
+
 pub(crate) fn sweep<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
@@ -1514,77 +1595,6 @@ pub(crate) fn sweep<B: Backend>(
         });
     }
 
-    // — BL.2b′: the partition's own cells, for the tracer alone —
-    //
-    // One sample per cell of the event partition, at the gap **midpoint** (a zone endpoint is a
-    // hole-attribution window boundary and that test is strict, so a hole-active sample there would
-    // be orphaned — #311's branch, at window ends of our own making). These never reach `recs`, so
-    // `runs`/`holes`/`roles` and every certificate downstream are exactly what they were.
-    let zones = event_zones(&regions)?;
-    {
-        let half = Rat::new(1, 2);
-        let (lo_end, hi_end) = (domain.lo.clone(), domain.hi.clone());
-        let mut extra: Vec<(usize, Rat<B>)> = Vec::new();
-        for (ri, rf) in regions.iter().enumerate() {
-            let mut edge = rf.band.lo.clone();
-            for z in zones.iter().filter(|z| z.region == ri) {
-                if edge.cmp(&z.at.lo) == core::cmp::Ordering::Less {
-                    extra.push((ri, edge.add(&z.at.lo).mul(&half)));
-                }
-                edge = z.at.hi.clone();
-            }
-            if edge.cmp(&rf.band.hi) == core::cmp::Ordering::Less {
-                extra.push((ri, edge.add(&rf.band.hi).mul(&half)));
-            }
-        }
-        for (ri, sigma) in extra {
-            // Only inside the derived extent, and only where a grid cell is not already sitting.
-            if sigma.cmp(&lo_end) == core::cmp::Ordering::Less
-                || hi_end.cmp(&sigma) == core::cmp::Ordering::Less
-                || cells
-                    .iter()
-                    .any(|c| c.sigma.cmp(&sigma) == core::cmp::Ordering::Equal)
-            {
-                continue;
-            }
-            // A partition sample that will not resolve is SKIPPED, never fatal. These cells exist
-            // for the tracer alone, so propagating the error would let a σ the shipped path never
-            // samples refuse a part that certifies today — a regression introduced by looking.
-            let sec = match sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma) {
-                Ok(sec) if !sec.is_empty() => sec,
-                _ => continue,
-            };
-            // The pick propagates by µ̂-overlap from the nearest cell already resolved — the same
-            // continuity `choose_comps` uses, seeded from a cell whose pick is known.
-            let near = cells
-                .iter()
-                .min_by(|a, b| {
-                    let da = rat_to_f64(&a.sigma.sub(&sigma)).abs();
-                    let db = rat_to_f64(&b.sigma.sub(&sigma)).abs();
-                    da.partial_cmp(&db).unwrap_or(core::cmp::Ordering::Equal)
-                })
-                .expect("at least one grid cell");
-            let want = near.merged[near.pick].comp;
-            let (wlo, whi) = (want.lo.expect("bounded").0, want.hi.expect("bounded").0);
-            let pick = sec
-                .merged
-                .iter()
-                .position(|m| {
-                    let (l, h) = (m.comp.lo.expect("bounded").0, m.comp.hi.expect("bounded").0);
-                    l < whi && wlo < h
-                })
-                .unwrap_or(0);
-            cells.push(Cell {
-                sigma,
-                region: ri,
-                raw: sec.raw,
-                merged: sec.merged,
-                pick,
-            });
-        }
-        cells.sort_by(|a, b| a.sigma.cmp(&b.sigma));
-    }
-
     // Fold into runs of constant boundary labels.
     let mut runs: Vec<Run<B>> = Vec::new();
     for rec in &recs {
@@ -1694,7 +1704,6 @@ pub(crate) fn sweep<B: Backend>(
         roles,
         mu_negative,
         cells,
-        zones,
     })
 }
 
@@ -2749,7 +2758,14 @@ mu_negative Some(false)
     #[test]
     fn consecutive_cells_straddle_at_most_one_event() {
         for (name, part) in pre_state_fixtures() {
-            let st = extent(&part).expect("the fixture resolves");
+            let built = part.build_regions().expect("the regions develop");
+            let base = extent(&part).expect("the fixture resolves");
+            let (cells, zones) =
+                partition_cells(&part, &built, &base).expect("the partition resolves");
+            let st = Structure {
+                cells,
+                ..base.clone()
+            };
             let grid_only = st
                 .cells
                 .iter()
@@ -2771,8 +2787,7 @@ mu_negative Some(false)
                 st.cells.len()
             );
             for w in st.cells.windows(2) {
-                let between = st
-                    .zones
+                let between = zones
                     .iter()
                     .filter(|z| {
                         w[0].sigma.cmp(&z.at.hi) == core::cmp::Ordering::Less
