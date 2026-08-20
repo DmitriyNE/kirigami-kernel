@@ -30,8 +30,8 @@ use export::brep::Brep;
 use export::brep_build::{HoleRail, WirePoint, brep_trim_solid_regions};
 use export::cut_oracle::RootPick;
 use export::trim::{
-    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, flat_to_poly, hole_poly,
-    hole_rail, shadow_hole_loops, surface_hole_loop,
+    HoleLoop, RailFit, assemble_flat, bisect_root, certified_rail_surface, chord_pcurve,
+    flat_to_poly, hole_poly, hole_rail, shadow_hole_loops, surface_hole_loop,
 };
 use lattice::{Backend, Interval, Rat, RatFunc};
 
@@ -54,8 +54,19 @@ fn mu_form_opens_up<B: Backend>(
     }
 }
 
-/// A per-op exact σ-extent within one region (the two-tangent clamp), or `None` (no extent).
-type Extent<B> = Option<(Rat<B>, Rat<B>)>;
+/// One wall's real σ-window within a region: the stretch between consecutive tangent rulings on
+/// which its µ̂-quadratic has roots at all, and **which ends are tangent rulings**.
+///
+/// The distinction is not bookkeeping. A fit stands off from a window end because the branch has a
+/// √-tail with unbounded slope there — which is true of a tangent ruling and false of the band's
+/// own edge. Insetting at a band edge buys nothing and costs reach: it shortens the rail by the
+/// inset at exactly the σ where a derived σ-end puts the boundary, and the segment then has no
+/// certified rail under it.
+struct Window<B: lattice::Backend> {
+    span: Interval<B>,
+    lo_is_tangent: bool,
+    hi_is_tangent: bool,
+}
 
 /// One piecewise boundary chain: ordered contiguous `(σ-band, rail)` pieces (the
 /// `brep_trim_solid_regions` currency).
@@ -76,7 +87,9 @@ macro_rules! bail {
         match $e {
             Ok(v) => v,
             Err(RErr::Fault(f)) => return Verdict::Refuted(f),
-            Err(RErr::Loose(e)) => return Verdict::Unresolved(e),
+            Err(RErr::Loose(e)) => {
+                return Verdict::Unresolved(e);
+            }
         }
     };
 }
@@ -93,12 +106,51 @@ struct RailPiece<B: Backend> {
     span: Interval<B>,
 }
 
+/// A **mid-chain splice**: the certified path across a flank crossing — §12.4's p-curve end, met
+/// in the middle of a chain rather than at a σ-end.
+///
+/// Two quadric walls whose profile edges are both tangent to the same straight edge (the device
+/// drawing's fillet–flank–fillet corner) have µ̂-windows that **abut at a shared tangent ruling**:
+/// the flank is radial, so the ruling through it is tangent to both fillets at once. The two
+/// graph rails never cross — they are joined by a stretch of boundary *along* that ruling — and
+/// neither can be certified up to it (the branch turns vertical there). So each chain segment
+/// stops at its own certificate's edge, and the splice owns the gap `[edge_a, edge_b]`.
+struct Splice<B: Backend> {
+    /// Where the left rail's certified span ends — its segment's new `to`.
+    edge_a: Rat<B>,
+    /// Where the right rail's certified span begins — its segment's new `from`.
+    edge_b: Rat<B>,
+    /// The left rail's fitted value at `edge_a` (one end of the solid's chord).
+    v_a: Rat<B>,
+    /// The right rail's fitted value at `edge_b` (the other).
+    v_b: Rat<B>,
+    /// The traced route across the gap, σ-ascending: the left wall's tail into its tangent
+    /// vertex, the connector along the flank, the right wall's tail out. The flat pattern draws it
+    /// piece-by-piece; the solid chords it at the export sagitta budget ([`splice_chain`]) — it
+    /// used to take the single chord `(edge_a, v_a) → (edge_b, v_b)` instead, which was #305 once
+    /// splices grew from µm-fine tails into whole caps and domes. Empty only when built with
+    /// `traced_splices: false`, which then degenerates the solid's stretch to that single chord.
+    curves: Vec<develop::pcurve::PCurve<B>>,
+    /// The certified bound over whichever route was built (folded into the boundary's ε).
+    eps: Rat<B>,
+}
+
+/// One refined run corner: the σ where the two adjacent rails meet, or the gap a [`Splice`] owns.
+enum Corner<B: Backend> {
+    At(Rat<B>),
+    Gap(Rat<B>, Rat<B>),
+}
+
 /// The certified boundary: the per-region rail pieces, the per-side chain segments
 /// `(from, to, label)` covering the domain, and the max rail ε.
 struct Boundary<B: Backend> {
     pieces: Vec<RailPiece<B>>,
     upper_segs: Vec<(Rat<B>, Rat<B>, Label)>,
     lower_segs: Vec<(Rat<B>, Rat<B>, Label)>,
+    /// The mid-chain splices per side, in ascending σ; each sits between the segment ending at its
+    /// `edge_a` and the one beginning at its `edge_b`.
+    upper_splices: Vec<Splice<B>>,
+    lower_splices: Vec<Splice<B>>,
     /// The turn arc closing each σ-end (`[lower end, upper end]`), where that end is a **smooth
     /// pinch** — a tangent ruling of one quadric wall, which no graph rail reaches. Where it is
     /// `None` the end closes with a ruling cap, as it always did. When an arc is present the
@@ -107,6 +159,355 @@ struct Boundary<B: Backend> {
     /// junctions the run-corner refinement located.
     end_arcs: [Option<Vec<develop::pcurve::PCurve<B>>>; 2],
     eps: Rat<B>,
+}
+
+/// The straight domain segment between two `(σ, µ̂)` points, as a p-curve over `t ∈ [0, 1]`.
+fn domain_segment<B: Backend>(a: &[Rat<B>; 2], b: &[Rat<B>; 2]) -> develop::pcurve::PCurve<B> {
+    let lin = |p: &Rat<B>, q: &Rat<B>| {
+        RatFunc::from_poly(lattice::Poly::from_coeffs(vec![p.clone(), q.sub(p)]))
+    };
+    develop::pcurve::PCurve {
+        sigma: lin(&a[0], &b[0]),
+        mu: lin(&a[1], &b[1]),
+        domain: Interval {
+            lo: Rat::from_i128(0),
+            hi: Rat::from_i128(1),
+        },
+    }
+}
+
+/// Per region, per op, per wall: the wall's µ̂-discriminant together with the brackets isolating
+/// its tangent rulings, or `None` where the wall is affine and has no windows.
+///
+/// The discriminant rides along because the brackets alone do not say **which** of the stretches
+/// they cut the band into the wall is real on. A gap between two consecutive tangent rulings is
+/// disc-positive or disc-negative depending on the wall, and a rail clamped into the negative one
+/// is a rail over σ where the cut does not exist.
+type DiscRoots<B> = Vec<Vec<Vec<Option<(RatFunc<B>, Vec<Interval<B>>)>>>>;
+
+/// Detect and build the [`Splice`] at one run corner, or `None` where the corner is not a flank
+/// crossing (the ordinary case — the caller then refines it as a rail crossing, as ever).
+///
+/// The detection is exact, not heuristic, and every clause names a property the construction
+/// needs:
+/// - **same op, distinct walls**, of which at least one **turns**: it has an isolated
+///   discriminant-root bracket inside this corner's gap, where its window ends and its rail's
+///   certificate stops. When both turn (a fillet–flank–fillet corner, #294) the two brackets must
+///   *overlap* — the windows abut at one shared tangent ruling. A side with no root in the gap
+///   **continues** (#296's mixed corner): its wall crosses the flank transversally, its rail is
+///   certified straight across the gap, and its own certified edge is where the connector starts.
+///   The lug's rim against its tangent nose arc is the geometry that forces it.
+/// - **a middle wall between them in the profile cycle, affine in µ̂** — the flank itself. It is
+///   what the connector is certified against: the true boundary between the handoff points runs
+///   *along* that wall. (A flank is a plane through the chart's apex, so its pullback crosses
+///   µ̂ = 0 identically except at its own azimuth, where the ruling lies *in* the plane — which is
+///   where a wall tangent to it turns. The tangency root and the flank's own ruling are the same
+///   σ, which is why one isolation serves both claims.)
+///
+/// The traced route (`traced`): each **turning** wall's own certified tail from the rail's
+/// certified edge into the tangent vertex ([`develop::cut::quadric_tail`] — PC.3's construction,
+/// graded for the one-tangency stretch); the connector joins the two handoff points — a tangent
+/// vertex, or a continuing rail's certified endpoint — and is certified by
+/// [`develop::cut::pcurve_cut_fit`]. The chord route (solid): one straight piece between the
+/// rails' own endpoint values, certified the same way — it deviates from the true corner by the
+/// √-tails the rails could not reach, and the certificate against the flank wall is exactly a
+/// bound on that.
+///
+/// A tail or certificate that comes back `Unresolved` propagates as a loose (refinable) bound; a
+/// structural disagreement (`Refuted`) falls back to `None`, so the refusal the caller then
+/// reports is the honest pre-existing one.
+#[allow(clippy::too_many_arguments)]
+fn flank_splice<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+    bands: &[Interval<B>],
+    disc_roots: &DiscRoots<B>,
+    pieces: &[RailPiece<B>],
+    l: Label,
+    r: Label,
+    gap_lo: &Rat<B>,
+    gap_hi: &Rat<B>,
+    traced: bool,
+) -> Result<Option<Splice<B>>, RErr<B>> {
+    use core::cmp::Ordering;
+    let op = l.0;
+    if r.0 != op {
+        return Ok(None);
+    }
+    let (wl, wr) = (wall_of(l), wall_of(r));
+    if wl == wr {
+        return Ok(None);
+    }
+    // One region only: the splice's curves live on one chart. A gap straddling a region join
+    // stays a refusal until a real part needs it.
+    let Some(ri) = bands.iter().position(|band| {
+        band.lo.cmp(gap_lo) != Ordering::Greater && gap_hi.cmp(&band.hi) != Ordering::Greater
+    }) else {
+        return Ok(None);
+    };
+    // Which sides **turn**: an isolated root of the wall's discriminant inside this gap — the same
+    // isolation its window was clamped to, so "the window ends here" and "the boundary hands off
+    // here" are claims about the same root. `l`'s window ends at its root and `r`'s begins at its,
+    // so a turning `l` takes the stretch before its root and a turning `r` the stretch after. A
+    // wall with no root in the gap **continues** across it and needs no window at all.
+    //
+    // When the root is the wall's *first* (or *last*) tangent ruling in this band, the stretch is
+    // bounded by the band itself — the same outermost window `window_for` names. Demanding a
+    // neighbouring bracket instead refused exactly the walls that are real from the band's edge up
+    // to their one tangent ruling, which is where a derived σ-end puts the bore's rail (#302).
+    let in_gap = |iv: &Interval<B>| {
+        gap_lo.cmp(&iv.lo) != Ordering::Greater && iv.hi.cmp(gap_hi) != Ordering::Greater
+    };
+    type Turn<B> = Option<(Interval<B>, Interval<B>)>;
+    let turn_of = |w: usize, needs_preceding: bool| -> Turn<B> {
+        let (_, b) = disc_roots[ri][op].get(w).and_then(|x| x.as_ref())?;
+        let k = b.iter().position(&in_gap)?;
+        let win = if needs_preceding {
+            Interval {
+                lo: if k == 0 {
+                    bands[ri].lo.clone()
+                } else {
+                    b[k - 1].hi.clone()
+                },
+                hi: b[k].lo.clone(),
+            }
+        } else {
+            Interval {
+                lo: b[k].hi.clone(),
+                hi: if k + 1 >= b.len() {
+                    bands[ri].hi.clone()
+                } else {
+                    b[k + 1].lo.clone()
+                },
+            }
+        };
+        Some((b[k].clone(), win))
+    };
+    // Neither turning is no flank crossing at all: two rails that really cross, refined as ever.
+    let (turn_l, turn_r) = (turn_of(wl, true), turn_of(wr, false));
+    if turn_l.is_none() && turn_r.is_none() {
+        return Ok(None);
+    }
+    // Both turning: the two windows must abut at ONE shared tangent ruling — overlapping brackets.
+    if let (Some((rl, _)), Some((rr, _))) = (&turn_l, &turn_r)
+        && (rl.lo.cmp(&rr.hi) == Ordering::Greater || rr.lo.cmp(&rl.hi) == Ordering::Greater)
+    {
+        return Ok(None);
+    }
+    // The connector's own wall: the profile edge between the two, affine in µ̂.
+    let walls = part.ops[op]
+        .1
+        .walls()
+        .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op }))?;
+    let nw = walls.len();
+    if nw < 3 {
+        return Ok(None);
+    }
+    let (m1, m2) = ((wl + 1) % nw, (wl + nw - 1) % nw);
+    let m = if (m1 + 1) % nw == wr {
+        m1
+    } else if (m2 + nw - 1) % nw == wr {
+        m2
+    } else {
+        return Ok(None);
+    };
+    let chart = &built.charts[ri];
+    let zero = Rat::from_i128(0);
+    match cut_mu_form(chart, &walls[m], &zero) {
+        Some(f) if f.a.is_zero() => {}
+        _ => return Ok(None),
+    }
+    // The rails' certified edges, and their fitted values there.
+    let (Some(pa), Some(pb)) = (
+        find_piece(pieces, l, ri, gap_lo),
+        find_piece(pieces, r, ri, gap_hi),
+    ) else {
+        return Ok(None);
+    }; // The pieces must actually be certified AT this corner. `find_piece`'s trailing arms return a
+    // same-label piece from anywhere as a last resort, and on a wrapping chart the same wall bounds
+    // on a second pass half a turn away (#293) — so when this corner's own piece is missing (its
+    // fit was recorded rather than raised, step 2), the fallback is the *other pass's* rail, whose
+    // span and fitted values are about a different stretch of boundary entirely. Every use below —
+    // the handoff edges, `mu.eval` at them, the tails — would be arithmetic on that wrong rail, so
+    // the corner is declined instead and the coverage check reports the fit's own recorded reason.
+    //
+    // What "at this corner" means is per side. A **continuing** side's rail is certified straight
+    // across the gap, so its span covers the gap edge. A **turning** side's span is clamped into
+    // its own window less the fit inset, and the gap edge — the neighbouring run's outermost
+    // sample — can land inside that inset sliver; the honest claim there is that the span lies in
+    // the window this turn opens or closes, which the wrong-pass fallback never does (its span is
+    // in the same wall's *other* window, half a turn away).
+    let holds = |p: &RailPiece<B>, s: &Rat<B>| {
+        p.span.lo.cmp(s) != Ordering::Greater && s.cmp(&p.span.hi) != Ordering::Greater
+    };
+    let overlaps = |p: &RailPiece<B>, w: &Interval<B>| {
+        p.span.lo.cmp(&w.hi) != Ordering::Greater && w.lo.cmp(&p.span.hi) != Ordering::Greater
+    };
+    let ok_a = match &turn_l {
+        None => holds(pa, gap_lo),
+        Some((_, win)) => overlaps(pa, win),
+    };
+    let ok_b = match &turn_r {
+        None => holds(pb, gap_hi),
+        Some((_, win)) => overlaps(pb, win),
+    };
+    if !ok_a || !ok_b {
+        return Ok(None);
+    }
+    // A turning side hands off at its rail's certified edge — the window inset just before its
+    // tangency. A continuing side's rail is certified straight ACROSS the gap and past the handoff
+    // (its span is hulled out to the neighbouring run's first sample, a grid point on the wrong
+    // side of the flank), so its span end says nothing about where the boundary turns: the handoff
+    // is the *turning* wall's own root, taken at its bracket edge and clamped into the continuing
+    // rail's certificate.
+    //
+    // (Handing off *earlier* — walking the traced tail deeper into the window so the rail never
+    // chordizes the curl — was tried and honestly refused: the tail's pieces are certified one by
+    // one at a fixed subdivision, and stretched over a wide window they read looser than the
+    // clearance. The curl's chordization is an *emission* problem and is solved there: the chain
+    // assembly √-grades the rail's own chords into a spliced end.)
+    let edge_a = match (&turn_l, &turn_r) {
+        (None, Some((root_r, _))) => rmax(&pa.span.lo, &rmin(&pa.span.hi, &root_r.lo)),
+        _ => pa.span.hi.clone(),
+    };
+    let edge_b = match (&turn_r, &turn_l) {
+        (None, Some((root_l, _))) => rmin(&pb.span.hi, &rmax(&pb.span.lo, &root_l.hi)),
+        _ => pb.span.lo.clone(),
+    };
+    if edge_a.cmp(&edge_b) != Ordering::Less {
+        return Ok(None);
+    }
+    let (Some(v_a), Some(v_b)) = (pa.mu.eval(&edge_a), pb.mu.eval(&edge_b)) else {
+        return Err(RErr::Fault(PartFault::Pole));
+    };
+
+    let mut eps = Rat::from_i128(0);
+    let certify = |curve: &develop::pcurve::PCurve<B>,
+                   wall: &CutSurface<B>,
+                   eps: &mut Rat<B>|
+     -> Result<bool, RErr<B>> {
+        match develop::cut::pcurve_cut_fit(
+            chart,
+            curve,
+            wall,
+            &zero,
+            32,
+            &part.clearance,
+            &part.cfg,
+        ) {
+            Verdict::Verified(v) => {
+                *eps = rmax(eps, &v.eps);
+                Ok(true)
+            }
+            Verdict::Unresolved(e) => Err(RErr::Loose(e)),
+            Verdict::Refuted(_) => Ok(false),
+        }
+    };
+    let curves = if traced {
+        // A turning side contributes its wall's own traced tail — from the rail's certified edge
+        // into the tangent vertex. A continuing side has no vertex to walk into and contributes
+        // nothing: its rail's certified endpoint IS where the connector starts.
+        let make_tail = |turn: &Turn<B>,
+                         wi: usize,
+                         edge: &Rat<B>,
+                         val: &Rat<B>,
+                         vertex_is_max: bool,
+                         eps: &mut Rat<B>|
+         -> Result<Option<Vec<develop::pcurve::PCurve<B>>>, RErr<B>> {
+            let Some((_, win)) = turn else {
+                return Ok(Some(Vec::new()));
+            };
+            // The dedicated tail tracer: the branch from the rail's certified edge into the
+            // tangent vertex, √-graded toward the vertex so the chords are equal-turn — the
+            // resolution lands where the turning is, at every `segments`. (Its two predecessors
+            // are recorded on [`develop::cut::quadric_tail`]: tracing the wall's *full* window
+            // gave the tail `n·√f` of the loop's `n` pieces — two or three chords carrying ~50°
+            // — and tracing a padded sub-window inherited the loop's both-end grading, so the
+            // junction chord stayed coarse however fine the budget.)
+            match develop::cut::quadric_tail(
+                chart,
+                &walls[wi],
+                win,
+                edge,
+                val,
+                vertex_is_max,
+                (part.segments / 2).max(8),
+                &zero,
+                &part.clearance,
+                &part.cfg,
+            ) {
+                Verdict::Verified(t) => {
+                    *eps = rmax(eps, &t.eps);
+                    Ok(Some(t.pieces))
+                }
+                Verdict::Unresolved(e) => Err(RErr::Loose(e)),
+                Verdict::Refuted(_) => Ok(None),
+            }
+        };
+        let Some(tail_a) = make_tail(&turn_l, wl, &edge_a, &v_a, true, &mut eps)? else {
+            return Ok(None);
+        };
+        let Some(tail_b) = make_tail(&turn_r, wr, &edge_b, &v_b, false, &mut eps)? else {
+            return Ok(None);
+        };
+        // The connector's endpoints: a turning side's tangent vertex, a continuing side's own
+        // certified rail edge.
+        let va = match tail_a.last() {
+            Some(last) => last
+                .eval(&last.domain.hi)
+                .ok_or(RErr::Fault(PartFault::Pole))?,
+            None => [edge_a.clone(), v_a.clone()],
+        };
+        let vb = match tail_b.first() {
+            Some(first) => first
+                .eval(&first.domain.lo)
+                .ok_or(RErr::Fault(PartFault::Pole))?,
+            None => [edge_b.clone(), v_b.clone()],
+        };
+        // The connector, as an exactly-vertical piece plus an exactly-horizontal one rather than
+        // the diagonal between the vertices. The two tangent vertices sit on the same ruling to
+        // within their brackets, so the diagonal is ~10⁻⁶ off vertical — but the unroll can carry
+        // a *vertical* piece exactly (a ruling segment develops to a straight edge, a `Cap`),
+        // while a merely near-vertical one goes through the generic chord bound, whose enclosure
+        // over a millimetres-long µ̂ span reads several mm however true the piece is. Both pieces
+        // still certify against the flank wall; the assembly emits them as the exact arc kinds.
+        let elbow = [va[0].clone(), vb[1].clone()];
+        let mut cs = tail_a;
+        for piece in [domain_segment(&va, &elbow), domain_segment(&elbow, &vb)] {
+            let a = piece
+                .eval(&piece.domain.lo)
+                .ok_or(RErr::Fault(PartFault::Pole))?;
+            let bpt = piece
+                .eval(&piece.domain.hi)
+                .ok_or(RErr::Fault(PartFault::Pole))?;
+            if a[0].cmp(&bpt[0]) == Ordering::Equal && a[1].cmp(&bpt[1]) == Ordering::Equal {
+                continue;
+            }
+            if !certify(&piece, &walls[m], &mut eps)? {
+                return Ok(None);
+            }
+            cs.push(piece);
+        }
+        cs.extend(tail_b);
+        cs
+    } else {
+        let chord = domain_segment(
+            &[edge_a.clone(), v_a.clone()],
+            &[edge_b.clone(), v_b.clone()],
+        );
+        if !certify(&chord, &walls[m], &mut eps)? {
+            return Ok(None);
+        }
+        Vec::new()
+    };
+    Ok(Some(Splice {
+        edge_a,
+        edge_b,
+        v_a,
+        v_b,
+        curves,
+        eps,
+    }))
 }
 
 /// The smaller/larger of two rationals.
@@ -123,6 +524,460 @@ fn rmax<B: Backend>(a: &Rat<B>, b: &Rat<B>) -> Rat<B> {
     } else {
         a.clone()
     }
+}
+
+/// The σ-advance floor between splice-chain stations, `2⁻¹²`. Every chain piece end becomes a
+/// builder **station** — a full ruling with wall faces on both shells — so two stations closer
+/// than this made micron-wide sliver faces the STEP translators choke on (measured: 2·10⁻⁴-long
+/// edges where the connector's elbow spanned only its root brackets, ~10⁻⁶ in σ). The floor is
+/// *not* licence to drop geometry: a sub-floor stretch whose µ̂ moves (a drawn radial flank) is a
+/// **cliff** and keeps its full µ̂-travel as a steep affine piece over exactly one floor-wide
+/// window (see [`splice_nodes`]). Folding such a stretch into a neighbouring piece was #309: the
+/// piece cut a diagonal across the flank (a razor-thin wedge in the sheet), and where the fold
+/// landed inside a merged interpolant the boundary oscillated 0.5 where the drawing has a dome.
+const SPLICE_SLICE_BITS: u32 = 12;
+
+/// Cap on the nodes one merged splice piece may interpolate (see [`splice_chain`]).
+const SPLICE_MERGE_MAX: usize = 12;
+
+/// One station candidate of a splice walk: a route point that survives the floor thinning,
+/// anchored to the route index it stands for (the coverage anchor for [`splice_fits_route`]).
+struct SpliceNode<B: Backend> {
+    s: Rat<B>,
+    m: Rat<B>,
+    idx: usize,
+}
+
+/// Append a [`Splice`]'s stretch of a solid chain: the **traced route** across the gap — the same
+/// tails-and-connector the flat pattern draws — as few, curved `(band, rail)` pieces.
+///
+/// This replaces the single certified chord per splice, which was #305: splices had grown from
+/// µm-fine tails into whole caps and domes while the solid still hulled each one, so the device's
+/// lug came out with sides 15° off their rulings and a flat top at the two rails' shared level
+/// where the drawing has a dome.
+///
+/// The walk ([`splice_nodes`]) thins the route to station nodes at least one floor apart, and the
+/// merge ([`splice_merge`]) coalesces runs of nodes into low-degree interpolants — every piece
+/// checked against the whole stretch of certified route it covers ([`splice_fits_route`]), not
+/// merely its own interpolation nodes. A drawn radial flank is the node-to-node chord containing
+/// its climb: at most two floors wide, so the climb sits within the sagitta budget's own
+/// σ-equivalent of where the drawing puts it, and no station pair goes sub-floor (#309 — folding
+/// such a stretch into an unchecked neighbour was how the tab got a razor wedge). The route's
+/// first and last points are the rails' `(edge, value)` corners (the #307 pin), carried
+/// bit-exactly. A route the floor-scale graph model cannot carry — a σ-overhang, a sub-floor
+/// feature no piece can honour — falls back to [`splice_fallback`]'s station-per-chord chain:
+/// subdivided, but never distorted.
+fn splice_chain<B: Backend>(sp: &Splice<B>, out: &mut Chain<B>) -> Result<(), PartFault> {
+    use core::cmp::Ordering;
+    let start = (sp.edge_a.clone(), sp.v_a.clone());
+    let end = (sp.edge_b.clone(), sp.v_b.clone());
+    if end.0.cmp(&start.0) != Ordering::Greater {
+        return Ok(());
+    }
+    let mut raw: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+    for curve in &sp.curves {
+        if chord_pcurve(curve, &mut raw).is_none() {
+            return Err(PartFault::Pole);
+        }
+    }
+    // The route: the pinned corners around the traced points strictly between them.
+    let mut route: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(raw.len() + 2);
+    route.push(start.clone());
+    for (s, m) in raw {
+        let s = snap30(&s);
+        if s.cmp(&start.0) == Ordering::Greater && end.0.cmp(&s) == Ordering::Greater {
+            route.push((s, m));
+        }
+    }
+    route.push(end);
+    let floor = Rat::<B>::new(1, 1i128 << SPLICE_SLICE_BITS);
+    let budget = Rat::<B>::new(1, 1i128 << 8);
+    if let Some(nodes) = splice_nodes(&route, &floor, &budget)
+        && let Some(chain) = splice_merge(&route, &nodes, &budget, &floor)
+    {
+        out.extend(chain);
+        return Ok(());
+    }
+    splice_fallback(&route, out)
+}
+
+/// The station nodes of a splice route: one per cluster of route points whose σ-hull stays
+/// within a floor (its first point), the pinned end appended last.
+///
+/// A cluster whose µ̂-jump exceeds the sagitta budget — a drawn radial flank — and whose interior
+/// stays inside its endpoints' µ̂-range (± budget) gets a **window pair** instead, one floor wide
+/// around its hull, so the climb survives as its own steep affine piece rather than smearing
+/// across the whole gap to the next node; but only where there is **room** (a floor beyond the
+/// window on each side, a pinned corner anchoring its own side). Where there is no room the
+/// stretch is dense, node gaps are floor-scale anyway, and [`splice_fits_route`]'s horizontal
+/// escape carries the climb without a window — that measured split is what keeps windows from
+/// crowding each other on fillet chains (#309's second round).
+///
+/// Two nodes closer than a floor merge their clusters (a window demotes to a plain node first)
+/// and the walk re-emits; a merged cluster's σ-hull is capped at two floors so a folded point
+/// never sits farther than that from the boundary that carries its µ̂-travel.
+///
+/// `None` — for [`splice_fallback`] — when σ retreats beyond the floor (an overhang: not a µ̂(σ)
+/// graph) or crowding merges grow a cluster past the hull cap.
+fn splice_nodes<B: Backend>(
+    route: &[(Rat<B>, Rat<B>)],
+    floor: &Rat<B>,
+    budget: &Rat<B>,
+) -> Option<Vec<SpliceNode<B>>> {
+    use core::cmp::Ordering::{Greater, Less};
+    let last = route.len() - 1;
+    // Clusters, as inclusive route-index ranges over `route[..last]`; the pinned end is its own
+    // final node.
+    let mut clusters: Vec<(usize, usize)> = Vec::new();
+    let mut c0 = 0usize;
+    let mut hull_lo = route[0].0.clone();
+    let mut hull_hi = route[0].0.clone();
+    for (k, (s, _)) in route.iter().enumerate().take(last).skip(1) {
+        let lo = if s.cmp(&hull_lo) == Less { s } else { &hull_lo };
+        let hi = if s.cmp(&hull_hi) == Greater {
+            s
+        } else {
+            &hull_hi
+        };
+        if hi.sub(lo).cmp(floor) == Greater {
+            if s.cmp(&hull_hi) != Greater {
+                return None; // σ retreats beyond the floor: an overhang, not a graph
+            }
+            clusters.push((c0, k - 1));
+            c0 = k;
+            hull_lo = s.clone();
+            hull_hi = s.clone();
+        } else {
+            hull_lo = lo.clone();
+            hull_hi = hi.clone();
+        }
+    }
+    clusters.push((c0, last - 1));
+
+    let half = Rat::<B>::new(1, 1i128 << (SPLICE_SLICE_BITS + 1));
+    let hull_cap = floor.add(floor);
+    let mut demoted = vec![false; clusters.len()];
+    loop {
+        let mut nodes: Vec<SpliceNode<B>> = Vec::new();
+        let mut owner: Vec<usize> = Vec::new();
+        for (ci, (a, b)) in clusters.iter().cloned().enumerate() {
+            let (mut c_lo, mut c_hi) = (route[a].0.clone(), route[a].0.clone());
+            for (s, _) in &route[a..=b] {
+                if s.cmp(&c_lo) == Less {
+                    c_lo = s.clone();
+                }
+                if s.cmp(&c_hi) == Greater {
+                    c_hi = s.clone();
+                }
+            }
+            if c_hi.sub(&c_lo).cmp(&hull_cap) == Greater {
+                return None;
+            }
+            let single = |nodes: &mut Vec<SpliceNode<B>>, owner: &mut Vec<usize>| {
+                nodes.push(SpliceNode {
+                    s: route[a].0.clone(),
+                    m: route[a].1.clone(),
+                    idx: a,
+                });
+                owner.push(ci);
+            };
+            let (mf, ml) = (&route[a].1, &route[b].1);
+            let jump = ml.sub(mf);
+            let jump_abs = if jump.sign() < 0 { jump.neg() } else { jump };
+            if demoted[ci] || jump_abs.cmp(budget) != Greater {
+                single(&mut nodes, &mut owner);
+                continue;
+            }
+            // A steep cluster: window only if the interior is a monotone climb (inside the
+            // endpoints' range ± budget) and there is room; otherwise it is dense or a notch,
+            // and the plain node + route check decide.
+            let (m_lo, m_hi) = if mf.cmp(ml) == Less {
+                (mf, ml)
+            } else {
+                (ml, mf)
+            };
+            let (gate_lo, gate_hi) = (m_lo.sub(budget), m_hi.add(budget));
+            if route[a..=b]
+                .iter()
+                .any(|(_, m)| m.cmp(&gate_lo) == Less || m.cmp(&gate_hi) == Greater)
+            {
+                single(&mut nodes, &mut owner);
+                continue;
+            }
+            let pin_start = a == 0;
+            let near_end = route[last].0.sub(&c_hi).cmp(floor) != Greater;
+            let (sl, sr) = if pin_start {
+                (route[0].0.clone(), route[0].0.add(floor))
+            } else if near_end {
+                (route[last].0.sub(floor), route[last].0.clone())
+            } else {
+                let mid = c_lo.add(&c_hi).mul(&Rat::new(1, 2));
+                (mid.sub(&half), mid.add(&half))
+            };
+            let room_left = pin_start
+                || nodes
+                    .last()
+                    .map(|p| sl.sub(&p.s).cmp(floor) != Less)
+                    .unwrap_or(false);
+            let next_first = clusters
+                .get(ci + 1)
+                .map(|(na, _)| route[*na].0.clone())
+                .unwrap_or_else(|| route[last].0.clone());
+            let room_right = if near_end {
+                clusters.len() == ci + 1
+            } else {
+                next_first.sub(&sr).cmp(floor) != Less
+            };
+            if !(room_left && room_right) {
+                single(&mut nodes, &mut owner);
+                continue;
+            }
+            if !near_end {
+                nodes.push(SpliceNode {
+                    s: sl,
+                    m: mf.clone(),
+                    idx: a,
+                });
+                owner.push(ci);
+                nodes.push(SpliceNode {
+                    s: sr,
+                    m: ml.clone(),
+                    idx: b,
+                });
+                owner.push(ci);
+            } else {
+                // The climb runs into the pinned end: the end node itself is the window's far
+                // side, so only the near side is emitted.
+                nodes.push(SpliceNode {
+                    s: sl,
+                    m: mf.clone(),
+                    idx: a,
+                });
+                owner.push(ci);
+            }
+        }
+        let n_clusters = owner.last().map(|c| c + 1).unwrap_or(0);
+        nodes.push(SpliceNode {
+            s: route[last].0.clone(),
+            m: route[last].1.clone(),
+            idx: last,
+        });
+        owner.push(n_clusters);
+        let n = nodes.len();
+        if n == 2 {
+            // The two pinned corners of a tiny splice are authored and may sit closer than the
+            // floor; anything non-ascending is a pathology.
+            return (nodes[1].s.cmp(&nodes[0].s) == Greater).then_some(nodes);
+        }
+        // Crowding: a sub-floor node pair first demotes any window involved, then merges the
+        // owning clusters (the pinned end instead folds the offending last cluster backward).
+        match (1..n).find(|&i| {
+            owner[i] != owner[i - 1] && nodes[i].s.sub(&nodes[i - 1].s).cmp(floor) == Less
+        }) {
+            None => {
+                for i in 1..n {
+                    if nodes[i].s.cmp(&nodes[i - 1].s) != Greater {
+                        return None;
+                    }
+                }
+                return Some(nodes);
+            }
+            Some(i) => {
+                let (ca, cb) = (owner[i - 1], owner[i]);
+                if ca < clusters.len() && !demoted[ca] && cluster_is_window(&owner, ca) {
+                    demoted[ca] = true;
+                } else if cb < clusters.len() && !demoted[cb] && cluster_is_window(&owner, cb) {
+                    demoted[cb] = true;
+                } else if cb >= clusters.len() {
+                    // The pinned end: fold the last cluster backward.
+                    let (_, b) = clusters.pop()?;
+                    demoted.pop();
+                    match clusters.last_mut() {
+                        Some(prev) => prev.1 = b,
+                        None => return None,
+                    }
+                } else {
+                    let merged = (clusters[ca].0, clusters[cb].1);
+                    clusters.splice(ca..=cb, [merged]);
+                    demoted.splice(ca..=cb, [false]);
+                }
+            }
+        }
+    }
+}
+
+/// Does cluster `ci` currently emit a window pair (two nodes)?
+fn cluster_is_window(owner: &[usize], ci: usize) -> bool {
+    owner.iter().filter(|&&c| c == ci).count() == 2
+}
+
+/// The merge pass over splice nodes: runs of nodes greedily coalesce into one interpolant
+/// ([`splice_piece`]) for as long as it honours **every route point it covers** and every local
+/// chord corridor ([`splice_fits_route`]) — the certified trace itself, not merely the nodes,
+/// which for runs short enough that all nodes are interpolated is the only non-vacuous check.
+/// `None` — for [`splice_fallback`] — when even an adjacent-node piece cannot honour its stretch
+/// of the route.
+fn splice_merge<B: Backend>(
+    route: &[(Rat<B>, Rat<B>)],
+    nodes: &[SpliceNode<B>],
+    budget: &Rat<B>,
+    floor: &Rat<B>,
+) -> Option<Chain<B>> {
+    let pair = |i: usize, j: usize| -> Vec<(Rat<B>, Rat<B>)> {
+        nodes[i..=j]
+            .iter()
+            .map(|n| (n.s.clone(), n.m.clone()))
+            .collect()
+    };
+    let mut out: Chain<B> = Vec::new();
+    let mut i = 0;
+    while i + 1 < nodes.len() {
+        let mut j = i + 1;
+        let mut piece = splice_piece(&pair(i, j))?;
+        if !splice_fits_route(&piece, &route[nodes[i].idx..=nodes[j].idx], budget, floor) {
+            return None;
+        }
+        while j + 1 < nodes.len() && j - i < SPLICE_MERGE_MAX {
+            match splice_piece(&pair(i, j + 1)) {
+                Some(next)
+                    if splice_fits_route(
+                        &next,
+                        &route[nodes[i].idx..=nodes[j + 1].idx],
+                        budget,
+                        floor,
+                    ) =>
+                {
+                    piece = next;
+                    j += 1;
+                }
+                _ => break,
+            }
+        }
+        out.push(piece);
+        i = j;
+    }
+    Some(out)
+}
+
+/// Does `piece` honour its stretch of the certified route? Two obligations, both at the
+/// [`chord_pcurve`] trust tier:
+///
+/// - **Every route point**: within `budget` vertically, or — where the boundary is steeper than a
+///   graph can meaningfully measure vertically — passing µ̂ = m within two floors horizontally (a
+///   sign change of `piece − m` across `[s − 2·floor, s + 2·floor]`; a point folded into a
+///   cluster sits within the hull cap of the node-to-node stretch that carries its climb).
+/// - **Every adjacent route pair's chord midpoint**, within twice the budget (vertically or by
+///   the same escape): [`chord_pcurve`] certifies the true boundary chord-close *between* its
+///   points, so this is what stops an interpolant from swinging wide across a sparse gap where no
+///   sample would otherwise catch it.
+fn splice_fits_route<B: Backend>(
+    piece: &(Interval<B>, RatFunc<B>),
+    pts: &[(Rat<B>, Rat<B>)],
+    budget: &Rat<B>,
+    floor: &Rat<B>,
+) -> bool {
+    use core::cmp::Ordering::Greater;
+    let window = floor.add(floor);
+    let half = Rat::<B>::new(1, 2);
+    let honours = |s: &Rat<B>, m: &Rat<B>, tol: &Rat<B>| -> bool {
+        let Some(v) = piece.1.eval(s) else {
+            return false;
+        };
+        let d = v.sub(m);
+        let d = if d.sign() < 0 { d.neg() } else { d };
+        if d.cmp(tol) != Greater {
+            return true;
+        }
+        let (lo, hi) = (piece.1.eval(&s.sub(&window)), piece.1.eval(&s.add(&window)));
+        match (lo, hi) {
+            (Some(lo), Some(hi)) => lo.sub(m).sign() * hi.sub(m).sign() < 0,
+            _ => false,
+        }
+    };
+    let corridor = budget.add(budget);
+    pts.iter().all(|(s, m)| honours(s, m, budget))
+        && pts.windows(2).all(|w| {
+            let s = w[0].0.add(&w[1].0).mul(&half);
+            let m = w[0].1.add(&w[1].1).mul(&half);
+            honours(&s, &m, &corridor)
+        })
+}
+
+/// The faithful fallback chain: one affine chord per σ-advancing route point — the pre-#306
+/// station-per-chord representation, subdivided (every piece end is a builder station, sliver
+/// faces and all) but never cutting across the trace. Reached when [`splice_nodes`] or
+/// [`splice_merge`] meets geometry the floor-scale graph model cannot carry.
+///
+/// One spacing rule still applies: points advancing less than **twice the export step**
+/// ([`export::trim::MIN_STEP_BITS`]) fold into the next chord. A piece boundary below that scale
+/// lands inside the solid builder's station-thinning window, and the thinned slice then straddles
+/// a rail-piece boundary its two lids evaluate from different pieces — a cross-ring mismatch that
+/// refuses the whole solid. Folding within `2⁻¹⁹` of σ costs the boundary less than the export
+/// profile can represent.
+fn splice_fallback<B: Backend>(
+    route: &[(Rat<B>, Rat<B>)],
+    out: &mut Chain<B>,
+) -> Result<(), PartFault> {
+    use core::cmp::Ordering::Greater;
+    let step = Rat::<B>::new(1, 1i128 << (export::trim::MIN_STEP_BITS - 1));
+    let end = route.last().expect("route has its pinned corners");
+    let mut prev = &route[0];
+    for p in &route[1..] {
+        let advances = p.0.sub(&prev.0).cmp(&step) == Greater;
+        let is_end = core::ptr::eq(p, end);
+        if (advances && (is_end || end.0.sub(&p.0).cmp(&step) == Greater))
+            || (is_end && p.0.cmp(&prev.0) == Greater)
+        {
+            out.push(splice_piece(&[prev.clone(), p.clone()]).ok_or(PartFault::Pole)?);
+            prev = p;
+        }
+    }
+    Ok(())
+}
+
+/// One interpolating splice piece through `run` (≥ 2 strictly σ-ascending points): the polynomial
+/// through up to 4 spread nodes — always the run's two ends, so consecutive pieces chain exactly.
+/// `None` only if a node σ repeats (the walk's floor forbids it).
+fn splice_piece<B: Backend>(run: &[(Rat<B>, Rat<B>)]) -> Option<(Interval<B>, RatFunc<B>)> {
+    let last = run.len() - 1;
+    let idx: Vec<usize> = match last {
+        1 => vec![0, 1],
+        2 => vec![0, 1, 2],
+        _ => {
+            let a = (last / 3).max(1);
+            let b = ((2 * last) / 3).max(a + 1);
+            vec![0, a, b, last]
+        }
+    };
+    // Newton's divided differences over the chosen nodes, expanded to monomial coefficients.
+    let nodes: Vec<&(Rat<B>, Rat<B>)> = idx.iter().map(|&k| &run[k]).collect();
+    let n = nodes.len();
+    let mut dd: Vec<Rat<B>> = nodes.iter().map(|p| p.1.clone()).collect();
+    for level in 1..n {
+        for k in (level..n).rev() {
+            let denom = nodes[k].0.sub(&nodes[k - level].0);
+            if denom.sign() == 0 {
+                return None;
+            }
+            dd[k] = dd[k].sub(&dd[k - 1]).div(&denom);
+        }
+    }
+    let mut poly = lattice::Poly::constant(dd[n - 1].clone());
+    for k in (0..n - 1).rev() {
+        // poly = poly·(σ − σ_k) + dd_k
+        let shift =
+            lattice::Poly::from_coeffs(vec![Rat::from_i128(0).sub(&nodes[k].0), Rat::from_i128(1)]);
+        poly = poly
+            .mul(&shift)
+            .add(&lattice::Poly::constant(dd[k].clone()));
+    }
+    Some((
+        Interval {
+            lo: run[0].0.clone(),
+            hi: run[last].0.clone(),
+        },
+        RatFunc::from_poly(poly),
+    ))
 }
 
 /// The pieces of `[a, b]` split at region joins: `(from, to, region index)` in ascending σ.
@@ -200,13 +1055,16 @@ fn snap30<B: Backend>(x: &Rat<B>) -> Rat<B> {
 /// Steps 1–3 of both evaluators: fit + certify every boundary label's rail per region (spans
 /// clamped to the cutter's exact two-tangent extent), refine the run corners on the fitted
 /// rails, and fold the runs into per-side chain segments covering the domain. `snap_corners`
-/// applies the STEP dyadic snap to the refined junctions.
+/// applies the STEP dyadic snap to the refined junctions; `traced_splices` picks each flank
+/// crossing's route — the traced tails-and-connector for the flat pattern, the single certified
+/// chord for the solid (see [`Splice`]).
 fn certify_boundary<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
     structure: &Structure<B>,
     fit_base: RailFit,
     snap_corners: bool,
+    traced_splices: bool,
 ) -> Result<Boundary<B>, RErr<B>> {
     use core::cmp::Ordering;
     let bands: Vec<Interval<B>> = part.regions.iter().map(|r| r.band.clone()).collect();
@@ -288,9 +1146,6 @@ fn certify_boundary<B: Backend>(
     // Reading it that way rather than matching on `Cutter` is what lets a multi-walled cutter join
     // — and it reproduces the old behaviour exactly, since a cylinder's wall is quadratic and a
     // half-space's is not.
-    /// Per region, per op, per wall: the brackets isolating the wall's tangent rulings, or `None`
-    /// where the wall is affine and has no windows.
-    type DiscRoots<B> = Vec<Vec<Vec<Option<Vec<Interval<B>>>>>>;
     let mut disc_roots: DiscRoots<B> = Vec::new();
     for (ri, band) in bands.iter().enumerate() {
         let mut row = Vec::with_capacity(part.ops.len());
@@ -307,7 +1162,9 @@ fn certify_boundary<B: Backend>(
                 let form = develop::cut::cut_mu_form(&built.charts[ri], wall, &Rat::from_i128(0));
                 per_wall.push(match form {
                     Some(f) if !f.a.is_zero() => {
-                        develop::cut::tangent_events(&f, band, &crate::resolve::tangent_tol()).ok()
+                        develop::cut::tangent_events(&f, band, &crate::resolve::tangent_tol())
+                            .ok()
+                            .map(|roots| (f.disc(), roots))
                     }
                     _ => None,
                 });
@@ -316,16 +1173,73 @@ fn certify_boundary<B: Backend>(
         }
         disc_roots.push(row);
     }
-    let window_around = |ri: usize, op: usize, wall: usize, at: &Rat<B>| -> Extent<B> {
-        let brackets = disc_roots[ri][op].get(wall)?.as_ref()?;
-        for w in brackets.windows(2) {
-            let (lo, hi) = (&w[0].hi, &w[1].lo);
-            if lo.cmp(at) == Ordering::Less && at.cmp(hi) == Ordering::Less {
-                let inset = hi.sub(lo).mul(&Rat::new(1, 200));
-                return Some((lo.add(&inset), hi.sub(&inset)));
+    // **The wall's real σ-window**: the maximal stretch between consecutive tangent rulings on
+    // which the µ̂-quadratic actually has roots — the only σ where a branch of this wall exists to
+    // be fitted at all. Chosen as the disc-positive stretch overlapping `raw` most, so the clamp
+    // follows the span the boundary asks about rather than whichever side of a tangency a midpoint
+    // happens to fall on.
+    //
+    // Two things the brackets alone do not give, and both cost the demo a rail (#302):
+    //
+    // - **The outermost stretches count.** Reading only the gaps *between* consecutive brackets
+    //   leaves `band.lo → first root` and `last root → band.hi` unnameable, and a wall real only up
+    //   to its first tangent ruling has its entire rail in exactly one of those. With no window the
+    //   fit ladder loses its clamp *and* its second rung, and the oracle is handed a raw hull that
+    //   runs off the end of the wall.
+    // - **A gap is not a window until its sign says so.** `disc` alternates sign across simple
+    //   roots, so half the gaps are stretches where the cut is *not real*; clamping into one is
+    //   worse than not clamping. The sign is read at the stretch's own midpoint, which decides the
+    //   whole stretch because the brackets isolate every root in the band — no root lies inside.
+    let window_for = |ri: usize, op: usize, wall: usize, raw: &Interval<B>| -> Option<Window<B>> {
+        let (disc, brackets) = disc_roots[ri][op].get(wall)?.as_ref()?;
+        let band = &bands[ri];
+        let mut stretches: Vec<Window<B>> = Vec::with_capacity(brackets.len() + 1);
+        let mut lo = band.lo.clone();
+        let mut lo_is_tangent = false;
+        for b in brackets {
+            stretches.push(Window {
+                span: Interval {
+                    lo,
+                    hi: b.lo.clone(),
+                },
+                lo_is_tangent,
+                hi_is_tangent: true,
+            });
+            lo = b.hi.clone();
+            lo_is_tangent = true;
+        }
+        stretches.push(Window {
+            span: Interval {
+                lo,
+                hi: band.hi.clone(),
+            },
+            lo_is_tangent,
+            hi_is_tangent: false,
+        });
+        let mut best: Option<(Rat<B>, Window<B>)> = None;
+        for w in stretches {
+            if w.span.lo.cmp(&w.span.hi) != Ordering::Less {
+                continue;
+            }
+            let (ov_lo, ov_hi) = (rmax(&w.span.lo, &raw.lo), rmin(&w.span.hi, &raw.hi));
+            if ov_lo.cmp(&ov_hi) != Ordering::Less {
+                continue;
+            }
+            let mid = w.span.lo.add(&w.span.hi).div(&Rat::from_i128(2));
+            match disc.eval(&mid) {
+                Some(d) if d.sign() > 0 => {}
+                _ => continue,
+            }
+            let width = ov_hi.sub(&ov_lo);
+            let better = match &best {
+                Some((w0, _)) => w0.cmp(&width) == Ordering::Less,
+                None => true,
+            };
+            if better {
+                best = Some((width, w));
             }
         }
-        None
+        best.map(|(_, w)| w)
     };
     // **Certify what the boundary uses, not what it might use.**
     //
@@ -346,103 +1260,207 @@ fn certify_boundary<B: Backend>(
                 // The hull already extends into the event brackets, so every refined corner lies
                 // inside the certified span; no further padding (over-reach walks the fit into the
                 // cutter's √-branch endpoints, where the oracle rightly declines).
-                let mut span = Interval {
+                let raw = Interval {
                     lo: span_lo,
                     hi: span_hi,
                 };
-                let mid = span.lo.add(&span.hi).mul(&Rat::new(1, 2));
-                if let Some((t1, t2)) =
-                    window_around(ri, label.0, crate::resolve::wall_of(label), &mid)
-                {
-                    span = Interval {
-                        lo: rmax(&span.lo, &t1),
-                        hi: rmin(&span.hi, &t2),
-                    };
-                }
-                if span.lo.cmp(&span.hi) != Ordering::Less {
-                    deferred.push((label, Err(PartFault::CutUnresolved { op: label.0 })));
-                    continue;
-                }
-                // A narrow off-origin span is ill-conditioned in the monomial basis (the G2/notch
-                // finding) — cap the fit degree there.
-                let narrow = span
-                    .hi
-                    .sub(&span.lo)
-                    .mul(&Rat::from_i128(4))
-                    .cmp(&domain_width)
-                    == Ordering::Less;
-                let fit = if narrow && fit_base.degree > 3 {
-                    RailFit {
-                        degree: 3,
-                        ..fit_base
-                    }
-                } else {
-                    fit_base
-                };
+                let window = window_for(ri, label.0, crate::resolve::wall_of(label), &raw);
                 let walls = part.ops[label.0]
                     .1
                     .walls()
                     .map_err(|_| RErr::Fault(PartFault::CutUnresolved { op: label.0 }))?;
                 let wall = &walls[crate::resolve::wall_of(label)];
-                let pick = match label.1 {
-                    BranchSide::Lower => RootPick::Lower,
-                    BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
-                    // `upper` says which end of the cutter's **shadow** this is — not which root of
-                    // the µ̂-quadratic. The two coincide only when that quadratic opens *upward*, so
-                    // that "inside the cutter" is the interval **between** its roots. Every cylinder
-                    // is that case, which is why the identity held until a cone wall turned up.
-                    //
-                    // A wall whose ruling meets it twice on one side has `a < 0`: inside is then the
-                    // *complement* of the root interval, so a shadow piece's **lower** end is the
-                    // quadratic's **upper** root and vice versa. Reading the sign of `a` is what makes
-                    // the resolver's convention and the oracle's agree; without it the oracle traces
-                    // the far branch, and `cut_fit` reports it as `NappeCrossed` — the fitted rail
-                    // really is off on the mirror nappe, so the refusal is right and the cause is here.
-                    //
-                    // Only the *search* branch depends on this, so a midpoint sample settles it: a
-                    // wrong guess costs a refusal from `cut_fit`, never a wrong `Verified`.
-                    BranchSide::Wall(_, upper) => {
-                        let opens_up = mu_form_opens_up(&built.charts[ri], wall, &span);
-                        if upper == opens_up {
-                            RootPick::Upper
-                        } else {
-                            RootPick::Lower
+                // **The fit ladder** (the hole-loop inset doctrine, on the boundary path). A
+                // quadric wall's rail exists only between its tangent rulings and blows up at
+                // them, so the span is clamped to the window less an inset — and how much inset a
+                // certifiable fit needs is a property of the sheet, not a constant: the drawing's
+                // R 0.3 root fillet certifies at `ε 0.12` behind a `1/200` inset on the base pass
+                // and reads `ε 9.2` behind the same inset on the offset pass. Escalating the
+                // inset and the subdivision together trades boundary *reach* for certifiability,
+                // which is sound twice over: the stretch given up lies against a tangent ruling
+                // the splice's traced tail carries anyway, and `covered` still refuses if a
+                // surviving segment turns out to need it. Rung 1 is exactly the old single
+                // attempt, so every fit that certified before certifies identically; two rungs
+                // because a middle one was measured useless (a 1/48 inset alone moved the four
+                // fillet fits from ε ≈ 12 to ε ≈ 10, while 1/16 with doubled subdivision took
+                // them to ε ≈ 0.02–0.04 — and every loose rung costs a full certification).
+                const RUNGS: [(i128, usize); 2] = [(200, 1), (16, 2)];
+                let rungs: &[(i128, usize)] = if window.is_some() {
+                    &RUNGS
+                } else {
+                    &RUNGS[..1]
+                };
+                let mut fitted: Option<(RatFunc<B>, Rat<B>, Interval<B>)> = None;
+                // The reason to report if no rung certifies: the tightest loose bound seen
+                // (refinable), else the refusal.
+                let mut reason: Result<Rat<B>, PartFault> =
+                    Err(PartFault::CutUnresolved { op: label.0 });
+                for (den, subx) in rungs {
+                    // `pin_ends`: a span end that is a tangent-ruling **inset** is where a flank
+                    // splice hands off, so the fit is pinned to the wall's true branch value
+                    // there (#307). A band- or run-edge end has no tail meeting it and stays
+                    // unpinned — pinning it is pure interior distortion (the sketch-gore bore's
+                    // pin leak once swallowed a hole authored 0.003 clear of it).
+                    let mut pin_ends = (false, false);
+                    let span = match &window {
+                        // The inset is a stand-off from a **tangent ruling** — the √-branch
+                        // endpoint the fit cannot follow. A window end that is the band's own edge
+                        // is no such thing: the branch is as smooth there as anywhere, and
+                        // insetting only shortens the rail short of the σ a derived end needs.
+                        Some(w) => {
+                            let inset = w.span.hi.sub(&w.span.lo).div(&Rat::from_i128(*den));
+                            let t1 = match w.lo_is_tangent {
+                                true => w.span.lo.add(&inset),
+                                false => w.span.lo.clone(),
+                            };
+                            let t2 = match w.hi_is_tangent {
+                                true => w.span.hi.sub(&inset),
+                                false => w.span.hi.clone(),
+                            };
+                            pin_ends = (
+                                w.lo_is_tangent && raw.lo.cmp(&t1) != Ordering::Greater,
+                                w.hi_is_tangent && t2.cmp(&raw.hi) != Ordering::Greater,
+                            );
+                            Interval {
+                                lo: rmax(&raw.lo, &t1),
+                                hi: rmin(&raw.hi, &t2),
+                            }
                         }
-                    }
-                };
-                let (mu, e) = match certified_rail_surface(
-                    &built.charts[ri],
-                    wall,
-                    pick,
-                    &span,
-                    fit,
-                    &part.clearance,
-                    &part.cfg,
-                ) {
-                    Verdict::Verified(x) => x,
-                    Verdict::Unresolved(e) => {
-                        deferred.push((label, Ok(e)));
+                        None => raw.clone(),
+                    };
+                    if span.lo.cmp(&span.hi) != Ordering::Less {
                         continue;
                     }
-                    Verdict::Refuted(_) => {
-                        deferred.push((label, Err(PartFault::CutUnresolved { op: label.0 })));
-                        continue;
+                    // A narrow off-origin span is ill-conditioned in the monomial basis (the
+                    // G2/notch finding) — cap the fit degree there.
+                    let narrow = span
+                        .hi
+                        .sub(&span.lo)
+                        .mul(&Rat::from_i128(4))
+                        .cmp(&domain_width)
+                        == Ordering::Less;
+                    let fit = RailFit {
+                        degree: if narrow && fit_base.degree > 3 {
+                            3
+                        } else {
+                            fit_base.degree
+                        },
+                        subdiv: fit_base.subdiv * subx,
+                        ..fit_base
+                    };
+                    let pick = match label.1 {
+                        BranchSide::Lower => RootPick::Lower,
+                        BranchSide::Upper | BranchSide::Plane => RootPick::Upper,
+                        // `upper` says which end of the cutter's **shadow** this is — not which
+                        // root of the µ̂-quadratic. The two coincide only when that quadratic opens
+                        // *upward*, so that "inside the cutter" is the interval **between** its
+                        // roots. Every cylinder is that case, which is why the identity held until
+                        // a cone wall turned up.
+                        //
+                        // A wall whose ruling meets it twice on one side has `a < 0`: inside is
+                        // then the *complement* of the root interval, so a shadow piece's **lower**
+                        // end is the quadratic's **upper** root and vice versa. Reading the sign of
+                        // `a` is what makes the resolver's convention and the oracle's agree;
+                        // without it the oracle traces the far branch, and `cut_fit` reports it as
+                        // `NappeCrossed` — the fitted rail really is off on the mirror nappe, so
+                        // the refusal is right and the cause is here.
+                        //
+                        // Only the *search* branch depends on this, so a midpoint sample settles
+                        // it: a wrong guess costs a refusal from `cut_fit`, never a wrong
+                        // `Verified`.
+                        BranchSide::Wall(_, upper) => {
+                            let opens_up = mu_form_opens_up(&built.charts[ri], wall, &span);
+                            if upper == opens_up {
+                                RootPick::Upper
+                            } else {
+                                RootPick::Lower
+                            }
+                        }
+                    };
+                    match certified_rail_surface(
+                        &built.charts[ri],
+                        wall,
+                        pick,
+                        &span,
+                        fit,
+                        pin_ends,
+                        &part.clearance,
+                        &part.cfg,
+                    ) {
+                        Verdict::Verified((mu, e)) => {
+                            // **The fidelity escalation.** `Verified` is the DRC bar — but a rail
+                            // whose certified tube is a sizable fraction of its own µ̂ sweep still
+                            // draws the feature wrong: every distance stays inside `e` while the
+                            // fit's end SLOPE is tens of degrees off (measured: a fillet rail
+                            // Verified at ε 1.59 met its own traced tail 22° off-direction at the
+                            // splice handoff, and a cap rail at ε 0.109 on a 0.42 sweep — just
+                            // over a quarter — met its tail 29° off with a 50 µm end residual;
+                            // its mirror pass at ε 0.218 escalated and joined cleanly, which is
+                            // what places the bar at a sixth of the sweep rather than a half). So
+                            // a loose Verified keeps climbing for tightness, keeping the earlier
+                            // result as the floor: nothing that certifies today can stop
+                            // certifying, a later rung is only adopted if it certifies tighter.
+                            let keep = match &fitted {
+                                Some((_, prev, _)) => e.cmp(prev) == Ordering::Less,
+                                None => true,
+                            };
+                            if keep {
+                                fitted = Some((mu, e, span));
+                            }
+                            let (mu_b, e_b, span_b) =
+                                fitted.as_ref().expect("just kept or already held");
+                            let loose = match (mu_b.eval(&span_b.lo), mu_b.eval(&span_b.hi)) {
+                                (Some(a), Some(b)) => {
+                                    let sweep = if a.cmp(&b) == Ordering::Less {
+                                        b.sub(&a)
+                                    } else {
+                                        a.sub(&b)
+                                    };
+                                    e_b.mul(&Rat::from_i128(6)).cmp(&sweep) == Ordering::Greater
+                                }
+                                _ => false,
+                            };
+                            if !loose {
+                                break;
+                            }
+                        }
+                        Verdict::Unresolved(e) => {
+                            reason = match reason {
+                                Ok(prev) => Ok(rmin(&prev, &e)),
+                                Err(_) => Ok(e),
+                            };
+                        }
+                        Verdict::Refuted(_) => {}
                     }
-                };
-                eps = rmax(&eps, &e);
-                pieces.push(RailPiece {
-                    label,
-                    region: ri,
-                    mu,
-                    span,
-                });
+                }
+                match fitted {
+                    Some((mu, e, span)) => {
+                        eps = rmax(&eps, &e);
+                        pieces.push(RailPiece {
+                            label,
+                            region: ri,
+                            mu,
+                            span,
+                        });
+                    }
+                    None => deferred.push((label, reason)),
+                }
             }
         }
     }
 
     // — 3. Refine the run corners on the fitted rails (per changed side). —
-    let mut upper_junctions: Vec<Rat<B>> = Vec::new();
-    let mut lower_junctions: Vec<Rat<B>> = Vec::new();
+    //
+    // A corner is normally where the two fitted rails **cross**, refined by exact bisection. A
+    // **flank crossing** is the exception: at least one rail's window ends at a tangent ruling
+    // and the graphs never cross at all — bisecting a root that does not exist lands on an
+    // arbitrary midpoint outside one rail's certificate, which `covered` then (correctly) refuses.
+    // There the corner is a [`Corner::Gap`] and a [`Splice`] owns the stretch between the two
+    // certificates.
+    let mut upper_corners: Vec<Corner<B>> = Vec::new();
+    let mut lower_corners: Vec<Corner<B>> = Vec::new();
+    let mut upper_splices: Vec<Splice<B>> = Vec::new();
+    let mut lower_splices: Vec<Splice<B>> = Vec::new();
     for i in 0..runs.len() - 1 {
         let (a, b) = (&runs[i].hi, &runs[i + 1].lo);
         let mid = a.add(b).mul(&Rat::new(1, 2));
@@ -458,8 +1476,20 @@ fn certify_boundary<B: Backend>(
                 find_piece(&pieces, right, ri, &mid),
             ) {
                 (Some(l), Some(r)) => {
+                    // Where the two fitted rails **cross** — or, when they never do, where they
+                    // come **closest**. Two walls meeting tangentially (the drawing's rim against
+                    // its own root fillet) have rails that touch at a double root of their
+                    // difference: no sign change, so the crossing bisection finds nothing, and the
+                    // old midpoint fallback silently parked the corner up to half a sample cell
+                    // from the true contact — certified on both rails, wrong place, and a kink in
+                    // an outline the drawing draws G1. The difference's σ-derivative *does* cross
+                    // zero at that touch, so the closest approach is bisected the same way; the
+                    // midpoint remains only for the pair no meeting point of any order exists in
+                    // the gap for.
                     let dmu = l.mu.sub(&r.mu);
-                    bisect_root(&dmu, a, b, 60).unwrap_or_else(|| mid.clone())
+                    bisect_root(&dmu, a, b, 60)
+                        .or_else(|| bisect_root(&dmu.derivative(), a, b, 60))
+                        .unwrap_or_else(|| mid.clone())
                 }
                 _ => mid.clone(),
             };
@@ -469,31 +1499,70 @@ fn certify_boundary<B: Backend>(
                 corner
             }
         };
-        upper_junctions.push(if runs[i].upper != runs[i + 1].upper {
-            refine(runs[i].upper, runs[i + 1].upper)
-        } else {
-            mid.clone()
-        });
-        lower_junctions.push(if runs[i].lower != runs[i + 1].lower {
-            refine(runs[i].lower, runs[i + 1].lower)
-        } else {
-            mid
-        });
+        let corner_of = |left: Label,
+                         right: Label,
+                         splices: &mut Vec<Splice<B>>,
+                         eps: &mut Rat<B>|
+         -> Result<Corner<B>, RErr<B>> {
+            if left == right {
+                return Ok(Corner::At(mid.clone()));
+            }
+            if let Some(sp) = flank_splice(
+                part,
+                built,
+                &bands,
+                &disc_roots,
+                &pieces,
+                left,
+                right,
+                a,
+                b,
+                traced_splices,
+            )? {
+                let corner = Corner::Gap(sp.edge_a.clone(), sp.edge_b.clone());
+                *eps = rmax(eps, &sp.eps);
+                splices.push(sp);
+                return Ok(corner);
+            }
+            Ok(Corner::At(refine(left, right)))
+        };
+        let up = corner_of(
+            runs[i].upper,
+            runs[i + 1].upper,
+            &mut upper_splices,
+            &mut eps,
+        )?;
+        upper_corners.push(up);
+        let lo = corner_of(
+            runs[i].lower,
+            runs[i + 1].lower,
+            &mut lower_splices,
+            &mut eps,
+        )?;
+        lower_corners.push(lo);
     }
 
-    // Fold the runs into per-side chain segments (from, to, label) covering the domain.
-    let side_segments = |junctions: &[Rat<B>], label_of: &dyn Fn(usize) -> Label| {
+    // Fold the runs into per-side chain segments (from, to, label) covering the domain. A `Gap`
+    // corner ends one segment at the left rail's certified edge and starts the next at the right
+    // rail's — the splice owns what lies between.
+    let side_segments = |corners: &[Corner<B>], label_of: &dyn Fn(usize) -> Label| {
         let mut segs: Vec<(Rat<B>, Rat<B>, Label)> = Vec::new();
         for (i, _) in runs.iter().enumerate() {
             let from = if i == 0 {
                 domain.lo.clone()
             } else {
-                junctions[i - 1].clone()
+                match &corners[i - 1] {
+                    Corner::At(s) => s.clone(),
+                    Corner::Gap(_, edge_b) => edge_b.clone(),
+                }
             };
             let to = if i + 1 == runs.len() {
                 domain.hi.clone()
             } else {
-                junctions[i].clone()
+                match &corners[i] {
+                    Corner::At(s) => s.clone(),
+                    Corner::Gap(edge_a, _) => edge_a.clone(),
+                }
             };
             match segs.last_mut() {
                 Some(last) if last.2 == label_of(i) => last.1 = to,
@@ -502,8 +1571,8 @@ fn certify_boundary<B: Backend>(
         }
         segs
     };
-    let mut upper_segs = side_segments(&upper_junctions, &|i| runs[i].upper);
-    let mut lower_segs = side_segments(&lower_junctions, &|i| runs[i].lower);
+    let mut upper_segs = side_segments(&upper_corners, &|i| runs[i].upper);
+    let mut lower_segs = side_segments(&lower_corners, &|i| runs[i].lower);
 
     // — 3′. Smooth-pinch ends become turn arcs. —
     //
@@ -620,7 +1689,16 @@ fn certify_boundary<B: Backend>(
                 if plo.cmp(&piece.span.lo) == Ordering::Less
                     || piece.span.hi.cmp(&phi) == Ordering::Less
                 {
-                    return Err(RErr::Fault(PartFault::RailSpanShort { op: label.0 }));
+                    // A piece that does not reach the segment may be `find_piece`'s last-resort
+                    // fallback — the same label's rail from the chart's *other pass* (#293) —
+                    // standing in for a fit that was recorded rather than raised. The recorded
+                    // reason is the honest refusal then: a loose fit stays refinable, and
+                    // `RailSpanShort` keeps naming the genuinely short certificate.
+                    return Err(match deferred.iter().find(|(l, _)| l == label) {
+                        Some((_, Ok(e))) => RErr::Loose(e.clone()),
+                        Some((_, Err(f))) => RErr::Fault(*f),
+                        None => RErr::Fault(PartFault::RailSpanShort { op: label.0 }),
+                    });
                 }
             }
         }
@@ -633,6 +1711,8 @@ fn certify_boundary<B: Backend>(
         pieces,
         upper_segs,
         lower_segs,
+        upper_splices,
+        lower_splices,
         end_arcs,
         eps,
     })
@@ -1003,7 +2083,9 @@ pub(crate) fn flat_pattern<B: Backend>(
         let hole = bail!(contour_outline(part, built, op, part.segments));
         let outline = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Unresolved(e) => {
+                return Verdict::Unresolved(e);
+            }
             Verdict::Refuted(UnrollFault::PoleInEval) => return Verdict::Refuted(PartFault::Pole),
             Verdict::Refuted(_) => return Verdict::Refuted(PartFault::LoopBroken),
         };
@@ -1011,7 +2093,9 @@ pub(crate) fn flat_pattern<B: Backend>(
         return pattern_from_outline(part, built, structure, outline, eps_all);
     }
 
-    let boundary = bail!(certify_boundary(part, built, &structure, part.fit, false));
+    let boundary = bail!(certify_boundary(
+        part, built, &structure, part.fit, false, true
+    ));
     let mut eps_all = boundary.eps.clone();
 
     // — 4. Assemble the one general boundary loop. —
@@ -1073,9 +2157,152 @@ pub(crate) fn flat_pattern<B: Backend>(
             mu_end: up0,
         });
     }
-    // Each chain: rails split at region joins, micro-caps at junctions.
+    // Each chain: rails split at region joins, micro-caps at junctions — and where two segments
+    // are joined by a flank crossing, the splice's traced route between them. A splice joins the
+    // chain the way a turn arc does: its head starts at the wall's **true** branch value and the
+    // rail it follows ends at its **fitted** one, so a micro-cap (the ε-wide ruling gap every
+    // junction has) closes the difference; within the splice the pieces chain head-to-tail
+    // exactly.
+    let push_splice =
+        |arcs: &mut Vec<BoundaryArc<B>>, sp: &Splice<B>, forward: bool| -> Result<(), PartFault> {
+            let list: Vec<develop::pcurve::PCurve<B>> = if forward {
+                sp.curves.clone()
+            } else {
+                sp.curves
+                    .iter()
+                    .rev()
+                    .map(|c| develop::cut::rev_chord(c).ok_or(PartFault::LoopBroken))
+                    .collect::<Result<_, _>>()?
+            };
+            if let Some(head) = list.first() {
+                let [sa, ma] = head.eval(&head.domain.lo).ok_or(PartFault::Pole)?;
+                if let Some(prev) = last_end(arcs)
+                    && prev.1.cmp(&ma) != Ordering::Equal
+                {
+                    arcs.push(BoundaryArc::Cap {
+                        sigma: sa,
+                        mu_start: prev.1.clone(),
+                        mu_end: ma,
+                    });
+                }
+            }
+            // A piece that is exactly vertical IS a cap, and one that is exactly µ̂-constant IS a
+            // one-chord rail — emitted as those arc kinds, they develop exactly (the cap) or carry the
+            // cheap graph chord bound (the rail), where the generic curve chord bound over the same
+            // stretch cannot be tight (the connector's µ̂ span is millimetres). The translation is
+            // lossless: the arcs trace the same domain points.
+            for curve in list {
+                let a = curve.eval(&curve.domain.lo).ok_or(PartFault::Pole)?;
+                let b = curve.eval(&curve.domain.hi).ok_or(PartFault::Pole)?;
+                if a[0].cmp(&b[0]) == Ordering::Equal {
+                    arcs.push(BoundaryArc::Cap {
+                        sigma: a[0].clone(),
+                        mu_start: a[1].clone(),
+                        mu_end: b[1].clone(),
+                    });
+                } else if a[1].cmp(&b[1]) == Ordering::Equal {
+                    arcs.push(BoundaryArc::Rail {
+                        mu: RatFunc::from_poly(lattice::Poly::constant(a[1].clone())),
+                        sigma_start: a[0].clone(),
+                        sigma_end: b[0].clone(),
+                        segments: 1,
+                    });
+                } else {
+                    arcs.push(BoundaryArc::Curve { curve, segments: 1 });
+                }
+            }
+            Ok(())
+        };
+    // A rail is chordized **√-graded into a spliced end**, uniformly elsewhere. A splice's
+    // handoff sits an inset short of a tangent ruling, where the rail behaves like
+    // `µ̂ − µ̂_t ∝ √(σ − σ_t)` — and uniform-in-σ chords against a √-branch bunch the whole turn
+    // into the last chord (measured: 53° in one chord at `segments = 8`, a visible facet on a
+    // cap the drawing draws G1, on a boundary every distance certificate was blind to). Graded
+    // breakpoints `end ∓ g·(k/n)²` make the chords equal-turn, exactly why the turn tails are
+    // graded — and `g` a quarter of the span makes the bulk's last uniform chord and the graded
+    // stretch's largest turn agree at every `segments`. The carrier is the SAME certified rail
+    // polynomial; only chord placement moves, so nothing new is certified (the unroll's
+    // per-chord certificates only tighten on shorter spans), and consecutive sub-rails evaluate
+    // one polynomial at one shared σ, so no micro-cap forms between them.
+    //
+    // The uniform stretch's chord count also scales with its **share of the σ-domain** (#310):
+    // `segments` per piece starves a long rail — a body arc spanning half the device got the
+    // same handful of chords as a millimetre fillet, an 0.43 sagitta facet on the outer contour
+    // at `segments = 8` — so a piece never gets fewer than `2 · segments · span / domain` chords.
+    // Emission-only, same certified rail; the develop's ε never sees output resolution, which is
+    // exactly why a size floor has to live here rather than in a certificate.
+    let domain_width = domain.hi.sub(&domain.lo);
+    let bulk_segments = |start: &Rat<B>, end: &Rat<B>| -> usize {
+        let span = end.sub(start);
+        let span = if span.sign() < 0 { span.neg() } else { span };
+        if domain_width.sign() <= 0 {
+            return part.segments;
+        }
+        let q = span
+            .mul(&Rat::from_i128(2 * part.segments as i128))
+            .div(&domain_width);
+        let mut n = part.segments.max(1);
+        while Rat::from_i128(n as i128).cmp(&q) == Ordering::Less && n < 4 * part.segments {
+            n += 1;
+        }
+        n
+    };
+    let push_rail = |arcs: &mut Vec<BoundaryArc<B>>,
+                     mu: &RatFunc<B>,
+                     start: Rat<B>,
+                     end: Rat<B>,
+                     grade_start: bool,
+                     grade_end: bool| {
+        let n = part.segments.max(2);
+        if start.cmp(&end) == Ordering::Equal || (!grade_start && !grade_end) {
+            let segments = bulk_segments(&start, &end);
+            arcs.push(BoundaryArc::Rail {
+                mu: mu.clone(),
+                sigma_start: start,
+                sigma_end: end,
+                segments,
+            });
+            return;
+        }
+        // `g` is signed by the walk direction, so the same formulas serve both chains.
+        let g = end.sub(&start).mul(&Rat::new(1, 4));
+        let quad = |k: usize| {
+            let f = Rat::new(k as i128, n as i128);
+            f.mul(&f)
+        };
+        if grade_start {
+            for k in 0..n {
+                arcs.push(BoundaryArc::Rail {
+                    mu: mu.clone(),
+                    sigma_start: start.add(&g.mul(&quad(k))),
+                    sigma_end: start.add(&g.mul(&quad(k + 1))),
+                    segments: 1,
+                });
+            }
+        }
+        let bulk_start = if grade_start { start.add(&g) } else { start };
+        let bulk_end = if grade_end { end.sub(&g) } else { end.clone() };
+        let segments = bulk_segments(&bulk_start, &bulk_end);
+        arcs.push(BoundaryArc::Rail {
+            mu: mu.clone(),
+            sigma_start: bulk_start,
+            sigma_end: bulk_end,
+            segments,
+        });
+        if grade_end {
+            for k in (1..=n).rev() {
+                arcs.push(BoundaryArc::Rail {
+                    mu: mu.clone(),
+                    sigma_start: end.sub(&g.mul(&quad(k))),
+                    sigma_end: end.sub(&g.mul(&quad(k - 1))),
+                    segments: 1,
+                });
+            }
+        }
+    };
     let push_chain = |arcs: &mut Vec<BoundaryArc<B>>,
                       segs: &[(Rat<B>, Rat<B>, Label)],
+                      splices: &[Splice<B>],
                       forward: bool|
      -> Result<(), PartFault> {
         let order: Vec<usize> = if forward {
@@ -1083,13 +2310,22 @@ pub(crate) fn flat_pattern<B: Backend>(
         } else {
             (0..segs.len()).rev().collect()
         };
+        let mut entered_from_splice = false;
         for &si in &order {
             let (a, b, label) = &segs[si];
+            // The splice keyed to this segment's trailing edge, if any — resolved before the
+            // rails are emitted, because it also decides which rail end is graded.
+            let key = if forward { b } else { a };
+            let sp = splices.iter().find(|s| {
+                let edge = if forward { &s.edge_a } else { &s.edge_b };
+                edge.cmp(key) == Ordering::Equal
+            });
             let mut region_pieces = span_pieces(&bands, a, b);
             if !forward {
                 region_pieces.reverse();
             }
-            for (plo, phi, ri) in region_pieces {
+            let np = region_pieces.len();
+            for (pi, (plo, phi, ri)) in region_pieces.into_iter().enumerate() {
                 let piece =
                     find_piece(&boundary.pieces, *label, ri, &plo).ok_or(PartFault::Pole)?;
                 let (start, end) = if forward {
@@ -1108,17 +2344,28 @@ pub(crate) fn flat_pattern<B: Backend>(
                         mu_end: v,
                     });
                 }
-                arcs.push(BoundaryArc::Rail {
-                    mu: piece.mu.clone(),
-                    sigma_start: start,
-                    sigma_end: end,
-                    segments: part.segments,
-                });
+                push_rail(
+                    arcs,
+                    &piece.mu,
+                    start,
+                    end,
+                    entered_from_splice && pi == 0,
+                    sp.is_some() && pi + 1 == np,
+                );
+            }
+            entered_from_splice = sp.is_some();
+            if let Some(sp) = sp {
+                push_splice(arcs, sp, forward)?;
             }
         }
         Ok(())
     };
-    if let Err(f) = push_chain(&mut arcs, &boundary.upper_segs, true) {
+    if let Err(f) = push_chain(
+        &mut arcs,
+        &boundary.upper_segs,
+        &boundary.upper_splices,
+        true,
+    ) {
         return Verdict::Refuted(f);
     }
     // The far end, symmetrically: the turn arc, or the cap.
@@ -1144,7 +2391,12 @@ pub(crate) fn flat_pattern<B: Backend>(
             });
         }
     }
-    if let Err(f) = push_chain(&mut arcs, &boundary.lower_segs, false) {
+    if let Err(f) = push_chain(
+        &mut arcs,
+        &boundary.lower_segs,
+        &boundary.lower_splices,
+        false,
+    ) {
         return Verdict::Refuted(f);
     }
     // Close the loop back onto the first arc. Without a turn end the last rail and the opening cap
@@ -1179,7 +2431,9 @@ pub(crate) fn flat_pattern<B: Backend>(
     // — 5. Unroll the boundary through the connected piecewise development. —
     let outline = match unroll_trim_loop(&built.pw, &arcs, &part.cfg, &part.clearance) {
         Verdict::Verified(o) => o,
-        Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+        Verdict::Unresolved(e) => {
+            return Verdict::Unresolved(e);
+        }
         Verdict::Refuted(UnrollFault::PoleInEval) => return Verdict::Refuted(PartFault::Pole),
         Verdict::Refuted(_) => return Verdict::Refuted(PartFault::LoopBroken),
     };
@@ -1209,7 +2463,9 @@ fn pattern_from_outline<B: Backend>(
         eps_all = rmax(&eps_all, &hole.eps);
         let flat = match unroll_trim_loop(&built.pw, &hole.arcs, &part.cfg, &part.clearance) {
             Verdict::Verified(o) => o,
-            Verdict::Unresolved(e) => return Verdict::Unresolved(e),
+            Verdict::Unresolved(e) => {
+                return Verdict::Unresolved(e);
+            }
             Verdict::Refuted(UnrollFault::PoleInEval) => {
                 return Verdict::Refuted(PartFault::Pole);
             }
@@ -1245,7 +2501,9 @@ fn pattern_from_outline<B: Backend>(
     let expected_holes = hole_polys.len();
     let region = match assemble_flat(&outer_poly, &hole_polys) {
         Verdict::Verified(r) => r,
-        Verdict::Unresolved(()) => return Verdict::Unresolved(part.clearance.clone()),
+        Verdict::Unresolved(()) => {
+            return Verdict::Unresolved(part.clearance.clone());
+        }
         Verdict::Refuted(_) => {
             return Verdict::Refuted(PartFault::TopologyMismatch {
                 expected_holes,
@@ -1319,26 +2577,36 @@ pub(crate) fn solid_brep<B: Backend>(
         subdiv: part.fit.subdiv.max(RailFit::occt_low().subdiv),
         ..RailFit::occt_low()
     };
-    let boundary = bail!(certify_boundary(part, built, &structure, fit, true));
+    let boundary = bail!(certify_boundary(part, built, &structure, fit, true, true));
     let mut eps_all = boundary.eps.clone();
 
-    // The chains: per-side segments split at region joins, as ordered (band, rail) pieces.
-    let chain = |segs: &[(Rat<B>, Rat<B>, Label)]| -> Result<Chain<B>, PartFault> {
-        let mut out = Vec::new();
-        for (a, b, label) in segs {
-            for (plo, phi, ri) in span_pieces(&bands, a, b) {
-                let piece =
-                    find_piece(&boundary.pieces, *label, ri, &plo).ok_or(PartFault::Pole)?;
-                out.push((Interval { lo: plo, hi: phi }, piece.mu.clone()));
+    // The chains: per-side segments split at region joins, as ordered (band, rail) pieces. A
+    // flank crossing's splice contributes its **traced route** — the same tails-and-connector the
+    // flat pattern draws — chorded into contiguous affine pieces ([`splice_chain`]). It used to
+    // contribute one certified chord, and that was #305: the splices had grown from µm-fine tails
+    // into whole caps and domes, and hulling each one printed a lug with sides 15° off their
+    // rulings and a flat top where the drawing has a dome.
+    let chain =
+        |segs: &[(Rat<B>, Rat<B>, Label)], splices: &[Splice<B>]| -> Result<Chain<B>, PartFault> {
+            use core::cmp::Ordering;
+            let mut out = Vec::new();
+            for (a, b, label) in segs {
+                for (plo, phi, ri) in span_pieces(&bands, a, b) {
+                    let piece =
+                        find_piece(&boundary.pieces, *label, ri, &plo).ok_or(PartFault::Pole)?;
+                    out.push((Interval { lo: plo, hi: phi }, piece.mu.clone()));
+                }
+                if let Some(sp) = splices.iter().find(|s| s.edge_a.cmp(b) == Ordering::Equal) {
+                    splice_chain(sp, &mut out)?;
+                }
             }
-        }
-        Ok(out)
-    };
-    let outer = match chain(&boundary.upper_segs) {
+            Ok(out)
+        };
+    let outer = match chain(&boundary.upper_segs, &boundary.upper_splices) {
         Ok(c) => c,
         Err(f) => return Verdict::Refuted(f),
     };
-    let inner = match chain(&boundary.lower_segs) {
+    let inner = match chain(&boundary.lower_segs, &boundary.lower_splices) {
         Ok(c) => c,
         Err(f) => return Verdict::Refuted(f),
     };
@@ -1362,17 +2630,20 @@ pub(crate) fn solid_brep<B: Backend>(
             WirePoint::OnOuter(outer[0].0.lo.clone()),
             WirePoint::OnOuter(outer[outer.len() - 1].0.hi.clone()),
         ];
-        // …then the arc back, **skipping its first sample**: that one sits on the junction the rail
-        // vertex above already carries, and to within the ε-wide ruling gap it is the same point.
-        // Keeping both would put a sub-ε radial edge in the wall (the shape #267 refused in STEP),
-        // and asking `inside_band` whether a junction point is strictly inside the rail it lies on
-        // is a question with no right answer.
-        for piece in arc.iter().skip(1) {
-            let p = match piece.eval(&piece.domain.lo) {
-                Some(v) => v,
-                None => return Verdict::Refuted(PartFault::Pole),
-            };
-            wire.push(WirePoint::At(snap30(&p[0]), snap30(&p[1])));
+        // …then the arc back — each piece chorded at the solid's sagitta budget (one chord per
+        // piece was #304's ziggurat) — **skipping its first point**: that one sits on the junction
+        // the rail vertex above already carries, and to within the ε-wide ruling gap it is the
+        // same point. Keeping both would put a sub-ε radial edge in the wall (the shape #267
+        // refused in STEP), and asking `inside_band` whether a junction point is strictly inside
+        // the rail it lies on is a question with no right answer.
+        let mut arc_pts: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+        for piece in arc.iter() {
+            if chord_pcurve(piece, &mut arc_pts).is_none() {
+                return Verdict::Refuted(PartFault::Pole);
+            }
+        }
+        for (sg, m) in arc_pts.into_iter().skip(1) {
+            wire.push(WirePoint::At(snap30(&sg), snap30(&m)));
         }
         let eps = eps_all.clone();
         return wire_solid(part, built, structure, wire, Some(outer), eps);
@@ -1423,7 +2694,9 @@ pub(crate) fn solid_brep<B: Backend>(
 /// σ-station, so segment count drives the solid's face count directly (48 segments cost ~770 faces
 /// on the doctest panel, 16 cost ~250). The solid is already emitted at the low-degree STEP profile,
 /// so it takes the coarser loop; the flat pattern — the artifact that is actually manufactured —
-/// keeps the fine one.
+/// keeps the fine one. The coarse trace is a *station* economy, not a shape one: each curved piece
+/// is chorded against the sagitta budget at conversion (`export::trim::chord_pcurve`, #304), so a
+/// cap still reads as its curve while its stations stay few.
 #[allow(clippy::type_complexity)]
 fn solid_holes<B: Backend>(
     part: &Part<B>,
@@ -1751,6 +3024,151 @@ mod tests {
         Q::from_i128(n)
     }
 
+    /// [`splice_piece`] + [`splice_fits_route`] — the #306 merge. The piece interpolates its
+    /// run's two ends exactly (the chain's C0 invariant); points on a parabola merge into one
+    /// piece that passes the budget check; a corner in the run fails it.
+    #[test]
+    fn splice_pieces_interpolate_ends_and_reject_corners() {
+        let floor = q(1, 1 << 12);
+        // A parabola sampled at 7 σs: one merged piece reproduces every sample exactly.
+        let para: Vec<(Q, Q)> = (0..7).map(|k| (q(k, 8), q(k * k, 64))).collect();
+        let piece = splice_piece(&para).expect("distinct nodes");
+        assert_eq!(piece.0.lo.cmp(&para[0].0), core::cmp::Ordering::Equal);
+        assert_eq!(piece.0.hi.cmp(&para[6].0), core::cmp::Ordering::Equal);
+        let tight = q(1, 1_000_000_000);
+        for (s, m) in &para {
+            let d = piece.1.eval(s).unwrap().sub(m);
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            assert!(
+                d.cmp(&tight) != core::cmp::Ordering::Greater,
+                "a ≤3-degree interpolant through 4 nodes of a parabola is the parabola",
+            );
+        }
+        assert!(
+            splice_fits_route(&piece, &para, &q(1, 256), &floor),
+            "…and it honours the chord corridors at the sagitta budget",
+        );
+
+        // A right-angle corner: flat then steep. The interpolant through the spread nodes cannot
+        // pass within the sagitta budget of the corner points, and it is nowhere near steep
+        // enough for the one-floor horizontal escape.
+        let mut corner: Vec<(Q, Q)> = (0..4).map(|k| (q(k, 8), qi(0))).collect();
+        corner.extend((1..4).map(|k| (q(3 + k, 8), q(k, 2))));
+        let piece = splice_piece(&corner).expect("distinct nodes");
+        let budget = q(1, 256);
+        assert!(
+            !splice_fits_route(&piece, &corner, &budget, &floor),
+            "a corner run must fail the merge check and stay split",
+        );
+
+        // Two points: the affine chord, ends exact.
+        let two = [(qi(0), qi(1)), (q(1, 4), qi(2))];
+        let piece = splice_piece(&two).expect("affine");
+        assert_eq!(
+            piece.1.eval(&q(1, 8)).unwrap().cmp(&q(3, 2)),
+            core::cmp::Ordering::Equal,
+            "two points make the straight chord",
+        );
+    }
+
+    /// [`splice_nodes`] + [`splice_merge`] — the #309 discipline. A drawn radial flank (µ̂
+    /// climbing across a sub-floor σ-stretch) must survive as the node-to-node chord containing
+    /// its climb — at most two floors wide, never folded into an unchecked neighbour — with every
+    /// station at least one floor from the next and every route point honoured.
+    #[test]
+    fn splice_walk_carries_a_radial_flank_within_two_floors() {
+        use core::cmp::Ordering;
+        let floor = q(1, 1 << 12);
+        let budget = q(1, 1 << 8);
+        let eps = q(1, 1 << 20);
+        // Flat at µ̂ = 1 to σ = 1/2, a flank climbing to µ̂ = 3 within a few σ-microsteps, flat on.
+        let mut route: Vec<(Q, Q)> = (0..=4).map(|k| (q(k, 8), qi(1))).collect();
+        route.push((q(1, 2).add(&eps), q(3, 2)));
+        route.push((q(1, 2).add(&eps.mul(&qi(2))), qi(2)));
+        route.push((q(1, 2).add(&eps.mul(&qi(3))), qi(3)));
+        route.extend((5..=8).map(|k| (q(k, 8), qi(3))));
+        let nodes = splice_nodes(&route, &floor, &budget).expect("a graph route walks");
+        for w in nodes.windows(2) {
+            assert_ne!(
+                w[1].s.sub(&w[0].s).cmp(&floor),
+                Ordering::Less,
+                "consecutive stations keep the floor",
+            );
+        }
+        let chain = splice_merge(&route, &nodes, &budget, &floor).expect("the route merges");
+        assert_eq!(
+            chain[0].0.lo.cmp(&route[0].0),
+            Ordering::Equal,
+            "the chain starts at the pinned corner",
+        );
+        assert_eq!(
+            chain.last().unwrap().0.hi.cmp(&route.last().unwrap().0),
+            Ordering::Equal,
+            "the chain ends at the pinned corner",
+        );
+        // The plateaus stay put, and the whole climb happens within two floors of the flank.
+        let two_floors = floor.add(&floor);
+        let before = chain_at(&chain, &q(1, 2).sub(&two_floors)).expect("covered");
+        let after =
+            chain_at(&chain, &q(1, 2).add(&eps.mul(&qi(3))).add(&two_floors)).expect("covered");
+        let near = |v: &Q, want: i128| {
+            let d = v.sub(&qi(want));
+            let d = if d.sign() < 0 { d.neg() } else { d };
+            d.cmp(&budget) != Ordering::Greater
+        };
+        assert!(
+            near(&before, 1),
+            "left plateau still at 1 two floors before the flank"
+        );
+        assert!(
+            near(&after, 3),
+            "right plateau at 3 two floors after the flank"
+        );
+    }
+
+    /// A µ̂(σ)-graph piece at a shared piece boundary of the merged chain.
+    fn chain_at(chain: &[(Interval<Bignum>, RatFunc<Bignum>)], s: &Q) -> Option<Q> {
+        use core::cmp::Ordering;
+        chain
+            .iter()
+            .find(|(iv, _)| iv.lo.cmp(s) != Ordering::Greater && s.cmp(&iv.hi) != Ordering::Greater)
+            .and_then(|(_, mu)| mu.eval(s))
+    }
+
+    /// The shapes the floor-scale graph model cannot carry go to the station-per-chord fallback
+    /// instead of being distorted: a sub-floor notch (µ̂ leaves and returns inside one floor —
+    /// no graph piece can honour both walls) fails the merge; a σ-overhang (the trace retreats
+    /// beyond the floor) fails the walk.
+    #[test]
+    fn splice_walk_refuses_notches_and_overhangs() {
+        let floor = q(1, 1 << 12);
+        let budget = q(1, 1 << 8);
+        let eps = q(1, 1 << 20);
+        let notch: Vec<(Q, Q)> = vec![
+            (qi(0), qi(1)),
+            (q(1, 2), qi(1)),
+            (q(1, 2).add(&eps), qi(3)),
+            (q(1, 2).add(&eps.mul(&qi(2))), qi(1)),
+            (qi(1), qi(1)),
+        ];
+        let nodes =
+            splice_nodes(&notch, &floor, &budget).expect("the walk itself accepts the σ order");
+        assert!(
+            splice_merge(&notch, &nodes, &budget, &floor).is_none(),
+            "a spike inside one floor cannot be honoured by any graph piece",
+        );
+        let overhang: Vec<(Q, Q)> = vec![
+            (qi(0), qi(1)),
+            (q(1, 8), qi(1)),
+            (q(1, 8).sub(&floor).sub(&floor), qi(2)),
+            (qi(1), qi(2)),
+        ];
+        assert!(
+            splice_nodes(&overhang, &floor, &budget).is_none(),
+            "a σ-retreat beyond the floor is an overhang, not a graph",
+        );
+    }
+
     /// `acceptance::flex_panel()`, copied verbatim — `acceptance` depends on `author`, so an
     /// in-crate test cannot use it without linking a second copy of this crate.
     fn flex_panel() -> Part<Bignum> {
@@ -1837,7 +3255,7 @@ mod tests {
 
             develop::counters::reset();
             let c = std::time::Instant::now();
-            let _ = certify_boundary(&part, &built, &structure, part.fit, false);
+            let _ = certify_boundary(&part, &built, &structure, part.fit, false, true);
             let t_bnd = c.elapsed().as_secs_f64();
             let (g_b, e_b) = (
                 develop::counters::gamma_cells(),

@@ -157,6 +157,19 @@ pub fn self_lapping_cone_from(
 /// which the VV.1 budgets, VV.2 ε bounds and VV.3 goldens all depend on. `ramp_start = 4/7` is
 /// `φ = 118.98°`, so the ramp spans `61.02°` — the nearest small rational to the authored 60°.
 ///
+/// **Placing a feature by azimuth.** The kept sheet is the *lower* nappe, so a point of material at
+/// chart parameter σ sits at plan azimuth
+///
+/// ```text
+/// az = 270° + 4·arctan σ        (mod 360°)
+/// ```
+///
+/// — which runs `64.65° → 115.35°` the long way round over `σ ∈ [−5/4, 5/4]`, 410.7° in all. So
+/// `az ∈ (64.65°, 115.35°)` is the **lap wedge**, swept twice: once by the base cone at `σ < 0` and
+/// once by the ramp and tail flap at `σ > 0`. Both cut files draw their feature inside it, which is
+/// why each of them appears twice in the flat pattern and why only the `σ > 0` pass can meet a ramp.
+/// Note the *ruling direction*'s azimuth is this less 180°: it is the sign of µ̂ that decides which.
+///
 /// The pick is **derived** now: both trim radii live in the recipe, so `lapped_cone`'s own
 /// mid-annulus point at `ρ = (4 + 43/4)/2 = 59/8` is in material by construction. It had to be
 /// named while the inner bound was an off-axis cylinder applied afterwards, which the recipe could
@@ -177,6 +190,13 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
         },
         cw: lapped::SideAngles::flat(sigma(-5, 4)),
         outer_r: q(43, 4),
+        // **Not yet the drawing**, for the same reason the bore is not: `outer_cut_profile()` is the
+        // rim this device is meant to have — the Ø 21.5 circle interrupted by a lug over 15° about
+        // `+y` — and the file reads exactly. Where the lug lands is what decides whether it places:
+        // its wedge sits inside the lap, so the chart passes it twice, and only a pass with `h′ ≠ 0`
+        // can run a ruling across a radial flank. Left `None` so the pinned device stays the object
+        // every V&V number was taken on; `author/tests/rim_notch.rs` is where it is measured.
+        outer_profile: None,
         inner_r: Some(qi(4)),
         // **Not yet the drawing.** `inner_cut_profile()` is the bore this device is meant to have —
         // the file reads exactly and the recipe carries it. What the resolver cannot yet place is
@@ -205,6 +225,67 @@ pub fn self_lapping_spec() -> lapped::LappedCone {
     }
 }
 
+/// **The two-ramp device, carrying both drawings** — the same 42° cone, stack and annulus as
+/// [`self_lapping_spec`], with the seam centred on the base sheet instead of offset onto one side
+/// of it.
+///
+/// One number differs, `seam_offset = −1/8` against `+1/8`, and it costs a ramp on each side:
+/// the pinned device's clockwise end never leaves the base cone, this one's does. That is what a
+/// board wants when neither end may bulge more than the other — and it is also the configuration
+/// that can carry **both** cut files at once, which the pinned device cannot.
+///
+/// Why this one places them: its ramps sit at `σ ∈ [37/80, 7/8]`, so each drawing's wedge meets
+/// `h′ = 0` sheet on both of its passes, where a ruling's plan projection runs through the axis and
+/// *along* a radial flank rather than across it. On the pinned device the second pass lands on the
+/// ramp and the bore refuses `SectionNotSimple` (#291), which is why `self_lapping_spec` leaves
+/// both profiles `None`.
+///
+/// Both ramps span `Δσ = 7/20`. A ramp's edge of regression sweeps `≈ 0.9·h/Δσ²` along the ruling
+/// and must stay inside the inner bound's `µ̂ ≈ 1.81` or the sheet would have to crease:
+/// `0.9·(1/8)/(7/20)² ≈ 0.92`, clear by about 2×. Narrow them and the recipe is refused, soundly.
+///
+/// Lives here rather than in the driver that runs it because `author/tests/lapped_cone.rs` must
+/// certify the *same* device the demo emits. A test that restated these numbers would keep passing
+/// while the two drifted apart — the failure the `acceptance` crate exists to prevent.
+pub fn two_ramp_spec() -> lapped::LappedCone {
+    let sigma = |n: i128, d: i128| lapped::Azimuth::Sigma(q(n, d));
+    lapped::LappedCone {
+        // The Pythagorean (72, 65, 97): sin β = 65/97, the same 42° device.
+        apex: (qi(72), qi(65)),
+        thickness: q(6, 25),
+        gap: q(1, 100),
+        on_top: lapped::OnTop::Cw,
+        // c = 0 in physical terms: the seam straddles the base cone, so BOTH ends ramp, by
+        // ∓(t/2 + g/2) = ∓1/8.
+        seam_offset: q(-25, 200),
+        ccw: lapped::SideAngles {
+            ramp_start: sigma(37, 80),
+            ramp_end: sigma(7, 8),
+            sheet_end: sigma(9, 8),
+        },
+        cw: lapped::SideAngles::flat(sigma(-9, 8)),
+        outer_r: q(43, 4),
+        // The device's real rim: the Ø 21.5 circle with a lug reaching out to Ø 27.5 on two radial
+        // flanks and a 195° nose arc tangent to both.
+        outer_profile: Some(outer_cut_profile()),
+        inner_r: Some(qi(4)),
+        // The device's real bore: the Ø 8 hole with a 10° tab reaching in to Ø 4.
+        inner_profile: Some(inner_cut_profile()),
+        // Both bounds are cones cut normal to the sheet — a cone of revolution has a closed-form
+        // distance, so `develop::cut::RevCone` puts them on the same certificate arm a cylinder is
+        // on and they cost the same.
+        trim: lapped::TrimStyle::NormalCut,
+        neutral: q(1, 2),
+        // `h''` constant in magnitude, so the bend spreads across the ramp instead of piling up at
+        // its two joins: measured 1.5× less fold-line swing.
+        ramp_profile: lapped::RampProfile::EvenCurvature,
+        // Both ramps finish before the overlap starts (ramp_end 7/8 against the lap's 8/9), so the
+        // gap really is `g` across the whole seam and the strict policy holds.
+        policy: lapped::GapPolicy::Constant,
+        pick: None,
+    }
+}
+
 /// **The device's inner cut, as the drawing states it** — `data/inner-cut.dxf`, verbatim.
 ///
 /// Embedded rather than read from disk so the device is the same object wherever it is built, and
@@ -220,6 +301,42 @@ pub const INNER_CUT_DXF: &str = include_str!("../data/inner-cut.dxf");
 /// reader refuses to infer — an inferred unit is a 10× or 25.4× part — and the unit is supplied
 /// here, where it is a statement about *this* drawing rather than a default.
 pub const INNER_CUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// **The device's outer trim, as the drawing states it** — `data/outer-cut.dxf`, verbatim.
+///
+/// Embedded for the same reason [`INNER_CUT_DXF`] is: the file, not a transcription of it, is the
+/// definition, and the device is the same object wherever it is built.
+pub const OUTER_CUT_DXF: &str = include_str!("../data/outer-cut.dxf");
+
+/// The unit [`OUTER_CUT_DXF`] is read in — the same drawing, the same statement as
+/// [`INNER_CUT_UNIT`]: `$MEASUREMENT 1` picks a linetype table, it does not say millimetre.
+pub const OUTER_CUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// The outer trim's outline, read out of [`OUTER_CUT_DXF`].
+///
+/// Four entities on layer `VISIBLE` forming one closed loop: the Ø 21.5 rim, interrupted over a
+/// 15° wedge about `+y` by a **lug** — two exactly radial flanks running out from the rim to a
+/// 195° nose arc tangent to both, tipped at ρ = 13.75. So it is [`inner_cut_profile`]'s tab
+/// inverted: material reaching *out* of the rim rather than *in* to the bore, drawn with the same
+/// two wall kinds.
+///
+/// The flanks being radial is geometry, not drafting taste. Cast from a point on the axis
+/// ([`lapped::TrimStyle::NormalCut`]) a radial sketch line sweeps a **plane through the axis**, so the lug's
+/// flanks are the same walls the bore's tab has — which is what makes this outline the outer
+/// counterpart rather than a second unrelated shape.
+///
+/// Panics only on a file this repository ships, so a failure is a broken commit rather than a
+/// runtime condition; `tests/imported_outline.rs` is what names it.
+pub fn outer_cut_profile() -> Vec<Edge<Bignum>> {
+    let opts = interchange::dxf::DxfOptions::<Bignum> {
+        assume_unit: Some(OUTER_CUT_UNIT),
+        ..Default::default()
+    };
+    interchange::dxf::read_dxf::<Bignum>(OUTER_CUT_DXF, &opts)
+        .expect("data/outer-cut.dxf is a readable outline")
+        .profile()
+        .into_edges()
+}
 
 /// The inner cut's outline, read out of [`INNER_CUT_DXF`].
 ///

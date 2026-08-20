@@ -473,8 +473,14 @@ pub fn unroll_trim_loop<B: Backend>(
     if arcs.is_empty() {
         return Verdict::Refuted(UnrollFault::EmptyLoop);
     }
-    // The subdivision inside each edge's lift bound is a few sub-intervals (the edge is short).
-    let edge_subdiv = 4usize;
+    // The subdivision inside each edge's lift bound: a few sub-intervals suffice for a shallow
+    // edge, and each edge escalates only if its own bound fails the gate. A steep edge — the
+    // device drawing's R 0.25 fillet rail dives half a µ̂-unit across a 0.036-wide window — loses
+    // enough σ↔µ̂ correlation at 4 sub-intervals to read ~4 mm where the true chord error is ~3 µm,
+    // and certifies at 32. Every rung is a sound bound on the same sup, so the running minimum is
+    // too, and shallow edges (every fixture before the drawing) stop at the first rung.
+    let edge_ladder: [usize; 3] = [4, 16, 64];
+    let half = clearance.mul(&Rat::new(1, 2));
     let mut eps = Rat::from_i128(0);
     let mut vertices: Vec<FlatBox<B>> = Vec::new();
     let mut first_start: Option<(Rat<B>, Rat<B>)> = None;
@@ -495,6 +501,26 @@ pub fn unroll_trim_loop<B: Backend>(
         }
         prev_end = Some(data.end_sm.clone());
 
+        // One edge's bound, escalated through the ladder while it fails the gate.
+        let laddered =
+            |bound: &dyn Fn(usize) -> Result<Rat<B>, UnrollFault>| -> Result<Rat<B>, UnrollFault> {
+                let mut best: Option<Rat<B>> = None;
+                for subdiv in edge_ladder {
+                    let e = bound(subdiv)?;
+                    let tighter = best
+                        .as_ref()
+                        .map(|b| e.cmp(b) == Ordering::Less)
+                        .unwrap_or(true);
+                    if tighter {
+                        best = Some(e);
+                    }
+                    if best.as_ref().expect("just set").cmp(&half) == Ordering::Less {
+                        break;
+                    }
+                }
+                Ok(best.expect("the ladder has rungs"))
+            };
+
         // ε from rail edges (caps develop exactly). `rail_edge_eps` needs σ_lo < σ_hi, so order
         // each edge's endpoints ascending in σ — a backward rail visits σ descending.
         if let Some(mu) = &data.rail_mu {
@@ -504,7 +530,9 @@ pub fn unroll_trim_loop<B: Backend>(
                 } else {
                     (&sw[1], &pw[1], &sw[0], &pw[0])
                 };
-                match rail_edge_eps(dev, mu, s_lo, s_hi, p_lo, p_hi, edge_subdiv, cfg) {
+                match laddered(&|subdiv| {
+                    rail_edge_eps(dev, mu, s_lo, s_hi, p_lo, p_hi, subdiv, cfg)
+                }) {
                     Ok(e) => {
                         if e.cmp(&eps) == Ordering::Greater {
                             eps = e;
@@ -518,7 +546,9 @@ pub fn unroll_trim_loop<B: Backend>(
         // ε from p-curve chords — the same lift bound, taken over the curve's own parameter.
         if let Some((curve, ts)) = &data.curve {
             for (tw, pw) in ts.windows(2).zip(data.points.windows(2)) {
-                match curve_edge_eps(dev, curve, &tw[0], &tw[1], &pw[0], &pw[1], edge_subdiv, cfg) {
+                match laddered(&|subdiv| {
+                    curve_edge_eps(dev, curve, &tw[0], &tw[1], &pw[0], &pw[1], subdiv, cfg)
+                }) {
                     Ok(e) => {
                         if e.cmp(&eps) == Ordering::Greater {
                             eps = e;
@@ -545,7 +575,6 @@ pub fn unroll_trim_loop<B: Backend>(
     // Drop the final vertex: it develops the same (σ, μ̂) as `vertices[0]` (loop closure).
     vertices.pop();
 
-    let half = clearance.mul(&Rat::new(1, 2));
     if eps.cmp(&half) == Ordering::Less {
         Verdict::Verified(FlatOutline {
             vertices,

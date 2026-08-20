@@ -274,28 +274,45 @@ pub fn certified_rail<B: Backend>(
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
 ) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
-    certified_rail_surface(chart, &disk.surface, disk.pick, span, fit, clearance, cfg)
+    certified_rail_surface(
+        chart,
+        &disk.surface,
+        disk.pick,
+        span,
+        fit,
+        (false, false),
+        clearance,
+        cfg,
+    )
 }
 
 /// Fit **and** certify the ruling-rail of a bare [`CutSurface`] branch over `span` — the
 /// footprint-free core of [`certified_rail`] (a [`TrimDisk`] just bundles the surface with its
 /// xy footprint). The float oracle proposes, [`cut_fit`] decides; fail-closed as ever.
+///
+/// `pin_ends` marks which span ends are **tangent-ruling insets** — the ends a flank splice
+/// hands off at — and only those are pinned to the wall's true branch value ([`pin_rail_ends`],
+/// #307). A span end at a band or run edge has no tail meeting it, and pinning it is pure cost:
+/// the pin's interior leak on a fixture's full-gore bore rail (0.0035 at σ = 0) was enough to
+/// cross a hole authored 0.0029 clear of the bore and swallow it in the flat boolean.
+#[allow(clippy::too_many_arguments)]
 pub fn certified_rail_surface<B: Backend>(
     chart: &Chart<B>,
     surface: &CutSurface<B>,
     pick: RootPick,
     span: &Interval<B>,
     fit: RailFit,
+    pin_ends: (bool, bool),
     clearance: &Rat<B>,
     cfg: &DevConfig<B>,
 ) -> Verdict<(RatFunc<B>, Rat<B>), CutFitFault, Rat<B>> {
-    let mu_hat = match fit_cut_rail(chart, surface, span, fit.degree, pick, fit.bits) {
+    let mu_raw = match fit_cut_rail(chart, surface, span, fit.degree, pick, fit.bits) {
         Some(m) => m,
         // The oracle declined (cut not real at a node / singular solve) — fail-closed.
         None => return Verdict::Unresolved(clearance.clone()),
     };
     let cert = CutFitCert {
-        mu_hat: mu_hat.clone(),
+        mu_hat: mu_raw.clone(),
         w: Rat::from_i128(0),
         surface: clone_surface(surface),
         span: span.clone(),
@@ -304,10 +321,113 @@ pub fn certified_rail_surface<B: Backend>(
         cfg: cfg.clone(),
     };
     match cut_fit(chart, &cert) {
-        Verdict::Verified(v) => Verdict::Verified((mu_hat, v.eps)),
+        Verdict::Verified(v) => {
+            let (mu_hat, pin) = pin_rail_ends(chart, surface, pick, span, pin_ends, mu_raw, cfg);
+            let eps = v.eps.add(&pin);
+            // The pinned rail inherits the raw certificate by triangle inequality; re-apply the
+            // same DRC gate the certificate itself enforces, so a pin that costs real ε stays
+            // fail-closed instead of riding a stale Verified.
+            if eps.cmp(&clearance.mul(&Rat::new(1, 2))) == core::cmp::Ordering::Less {
+                Verdict::Verified((mu_hat, eps))
+            } else {
+                Verdict::Unresolved(eps)
+            }
+        }
         Verdict::Unresolved(e) => Verdict::Unresolved(e),
         Verdict::Refuted(f) => Verdict::Refuted(f),
     }
+}
+
+/// Pin a fitted rail to the wall's **true** (snapped) branch values at its span ends, by adding
+/// an end-localized (quartic-decay) correction through the two end residuals — the #307 fix.
+/// Returns the pinned rail and the pin's size `max(|e_lo|, |e_hi|)`: the correction's sup is
+/// bounded by that (see the basis note in the body), so the pinned rail inherits the *raw* fit's
+/// certificate by triangle inequality — `dist(pinned, wall) ≤ ε_raw + pin` pointwise. The caller
+/// adds `pin` to the raw ε
+/// rather than re-certifying the pinned polynomial, deliberately: the RevCone symbolic arm's
+/// interval evaluation is hypersensitive to fit perturbation (measured: a 2·10⁻¹⁰ pin inflated
+/// its bound 7.6e-8 → 5.2e-2 — the [enclosure-cancellation] class), while the triangle bound is
+/// exact at the pin's own scale.
+///
+/// Why pin: a splice's traced tail starts at the wall's true branch value (snapped on the
+/// [`develop::cut::TRACE_SNAP_BITS`] grid, [`develop::cut::quadric_tail`]'s from-node), while an
+/// unpinned rail ends at its *fitted* value — the boundary stepped sideways by the fit's own end
+/// residual at every turning handoff (a sign-flipping ~ε jog on every cap tangency, in the flat
+/// SVG and the STEP alike). Turning handoffs are always at rail span ends, so pinning the ends
+/// makes the junction share one exact point; two pieces of the same wall meeting at a region join
+/// heal the same way. The target composes the same snap of the same branch data as the tail, so
+/// the values agree bit-for-bit.
+///
+/// A plane rail is exact (`branch_at` declines where the µ̂-form is affine) and an end at a pole
+/// evaluates to `None`; both leave that end unpinned, so exact stays exact and costs no ε.
+///
+/// [enclosure-cancellation]: ../../docs/engineering-log.md
+fn pin_rail_ends<B: Backend>(
+    chart: &Chart<B>,
+    surface: &CutSurface<B>,
+    pick: RootPick,
+    span: &Interval<B>,
+    pin_ends: (bool, bool),
+    mu_hat: RatFunc<B>,
+    cfg: &DevConfig<B>,
+) -> (RatFunc<B>, Rat<B>) {
+    let zero = Rat::from_i128(0);
+    let width = span.hi.sub(&span.lo);
+    if width.sign() <= 0 || (!pin_ends.0 && !pin_ends.1) {
+        return (mu_hat, zero);
+    }
+    let Some(form) = cut_mu_form(chart, surface, &zero) else {
+        return (mu_hat, zero);
+    };
+    let residual = |s: &Rat<B>| -> Option<Rat<B>> {
+        let (m, h) = form.branch_at(s, &cfg.sqrt_eps)?;
+        let bits = develop::cut::TRACE_SNAP_BITS;
+        let (m, h) = (
+            develop::pcurve::snap(&m, bits),
+            develop::pcurve::snap(&h, bits),
+        );
+        let target = match pick {
+            RootPick::Upper => m.add(&h),
+            RootPick::Lower => m.sub(&h),
+        };
+        Some(target.sub(&mu_hat.eval(s)?))
+    };
+    let e_lo = if pin_ends.0 {
+        residual(&span.lo).unwrap_or_else(|| zero.clone())
+    } else {
+        zero.clone()
+    };
+    let e_hi = if pin_ends.1 {
+        residual(&span.hi).unwrap_or_else(|| zero.clone())
+    } else {
+        zero.clone()
+    };
+    if e_lo.sign() == 0 && e_hi.sign() == 0 {
+        return (mu_hat, zero);
+    }
+    let pin = {
+        let a = abs_diff(&e_lo, &zero);
+        let b = abs_diff(&e_hi, &zero);
+        if a.cmp(&b) == core::cmp::Ordering::Greater {
+            a
+        } else {
+            b
+        }
+    };
+    // The correction is the AFFINE interpolant of the two end residuals — deliberately, after
+    // measuring two alternatives to death. A steeper polynomial decay (quartic bases per end)
+    // leaks less mid-span, but its coefficients scale as `e/w⁴` — ~10³ on a narrow span — and
+    // every *downstream* interval consumer of the rail (the unroll's chord bounds first) hits the
+    // [enclosure-cancellation] wall on those mixed giant coefficients: the device's develop went
+    // Verified 3.4 → Unresolved 6.6 with no single large pin anywhere, and the +4 degree broke
+    // OCCT `MakeEdge` on the emitted Béziers (the G7 finding). The affine's coefficients are
+    // `~e/w`, its degree cost is +1, and its sup is `max|e|` attained at an end (the pin bound
+    // above). Its one vice — dragging a loose rail's whole span by its end residual — is
+    // controlled by pinning only tangent-inset ends, which loose full-gore rails don't have.
+    let slope = e_hi.sub(&e_lo).div(&width);
+    let icept = e_lo.sub(&slope.mul(&span.lo));
+    let pinned = mu_hat.add(&RatFunc::from_poly(Poly::from_coeffs(vec![icept, slope])));
+    (pinned, pin)
 }
 
 /// The **piecewise-region** certified rail: one rail per region band, each fitted and certified
@@ -329,8 +449,16 @@ pub fn certified_rail_piecewise<B: Backend>(
     let mut pieces = Vec::with_capacity(charts.len());
     let mut eps = Rat::from_i128(0);
     for (band, chart) in charts {
-        let (mu, e) = match certified_rail_surface(chart, surface, pick, band, fit, clearance, cfg)
-        {
+        let (mu, e) = match certified_rail_surface(
+            chart,
+            surface,
+            pick,
+            band,
+            fit,
+            (false, false),
+            clearance,
+            cfg,
+        ) {
             Verdict::Verified(x) => x,
             Verdict::Unresolved(e) => return Verdict::Unresolved(e),
             Verdict::Refuted(f) => return Verdict::Refuted(f),
@@ -770,20 +898,112 @@ pub fn trim_rail_chains<B: Backend>(
 ///
 /// σ are dyadic-snapped as before, so exported Bézier control points stay small-denominator.
 /// `None` if the loop is not a single σ-extreme-to-σ-extreme traversal.
-pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
-    use core::cmp::Ordering::{Equal, Greater, Less};
+/// The dyadic exponent of the solid's **chord-sagitta budget**, `2⁻⁸ ≈ 3.9·10⁻³` part units: how
+/// deep a solid wall may cut the corner of a curved boundary piece. Twelve orders above the snap
+/// grid (`2⁻³⁰`), an order and a half under the smallest drawn feature the device carries (the
+/// `r = 0.3` fillets), so a cap or fillet reads as its curve while a straight flank still costs
+/// one chord.
+const CHORD_SAGITTA_BITS: u32 = 8;
+
+/// How often [`chord_pcurve`] may bisect one piece: `2⁵ = 32` chords caps the cost of a piece
+/// however curved, and a `195°` cap already reads smooth at a quarter of that.
+const CHORD_MAX_DEPTH: u32 = 5;
+
+/// Chord one curved boundary piece for the solid: push the `(σ, µ̂)` **start points** of enough
+/// sub-chords that none cuts the curve's corner deeper than the sagitta budget — the piece's end
+/// point is the next piece's start and is *not* pushed. A straight piece costs exactly one point;
+/// a cap or fillet costs what its turning costs, capped at [`CHORD_MAX_DEPTH`] bisections.
+///
+/// This is the #304 fix. The solid's loops are traced coarse on purpose (a hole's σ-stations
+/// drive its face count), and each traced piece used to become **one** chord — so the device's
+/// round tab cap, two pieces at the solid's trace resolution, shipped as a two-step ziggurat. The
+/// piece still carries its true [`PCurve`](develop::pcurve::PCurve), so fidelity is recovered here
+/// at conversion, where the curve is consumed, rather than by raising the trace resolution and
+/// paying for stations the straight stretches never needed.
+///
+/// The sagitta test is exact rational — `cross² > budget²·|chord|²` — with the plain midpoint
+/// distance standing in when the chord's ends coincide (a piece that leaves and returns would
+/// otherwise divide by zero). `None` if the curve fails to evaluate (a pole in the domain).
+pub fn chord_pcurve<B: Backend>(
+    curve: &develop::pcurve::PCurve<B>,
+    out: &mut Vec<(Rat<B>, Rat<B>)>,
+) -> Option<()> {
+    type End<B> = (Rat<B>, [Rat<B>; 2]);
+    fn go<B: Backend>(
+        curve: &develop::pcurve::PCurve<B>,
+        b2: &Rat<B>,
+        a: End<B>,
+        b: End<B>,
+        depth: u32,
+        out: &mut Vec<(Rat<B>, Rat<B>)>,
+    ) -> Option<()> {
+        let ((t0, p0), (t1, p1)) = (a, b);
+        if depth > 0 {
+            let tm = t0.add(&t1).mul(&Rat::new(1, 2));
+            let pm = curve.eval(&tm)?;
+            let (dx, dy) = (p1[0].sub(&p0[0]), p1[1].sub(&p0[1]));
+            let (ex, ey) = (pm[0].sub(&p0[0]), pm[1].sub(&p0[1]));
+            let len2 = dx.mul(&dx).add(&dy.mul(&dy));
+            let bent = if len2.sign() > 0 {
+                let cross = dx.mul(&ey).sub(&dy.mul(&ex));
+                cross.mul(&cross).cmp(&b2.mul(&len2)) == core::cmp::Ordering::Greater
+            } else {
+                ex.mul(&ex).add(&ey.mul(&ey)).cmp(b2) == core::cmp::Ordering::Greater
+            };
+            if bent {
+                let mid = (tm, pm);
+                go(curve, b2, (t0, p0), mid.clone(), depth - 1, out)?;
+                return go(curve, b2, mid, (t1, p1), depth - 1, out);
+            }
+        }
+        out.push((p0[0].clone(), p0[1].clone()));
+        Some(())
+    }
+    let budget = Rat::<B>::new(1, 1i128 << CHORD_SAGITTA_BITS);
+    let p_lo = curve.eval(&curve.domain.lo)?;
+    let p_hi = curve.eval(&curve.domain.hi)?;
+    go(
+        curve,
+        &budget.mul(&budget),
+        (curve.domain.lo.clone(), p_lo),
+        (curve.domain.hi.clone(), p_hi),
+        CHORD_MAX_DEPTH,
+        out,
+    )
+}
+
+/// A developed loop's `(σ, µ̂)` vertex sequence at **solid fidelity**: every piece's start point
+/// plus the interior chord points [`chord_pcurve`] owes the sagitta budget, consecutive
+/// sub-[`min_export_step`] vertices merged. σ is snapped to the `2⁻³⁰` dyadic grid (the loop's
+/// own corners already are); µ̂ is left exact — [`hole_rail`] wants the raw rail intercepts, and
+/// [`hole_poly`] snaps it itself. The one sequence both consume, so the band channel and the
+/// polygon channel cannot disagree about what the loop looks like. `None` if a piece is not a
+/// [`BoundaryArc::Curve`].
+fn loop_chords<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
     let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
-    // The loop's corners in traversal order.
-    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len() * 2);
     for arc in &hole.arcs {
         match arc {
             BoundaryArc::Curve { curve, .. } => {
-                let [sg, m] = curve.eval(&curve.domain.lo)?;
-                pts.push((snap(&sg), m));
+                let mut raw: Vec<(Rat<B>, Rat<B>)> = Vec::new();
+                chord_pcurve(curve, &mut raw)?;
+                for (sg, m) in raw {
+                    let p = (snap(&sg), m);
+                    if pts.last().is_none_or(|q| export_apart(q, &p)) {
+                        pts.push(p);
+                    }
+                }
             }
             _ => return None,
         }
     }
+    Some(pts)
+}
+
+pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::HoleRail<B>> {
+    use core::cmp::Ordering::{Equal, Greater, Less};
+    // The loop's corners in traversal order, chorded at the solid's sagitta budget.
+    let pts: Vec<(Rat<B>, Rat<B>)> = loop_chords(hole)?;
     if pts.len() < 4 {
         return None;
     }
@@ -886,8 +1106,10 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
 /// opposed to [`hole_rail`]'s near/far band.
 ///
 /// Every loop is expressible this way, including the ones that turn around in σ and therefore have
-/// no near/far split at all: the pieces are straight in `(σ, µ̂)` and this is simply their vertex
-/// sequence. `None` if a piece is not a straight segment.
+/// no near/far split at all. A **curved** piece (the p-curve rails cuts have carried since PC.4)
+/// is chorded against the solid's sagitta budget by [`chord_pcurve`] — one vertex per piece was
+/// the #304 ziggurat: the device's round tab cap, two traced pieces at the solid's resolution,
+/// shipped as two flat steps. `None` if a piece is not a [`BoundaryArc::Curve`].
 ///
 /// **Vertices closer together than the export profile can carry are merged**, and the reason is not
 /// tidiness. The tracer samples one grid step (`2⁻³⁰`) inside each cell end — that is what keeps a
@@ -905,17 +1127,13 @@ pub fn hole_rail<B: Backend>(hole: &HoleLoop<B>) -> Option<crate::brep_build::Ho
 /// that device, so the merge is invisible to the certified bound and decisive for the exporter.
 pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>> {
     let snap = |r: &Rat<B>| crate::approx::f64_to_rat::<B>(crate::approx::rat_to_f64(r), 30);
-    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len());
-    for arc in &hole.arcs {
-        match arc {
-            BoundaryArc::Curve { curve, .. } => {
-                let [sg, m] = curve.eval(&curve.domain.lo)?;
-                let p = (snap(&sg), snap(&m));
-                if pts.last().is_none_or(|q| export_apart(q, &p)) {
-                    pts.push(p);
-                }
-            }
-            _ => return None,
+    let mut pts: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(hole.arcs.len() * 2);
+    for (sg, m) in loop_chords(hole)? {
+        // `loop_chords` snaps σ and keeps µ̂ exact for the band channel; the polygon is emitted
+        // geometry, so µ̂ takes the same grid — and the merge re-runs on the re-snapped pair.
+        let p = (sg, snap(&m));
+        if pts.last().is_none_or(|q| export_apart(q, &p)) {
+            pts.push(p);
         }
     }
     // The wrap-around pair too — the loop closes on its first vertex, and a last vertex within a
@@ -928,8 +1146,10 @@ pub fn hole_poly<B: Backend>(hole: &HoleLoop<B>) -> Option<Vec<(Rat<B>, Rat<B>)>
 
 /// The dyadic exponent of [`hole_poly`]'s minimum emitted step, `2⁻²⁰ ≈ 9.5·10⁻⁷`: coarse enough
 /// that every emitted edge clears OCCT's `10⁻⁷` vertex tolerance by an order, fine enough to sit
-/// far below any certified cut bound.
-pub(crate) const MIN_STEP_BITS: u32 = 20;
+/// far below any certified cut bound. Public because a chain producer must not emit piece
+/// boundaries closer than this: the solid builder's station thinning merges such a pair, and the
+/// slice then straddles a rail-piece boundary its lids evaluate only one side of.
+pub const MIN_STEP_BITS: u32 = 20;
 
 /// [`MIN_STEP_BITS`] as a rational — the smallest `(σ, µ̂)` step the export profile can carry.
 pub(crate) fn min_export_step<B: Backend>() -> Rat<B> {
@@ -1742,5 +1962,164 @@ mod tests {
             Verdict::Refuted(w) => format!("Refuted({w:?})"),
             Verdict::Unresolved(_) => "Unresolved".into(),
         }
+    }
+
+    /// [`pin_rail_ends`] — the #307 fix. A fitted (curved) rail's value at each span end equals
+    /// the wall's true branch value on the [`develop::cut::TRACE_SNAP_BITS`] grid — the exact
+    /// composition `quadric_tail` gives its from-node, so a splice handoff shares one point.
+    /// The pinned rail still certifies, and the exact plane rail is left untouched.
+    #[test]
+    fn pinned_rail_interpolates_the_branch_at_its_span_ends() {
+        let chart = cone();
+        let cfg = DevConfig::tight();
+        let clearance = Q::from_i128(1000);
+        let span = Interval {
+            lo: Q::new(1, 5),
+            hi: Q::new(4, 5),
+        };
+        let surface: CutSurface<Bignum> = CutSurface::Cylinder {
+            axis_point: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(0)],
+            axis_dir: [Q::from_i128(0), Q::from_i128(1), Q::from_i128(0)],
+            r2: Q::new(1, 4),
+        };
+        let (mu, _eps) = match certified_rail_surface(
+            &chart,
+            &surface,
+            RootPick::Upper,
+            &span,
+            RailFit::default(),
+            (true, true),
+            &clearance,
+            &cfg,
+        ) {
+            Verdict::Verified(x) => x,
+            other => panic!("pinned rail not certified: {}", tag(&other)),
+        };
+        let form = cut_mu_form(&chart, &surface, &Q::from_i128(0)).unwrap();
+        for s in [&span.lo, &span.hi] {
+            let (m, h) = form.branch_at(s, &cfg.sqrt_eps).unwrap();
+            let bits = develop::cut::TRACE_SNAP_BITS;
+            let target = develop::pcurve::snap(&m, bits).add(&develop::pcurve::snap(&h, bits));
+            assert_eq!(
+                mu.eval(s).unwrap().cmp(&target),
+                core::cmp::Ordering::Equal,
+                "the pinned rail must land exactly on the traced-vertex grid at σ = {}",
+                f(s),
+            );
+        }
+
+        // The exact plane rail is exact already; the pin must not perturb it.
+        let plane: CutSurface<Bignum> = CutSurface::Plane {
+            n: [Q::from_i128(0), Q::from_i128(0), Q::from_i128(1)],
+            d: Q::from_i128(1),
+        };
+        let raw = fit_cut_rail(&chart, &plane, &span, 0, RootPick::Upper, 44).unwrap();
+        let (pinned, pin) = pin_rail_ends(
+            &chart,
+            &plane,
+            RootPick::Upper,
+            &span,
+            (true, true),
+            raw.clone(),
+            &cfg,
+        );
+        assert_eq!(pin.sign(), 0, "an exact rail costs no pin ε");
+        for s in [&span.lo, &span.hi] {
+            assert_eq!(
+                pinned.eval(s).unwrap().cmp(&raw.eval(s).unwrap()),
+                core::cmp::Ordering::Equal,
+                "exact stays exact",
+            );
+        }
+    }
+
+    /// A p-curve `t ↦ (t, µ̂(t))` over `[lo, hi]` with polynomial µ̂ — the chorder's test subject.
+    fn pcurve_graph(mu_coeffs: &[i128], lo: i128, hi: i128) -> develop::pcurve::PCurve<Bignum> {
+        develop::pcurve::PCurve {
+            sigma: RatFunc::from_poly(Poly::from_coeffs(vec![Q::from_i128(0), Q::from_i128(1)])),
+            mu: RatFunc::from_poly(Poly::from_coeffs(
+                mu_coeffs.iter().map(|&c| Q::from_i128(c)).collect(),
+            )),
+            domain: Interval {
+                lo: Q::from_i128(lo),
+                hi: Q::from_i128(hi),
+            },
+        }
+    }
+
+    /// [`chord_pcurve`] — the #304 fix. A straight piece stays one chord; a curved piece is
+    /// subdivided until every chord's midpoint sagitta is inside the `2⁻⁸` budget (checked against
+    /// the true curve, not against the chorder's own criterion); a violently curved piece is
+    /// capped at `2⁵` chords. Every emitted point lies **on** the curve — the chorder samples, it
+    /// never approximates.
+    #[test]
+    fn chord_pcurve_meets_the_sagitta_budget() {
+        // Straight: µ̂ = 2t over [0, 1] — one chord, its start point only.
+        let mut pts: Vec<(Q, Q)> = Vec::new();
+        chord_pcurve(&pcurve_graph(&[0, 2], 0, 1), &mut pts).unwrap();
+        assert_eq!(pts.len(), 1, "a straight piece costs exactly one chord");
+
+        // Curved: µ̂ = t² over [-1, 1] — the single chord's sagitta is 1/2, 128× the budget.
+        let parabola = pcurve_graph(&[0, 0, 1], -1, 1);
+        let mut pts: Vec<(Q, Q)> = Vec::new();
+        chord_pcurve(&parabola, &mut pts).unwrap();
+        assert!(
+            pts.len() >= 8,
+            "the parabola must subdivide, got {} chords",
+            pts.len()
+        );
+        // Emitted points are curve *samples*: µ̂ = σ² exactly.
+        for (s, m) in &pts {
+            assert_eq!(m.cmp(&s.mul(s)), core::cmp::Ordering::Equal);
+        }
+        // The realized polyline stays inside the budget against the true curve, measured densely
+        // (for a parabola the worst chord deviation is at the parameter midpoint, which is the
+        // chorder's own probe — so the budget is met exactly, not just approximately).
+        let budget = 1.0 / 256.0;
+        let mut poly: Vec<(f64, f64)> = pts.iter().map(|(s, m)| (f(s), f(m))).collect();
+        poly.push((1.0, 1.0)); // the piece's end point (the next piece's start in a loop)
+        for k in 0..=400 {
+            let t = -1.0 + 2.0 * (k as f64) / 400.0;
+            let (px, py) = (t, t * t);
+            let d = poly
+                .windows(2)
+                .map(|w| {
+                    let (ax, ay, bx, by) = (w[0].0, w[0].1, w[1].0, w[1].1);
+                    let (dx, dy) = (bx - ax, by - ay);
+                    let len2 = dx * dx + dy * dy;
+                    let u = (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0);
+                    let (ex, ey) = (ax + u * dx - px, ay + u * dy - py);
+                    (ex * ex + ey * ey).sqrt()
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                d <= budget * 1.001,
+                "curve point at t = {t} is {d:.2e} off the polyline (budget {budget:.2e})"
+            );
+        }
+
+        // Violently curved, uniform: the radius-8 half-circle `t ↦ 8·(1−t², 2t)/(1+t²)` wants
+        // ~2⁶ chords everywhere at once (sagitta is curvature-uniform, unlike the parabola's
+        // steep flanks, which flatten *perpendicular* sagitta and legitimately stop early), so
+        // every branch runs into the cap: exactly 2⁵ chords.
+        let one_plus_t2 =
+            Poly::from_coeffs(vec![Q::from_i128(1), Q::from_i128(0), Q::from_i128(1)]);
+        let circle = develop::pcurve::PCurve {
+            sigma: RatFunc::new(
+                Poly::from_coeffs(vec![Q::from_i128(8), Q::from_i128(0), Q::from_i128(-8)]),
+                one_plus_t2.clone(),
+            ),
+            mu: RatFunc::new(
+                Poly::from_coeffs(vec![Q::from_i128(0), Q::from_i128(16)]),
+                one_plus_t2,
+            ),
+            domain: Interval {
+                lo: Q::from_i128(-1),
+                hi: Q::from_i128(1),
+            },
+        };
+        let mut pts: Vec<(Q, Q)> = Vec::new();
+        chord_pcurve(&circle, &mut pts).unwrap();
+        assert_eq!(pts.len(), 32, "the depth cap bounds a piece at 2⁵ chords");
     }
 }

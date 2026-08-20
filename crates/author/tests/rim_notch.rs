@@ -1,35 +1,53 @@
-//! **#291 — a tab in the bore splits the material's µ̂-section, and the refusal says so.**
+//! **The device's real drawings against the resolver's boundary model (#291, #293, #294, #295,
+//! #296).**
 //!
-//! The device's real inner cut (`acceptance/data/inner-cut.dxf`) is the Ø 8 bore with a 10° tab
-//! reaching in to Ø 4. Cutting the device with it is refused, and *which* refusal it earns is the
-//! whole content of these tests: the resolver models a region as **one µ̂-interval per σ** — a
-//! lower rail and an upper rail, both graphs over σ — plus interior holes, and a tab that a ruling
-//! crosses sideways makes the material two intervals at one σ. That is
-//! [`PartFault::SectionNotSimple`], not an ambiguity and not a degenerate wall.
+//! Both of the device's boundaries come out of a file, and both are **radially flanked**: the bore
+//! (`acceptance/data/inner-cut.dxf`) is Ø 8 with a 10° tab reaching in to Ø 4, and the rim
+//! (`data/outer-cut.dxf`) is Ø 21.5 with a 15° lug reaching out to Ø 27.5. One is subtracted and
+//! one is intersected, and they are otherwise the same shape problem — which is what makes them
+//! worth pinning side by side.
 //!
-//! **Measured on the pinned device, and this is why the name matters.** The tab appears *twice* on
-//! the 410.7° chart, at the same plan azimuth:
+//! **A radial flank is the whole story.** Cast from a point on the axis, a radial sketch line
+//! sweeps a plane through the axis, and a ruling either lies *in* that plane or crosses it. Which
+//! one it does is decided by `h′` and by nothing else: where the support is flat the ruling's plan
+//! projection passes exactly through the axis and runs *along* the flank; on a ramp it misses by up
+//! to 0.481 mm and runs *across* it.
 //!
-//! | pass | region | `h` | ruling's plan miss | section |
-//! |---|---|---|---|---|
-//! | σ ≈ −1.079…−0.927 | 0 | `0` | **exactly 0** (radial) | one interval ✓ |
-//! | σ ≈ +0.888…+1.049 | 1 (the ramp) | `0 → 1/4` | up to **0.481 mm** | **two intervals** at σ = 0.897, 0.906, 0.915 ✗ |
+//! Both features sit in the wedge the 410.7° chart covers **twice** — material azimuth is
+//! `270° + 4·arctan σ`, so `az ∈ (64.6°, 115.4°)` is swept on the base cone and again on the
+//! lapping sheet:
 //!
-//! Same cut, same azimuth, same walls traversed in the same order — only the sheet differs. The
-//! split stretches are separated by a gap running from the tab's root fillet to its flank, and it
-//! is *not* a hole: it opens into the exterior at the low-σ end of its band, so merging the two
-//! stretches into a face-with-hole would emit a closed island where the part has an open bay.
+//! | | the bore's tab (subtract) | the rim's lug (intersect) |
+//! |---|---|---|
+//! | base pass | σ ≈ −1.079…−0.927, `h′ = 0` | σ ≈ −1.067…−0.937, `h′ = 0` |
+//! | lapping pass | σ ≈ +0.888…+1.049, on the pinned ramp | σ ≈ +0.937…+1.067, straddling its end |
 //!
-//! The tab is 0.35 mm half-wide at its root and the ramp's rulings miss the axis by more than that,
-//! which is the one-line statement of the geometry: on the ramp the ruling is wider off-axis than
-//! the tab is wide.
+//! On the pinned device the tab's second pass lands on the ramp and it refuses
+//! [`PartFault::SectionNotSimple`] — the kept material is two µ̂-intervals at one σ.
+//!
+//! The tab's route is understood: a region is modelled as **one µ̂-interval per σ** — a lower rail
+//! and an upper rail, both graphs over σ — plus interior holes, and a tab that bays in sideways
+//! splits that interval, which the section sampler sees and names. That is #291.
+//!
+//! With the ramp moved off the wedge, both features land on flat sheet on both passes, and both
+//! then **develop faithfully** — the four flank edges land on the drawing through the cast, and
+//! every flank is left tangentially, which are the checks that distinguish a green certificate
+//! from a right part.
+//!
+//! Since the drawings' G1 revision (root fillets tangent to flanks and rims, caps tangent to
+//! flanks) every junction is a **tangential contact**, and each of these tests pins a layer of
+//! what that demanded (the TANG campaign, engineering-log 2026-08-19): targeted stations for a
+//! mixed profile's quadric walls, the rail-fit ladder with its fidelity escalation, the per-side
+//! turn/continue splice (#296), tangential corners at the derivative's root, the √-graded turn
+//! tails (`quadric_tail`) and rail ends — plus [`cap_turns`], the direction criterion no distance
+//! certificate can replace (ε bounds distance, not direction).
 
 use acceptance::{self_lapping_cone_from, self_lapping_spec};
 use arrange2d::profile::Profile;
 use author::part::{Part, PartFault};
 use certify_core::Verdict;
 use geom::content::Edge;
-use lattice::{Bignum, Rat};
+use lattice::{Bignum, Rat, Surd};
 
 type Q = Rat<Bignum>;
 
@@ -47,9 +65,227 @@ fn device_with(profile: Vec<Edge<Bignum>>) -> Part<Bignum> {
 fn fault(v: Verdict<author::part::FlatPattern<Bignum>, PartFault, Q>) -> String {
     match v {
         Verdict::Verified(_) => "Verified".to_string(),
-        Verdict::Unresolved(_) => "Unresolved".to_string(),
+        Verdict::Unresolved(e) => {
+            let (n, d) = e.numer_denom_decimal();
+            let fl = n.parse::<f64>().unwrap_or(f64::NAN) / d.parse::<f64>().unwrap_or(f64::NAN);
+            format!("Unresolved({fl:.4e})")
+        }
         Verdict::Refuted(f) => format!("{f:?}"),
     }
+}
+
+/// The device with the ccw ramp slid **off** the features' azimuth wedge, so both the bore's tab
+/// and the rim's lug meet flat sheet on each of their two passes. Everything else is the pinned
+/// recipe, which is what makes the difference attributable to the ramp.
+fn ramp_off_the_wedge() -> acceptance::lapped::LappedCone {
+    let mut spec = self_lapping_spec();
+    spec.ccw.ramp_start = acceptance::lapped::Azimuth::Sigma(Q::new(1, 10));
+    spec.ccw.ramp_end = acceptance::lapped::Azimuth::Sigma(Q::new(1, 2));
+    spec
+}
+
+fn f(r: &Q) -> f64 {
+    let (n, d) = r.numer_denom_decimal();
+    n.parse::<f64>().unwrap() / d.parse::<f64>().unwrap()
+}
+
+fn sd(v: &Surd<Bignum>) -> f64 {
+    let (a, b, d) = v.parts();
+    f(a) + f(b) * f(d).sqrt()
+}
+
+/// **The drafted cast, in floats, straight from the recipe** — `acceptance::lapped`'s own
+/// construction at gauge radius `r`: the profile plane at `z_r = −r·cot β`, the apex `r·tan β`
+/// below it, the neutral cone `z = −(c/s)·ρ`. The gauge radius is the cast's fixed point, which is
+/// what pins the sign conventions.
+///
+/// Returns the sketch→sheet cast and its inverse projection: `sketch_of` sends **any** point of a
+/// cast wall back to the sketch plane, whatever `h` the sheet carries there, because the wall is a
+/// cone through the same apex. That is what lets one check cover both passes of a feature.
+#[allow(clippy::type_complexity)]
+fn drafted_cast(
+    apex: &(Q, Q),
+    r: &Q,
+) -> (
+    impl Fn(f64, f64) -> [f64; 3],
+    impl Fn(&[f64; 3]) -> (f64, f64),
+) {
+    let (c, s) = (f(&apex.0), f(&apex.1));
+    let r = f(r);
+    let z_r = -r * c / s;
+    let z_a = z_r - r * s / c;
+    (
+        move |x: f64, y: f64| -> [f64; 3] {
+            let rho = x.hypot(y);
+            let t = -z_a / (z_r - z_a + (c / s) * rho);
+            [t * x, t * y, z_a + t * (z_r - z_a)]
+        },
+        move |p: &[f64; 3]| -> (f64, f64) {
+            let u = (z_r - z_a) / (p[2] - z_a);
+            (u * p[0], u * p[1])
+        },
+    )
+}
+
+/// A drawing's straight **flanks**, as endpoint pairs. Both cut files are arcs joined by exactly
+/// two of these, and they are the radial walls the whole module is about.
+fn flanks_of(profile: &[Edge<Bignum>]) -> Vec<([f64; 2], [f64; 2])> {
+    profile
+        .iter()
+        .filter_map(|e| match e {
+            Edge::Seg(seg) => Some((
+                [sd(&seg.start.x), sd(&seg.start.y)],
+                [sd(&seg.end.x), sd(&seg.end.y)],
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Which of the flat pattern's edges are the drawing's flanks** — the faithfulness check both
+/// features get, and the reason a green certificate is not the end of it.
+///
+/// A flank crossing's splice ends with a cap along the flank's own ruling, so the flat pattern must
+/// carry one edge per flank per pass, at the length the cast dictates. Each candidate is found by
+/// that length (±10%), folded back to 3-D through the part's own `fold`, and pulled through the
+/// cast onto the sketch plane, where it must lie within `tol` of one of the drawing's flank lines.
+/// Returns the matching edges as outline indices (the edge from vertex `i` to `i + 1`), so the
+/// junction criterion below can ask *how* each one meets its neighbours, not just that it exists.
+///
+/// Nothing here is restated: the length comes from the spec's apex and the profile's own segments,
+/// and the fold is the part's.
+fn flank_edges_on_the_drawing(
+    part: &Part<Bignum>,
+    flat: &author::part::FlatPattern<Bignum>,
+    profile: &[Edge<Bignum>],
+    gauge: &Q,
+    apex: &(Q, Q),
+    tol: f64,
+) -> Vec<usize> {
+    let (cast, sketch_of) = drafted_cast(apex, gauge);
+    let flanks = flanks_of(profile);
+    assert_eq!(flanks.len(), 2, "the drawing has two flank segments");
+    let dist3 = |a: &[f64; 3], b: &[f64; 3]| {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    let flank_len = {
+        let (p, q) = &flanks[0];
+        dist3(&cast(p[0], p[1]), &cast(q[0], q[1]))
+    };
+
+    let verts = &flat.outline().vertices;
+    let n = verts.len();
+    let mut on_flank = Vec::new();
+    for i in 0..n {
+        let (ax, ay) = verts[i].center();
+        let (bx, by) = verts[(i + 1) % n].center();
+        let len = (f(&ax) - f(&bx)).hypot(f(&ay) - f(&by));
+        if (len - flank_len).abs() > flank_len / 10.0 {
+            continue;
+        }
+        let wire = match part.fold(&[[ax, ay], [bx, by]], &qi(0)) {
+            Verdict::Verified(w) => w,
+            v => panic!(
+                "a candidate flank edge's endpoints must fold back, got {}",
+                match v {
+                    Verdict::Unresolved(_) => "Unresolved".to_string(),
+                    Verdict::Refuted(fa) => format!("{fa:?}"),
+                    Verdict::Verified(_) => unreachable!(),
+                }
+            ),
+        };
+        let near_a_flank = wire.points.iter().all(|p| {
+            let p3 = [f(&p[0].mid()), f(&p[1].mid()), f(&p[2].mid())];
+            let (sx, sy) = sketch_of(&p3);
+            flanks.iter().any(|(a, b)| {
+                // Distance from (sx, sy) to the segment a→b.
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let t =
+                    (((sx - a[0]) * dx + (sy - a[1]) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                let (px, py) = (a[0] + t * dx, a[1] + t * dy);
+                (sx - px).hypot(sy - py) < tol
+            })
+        });
+        if near_a_flank {
+            on_flank.push(i);
+        }
+    }
+    on_flank
+}
+
+/// The outline's **turning angles at the two ends of flank edge `i`**, and the worst turn within
+/// `radius` real edges of it — the G1 criterion the edge-count check above is structurally blind
+/// to, in degrees.
+///
+/// Both drawings join every flank to its arcs tangentially, and tangency survives the cast and
+/// the unroll (both are smooth and injective away from the apex), so the emitted outline must
+/// leave each flank at a turning angle bounded by its own chordization — not at the ~50° the
+/// starved turn tails used to kink by — and the cap *neighbourhood* must be chordized smoothly:
+/// the uniform-in-σ rail chordization used to bunch ~50° of a cap's turn into the one chord at
+/// the splice handoff's shoulder, one edge beyond the junction. Every distance certificate is
+/// blind to both (ε bounds distance, not direction).
+///
+/// Turning is measured between consecutive **real** edges. An edge is not real when it is
+/// (a) shorter than `floor` — the ε-scale micro-caps every chain junction carries and the
+/// connector's ~10⁻⁶ elbow, whose directions are noise — or (b) shorter than 15% of the flank
+/// **and parallel to it within 5°**: a splice-junction *jog*, the fit's actual end residual
+/// bridged along the ruling where the two certified carriers meet. A jog is a translation
+/// artifact whose *size* is what the certificates bound (measured: 52 µm against a certified
+/// ε 0.109); reading its direction as boundary turning would call every ε-wide step a 90° kink,
+/// while dropping it measures the two carriers against each other — which is the actual claim.
+fn cap_turns(
+    flat: &author::part::FlatPattern<Bignum>,
+    i: usize,
+    floor: f64,
+    radius: usize,
+) -> ([f64; 2], f64) {
+    let verts = &flat.outline().vertices;
+    let n = verts.len();
+    let p = |k: usize| {
+        let (x, y) = verts[k % n].center();
+        [f(&x), f(&y)]
+    };
+    let dvec = |k: usize| {
+        let (a, b) = (p(k), p(k + 1));
+        [b[0] - a[0], b[1] - a[1]]
+    };
+    let len = |d: [f64; 2]| d[0].hypot(d[1]);
+    let turn = |d1: [f64; 2], d2: [f64; 2]| {
+        ((d1[0] * d2[0] + d1[1] * d2[1]) / (len(d1) * len(d2)))
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
+    };
+    let flank = dvec(i);
+    let flank_len = len(flank);
+    let real = |k: usize| {
+        let d = dvec(k);
+        let l = len(d);
+        if l < floor {
+            return false;
+        }
+        if l < 0.15 * flank_len {
+            // A jog can point either way along the ruling: compare as lines, not rays.
+            let t = turn(d, flank);
+            if !(5.0..=175.0).contains(&t) {
+                return false;
+            }
+        }
+        true
+    };
+    let kept: Vec<usize> = (0..n).filter(|&k| real(k)).collect();
+    let m = kept.len();
+    let pos = kept
+        .iter()
+        .position(|&k| k == i)
+        .expect("the flank edge is real by construction");
+    let t_at = |j: usize| turn(dvec(kept[j % m]), dvec(kept[(j + 1) % m]));
+    let junction = [t_at(pos + m - 1), t_at(pos)];
+    let mut worst = 0.0f64;
+    for jj in 0..2 * radius {
+        worst = worst.max(t_at(pos + m + jj - radius));
+    }
+    (junction, worst)
 }
 
 /// **The drawing itself.** `data/inner-cut.dxf` reads exactly and the recipe carries it; what the
@@ -66,45 +302,149 @@ fn the_device_drawing_splits_the_material_section_and_is_refused_by_name() {
     );
 }
 
-/// **#293 — a wall that bounds twice is fitted twice.** Move the ccw ramp off the tab and the
-/// section stops splitting, so the drawing gets past [`PartFault::SectionNotSimple`] and the *next*
-/// thing it meets is the rail fitting. Two fields differ from the pinned device, which is what
-/// keeps this a measurement of that device rather than a restated one.
-///
-/// The tab's root fillet bounds the material in **two disjoint σ-runs** — the 410.7° chart passes
-/// its azimuth twice — and a single hull over both spanned 60°+ of azimuth for a fillet subtending
-/// 7.6°, on which the float oracle rightly declined (`disc < 0`). One rail per run fixes it.
-///
-/// **Where the drawing now stops, and it is three fixes further on.** The chain, each step pinned
-/// by a measurement rather than inferred:
+/// **#293 → #294 — the drawing develops.** Move the ccw ramp off the tab and the section stops
+/// splitting, so the drawing gets past [`PartFault::SectionNotSimple`] — and then the whole chain
+/// of certificate walls behind it, each step pinned by a measurement rather than inferred:
 ///
 /// | | the drawing reported |
 /// |---|---|
 /// | before any of this | `Refuted(NappeCrossed)` — a DRC cushion used as a soundness gate |
 /// | after the per-ball nappe check | `Unresolved ε 1.1220e1` |
 /// | after #293's rail-per-run | `Unresolved ε 3.5000e0` — exactly `clearance/2`, the ball bound's "nothing certified" sentinel on eight tab rails |
-/// | after the centred discriminant | **`Refuted(RailSpanShort)`** |
+/// | after the centred discriminant | `Refuted(RailSpanShort)` — the rails certify, and the boundary needs them past their windows |
+/// | after the flank splice (§12.4 mid-chain) | `Unresolved ε 1.2e1` — the splice's own fillet loops could not be certified |
+/// | after the nested-centred chart fields + the ball floor | `Unresolved ε 8.9e0` — the loops certify, the steep fillet rails' unroll chords do not |
+/// | after the per-edge subdiv ladder | **`Verified`** |
 ///
-/// The last step is the interesting one and the reason `Refuted` here is *progress*, not
-/// regression: [`PartFault::RailSpanShort`] is only reachable once a rail **has** a certificate and
-/// the boundary needs it over σ the certificate does not cover. The eight rails on the tab's
-/// sub-millimetre walls — R 0.25 root fillets, R 0.15 tip fillets, the flanks — could not be
-/// certified *at all* while the µ̂-discriminant's enclosure straddled zero. They can now, and what
-/// is left is §12.4's p-curve end: a graph rail cannot reach a tangent ruling, and the turn arc has
-/// to own that stretch.
+/// Each wall was the same disease at a different layer: an interval enclosure blind to the scale
+/// of a sub-millimetre feature — the µ̂-discriminant's cancellation, the chart fields' cancellation,
+/// a ball floor as large as the fillet itself, a fixed chord subdivision on a rail that dives half
+/// a µ̂-unit across its window.
+///
+/// **And the result is checked against the drawing, not just `Verified`.** A flank crossing's
+/// splice ends with a cap along the flank's own ruling, so the flat pattern must contain the four
+/// flank edges (two per tab pass) at the length the cast dictates — computed here from the spec's
+/// apex and the profile's own flank segments, not restated — and folding each such edge's
+/// endpoints back to 3-D must land, through the drafted-apex cast, on the drawing's flank lines
+/// (the cut-file-is-the-cutter's-sketch ruling: the cast's radial displacement is the tool).
 #[test]
-fn the_drawings_tab_rails_certify_and_what_is_left_is_the_p_curve_end() {
-    let mut spec = self_lapping_spec();
-    spec.ccw.ramp_start = acceptance::lapped::Azimuth::Sigma(Q::new(1, 10));
-    spec.ccw.ramp_end = acceptance::lapped::Azimuth::Sigma(Q::new(1, 2));
+fn the_drawings_tab_develops_and_its_flanks_land_on_the_drawing() {
+    let mut spec = ramp_off_the_wedge();
     spec.inner_profile = Some(acceptance::inner_cut_profile());
-    let v = self_lapping_cone_from(&spec, 8, 8, false, None).develop();
+    let part = self_lapping_cone_from(&spec, 8, 8, false, None);
+    let flat = match part.develop() {
+        Verdict::Verified(fl) => fl,
+        v => panic!("the device drawing must develop, got {}", fault(v)),
+    };
 
-    assert!(
-        matches!(v, Verdict::Refuted(PartFault::RailSpanShort { op: 1 })),
-        "the tab's rails should certify and leave the p-curve end, got {}",
-        fault(v)
+    // Tolerance measured, not derived: across the four true flank edges the pulled-back endpoints
+    // sit 0.0000–0.051 off the drawing (the offset-sheet pass carries the splice vertices' tangent
+    // gaps; the base pass is exact to 4 decimals), while the nearest decoy — a rim chord of
+    // accidentally matching length — misses by 2.6. So 0.1 splits signal from decoy by a factor of
+    // 26 and stays 15× under the drawing's smallest fillet.
+    let on_flank = flank_edges_on_the_drawing(
+        &part,
+        &flat,
+        &acceptance::inner_cut_profile(),
+        spec.inner_r.as_ref().expect("the device has an inner cut"),
+        &spec.apex,
+        0.1,
     );
+    assert_eq!(
+        on_flank.len(),
+        4,
+        "two flanks on each of the tab's two passes: four flank edges in the flat pattern"
+    );
+    // And each flank is left **tangentially**, as the drawing draws it — the criterion the edge
+    // count is blind to: the starved turn tails used to kink ~50° here under green certificates.
+    // 15° is the chordization scale at this resolution (`segments = 8` → tail chords of a few
+    // degrees each), a third of the defect it exists to catch; the neighbourhood bound catches
+    // the rail-shoulder variant (uniform-in-σ chords bunching the cap's curl one edge further
+    // out), while admitting the honest ~16–19° mid-cap chords this resolution draws.
+    for &i in &on_flank {
+        let ([a, b], w) = cap_turns(&flat, i, 0.005, 12);
+        assert!(
+            a.max(b) < 15.0,
+            "flank edge {i} must join its arcs tangentially, turned {a:.1}° / {b:.1}°"
+        );
+        assert!(
+            w < 20.0,
+            "the cap around flank edge {i} must be chordized smoothly, worst turn {w:.1}°"
+        );
+    }
+}
+
+/// **The rim comes out of a file too (#295).** `data/outer-cut.dxf` replaces the outer *disc*: the
+/// same Ø 21.5 circle — the drawing states `r² = 1849/16` exactly, so the recipe's `outer_r` and
+/// the file agree at `δ = 0` — interrupted over 15° about `+y` by a lug reaching out to Ø 27.5 on
+/// two radial flanks and a 195° nose arc tangent to both.
+///
+/// It is the bore's tab inverted, and the inversion is the point. The tab is **subtracted** and
+/// bays into the material; the lug is **intersected** and pushes the material out. Same wall kinds,
+/// same radial flanks, opposite role — and the flat pattern must carry the same evidence: one edge
+/// per flank per pass, folding back onto the drawing's own flank lines through the cast.
+///
+/// **Why this is not the σ-stock refusal** (`docs/cutter-extrude-design.md` §12.5): a kept contour
+/// on this chart is refused by name because a ruling is a *line* and a swept profile a *prism*, so
+/// the far nappe is kept too wherever an azimuth and its antipode are both swept. This outline
+/// bounds **µ̂ alone** — it is cast from a point on the device's own axis and it encloses that axis
+/// — so it moves the upper rail and closes nothing in σ. The exclusion is about contours that have
+/// to say where material starts and stops, and a rim is not one.
+///
+/// **The acceptance criterion for #296 — the mixed corner.** The bore's tab has a *tangency at
+/// each end of its flank*, which is the shape #294's `flank_splice` was written to; the lug's
+/// flank is tangent to the nose arc at one end and meets the rim **transversally** at the other,
+/// so requiring a tangency of *both* walls missed it. The general statement is per side: a side
+/// **turns** (an isolated discriminant root inside the corner's gap, where its window and its
+/// rail's certificate end) or **continues** (no root — the rim's rail is certified straight across
+/// the gap, and the handoff is the *turning* wall's own root, at its bracket edge). The emission
+/// is #294's, one `turn_tail` instead of two.
+///
+/// Two ways this failed before it passed, both worth keeping:
+/// - the lug used to come back `Verified` with the tab cut *inward* as a bite — the shadow
+///   fragmented the non-convex kept region and the pick kept one piece (fixed in
+///   `resolve::extruded_shadow`, patches coalesced);
+/// - with detection lifted but the handoff read from the continuing rail's **span end**, three of
+///   the four corners still returned `None` (the span is hulled to the neighbouring run's first
+///   *sample* — a grid point on the wrong side of the flank — so the edges came out of order), and
+///   the un-spliced corners silently fell back to a midpoint `Corner::At` inside both rails'
+///   certificates: green, `covered`-clean, and cutting the corner by ~4e-3 in σ. Only THIS check —
+///   fold the emitted edges back onto the drawing — caught that; no certificate did.
+#[test]
+fn the_drawings_rim_lug_develops_and_its_flanks_land_on_the_drawing() {
+    let mut spec = ramp_off_the_wedge();
+    spec.outer_profile = Some(acceptance::outer_cut_profile());
+    let part = self_lapping_cone_from(&spec, 8, 8, false, None);
+    let flat = match part.develop() {
+        Verdict::Verified(fl) => fl,
+        v => panic!("the drawing's rim must develop, got {}", fault(v)),
+    };
+
+    let on_flank = flank_edges_on_the_drawing(
+        &part,
+        &flat,
+        &acceptance::outer_cut_profile(),
+        &spec.outer_r,
+        &spec.apex,
+        0.1,
+    );
+    assert_eq!(
+        on_flank.len(),
+        4,
+        "two flanks on each of the lug's two passes: four flank edges in the flat pattern"
+    );
+    // The same G1 junction + neighbourhood criterion as the tab's — see there for the scale.
+    for &i in &on_flank {
+        let ([a, b], w) = cap_turns(&flat, i, 0.005, 12);
+        assert!(
+            a.max(b) < 15.0,
+            "flank edge {i} must join its arcs tangentially, turned {a:.1}° / {b:.1}°"
+        );
+        assert!(
+            w < 20.0,
+            "the cap around flank edge {i} must be chordized smoothly, worst turn {w:.1}°"
+        );
+    }
 }
 
 /// **The flank, not the sheet, on its own is enough.** A straight-sided tab — vertical flanks, a

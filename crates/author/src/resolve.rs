@@ -360,23 +360,63 @@ fn extruded_shadow<B: Backend>(
         });
     }
     let width = (cuts[cuts.len() - 1].0 - cuts[0].0).abs().max(1.0);
-    let mut patches = Vec::new();
-    // The unbounded stretch below the first crossing, then each bounded stretch, then the one above.
-    if inside_near(cuts[0].0 - width, width)? {
-        patches.push(Patch::Below(cuts[0].0, cuts[0].1));
-    }
+    let n = cuts.len();
+
+    // Classify each stretch between consecutive crossings: `Some(true)` inside the profile's sweep,
+    // `Some(false)` outside, `None` for a degenerate stretch (two walls crossing at the same µ̂),
+    // which has no interior to sample and must not break a run. Stretch `0` is `(−∞, cuts[0])`,
+    // stretch `k` is `(cuts[k−1], cuts[k])`, and stretch `n` is `(cuts[n−1], +∞)`.
+    let mut flags: Vec<Option<bool>> = Vec::with_capacity(n + 1);
+    flags.push(Some(inside_near(cuts[0].0 - width, width)?));
     for pair in cuts.windows(2) {
         let (lo, hi) = (pair[0].0, pair[1].0);
         if hi - lo <= 0.0 {
-            continue;
-        }
-        if inside_near(0.5 * (lo + hi), hi - lo)? {
-            patches.push(Patch::Between(lo, hi, pair[0].1, pair[1].1));
+            flags.push(None);
+        } else {
+            flags.push(Some(inside_near(0.5 * (lo + hi), hi - lo)?));
         }
     }
-    let last = cuts[cuts.len() - 1];
-    if inside_near(last.0 + width, width)? {
-        patches.push(Patch::Above(last.0, last.1));
+    flags.push(Some(inside_near(cuts[n - 1].0 + width, width)?));
+
+    // **Consecutive inside stretches are ONE patch.** `cuts` carries every wall's crossings, and a
+    // wall crosses wherever its whole carrier does — not only where it bounds. So a ruling through
+    // a rim-with-a-lug meets the rim circle *inside* the lug, where the profile is filled on both
+    // sides, and the inside stretches either side of that crossing are one piece of material.
+    //
+    // Emitting them as two patches is set-theoretically harmless — their union is the same, and
+    // `comp_subtract` folded over abutting patches gives the same answer as over their union — but
+    // it is **not** harmless for `Intersect`: `comp_intersect` yields one component per patch, and
+    // `sample_comps` merges components only across a gap carved by a single `Subtract`. Abutting
+    // intersect pieces therefore survived as separate components, and the component pick kept only
+    // the one holding the witness. On the device's rim that dropped the lug and left the boundary
+    // on the nose wall's *near* root, cutting the tab inward as a bite (#296).
+    let mut patches = Vec::new();
+    let mut k = 0usize;
+    while k <= n {
+        if flags[k] != Some(true) {
+            k += 1;
+            continue;
+        }
+        // Extend over every stretch that is inside or degenerate; a degenerate one adds no width,
+        // so including a trailing run of them cannot enlarge the patch.
+        let start = k;
+        let mut end = k;
+        let mut j = k + 1;
+        while j <= n && flags[j] != Some(false) {
+            if flags[j] == Some(true) {
+                end = j;
+            }
+            j += 1;
+        }
+        let lo = (start > 0).then(|| cuts[start - 1]);
+        let hi = (end < n).then(|| cuts[end]);
+        patches.push(match (lo, hi) {
+            (None, None) => Patch::All,
+            (None, Some((r, lab))) => Patch::Below(r, lab),
+            (Some((r, lab)), None) => Patch::Above(r, lab),
+            (Some((l, ll)), Some((h, hl))) => Patch::Between(l, h, ll, hl),
+        });
+        k = end + 1;
     }
     Some(Shadow(patches))
 }
@@ -1024,11 +1064,21 @@ pub(crate) fn sweep<B: Backend>(
             } else {
                 None
             };
-            let probes: Vec<&CutSurface<B>> = match &bound {
-                Some(b) => vec![b],
-                None => quadric.iter().map(|wi| &walls[*wi]).collect(),
+            // Stations and hole-attribution windows are two different obligations, and only the
+            // proxy case separates them. **Stations** must reach every wall a boundary can hand
+            // off to: a mixed profile's quadric wall bounds only inside its own tangent window,
+            // and the drawing's R 0.3 root fillet subtends ~1.2 cells — probed through the proxy
+            // alone it gets a run only by grid luck, and a corner missing its run cannot splice
+            // (the two-walls-between refusal). **Windows** are what a subtract's hole loops are
+            // attributed to and traced over, so the mixed case must keep exactly the proxy's — a
+            // second, per-arc window over the same bore would trace the same hole twice.
+            let probes: Vec<(&CutSurface<B>, bool)> = match &bound {
+                Some(b) => core::iter::once((b, true))
+                    .chain(quadric.iter().map(|wi| (&walls[*wi], false)))
+                    .collect(),
+                None => quadric.iter().map(|wi| (&walls[*wi], true)).collect(),
             };
-            for wall in probes {
+            for (wall, record_window) in probes {
                 // The probe's **own** pullback decides which of its root brackets are real windows.
                 // Reading a wall-indexed form instead was right only while the proxy appeared for
                 // all-affine profiles alone: with a mixed one it filtered the proxy's brackets by
@@ -1056,7 +1106,9 @@ pub(crate) fn sweep<B: Backend>(
                     samples.push((ri, q1));
                     samples.push((ri, mid));
                     samples.push((ri, q3));
-                    windows[op].push((ri, t1.clone(), t2.clone()));
+                    if record_window {
+                        windows[op].push((ri, t1.clone(), t2.clone()));
+                    }
                 }
             }
         }
@@ -1186,7 +1238,6 @@ pub(crate) fn sweep<B: Backend>(
             }),
         }
     }
-
     // Derive roles. An op that both *carves a gap* and *bounds* is the one-interval model's own
     // frontier, not an ambiguity — see [`PartFault::SectionNotSimple`] for what it means and why
     // merging the two stretches anyway would ship the wrong pattern.

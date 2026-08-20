@@ -176,6 +176,121 @@ fn a_bulge_reproduces_the_file_s_curve_and_a_rect_reproduces_the_shape() {
     }
 }
 
+/// **The device's other cut file — and the one place a drawing and a recipe meet at `δ = 0`.**
+///
+/// `data/outer-cut.dxf` is the rim: six entities forming the Ø 21.5 circle interrupted over 15°
+/// about `+y` by a lug reaching out to Ø 27.5 — the gauge arc, two radial flanks, an R 1.5875 nose
+/// and, since the drawings' G1 revision, an R 0.3 root fillet where each flank meets the rim. The
+/// bore file has come to the same six: the two profiles are now the same shape problem entity for
+/// entity. Two things about this one are load-bearing downstream and neither is a tolerance:
+///
+/// * **the rim arc carries the recipe's own `outer_r = 43/4`, to the importer's published δ.** So
+///   swapping the authored disc for the file changes the *shape* and not the gauge, and
+///   `lapped::normal_cut`'s cast is the same cast. A drawing that agreed only to nine decimals
+///   would have been a different part with a plausible-looking diff.
+///
+///   It used to be `r² == 1849/16` on the nose, and the G1 revision is what ended that: with an
+///   R 0.3 root fillet at each end of the rim its junctions became **arc-to-arc**, where both sides
+///   own their endpoints and neither may be moved, so the rim is the side that gets re-gauged —
+///   `r²` lands 1.59e-12 high, a radius moved by 7.4e-14 mm. Before the fillets it met `LINE`
+///   endpoints, which the importer may slide for free, and kept its stated radius bit-for-bit.
+///   The claim that survives is the stronger one to state anyway: the deviation is bounded by the
+///   importer's **own** reported `δ`, so a gauge that drifted further would still be caught.
+/// * **the flanks are radial** — each one's line passes within `4·10⁻¹⁴ mm` of the axis, which is
+///   the file's float noise and not an exact zero. Cast from a point on the axis a radial line
+///   sweeps a *plane through the axis*, and whether a ruling lies in that plane or crosses it is
+///   the whole of `author/tests/rim_notch.rs`.
+#[test]
+fn the_devices_rim_file_states_the_recipes_own_radius_exactly() {
+    use interchange::dxf::{DxfOptions, read_dxf};
+    use interchange::element::Element;
+    use interchange::report::ImportFault;
+
+    assert!(matches!(
+        read_dxf::<Bignum>(acceptance::OUTER_CUT_DXF, &DxfOptions::default()),
+        Err(ImportFault::UnknownUnit { .. })
+    ));
+    let opts = DxfOptions::<Bignum> {
+        assume_unit: Some(acceptance::OUTER_CUT_UNIT),
+        ..Default::default()
+    };
+    let read = read_dxf::<Bignum>(acceptance::OUTER_CUT_DXF, &opts).expect("the device's rim");
+    assert_eq!(read.report.entities, 6);
+    assert_eq!(read.report.loops, 1, "{}", read.report.summary());
+
+    // The two error numbers stay apart here too: ours is the arc re-gauge, the file's is its own
+    // closure sloppiness, and it lands on the `LINE` endpoints where moving costs nothing.
+    let (delta, gap) = (&read.report.delta, &read.report.closure_gap);
+    assert!(
+        *delta < Q::new(1, 1_000_000_000_000i128),
+        "δ {}",
+        decimal(delta, 18)
+    );
+    assert!(
+        *gap > *delta && *gap < Q::new(1, 1_000_000_000i128),
+        "gap {}",
+        decimal(gap, 18)
+    );
+
+    let nominal = Q::new(1849, 16);
+    // A radius that moved by at most δ moves `r²` by at most `2rδ + δ²`; `22 > 2·43/4` covers both
+    // terms at this δ. Tied to the *reported* δ rather than to a constant, so a file whose gauge
+    // really drifted cannot pass by the importer quietly admitting a larger error.
+    let r2_slack = delta.mul(&Q::from_i128(22));
+    let mut rim = 0usize;
+    let mut flanks = 0usize;
+    for el in &read.loops[0] {
+        match el {
+            Element::Arc(a) => {
+                assert!(a.is_consistent(), "an assembled arc left its circle");
+                let off = a.r2.sub(&nominal);
+                let off = if off.sign() < 0 { off.neg() } else { off };
+                if off < r2_slack {
+                    rim += 1;
+                }
+            }
+            Element::Segment { start, end } => {
+                // The line through `start`/`end` misses the axis by |start × end| / |end − start|.
+                let cross = start[0].mul(&end[1]).sub(&end[0].mul(&start[1]));
+                let cross = if cross.sign() < 0 { cross.neg() } else { cross };
+                // The flanks are ≈1.31 long, so bounding the numerator alone bounds the miss.
+                assert!(
+                    cross < Q::new(1, 10_000_000_000_000i128),
+                    "a flank is not radial: |a × b| = {}",
+                    decimal(&cross, 20)
+                );
+                flanks += 1;
+            }
+            other => panic!("unexpected element {other:?}"),
+        }
+    }
+    assert_eq!(
+        rim, 1,
+        "one arc on the recipe's own Ø 21.5 circle, r² = 1849/16 to within the re-gauge"
+    );
+    assert_eq!(flanks, 2, "two radial flanks");
+
+    // The shape, by the arrangement's own fill rule: the disc out to 10.75 everywhere, and out to
+    // 13.75 only inside the lug's wedge.
+    let edges = read.profile().into_edges();
+    let at = |r: f64, deg: f64| -> bool {
+        let (x, y) = (r * deg.to_radians().cos(), r * deg.to_radians().sin());
+        let f = |v: f64| Q::new((v * 1_000_000.0) as i128, 1_000_000);
+        winding_parity(&f(x), &f(y), &edges)
+    };
+    assert!(at(10.0, 0.0) && at(10.0, 210.0), "the rim disc is material");
+    assert!(!at(11.0, 0.0) && !at(11.0, 270.0), "…and stops at 10.75");
+    assert!(
+        at(11.0, 90.0) && at(13.7, 90.0),
+        "the lug reaches out to 13.75"
+    );
+    assert!(!at(13.9, 90.0), "…and no further");
+    assert!(
+        !at(11.0, 82.0) && !at(11.0, 98.0),
+        "the lug is only 15° wide"
+    );
+}
+
 /// A file in inches produces a part 25.4× the one in millimetres — exactly, vertex for vertex.
 /// This is the control that makes the unit path a tested claim rather than a plausible one.
 #[test]
@@ -251,9 +366,9 @@ fn a_real_device_drawing_reads_as_one_exact_loop() {
         ..Default::default()
     };
     let read = read_dxf::<Bignum>(acceptance::INNER_CUT_DXF, &opts).expect("the device's bore");
-    assert_eq!(read.report.entities, 8);
+    assert_eq!(read.report.entities, 6);
     assert_eq!(read.report.loops, 1, "{}", read.report.summary());
-    assert_eq!(read.loops[0].len(), 8, "every entity is in the loop");
+    assert_eq!(read.loops[0].len(), 6, "every entity is in the loop");
 
     // The junctions really were arc-to-arc: a re-gauge is the only thing that can put δ above the
     // per-entity floor, and the two numbers differ by four orders.

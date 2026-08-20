@@ -669,13 +669,34 @@ pub fn eval_poly_on<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
 ///
 /// Both forms are sound, so their **intersection** is too, and neither is uniformly tighter: Horner
 /// wins on a wide interval where `p′` is badly behaved, the mean-value form wins wherever there is
-/// cancellation to lose. Taking both costs one extra Horner pass over the derivative.
+/// cancellation to lose.
+///
+/// The mean-value form is applied **nested**: the slope `p′(X)` is itself enclosed by its own
+/// centre, and so on down [`CENTRED_DEPTH`] levels. One level is not enough exactly where this
+/// function is most needed — a chart field is a degree-~24 polynomial whose *derivative* carries
+/// the same cancellation, so `p′(X)` under plain Horner is wide enough that `p′(X)·r` still
+/// swamps the value. Measured on the device drawing's fillet loops: a traced sub-piece whose true
+/// 3-D extent is ~10⁻⁶ enclosed to a ~1 mm box at depth 1, and to its own scale nested. Each level
+/// is the same mean-value theorem, each intersection is sound, and the recursion grounds at an
+/// affine `p` (whose Horner enclosure is exact up to rounding).
 pub fn eval_poly_on_centred<B: Backend>(p: &Poly<B>, x: &RatIv<B>) -> RatIv<B> {
+    centred_rec(p, x, CENTRED_DEPTH)
+}
+
+/// Nesting depth for [`eval_poly_on_centred`]: enough that `|p⁽ᵏ⁾(X)|·rᵏ` at the deepest plain
+/// enclosure is negligible for the sub-interval radii the certificates actually use, while the
+/// cost stays one exact point-eval and one derivative per level.
+const CENTRED_DEPTH: usize = 8;
+
+fn centred_rec<B: Backend>(p: &Poly<B>, x: &RatIv<B>, depth: usize) -> RatIv<B> {
     let plain = eval_poly_on(p, x);
+    if depth == 0 || p.degree().unwrap_or(0) <= 1 {
+        return plain;
+    }
     let m = x.mid();
     let centre = p.eval(&m);
     let radius = x.hi().sub(x.lo()).mul(&Rat::new(1, 2));
-    let slope = eval_poly_on(&p.derivative(), x);
+    let slope = centred_rec(&p.derivative(), x, depth - 1);
     // `p′(X)·(X − m)` ⊆ `p′(X)·[−r, r]`, then shifted by the exact centre value.
     let spread = slope.mul(&RatIv::new(radius.neg(), radius)).rounded();
     let mv = RatIv::point(centre).add(&spread).rounded();

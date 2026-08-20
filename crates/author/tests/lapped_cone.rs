@@ -433,3 +433,169 @@ fn the_ramp_profile_leaves_the_seam_alone() {
     );
     assert_eq!(even.regions[1].0.hi, even.regions[2].0.lo, "and they join");
 }
+
+/// **The two-ramp device develops, and its two gauge circles stay concentric (#302).**
+///
+/// This is the configuration that carries *both* cut files — `acceptance::two_ramp_spec`, the
+/// device `examples/lapped_cone.rs` emits — and until this test existed nothing in the suite ever
+/// called `develop()` on it. The recipe tests above certify the *parameters*; the geometry went
+/// uncovered, and a boundary the rail oracle could not fit sat there refusing while everything
+/// stayed green.
+///
+/// **Why the second assertion, and not just `Verified`.** A distance certificate bounds how far the
+/// emitted polyline is from the true development; it says nothing about *which* curve that is. The
+/// bug it missed was a rail clamped into a stretch of σ where its wall had no real intersection at
+/// all — a wrong curve, not a loose one. So the check here is shape-valued: both drawings' main
+/// arcs (`inner-cut.dxf`'s Ø 8 bore and `outer-cut.dxf`'s Ø 21.5 rim) are **coaxial with the cone
+/// axis**, so each develops to a circular arc about the *developed apex* — one point, shared. Two
+/// arcs at different radii sharing a centre is a fact about the part's shape that no ε can fake,
+/// and it is exactly what a rail off its own wall would break.
+///
+/// The radius ratio is left loose (5%) on purpose: the trim is a `NormalCut`, cast from a drafted
+/// apex, so the map from sketch radius to developed radius is projective rather than linear and
+/// the two circles are displaced by different amounts. That displacement is the tool, not an error
+/// (`docs/engineering-log.md`, the cut-file ruling) — what must hold is the concentricity.
+#[test]
+fn the_two_ramp_device_develops_and_its_gauge_circles_stay_concentric() {
+    use certify_core::Verdict;
+
+    let part = acceptance::self_lapping_cone_from(&acceptance::two_ramp_spec(), 8, 1, false, None);
+    let flat = match part.develop() {
+        Verdict::Verified(f) => f,
+        Verdict::Unresolved(e) => panic!(
+            "the two-ramp device must develop; Unresolved at ε {:.3e}",
+            rat_to_f64(&e)
+        ),
+        Verdict::Refuted(f) => panic!("the two-ramp device must develop; Refuted({f:?})"),
+    };
+    let eps = rat_to_f64(flat.eps());
+    assert!(
+        eps < 3.5,
+        "the DRC bar is clearance/2 = 3.5; got ε {eps:.4}"
+    );
+
+    let pts: Vec<(f64, f64)> = flat
+        .outline()
+        .vertices
+        .iter()
+        .map(|v| {
+            let (x, y) = v.center();
+            (rat_to_f64(&x), rat_to_f64(&y))
+        })
+        .collect();
+
+    // The two longest stretches of outline that lie on *some* circle, by **arc length**. Each
+    // drawing's main arc is one of them; nothing else on this outline is circular for anything like
+    // as far (the flanks are straight, the fillets and caps are R 0.3). Ranking by *point count*
+    // instead looks equivalent and is not — raise `--segments` and a R 0.39 cap carries more
+    // vertices than the Ø 21.5 rim, and the check silently starts measuring the wrong two curves.
+    let runs = circular_runs(&pts, 1e-2);
+    assert!(
+        runs.len() >= 2,
+        "the bore and the rim must each develop to a circular run; found {}",
+        runs.len()
+    );
+    let (bore, rim) = if runs[0].2 < runs[1].2 {
+        (&runs[0], &runs[1])
+    } else {
+        (&runs[1], &runs[0])
+    };
+    // The bar is the *shape* claim, not the fit's own precision: 5e-2 flat units is ~70× tighter
+    // than the ε this development certifies, so a rail wandering off its wall cannot slip under it,
+    // while the greedy run-grower's slack (it stops at `tol`, not at the tightest sub-run) does.
+    let apex_gap = (bore.0 - rim.0).hypot(bore.1 - rim.1);
+    assert!(
+        apex_gap < 5e-2,
+        "two coaxial drawing circles must develop about ONE centre — the developed apex; \
+         the fitted centres are {apex_gap:.2e} apart (bore R {:.4}, rim R {:.4})",
+        bore.2,
+        rim.2
+    );
+    let ratio = rim.2 / bore.2;
+    let drawn = 10.75 / 4.0;
+    assert!(
+        (ratio - drawn).abs() < 0.05 * drawn,
+        "the developed radii must keep the drawing's Ø 21.5 : Ø 8 proportion up to the normal-cut \
+         cast; got {ratio:.4} against {drawn:.4}"
+    );
+}
+
+/// The maximal runs of consecutive points that fit a circle to within `tol`, as
+/// `(centre_x, centre_y, radius)` — the two of **greatest arc length**.
+///
+/// Greedy and deliberately simple: grow a run while the algebraic fit still holds, then start the
+/// next one after it.
+///
+/// Arc length, not point count, is what makes the ranking mean "the two big arcs". The outline is
+/// sampled per σ-station, so raising `--segments` multiplies every feature's vertices alike and a
+/// R 0.39 cap overtakes the Ø 21.5 rim on count while remaining two orders shorter — the check
+/// would then compare two fillets and call them the gauge circles.
+fn circular_runs(pts: &[(f64, f64)], tol: f64) -> Vec<(f64, f64, f64)> {
+    const MIN: usize = 12;
+    let mut runs: Vec<(f64, (f64, f64, f64))> = Vec::new();
+    let mut i = 0;
+    while i + MIN <= pts.len() {
+        let mut j = i + MIN;
+        let mut last = match fit_circle(&pts[i..j]) {
+            Some(c) if c.3 < tol => Some(c),
+            _ => None,
+        };
+        if last.is_some() {
+            while j < pts.len() {
+                match fit_circle(&pts[i..j + 1]) {
+                    Some(c) if c.3 < tol => {
+                        last = Some(c);
+                        j += 1;
+                    }
+                    _ => break,
+                }
+            }
+            let c = last.expect("the seed fit held");
+            let arc = pts[i..j]
+                .windows(2)
+                .map(|w| (w[0].0 - w[1].0).hypot(w[0].1 - w[1].1))
+                .sum();
+            runs.push((arc, (c.0, c.1, c.2)));
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    runs.sort_by(|a, b| b.0.total_cmp(&a.0));
+    runs.into_iter().take(2).map(|(_, c)| c).collect()
+}
+
+/// Kåsa's algebraic circle fit: `(cx, cy, r, max |‖p − c‖ − r|)`, or `None` where the points are
+/// collinear enough that the normal equations are singular.
+fn fit_circle(p: &[(f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    let n = p.len() as f64;
+    let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut sxxx, mut syyy, mut sxyy, mut sxxy) = (0.0, 0.0, 0.0, 0.0);
+    for &(x, y) in p {
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        syy += y * y;
+        sxy += x * y;
+        sxxx += x * x * x;
+        syyy += y * y * y;
+        sxyy += x * y * y;
+        sxxy += x * x * y;
+    }
+    let c = n * sxx - sx * sx;
+    let d = n * sxy - sx * sy;
+    let e = n * sxxx + n * sxyy - (sxx + syy) * sx;
+    let g = n * syy - sy * sy;
+    let h = n * sxxy + n * syyy - (sxx + syy) * sy;
+    let den = 2.0 * (c * g - d * d);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let (a, b) = ((e * g - h * d) / den, (c * h - d * e) / den);
+    let r = p.iter().map(|&(x, y)| (x - a).hypot(y - b)).sum::<f64>() / n;
+    let res = p
+        .iter()
+        .map(|&(x, y)| ((x - a).hypot(y - b) - r).abs())
+        .fold(0.0, f64::max);
+    Some((a, b, r, res))
+}

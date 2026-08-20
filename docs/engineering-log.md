@@ -768,6 +768,637 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#310: the flat pattern's arc resolution was a per-piece constant, so long rails starved
+  (2026-08-20).** The user: *"svg contour resolution on cone part got very low"*. Measured: the
+  outer body arc — one rail piece spanning more than half the device — was emitted at
+  `part.segments` uniform chords like every other piece, a **0.43 sagitta** facet at the demo's
+  `--segments 8` (the debug-cycle invocations had been shipping that setting's artifacts). Two
+  fixes: the uniform stretch's chord count now scales with the piece's **share of the σ-domain**
+  (`n = max(segments, ceil(2·segments·span/domain))` — emission-only, the same certified rail,
+  per-chord unroll certificates only tighten), and the demo artifacts regenerate at the example
+  default 16 — worst arc sagitta **0.426 → 0.069**, outline 454 → 770 points, develop ε 3.408 →
+  3.412 (the denser sup honestly measured), develop +2 min, solid unchanged.
+
+  The one budget that moved is the *measurement-completeness* lesson in miniature: the
+  self-lapping part's fold ε rose 3.398e-1 → 4.002e-1 **with unchanged geometry** — the new
+  points on the big arcs are where its fold residual peaks, and the old budget (7/20, documented
+  at 1.03× headroom, the tightest of its four) was calibrated to the sparser sup. Raised to
+  21/50 with the dating note in the fixture. The deeper emission-resolution question — a sagitta
+  budget instead of counts, like the solid's `chord_pcurve` — is the [`faithfulness is
+  monotone`] "pin a size budget beside every ε budget" doctrine applied to *output* fidelity;
+  left on the task.
+
+  0.069 was still too coarse for the design (user), so the shipped artifacts moved to
+  `--segments 48`: worst arc sagitta **0.00765** (the 1/n² law lands exactly: 0.069·(16/48)² =
+  0.0076), outline 770 → 2307 points, solid 170 faces · 0 free · occt ok, both certificates
+  Verified (the SVG/STEP emit only inside the `Verified` arms).
+
+  *2026-08-20 · resolved (suite 824/824; demo12 = segments 48 shipped) · #310*
+
+- **#309: the de-subdivided splice chains cut across near-vertical flanks — the walk is now
+  measured, and it surfaced two general builder hazards (2026-08-20).** The user's report: the
+  solid "broken now, spurious jogs, the worst a razor-thin artifact on an internal edge". The
+  measurement: a wedge face 11 long whose bottom edge was a **0.6-long diagonal** cutting across
+  the tab flank between two stations 1.1·10⁻⁴ of σ apart. The mechanism: #306's station-floor
+  walk **dropped** every route point advancing σ by less than the floor — its own doc claimed the
+  fold-in was "budget-class", but the deviation is the dropped stretch's µ̂-travel, which for a
+  drawn radial flank is the flank *height* — and a merged piece of ≤ 4 nodes interpolated all of
+  them, so the fits check was vacuously exact while the interpolant swung freely in between.
+
+  ⚠️ **One accusation retracted.** The "lug boundary oscillating 0.5 where the drawing has a
+  dome" (this entry as first drafted, and the #309 task title) was my measurement's model error,
+  not geometry: the deviation was judged against an `r = const` arc's sagitta, but the drawing's
+  lug cap *bulges* (crown r 11.68 → 12.00 → 11.70), and the emitted boundary lies **exactly** on
+  the cone (r-vs-z affine fit residual 0.0000, slope −65/72 to 4 digits). Second retraction of
+  this shape in the milestone (the DD "ziggurat" was the two lap sheets): *judge a curved edge
+  against the drawing's own construction, never against an assumed primitive.*
+
+  The walk (`author::realize::{splice_nodes, splice_merge, splice_fits_route}`) is now built
+  from measured classification, third design standing after two were killed by route data:
+  1. **Windows only where measurement demands and room allows.** Clusters (σ-hull ≤ one floor)
+     thin to one node each; a cluster whose µ̂-jump exceeds the sagitta budget becomes a
+     floor-wide steep affine **window** only when a floor of room exists on each side (a pinned
+     corner anchors its side). Threshold-classified cliffs died on the data: fillet chains pass
+     through every slope band on the way to radial, their windows crowded each other, and the
+     crowding merges swallowed plateaus until nothing fit (7 of 8 routes fell back). Where
+     there is no room the stretch is dense, node gaps are floor-scale, and the climb rides the
+     node-to-node chord — within two floors of σ, the budget's own horizontal equivalent.
+  2. **The honesty predicate covers the whole certified trace.** A merged piece must honour
+     every covered route point — within budget vertically, or crossing µ̂ = m within ±2 floors
+     (a steep boundary is horizontally measurable, not vertically) — **and** every adjacent
+     route pair's chord midpoint within 2× budget: `chord_pcurve` certifies the true boundary
+     chord-close *between* its points, so the corridor check stops an interpolant from swinging
+     across a sparse gap no sample would catch. No thresholds, no vacuous ≤ 4-node passes.
+  3. **The fallback keeps the export's own floor.** Station-per-chord, but points advancing
+     less than `2⁻¹⁹` fold into the next chord — a piece boundary below the thinning scale is
+     exactly the hazard below.
+
+  The two **builder** hazards (`export::brep_build`), both pre-existing and unmasked here:
+  1. **Cross-chain boundary proximity defeats station thinning.** The tab (inner chain) and lug
+     (outer chain) flanks are radially aligned *by design*; their piece boundaries landed
+     4.6·10⁻⁷ of σ apart, `thin_stations` merged the station pair, and the adjacent slice then
+     straddled the other chain's boundary — its lid evaluating one piece across a handoff the
+     neighbour respects, an exact cross-ring mismatch, `SolidRefused`. Fix: `snap_chain_bounds`
+     moves every interior piece boundary onto its surviving station (≤ one export step, `2⁻²⁰`),
+     *then* the stitch re-establishes bit-exact C0.
+  2. **The constant-shift stitch propagates.** Post-snap, the stitch residual at a steep window
+     boundary is `slope · step` ≈ 2.7·10⁻³ — a constant shift dragged the whole rest of the
+     boundary by that much and pulled downstream rails off their vertices (OCCT
+     `MakeEdge(bezier)` refused; the shim's error now reports curve-end and vertex context).
+     Fix: the stitch is **local** — an affine ramp absorbs the residual and dies at the piece's
+     far end, so nothing propagates.
+
+  Measured, device demo before → after: wedge faces **8 → 2**, and the two survivors are
+  *faithful* — their diagonal is the certified node-to-node chord of the drawn fillet (the slab
+  is a partition slice crossing a steep stretch; internal hairline edges only). Faces 154 → 158,
+  STEP 12,506 → 12,770 entities, min edge 1.39e-3 → 1.34e-3, solid ε 1.242 unchanged, develop
+  ε 3.408 unchanged (the flat path never went through any of this — the flat SVG was clean all
+  along, which is what localized the defect to the solid's chain channel).
+
+  *2026-08-20 · resolved (unit tests on the walk; device solid Verified + occt ok) · #309*
+
+- **#307 + #306: the splice-handoff jog is closed at its source (rail-end pinning), and the
+  solid's splice chains are de-subdivided (2026-08-19).** ⚠️ *Correction (2026-08-20): this
+  entry's claim that "a steep flank breaks the run and stays its own affine piece with a legal
+  station width" described the intent, not the code — the floor walk silently dropped sub-floor
+  stretches and folded their µ̂-travel into unchecked neighbours, which is #309.* The jog was a
+  *designed-in* micro-cap:
+  the assembly comments said outright that a splice's traced tail starts at the wall's **true**
+  branch value while the rail it follows ends at its **fitted** one, with a ruling-segment cap
+  closing the ε-wide difference — visible as the sign-flipping zigzag at every cap tangency.
+  The fix, `export::trim::pin_rail_ends`: a fitted rail is pinned to the wall's true branch value
+  (snapped on `TRACE_SNAP_BITS`, the exact composition `quadric_tail` gives its from-node) — but
+  only at span ends that are **tangent-ruling insets** (`lo/hi_is_tangent`), the only ends a
+  splice hands off at. The ladder passes those flags; every other caller pins nothing.
+
+  Four defects found on the way, each a finding of its own:
+  1. **Certifying the pinned polynomial through the RevCone symbolic arm inflated its bound six
+     orders on a 2·10⁻¹⁰ perturbation** (7.6e-8 → 5.2e-2, bit-identical for two different tiny
+     perturbations — a structural sensitivity, the [enclosure-cancellation] class again). Dodged,
+     not fought: certify the *raw* fit, then pin, and account `ε ≤ ε_raw + max(|e_lo|,|e_hi|)` by
+     triangle inequality — the correction's sup is attained at an end, so the bound is exact at
+     the pin's own scale, and the sensitive path never sees the perturbed polynomial.
+  2. **A correction applied to ends that never hand off is pure interior distortion.** The
+     circumscribed-disc fixture authors a hole 0.0029 clear of the gore's bore; pinning the
+     bore's *band-edge* ends moved its mid-span and the flat boolean swallowed the hole
+     (`TopologyMismatch`). Hence the tangent-ends-only rule: the ladder passes its
+     `lo/hi_is_tangent` window flags, and only tangent-ruling insets — the ends a flank splice
+     actually meets — are pinned. The defect was invisible on the device and decisive on a
+     fixture packed to 0.003 clearance ([fixture-scaling]-adjacent).
+  3. **A steeper-than-affine decay poisons every downstream enclosure.** A quartic per-end basis
+     (leak `max|e|/8`) looked strictly better — but its coefficients scale as `e/w⁴` (~10³ on a
+     narrow span), and the develop went Verified 3.4 → **Unresolved 6.6 with no single large pin
+     anywhere**: the unroll's chord bounds and every other interval consumer of the deg+4 rail
+     hit the same cancellation wall, one layer downstream. The +4 degree also broke OCCT
+     `MakeEdge` on the emitted Béziers (the G7 finding, materialized). The shipped correction is
+     the plain **affine** interpolant of the two end residuals: coefficients `~e/w`, degree +1,
+     its one vice (whole-span drag on a loose rail) already contained by rule 2.
+  4. The residual after the fix is a *different, smaller* artifact: ~0.003 sign-flip clusters at
+     two of the four cap tangency **vertices** (one pass), the walked-in-vertex/tangent-gap
+     class — logged on the follow-up task, not #307's mechanism.
+
+  #306 rides in `author::realize::splice_chain`: a σ-advance floor of `2⁻¹²` between chain pieces
+  (a piece end is a builder station; the connector elbow's ~10⁻⁶-σ micro-pieces were the 2·10⁻⁴
+  sliver edges OnShape refused), plus greedy merging of chord runs into one interpolating
+  polynomial piece (Newton through ≤ 4 spread nodes, adopted only where it passes every skipped
+  point within the chord sagitta budget — the same trust class as the chords it replaces). A
+  steep flank breaks the run and stays its own affine piece with a legal station width.
+
+  Measured on the two-ramp device, chord-run → this: develop Verified ε 3.396 → **3.408** (the
+  pin's honest 0.012), solid **446 → 154 faces** (94 pre-#305), STEP **6.1 MB / 35k entities →
+  1.1 MB / 12.5k**, min edge **2.1e-4 → 1.4e-3**, OCCT ok (the chord run's `MakeEdge` failure
+  gone), full pipeline ~19.3 → **~16.5 min**, suites 349/349. Flanks ride their rulings and the
+  caps join tangently at render scale on both features; the old handoff zigzag flips are gone
+  from both rail-handoff classes.
+
+  *2026-08-19 · resolved (suite 349/349; device demo8e verified) · #306, #307*
+
+- **#303 closed: the two lap passes SHOULD disagree about the same physical cut — the tail pass
+  rides the offset sheet, and the emitted flat encodes exactly the through-support draft effect
+  (2026-08-19).** The suspect measurement said the tail-pass lap images sit 0.05–0.08 off the
+  exact cast+develop with a −0.64° rotation while the head pass is ≤ 0.03. The resolution is that
+  the *ideal* was wrong, not the pipeline: it cast onto the neutral cone for **both** passes,
+  but the tail sheet sits at support `h = −1/4` (the STEP's own vertices cluster on the face-cones
+  — head faces at ±0.12 normal-units, tail at −0.13/−0.37, with the authored 0.01 bond gap visible
+  between +0.12 and +0.13). Every cast ray passes through the shared drafted apex, so the trace on
+  a face at normal offset δ is the neutral trace **scaled radially by `u = 1 − δ/z_A` at unchanged
+  azimuths** (similar triangles), and the developed image is congruent to that scaled trace up to
+  the connected γ-development's stitching rigid motion across the ramp (which is the "rotation").
+  Measured on the emitted flat, two features with two different apexes: the tab's shoulder width
+  ratio between passes is **0.9530 vs 0.9536 predicted** (inner apex `z_A = 8.0419`), the lug's
+  arc width ratio **0.9820 vs 0.98274 predicted** (outer apex `z_A = 21.6126`) — both at <0.1%.
+  Product-side corollary: on a real lap the tail layer's cut opening genuinely comes out smaller
+  by `u`; the kernel models it, exactly in the spirit of the cut-file ruling ("the cast's radial
+  displacement is the tool, not an error to pre-distort away"). Method note: the confirming
+  instruments were rigid-invariant widths, not radii — a congruence preserves distances while the
+  stitching translation moves every `R`.
+
+  *2026-08-19 · resolved (measurement-model error; pipeline faithful) · #303*
+
+- **The solid's boundary chain now walks the traced splices — the lug/tab sides are radial and the
+  caps tangent in the STEP (2026-08-19, #305 fixed).** Two changes in `realize.rs`: the solid's
+  `certify_boundary` call now requests `traced_splices` (the `false` there was a stale economy from
+  the era when the STEP thinning would have eaten µm-fine tails), and `splice_chain` replaces the
+  one-affine-bridge-per-splice with a monotone hull walk over `chord_pcurve` samples of `sp.curves`
+  — σ-advancing points ≥ 2⁻²⁰ apart become affine pieces, vertical elbow stretches fold into the
+  next advancing piece, endpoints pinned to the rails' `(edge, value)` corners, empty `curves`
+  degenerating to the old single chord. Measured on the two-ramp device STEP (same instrument as
+  the defect): the lug's long flank edges go **15–16° off radial → ≤ 0.4°**, the tab's **4–5.7° →
+  ≤ 0.1°**, and the cap–side junctions **60–84° corners → tangent at render scale** (the dome was
+  already a true rational Bézier; only its approaches were bridged). Both suites and the demo are
+  green (develop ε 3.396, solid ε 1.242, OCCT ok, 0 free edges). Two honest caveats. *Cost*: every
+  splice-chain piece spawns a station (full ruling + both shells), so the solid grew 94 → 446 faces,
+  7 582 → 35 110 STEP entities, 484 → 557 s — growth shape O(features × chords-per-cap), fine at
+  this scale, watch it on feature-dense parts. *Method*: a chord-vs-chord turn metric first showed
+  "66° corners" in the fixed solid; both legs were secants of fast-turning curves at different
+  scales — the dome Bézier's own secant at the matched 0.2°-azimuth scale is the same 25°, so the
+  positions are sagitta-bounded and the kink is sampling, not geometry. Same lesson as the ziggurat,
+  one level up: **a turn angle between chords of curved edges is not a tangent break; compare
+  secants at matched scale, or pull the true end tangents.**
+
+  *2026-08-19 · resolved (device verified; before/after renders in the session scratchpad) · #305*
+
+- **One-vertex-per-piece in the solid's hole/wire channels — fixed with a sagitta-budget chorder;
+  and the device's "tip steps" turned out to be the lap's two sheets, not a defect (2026-08-19,
+  #304).** Two findings that started as one, separated by measurement.
+
+  The real defect: `export::trim::hole_poly` emitted **one vertex per `BoundaryArc` piece** and
+  silently chorded curved pieces — its own doc asserted "the pieces are straight in (σ, µ̂)", stale
+  since the p-curve milestone made cut rails quadric; `hole_rail`'s chains are affine-only
+  (`intercept + slope`), and the mixed-boundary end-arc wire sampled one point per piece
+  (`realize.rs`). So in the channels those feed — interior holes (drills, traced footprints, the
+  L-slot class), `outline_solid` contours, mixed-boundary arcs — a cap-sized feature quantizes to
+  piece-count chords no matter what `--segments` says, invisibly to every certificate (chord
+  sagitta ≪ the solid ε): the [faithfulness-is-monotone] class. Fixed by
+  `export::trim::chord_pcurve`: exact-rational bisection of a piece until every chord's
+  *perpendicular* (σ,µ̂) sagitta is under `2⁻⁸`, capped at `2⁵` chords/piece; `loop_chords` is the
+  one vertex sequence `hole_poly` and `hole_rail` now both consume, and the end-arc wire chords
+  through the same helper. Straight pieces still cost one chord, so the station economy stands.
+  Unit-tested (straight → 1 chord; parabola → within budget against the *true curve*; a rational
+  half-circle → exactly the cap). One method note: the criterion measures perpendicular sagitta,
+  so a steep stretch legitimately stops subdividing early — a first test expecting the cap on
+  `100·t²` was wrong, the code was right.
+
+  The retraction: the two-ramp device's STEP is **bit-identical** under this fix, because the
+  device has **no interior holes** — both cut files are its *boundary chains* (fitted rational
+  rails + splices), a third channel. And the viewer's "two steps at the tab tip" are not
+  quantization at all: extracting the STEP's actual edge geometry shows each tip curve is a
+   12-control-point rational B-spline dipping mid-tab (a correctly *curved* cap wall), the straight
+  side edges run exactly along the surface normal with |Δ| = the sheet thickness, and the two
+  nested quads are the **two lap sheets** the tab is cut through. A top-view render of the emitted
+  edges shows smooth nested cap arcs. The first diagnosis read 8 vertices as "2 flat strips per
+  face" without extracting the curves between them — **vertex positions alone cannot distinguish a
+  ziggurat from a curved wall; pull the edge geometry before calling something faceted.**
+
+  The user then re-asserted their two original observations — caps not tangent to sides, outer
+  sides not along rulings — and per-edge tangent measurement on the STEP **confirms both** (#305):
+  the lug's sides are 15–16° off radial (missing the axis by ~3 mm), the tab's 4–5°, each sweeping
+  exactly ~1.08° of azimuth; the caps are nearly-µ̂-constant shallow arcs at the wrong level (the
+  lug's top flat at r* 11.70 across 13° of azimuth where the true dome runs 11.30→11.92→11.30)
+  meeting the sides at 60–80° corners. The flat from the *same run* overlays the exact cast to
+  ≤ 0.03, so this is the **third channel** diverging: `realize.rs chain()` gives the solid one
+  affine bridge per splice (the 1.08° = the fit-inset gap between certified rail segments, crossed
+  diagonally where the flat traces `sp.curves` through it) and selects a cap piece the flat
+  demonstrably does not render. So the retraction above was itself half-wrong: the tip *walls* are
+  smoothly curved, but the curve they follow is the wrong one. The lesson compounds: **judge an
+  emitted boundary only against the exact expected curve — smoothness is not faithfulness** — and
+  the user's eye on the assembled view beat two rounds of structural forensics.
+
+  *2026-08-19 · chorder landed (hole/wire channels); device defect re-confirmed and re-localized
+  to the boundary-chain channel · #304, #305*
+
+- **The emitted cut features lie ON the exact cast+develop curve — the "invalid-looking" lug is
+  the ruled semantics, not an emission bug (2026-08-19).** The user judged the two-ramp pattern
+  visually wrong: the outer lug's round cap looks non-tangent to its sides, and the lug's sides do
+  not run along rulings the way the inner tab's do. Overlaying the *closed-form ideal map* on the
+  emitted SVG (the drafted-apex cast per the 2026-08-17 cut-file ruling — perpendicular-to-slant
+  gauge, apex on the axis at `z_g + r_g·tanβ`, so `r* = t·r_s` with `t = tanβ·z_A/(r_s +
+  tanβ(z_A−z_g))`, then `R = r*/sinβ`, `θ = φ·sinβ`) shows the head-pass images match to **0.028
+  (lug) / 0.011 (tab)** flat units — including the exact radial extents (predicted lug tip 17.785
+  vs measured 17.80; tab cap bottom 4.119 vs 4.121). Both drawn flanks *are* radial in the pattern
+  (0.5–0.6° off the apex ray) on the outer cut too. What the eye objects to is the map itself: the
+  outer cast is **anisotropic** (radial ×0.50 vs azimuthal ×0.87 at the lug tip, 1.5→1.7:1 over the
+  feature), so the drawn 1.01-long flanks develop to 0.62-unit stubs and the visible "sides" are
+  the cap's shoulders; and the r=1.5875 cap develops with radius of curvature **0.59 at the flank
+  junction vs 2.33 at the top** — G1 is preserved exactly (diffeomorphism invariant), but a 4:1
+  curvature spike at the junction reads as a corner. The inner tab sits where the same map is
+  near-isotropic (1.08–1.14:1), which is why it looks like the drawing. Method note: the ideal-map
+  overlay is the cheap decisive faithfulness instrument — a per-feature, shape-valued comparison
+  that took one script, where per-vertex turn angles drowned in the SVG's 3-decimal quantization.
+
+  One genuine defect fell out (#303): the **tail-pass** images are systematically ~0.05–0.08 off
+  the ideal (lug 0.078; tab 0.055 plus a −0.64° rotation) where the head pass is ≤0.03. The two
+  passes are isometric images of the same physical hole and must be congruent; suspects are the
+  σ'=−1/σ re-centered chart / the tail-pass anchor. Within certified ε 3.46 — invisible to every
+  certificate, caught only by the overlay.
+
+  *2026-08-19 · assessed, no fix applied (user is weighing a reengineering pass) · #303*
+
+- **A gap between two tangent rulings is not a window until its sign says so — and the outermost
+  stretch is a window too (2026-08-19, #302).** The two-ramp `lapped_cone` demo — the only device
+  carrying *both* cut files — reported `develop Unresolved at ε 7.000e0` and `solid Unresolved at
+  ε 7.000e0`, and no amount of `--segments` or `subdiv` moved it (the log's own
+  `1280 → 7.0000e0, 5120 → 7.0000e0` saturation was this, unrecognised). **`ε 7.0` was never a
+  certificate**: it is `part.clearance` verbatim, the fail-closed sentinel `certified_rail_surface`
+  returns when `fit_cut_rail` *declines*, so it is not a loose bound and is not refinable. Reading
+  it as one cost a day of refining a number that could not move.
+
+  The declining label was `(1, Wall(3, false))` — and entity 3 of `inner-cut.dxf` is
+  `ARC c=(0,0) r=4.0`, the Ø 8 bore itself. Instrumenting `pick_root` at the node it gave up on
+  showed `b² = 1.8754e5` against `4ac = 1.8789e5`, `disc = −355.6`: a **genuinely** negative
+  discriminant, 10¹²·ε_f64 clear of the cancellation hazard the same expression carries elsewhere.
+  The wall was being asked for a rail over σ where it does not meet the ruling at all.
+
+  Two faults, both in `realize`'s model of a wall's real σ-window, both the same missing concept:
+
+  1. **The outermost stretch had no name.** `window_around` scanned `brackets.windows(2)` only, so
+     `band.lo → first root` and `last root → band.hi` were unnameable. A wall real from the band's
+     edge up to its one tangent ruling — which is where a derived σ-end puts the bore's rail — got
+     `window = None`, which loses the clamp *and* silently degrades the TANG.B fit ladder to its
+     single unclamped rung. `hulls_of` then handed the oracle a hull reaching past the tangency.
+  2. **A root gap was assumed disc-positive.** `disc` alternates sign across simple roots, so half
+     the gaps are stretches where the cut is *not real*, and clamping into one is worse than not
+     clamping: `(0, Wall(3, true))` got a perfectly well-formed window `(−1.0677, −0.0463)` that was
+     the negative side, and declined there too.
+
+  `window_for` now cuts the band at every bracket, keeps the ends' provenance, tests `disc` at each
+  stretch's own midpoint (sound: the brackets isolate every root in the band, so no root is inside),
+  and picks the disc-positive stretch overlapping the raw span most. `flank_splice`'s `turn_of` had
+  the identical blind spot — `k == 0` and `k + 1 >= b.len()` were hard refusals — and now falls back
+  to the band end, which is the same window; the `Result<_, ()>` it needed for that refusal is gone.
+
+  A third, smaller one fell out: **the inset is a stand-off from a tangent ruling**, the √-branch
+  endpoint a graph fit cannot follow. A window end that is the band's own edge is no such thing, and
+  insetting there only shortened the rail short of the σ the boundary needed — `covered` then read
+  `SHORT` at `σ = −1.125`, the domain end. `Window` carries `lo_is_tangent`/`hi_is_tangent` so the
+  ladder insets only where there is something to stand off from.
+
+  Result on the demo (`--segments 8 --panels 1`): `develop Verified ε 3.396e0`,
+  `solid Verified ε 1.242e0, 94 faces, free 0, non-manifold 0` — both better than the last recorded
+  good run on this driver (`develop ε 3.413`, `solid ε 3.496`, same 94 faces).
+
+  **Two method notes worth carrying.** *First*, this was **not** a TANG regression: the pre-TANG
+  commit `eaba5d8`, run against the same new drawings in a worktree, gives the identical
+  `develop Unresolved at ε 7.000e0`. TANG.A–D fixed the two `rim_notch` fixtures, which use
+  `self_lapping_spec` with the ramp slid off the wedge; this device was never in that verified set.
+  *Second*, and the reason it stayed invisible: `author/tests/lapped_cone.rs` certified the
+  **recipe** and the BONDED seam and never once called `.develop()`. A green suite over a device's
+  parameters says nothing about its geometry. The test now there develops it and asserts a
+  shape-valued property — both drawings' main arcs are coaxial with the axis, so each develops to a
+  circular arc about the **developed apex**, one shared point. Measured at both resolutions: fitted
+  centres 2.3e-2 (8 segments) / 1.9e-2 (32) flat units apart, radii 5.95 and 16.04, ratio 2.695 and
+  2.696 against the drawing's 10.75/4 = 2.6875 — the ~0.3% being the normal-cut drafted-apex
+  displacement, which the cut-file ruling says is the tool and not an error. Two radii sharing a
+  centre is a fact about the part's shape that no ε can fake, which is the point: **a rail off its
+  own wall is a wrong curve, not a loose one, and a distance certificate cannot tell them apart.**
+
+  One trap in writing that check, worth the sentence: ranking the candidate circular runs by
+  **point count** looks equivalent to ranking by arc length and is not. The outline samples per
+  σ-station, so `--segments 32` multiplies every feature's vertices alike and an R 0.39 cap
+  overtakes the Ø 21.5 rim on count while staying two orders shorter — the check then compares two
+  fillets to each other and passes for the wrong reason. Rank by arc length.
+
+  *2026-08-19 · fixed · `crates/author/src/realize.rs` (`Window`, `window_for`, `turn_of`),
+  `crates/acceptance/src/lib.rs` (`two_ramp_spec`), `crates/author/tests/lapped_cone.rs` · #302*
+
+- **The G1 revision left two `imported_outline` pins red on `main`'s branch tip, and one of them was
+  a real semantic change (2026-08-19).** Found while gating #302: `acceptance::imported_outline`
+  had two failures **already present at `086bfda`** — the TANG commit landed with them red, because
+  that campaign's gate ran `-p author` and never the `acceptance` crate. Both are the revised
+  drawings speaking:
+
+  - **Entity counts.** Each file is now six entities — two flanks, two R 0.3 root fillets, the gauge
+    arc, a nose arc — where the pins said four (rim) and eight (bore). The G1 revision *added* the
+    outer's root fillets and *removed* the inner's coaxial tip cap, and they met in the middle: the
+    two profiles are now the same shape entity for entity, which is worth knowing.
+  - **The rim's gauge stopped being exact, for a reason.** `outer-cut.dxf`'s rim arc no longer
+    imports at `r² == 1849/16` on the nose; it lands 1.59e-12 high, a radius moved by 7.4e-14 mm.
+    That is the importer's re-gauge doing its job: a root fillet at each end made the rim's
+    junctions **arc-to-arc**, where both sides own their endpoints and neither may move, so the rim
+    is the side that gets re-gauged. Before the fillets it met `LINE` endpoints, which slide for
+    free, and kept its stated radius bit-for-bit. The pin is now `|r² − 1849/16| < 22·δ` against the
+    importer's **own** reported δ — a strictly better claim than the equality it replaces, since a
+    gauge that really drifted cannot pass by the importer admitting a larger error.
+
+  *2026-08-19 · fixed · `crates/acceptance/tests/imported_outline.rs`*
+
+- **Tangential contact was the kernel's thinnest layer — the G1 drawing revision hit five distinct
+  defects at once (2026-08-19, TANG.A–D).** The user's new cut files made every junction of both
+  profiles tangential (fillets G1 to flanks and rims, caps G1 to flanks), which the drawings are
+  entitled to: tangency is a diffeomorphism invariant, the cast and the unroll are smooth away from
+  the apex, so a kink in the flat pattern is always a kernel defect — and one no distance
+  certificate can see, because **ε bounds distance, not direction**. The lug refused
+  (`RailSpanShort { op: 0 }`) and both parts' caps kinked ~50° at their flank junctions. Five
+  causes, each fixed at its own layer:
+
+  1. **Mixed-profile station starvation** (resolver): a quadric+affine profile probed targeted
+     stations only through its bounding-circle proxy, so the R 0.3 root fillet's ~1.2-cell window
+     got a boundary run by grid luck (one pass: never → the boundary jumped rim→nose with two walls
+     between, the splice's exactly-one-wall precondition failed, and the midpoint fallback overran
+     the nose's certificate → the `RailSpanShort`). Quadric walls now get their own q1/mid/q3
+     stations; hole-attribution *windows* stay the proxy's alone, or a subtract's loops would trace
+     twice.
+  2. **The fit ladder** (realize step 2): how much tangent inset a certifiable rail fit needs is a
+     property of the sheet, not a constant — the same fillet certified at ε 0.12 behind the 1/200
+     inset on the base pass and read ε 9.2–12.7 on the offset pass. Two rungs, `(1/200, ×1)` then
+     `(1/16, subdiv ×2)`; rung 1 is bit-identical to the old single attempt, and a middle
+     `(1/48, ×1)` rung was measured useless (ε 12.7 → 9.9, while rung 2 took the four fillet fits
+     to ε 0.02–0.04). Plus the **fidelity escalation**: a Verified fit with `ε > sweep/6` climbs
+     anyway, keeping the earlier rung as the floor — a cap rail Verified at ε 0.109 on a 0.42 µ̂
+     sweep met its own traced tail 29° off-direction with a 52 µm end residual; its mirror pass at
+     ε 0.218 escalated and joined cleanly, which is what places the bar at a sixth.
+  3. **The wrong-pass fallback** (splice + coverage): with a pass's own fit deferred, `find_piece`'s
+     last-resort arm returned the same wall's rail from the chart's *other pass* half a turn away
+     (#293's hulled-span sibling), and the splice did arithmetic on it
+     (`edges-out-of-order a=1.067 b=−0.936`). The splice now requires each piece to be certified at
+     this corner — per side: a continuing span covers the gap edge, a turning span overlaps the
+     window its turn opens — and `covered` reports the recorded fit reason instead of
+     `RailSpanShort` when the fallback piece doesn't reach the segment.
+  4. **Tangential corners parked at the gap midpoint** (corner refinement): two rails meeting
+     tangentially (rim–fillet) have no sign change for `bisect_root`, and `unwrap_or(mid)` silently
+     placed the corner up to half a cell off the contact. The difference's σ-derivative crosses
+     zero at the touch, so it is bisected the same way; measured, the corners moved from the grid
+     artifact 0.921875 to the exactly mirrored ±0.923387 / ±1.082006 across both passes.
+  5. **√-branch chordization** (emission): all remaining kinks were uniform sampling against
+     `µ̂ − µ̂_t ∝ √(σ − σ_t)`. The turn tail is now its own engine primitive
+     (`develop::cut::quadric_tail`): the branch from the rail's certified edge into the tangent
+     vertex, √-graded toward the vertex **only** — equal-turn chords at every `segments`. (Its two
+     predecessors are recorded on the function: cutting the tail out of the full-window loop gave it
+     `n·√f` of n pieces — three chords carrying ~50° — and a padded sub-window loop inherited the
+     loop's both-end grading, leaving the coarsest piece at the junction.) And the chain assembly
+     √-grades a rail's own chords into a spliced end (`g = span/4`, matching the bulk's last uniform
+     chord to the graded stretch at every `segments`) — the nose rail used to bunch 53° into its
+     last chord at the handoff, a visible facet on a cap the drawing draws G1.
+
+  The acceptance criterion grew the shape-valued check this class needs
+  (`rim_notch::cap_turns`): each emitted flank edge must join its arcs under 15° and its cap
+  neighbourhood must turn under 20° per real edge, where "real" excludes sub-5µm micro-caps *and*
+  **jogs** — short edges parallel to the flank, the fit's actual end residual bridged along the
+  ruling where two certified carriers meet. A jog is a translation artifact whose size is what the
+  certificates bound (measured 52 µm against ε 0.109); reading its direction as turning would call
+  every ε-wide step a 90° kink. Both drawing tests now pass with tails at 1.1–4°/chord and
+  junctions at 0.3–2°. Remaining artifact class, accepted and bounded: the ε-scale ruling-directed
+  jog at each splice handoff (lug: ~0.03 flat units against nose ε 0.43).
+  *2026-08-19 · fixed · TANG.A–D (#298–#301) · `author/src/{resolve,realize}.rs`,
+  `develop/src/cut.rs::quadric_tail`, `author/tests/rim_notch.rs`*
+
+- **The mixed corner splices, and the lug cuts (2026-08-18, #296 closed).** The generalization the
+  entry below asked for: `flank_splice`'s detection is now **per side**. A side **turns** — an
+  isolated discriminant root inside the corner's gap, where its window and its rail's certificate
+  end — or **continues**: no root in the gap, the rail certified straight across (the lug's rim,
+  which the flank meets transversally). At least one side must turn; when both do, #294's
+  overlapping-brackets clause holds unchanged. Construction as before, one `turn_tail` per turning
+  side instead of always two.
+
+  The part that did NOT come out of the analysis, and failed **silently**: where the boundary hands
+  off. The first cut read the continuing side's handoff from its rail piece's **span end**, and
+  three of the four corners declined — a continuing rail's span is hulled out to the neighbouring
+  run's first *sample*, a grid point up to a whole cell past the flank, so `edge_a < edge_b` came
+  out false (the one corner that fired, fired by grid luck: the sample sat 1.5e-4 left of the
+  nose's window inset). The declined corners then fell back to a midpoint `Corner::At` that sat
+  inside **both** rails' certificates — the rim's carrier continues inside the lug, so both rails
+  are genuinely certified there — and the part came back `Verified`, coverage-clean, with the
+  corner cut ~4e-3 in σ off the flank. No certificate caught that and none could have: every rail
+  was true to its own wall. The fold-the-edges-back-onto-the-drawing check caught it (1 flank edge
+  of 4), which is what it is for. The handoff is therefore the **turning wall's own root** at its
+  bracket edge, clamped into the continuing rail's certificate — which is also the flank's own
+  ruling (the σ where the flank plane's `b = n·ruling(σ)` vanishes), so the tangency isolation
+  answers for both claims, and the emitted `Cap` sits within the 2⁻⁴⁰ bracket of the true flank.
+
+  Measured on `ramp_off_the_wedge` + `outer_cut_profile()`: all four corners splice (roots at
+  σ = ∓1.067689, ∓0.936602), each emitting one exactly-vertical `Cap` along its flank; the
+  acceptance criterion — four emitted flank edges folding back onto the drawing's flank lines —
+  passes at tol 0.1 where before the fix it found 1. The pinned `RailSpanShort { op: 0 }` refusal
+  test is deleted, as planned: its failure was the signal the fix had landed.
+  *2026-08-18 · fixed · #296 · `author/src/realize.rs::flank_splice`, design doc §12.4*
+
+- **The rim tab's cap is traversed the wrong way, so the lug is cut as an inward bite
+  (2026-08-18, #296) — and my first diagnosis of it was wrong in an instructive way.**
+  `outer_profile = outer_cut_profile()` develops **`Verified`** and the tab comes out inverted: over
+  the lug's own wedge the emitted rim dips **inward**, to `15.8841` on the base sheet and `15.9169`
+  on the offset one, against `16.0429` elsewhere, where the drawing puts material reaching **out**
+  to `17.78`. The two notches sit at `ψ = ∓59.7°`, symmetric about zero — exactly the two passes of
+  plan azimuth 90°. And the radius the boundary takes if it follows the cap's **complementary** arc
+  (the 165° minor arc, dipping to sketch `ρ = 10.575`, rather than the drawn 195° arc reaching
+  `13.75`) is `15.9235`. Right place, right feature, right magnitude.
+
+  **What I got wrong, and why it is worth writing down.** I first reported the lug as *silently
+  dropped*, on the evidence that the emitted outline's **maximum radius** was identical — to four
+  decimals, same vertex index, same position — to the same circle authored with no lug. That
+  evidence is real and it is worthless: a maximum cannot move when a feature goes the *wrong way*.
+  I had built a scalar summary of a shape and then reasoned about the shape from the summary, for
+  several hours, including a chain of four "ruled out" hypotheses that were all answering the wrong
+  question. The user found it in a minute by **looking at the picture** and reading the curvature.
+  The rule that would have saved it: when the question is *what shape came out*, the first
+  measurement must be shape-valued — a radius profile, a fold-back, an overlay — never an extremum
+  or a norm. Extrema and ε are for *bounding* a shape you have already seen.
+
+  **What survives from that dead end**, each measured rather than argued, and all of it still true:
+  the **import is right** (`winding_parity` on the imported outline is correct at every probe —
+  material at ρ = 10 any azimuth, none at ρ = 11 off the wedge, material at ρ = 11 and 13.7 on it,
+  none at 13.9 — and `Extrusion::contains` uses that same predicate); it is **not convexification**
+  (an L-shaped kept contour on the narrow gore keeps its notch — `0.6587` against its convex hull's
+  `1.4923`); and it is **not arcs-plus-a-lug in general** (a major arc plus a radial lug, the
+  drawing's rim in miniature, carries its lug on the narrow gore — `0.5932` against the same
+  circle's `0.4219`, +40.6%). Also worth carrying: on `h′ = 0` sheet the flank walls contribute
+  *no* crossing at all (the plane contains the ruling, so `a` and `b` both vanish), so the wedge's
+  ends are marked by the nose and rim roots alone.
+
+  **The cause, from one instrumented print of `extruded_shadow` at σ = −1.011.** The crossings are
+  `nose far −12.103`, `rim −10.925`, `nose near −10.853`, and the patches came back as *three*:
+  `[−12.103, −10.925]`, `[−10.925, −10.853]`, `[−10.853, 0]`. They **abut exactly** — their union is
+  the right material, out to the lug's tip. But `cuts` carries every wall's crossings, and a wall
+  crosses wherever its whole *carrier* does, not only where it bounds: a ruling through the lug meets
+  the rim circle **inside** the lug, where the profile is filled on both sides. Consecutive inside
+  stretches were being emitted as separate patches.
+
+  That is harmless for `Subtract` — `comp_subtract` folded over abutting patches gives exactly what
+  it gives over their union, labels included — and **not** harmless for `Intersect`, where
+  `comp_intersect` yields one component per patch and `sample_comps` merges components only across a
+  gap carved by a single subtract op. So a non-convex kept region was fragmented into abutting
+  components and the pick kept whichever held the witness. Which one that was moved with the
+  geometry, which is why the earlier ramp-position table looked meaningful: it was measuring an
+  artifact. **Fix: coalesce consecutive inside stretches into one maximal patch** in
+  `extruded_shadow` (degenerate zero-width stretches join a run rather than breaking it).
+
+  With that, the lug is kept and the device refuses **by name** instead of shipping a wrong part:
+  `RailSpanShort { op: 0 }` — §12.4's p-curve end at the lug's **mixed corner**. The bore's tab has
+  a tangency at *each* end of its flank, which is the shape #294's `flank_splice` detects; the lug's
+  flank is tangent to the nose arc at one end and meets the rim **transversally** at the other, so
+  the two windows never overlap and the splice does not fire. The boundary genuinely jumps in µ̂ at
+  the flank azimuth — a `Cap` along the flank wall, the emission #294 already builds — so what has
+  to grow is the *detection*. That is the rest of #296, closed in the entry above.
+  *2026-08-18 · fixed (the shadow here; the corner in the entry above) · #296 ·
+  `author/src/resolve.rs::extruded_shadow`*
+
+- **Both of the device's boundaries now come out of the drawing (2026-08-18, #295).** The outer
+  trim was the last authored number in the recipe: a `Profile::circle` at `outer_r`, intersected.
+  `acceptance/data/outer-cut.dxf` replaces it — the Ø 21.5 rim interrupted over 15° about `+y` by a
+  lug reaching out to Ø 27.5 on two radial flanks and a 195° nose arc tangent to both. It is the
+  bore's tab inverted, and `LappedCone::outer_profile` is the field, wired through the *same*
+  `normal_cut` cast the disc used (gauged to `outer_r`, so the tool is unchanged and only the sketch
+  differs) by one `bound(r, profile)` closure that now serves both trims — the two differed only in
+  `intersect` against `subtract`, and keeping them as two constructions was how they would drift.
+
+  **The file lands on the recipe's own number.** Four entities → one loop, `δ = 1.2e-15`, closure
+  gap `2.3e-10` (the drawing's, on the two `LINE` endpoints, exactly as the bore file's is), and the
+  rim arc reads `r² = 1849/16` — **exactly** `(43/4)²`, the recipe's `outer_r`. The flanks are radial
+  to `|a × b| ≤ 4.6e-14`, i.e. their lines miss the axis by ≤ 4·10⁻¹⁴ mm: the file's own float noise,
+  not exact, which matters because a radial flank cast from an axis point is a **plane through the
+  axis** and that is the whole geometry of both cut files.
+
+  **Where it places, measured.** Material azimuth on this chart is `az = 270° + 4·arctan σ` (the kept
+  sheet is the *lower* nappe, so it is the ruling direction's azimuth plus 180° — worth writing down,
+  since reading the ruling alone puts every feature on the wrong side and mis-describes the lap
+  wedge). The lug's 82.5°–97.5° wedge therefore lands twice: `σ ∈ [−1.067, −0.937]` on the base cone
+  and `σ ∈ [+0.937, +1.067]` on the lapping sheet, straddling the pinned ramp's end at `σ = 1`. With
+  the ramp slid off that wedge the lug develops `Verified` — **but not faithfully**, which is the
+  entry above and the reason this one is not the landing it was written to be. Both files at once
+  on the same device also develop (`ε 3.478, 377 outline points, 333 s`), and the two-ramp driver
+  carries both through to a watertight solid (`develop ε 3.413, 443.7 s; solid ε 3.496, 94 faces,
+  0 free edges, 261.2 s`) — with the same caveat on the rim.
+
+  What **is** landed: the recipe field, the shared construction, the file, and the import — and the
+  bore's tab, which is checked against the drawing and passes.
+
+  **The pinned device refuses it, and by a different name than the tab earns.** A *subtract* that
+  bays in splits the µ̂-section and `sample_comps` says so (`SectionNotSimple`); with the lug the
+  section stays simple, every certificate passes, and the refusal comes at the far end —
+  `TopologyMismatch { expected_holes: 0, faces: 2 }`, the exact flat boolean assembling the outline
+  into two faces. Sliding the ramp under a fixed lug tracks it exactly: ccw ramp `[1/10, 1/2]` →
+  `Verified ε 3.478`; `[4/7, 9/10]` → `Verified ε 3.473`; `[4/7, 1]` (the pinned one, ending inside
+  the wedge) → **2** faces; `[9/10, 11/10]` (covering it) → **6**. So the refusal follows `h′ ≠ 0`
+  under the flank, and the face count follows how much of the wedge is under it.
+
+  **What that does *not* license is calling it #291's second face** — the tempting reading, and the
+  one I wrote down before checking the geometry. The two `Verified` rows emit the plain rim, so on
+  this chart the lug's walls bound nowhere; whatever the extra faces are, they are not the lug's
+  boundary modelled badly. Recorded as a refusal that must keep happening, and no more.
+
+  **The ε is a rail-fit chord bound, and the pinned fit leaves 0.6% headroom.** The lug device
+  certifies at `ε 3.478` against the part's own `clearance/2 = 3.5` gate, and that number does *not*
+  move with `segments` (3.4781 at 8, 16 and 32) — the #294 signature for "wrong knob", not for a
+  blind enclosure. Attributed by stage: the boundary certification is 3.478 and the unroll 1.81,
+  against 0.12 / 2.35 for the same device on plain discs. It is `RailFit::subdiv` that owns it —
+  `160 → 320 → 640` takes the boundary term `3.478 → 1.617 → 0.655` at `51 → 84 → 152` s, while the
+  fit's `degree` (4 → 6) and `bits` (44 → 80) move it not at all: a chord count, cleanly. So the
+  lug's walls simply need a finer rail fit than a concentric disc did, which is what a nose arc of
+  radius 1.59 at `ρ ≈ 12` should cost. Worth carrying: the bore-tab device sits at 3.387 on
+  the same gate, so *both* drawing-based devices certify inside 3.5% of the DRC bar at the pinned
+  `subdiv 160` — a recipe knob to raise before a third feature lands, not a wall.
+  *2026-08-18 · resolved · `acceptance/src/lapped.rs` (`outer_profile`, `bound`),
+  `acceptance/src/lib.rs` (`OUTER_CUT_DXF`, `outer_cut_profile`), `author/tests/rim_notch.rs`,
+  `docs/cutter-extrude-design.md` §12.5*
+
+- **The device drawing develops (2026-08-18) — the §12.4 mid-chain splice, and three more enclosure
+  walls behind it.** #294's localization run named the four `RailSpanShort` segments at once: every
+  one a **flank crossing** — the drawing's radial flank is collinear with a ruling, both fillets are
+  tangent to it, so both their µ̂-windows end at the *same* isolated discriminant root and the two
+  graph rails never cross. The junction refinement was bisecting a root that does not exist and
+  landing on a midpoint outside one rail's certificate; `covered` refused, correctly. The lift is
+  general, not tab-shaped: a run corner between two same-op quadric walls whose window brackets
+  overlap inside the corner's gap, with an affine wall between them in the profile cycle, becomes a
+  [`Corner::Gap`] and a `Splice` owns the stretch — each fillet's own `quadric_cut_loop` walked from
+  the rail's certified edge into its tangent vertex (`turn_tail`, half a `tangent_turn_arc`), an
+  exactly-vertical connector along the flank plus an exactly-horizontal micro-piece (both certified
+  against the flank wall by `pcurve_cut_fit`; emitted as `Cap`/`Rail` arcs, which the unroll carries
+  exactly — the *diagonal* between the vertices reads several mm through the generic chord bound
+  however true it is). The solid path takes one certified chord between the rails' own endpoint
+  values instead: the builder wants contiguous graphs, the chord's steep wall *is* the flank, and
+  the µm-fine tails would not survive STEP thinning anyway.
+
+  **Behind the splice sat three more instances of the enclosure disease, each measured before
+  fixed.** (1) The fillet loops' pieces all stuck at exactly `clearance/2` — the ball bound's
+  sentinel — because `quadric_distance_on`'s `|F|` was interval-accumulated: ~4·10² where the true
+  value is ~10⁻². Fixed by the centre: `|F| ≤ |F(m)| + Σ sup|∇Fᵢ|·hwᵢ`, `F(m)` exact, min with the
+  plain form. (2) Still stuck: the 3-D boxes themselves were **~1 mm wide for ~µm sub-pieces** —
+  `vec3_on` evaluated the degree-24 chart fields by plain Horner, and one level of the mean-value
+  form did not help because the *derivative* carries the same cancellation. `eval_poly_on_centred`
+  is now **nested** (`CENTRED_DEPTH = 8` levels of slope-by-its-own-centre), which returns the box
+  to the piece's own scale. (3) Still stuck at the sentinel: the ball search's floor `radius/16 ≈
+  0.22` is as large as the R 0.25 fillet itself — over such a ball the gradient's direction sweeps
+  every component's enclosure through zero and `g` collapses at *every* radius, however tight the
+  box. `STEPS 4 → 20`, with two monotone early-exits (`g` non-increasing and nappe once-failed in
+  the radius) so the walk costs one iteration on healthy paths. (4) Last: the steep fillet rails'
+  unroll chords read ~4–9 at `edge_subdiv = 4` where the true chord error is ~3 µm — σ↔µ̂ correlation,
+  not cancellation, so a **per-edge subdiv ladder** `[4, 16, 64]` (each rung a sound bound, running
+  minimum, escalate only while the gate fails) certifies them and costs shallow edges nothing.
+
+  Result: `rim_notch::the_drawings_tab_develops_and_its_flanks_land_on_the_drawing` — the drawing
+  `Verified`, and checked against the drawing rather than only green: the four flank cap edges (two
+  per pass) found by cast-computed length, their endpoints folded back to 3-D and pulled through
+  the drafted-apex cast onto the sketch plane, landing 0.0000–0.051 mm off the drawing's own flank
+  segments (base pass exact to 4 decimals; the offset pass carries the splice vertices' tangent
+  gaps), while the nearest same-length decoy misses by 2.6 mm. The whole seven-step verdict chain
+  (`NappeCrossed → … → Verified`) is the test's doc table. The **solid builds too** — measured once
+  (`author/examples/probe_solid_drawing.rs`): `VERIFIED, 74 faces, 0 free edges, 129 s`; pinning it
+  belongs to #290's acceptance.
+  *2026-08-18 · resolved · `author/src/realize.rs` (`Splice`, `flank_splice`), `develop/src/cut.rs`
+  (`turn_tail`, `rev_chord`, `quadric_distance_on`, `vec3_on`), `develop/src/interval.rs`
+  (`CENTRED_DEPTH`), `develop/src/unroll.rs` (edge ladder)*
+
+- **The resolver's sampled runs skip the tip arc on one pass of the tab (2026-08-18).** The run
+  structure is a sampled sweep (uniform grid + 3 targeted stations per disc-positive window), and
+  the drawing's tip arc — a coaxial arc, so **no** tangent window and no targeted stations of its
+  own — subtends 0.018 in σ against a 0.028 grid. On the σ > 0 pass two grid samples land inside
+  and the boundary reads `…fillet, tip arc, fillet…`; on the σ < 0 pass none do (the neighbouring
+  windows' targeted stations bracket the stretch and miss by 2·10⁻⁴) and the runs hand the two tip
+  fillets *directly* to each other, junction at their below-the-arc graph crossing. Not a refusal
+  and not caught by any certificate — each rail is certified against its own wall, which holds even
+  where that wall is not the true boundary — so the emitted boundary dips ~4 µm deep over ~2° of
+  azimuth, silently. The honest completion is to put the run structure on the op's **event
+  partition** (`structure_events` — AUTH.2a built it, the σ-end locator already uses it): one
+  sample per event gap is exact where any grid is phase-lucky. Deferred from #294's splice work;
+  same family as #291's traced-boundary milestone.
+  *2026-08-18 · open · `author/src/resolve.rs` (`sweep`), measured on the pinned device*
+
+- **The drawing's develop costs ~275 s where the plain bore costs ~4 s (2026-08-18).** Not a pure
+  regression — the run does strictly more than any part before it (8 splice loops with 64-subdiv
+  piece certificates, ladder-escalated edge bounds on eight steep rails, deeper ball walks on the
+  paths that fail) — but the deepened `STEPS` and the ladder should be re-profiled against #279's
+  per-stage numbers before the next optimization pass takes aim.
+  *2026-08-18 · watching · #279*
+
 - **#292 adopted, on the third measurement — and the cost objection went away with one line
   (2026-08-18).** With the tab rails certifying, the chart arm has a benefit case at last, so
   min-of-both goes in: `cut_fit` hands `traced_cut_fit` a per-sub-interval `refine`, the ball arm

@@ -142,6 +142,7 @@ fn rail(surface: &CutSurface<Bignum>, subdiv: usize) -> (RatFunc<Bignum>, Q) {
         RootPick::Upper,
         &span(),
         fit,
+        (false, false),
         &qi(1),
         &cfg,
     ) {
