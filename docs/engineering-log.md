@@ -768,6 +768,71 @@ fine — this is a log, not a schema.
 
 ## Findings
 
+- **#311: `HoleCrossesRegions` was reported for a cut that crosses no region — the resolver's
+  hole-attribution windows have #302's blind spot (2026-08-20).** The user's `bat-cutout.dxf`
+  window (a 4.6 × 2.7 mm rectangle, sketched in a plane through the apex tilted 2° off the cone and
+  swept along that plane's own normal) refuses `Refuted(HoleCrossesRegions { op: 2 })` on the
+  two-ramp device. It does land across the seam, and its `+σ` pass does span the ramp→plateau join
+  at `σ = 0.875`, so the fault reads plausibly — and is wrong. Moving `ccw.ramp_end` from `7/8` to
+  `3/4`, which puts the whole `+σ` footprint inside **one** region, changes nothing: same fault,
+  41.5 s.
+
+  The cause is in the resolver, not the recipe. `windows[op]` — what a subtract's hole loops are
+  attributed to — is built from `tangent_events` (the isolating brackets of the wall's
+  discriminant *inside one region's band*) read as `brackets.windows(2)`, so only stretches
+  **between two tangent rulings** ever get named. This footprint runs to the band's own edge
+  (measured: two passes, `σ ∈ [−1.125, −0.7675]` and `[+0.7675, +1.125]`, one µ̂-interval each,
+  ρ 4.59–6.33), and in `[0.875, 1.125]` both tangent rulings lie outside the band — so the op gets
+  no window at all, its hole-active samples are orphaned, and the orphan branch reports
+  `HoleCrossesRegions`. That is exactly [`#302`]'s finding one layer up: *the outermost stretch had
+  no name*. There it cost `realize::window_for` its clamp; here it costs a hole its attribution,
+  and misfiles the refusal on top.
+
+  Fixed the same way: cut the band at every bracket and keep the two end stretches, each decided by
+  its own midpoint — sound because the brackets isolate every root of `disc` in the band, so each
+  stretch carries one sign. A strict capability extension: where a footprint is interior the new
+  end stretches test disc-negative and nothing moves.
+
+  With the fix the same cut reaches `CutUnresolved { op: 2 }` at 619 s instead of
+  `HoleCrossesRegions` at 43 s — fourteen times further in, and the ramp-join variant lands there
+  too (516 s), so the two are the same story.
+
+  **Where the capability actually ends, measured.** Two controlled variants, each with its
+  footprint walked *before* certifying:
+
+  | variant | footprint | verdict |
+  |---|---|---|
+  | as drawn, +y (4.6 mm, centred on the seam) | σ ∈ [−1.125, −0.7675] ∪ [+0.7675, +1.125], **reaches a band end** | `CutUnresolved{op:2}` |
+  | narrowed to ±0.6, +y (still in the lap wedge) | σ ∈ ±1.0688, 2 passes, ρ 4.53–6.10, end-clear | **Verified ε 3.490, 2 holes**, op 2 → `Hole` |
+  | as drawn, −y (plain body) | σ ∈ ±0.1313, 1 pass, ρ 4.60–6.25, end-clear | **Verified ε 3.490, 1 hole**, op 2 → `Hole` |
+
+  The narrow and the wide `+y` cuts differ in *nothing* but width. So the boundary of the
+  capability is exactly **a cut may not open onto the part's own boundary** — not the rectangle,
+  not the tilted plane, not the lap: one cutter piercing *both* lapped sheets derives two certified
+  holes on the wrapping chart.
+
+  **The framing to keep.** A subtract of two solids is *always* defined — Parasolid cuts this
+  window without complaint. There is no such thing as a geometrically impossible cut; what refuses
+  is a **representation**. Ours derives the kept region as two µ̂-graphs over σ plus interior hole
+  loops, and `resolve.rs`'s own guard states the limit exactly: an op that both carves a gap **and**
+  bounds is refused (`SectionNotSimple`), because `OpRole` is exclusive — there is a `Notch` role
+  and a `Hole` role and no way to be both. This window is both, which is the same frontier as
+  [`#291`], reached from a second direction. Worth noting what is *already* in the tree for lifting
+  it: `arrange2d` is an exact 2-D arrangement/boolean engine, cut rails are certified p-curves, and
+  #294–#296 already assemble a boundary out of pieces contributed by different walls — for bounding
+  ops. The one-interval model was a simplification, not a necessity.
+
+  **Two method notes, both paid for.** The first narrowing test used ±1.0 picked by arithmetic;
+  2.0 mm at ρ ≈ 5 subtends ≈27°, which is the lap wedge exactly, so its corners sat *on* the edges
+  it was meant to clear and it refused for the reason it was built to exclude. And the first −y
+  test reused `bat_sweep` for a mirrored frame — `u × v` flips with `v`, so it swept the profile
+  obliquely across a plane it was not perpendicular to; the cut missed the sheet and the part came
+  back **`Verified` with zero holes**. A green ε says nothing about whether the cut happened. The
+  probe now measures each footprint before certifying and prints every op's derived `OpRole` after,
+  so an `Inactive` cut cannot read as a success.
+
+  *2026-08-20 · window fix landed (suites 351/351); the as-drawn +y placement needs #291 · #311*
+
 - **#310: the flat pattern's arc resolution was a per-piece constant, so long rails starved
   (2026-08-20).** The user: *"svg contour resolution on cone part got very low"*. Measured: the
   outer body arc — one rail piece spanning more than half the device — was emitted at

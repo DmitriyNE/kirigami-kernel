@@ -60,13 +60,18 @@ pub fn self_lapping_cone(segments: usize, support_panels: usize, with_drill: boo
     self_lapping_cone_with(segments, support_panels, with_drill, None)
 }
 
-/// The same device carrying **one authored feature** swept from `apex` through `profile` — the
+/// The same device carrying **one authored feature** — an arbitrary [`Cutter`], subtracted — the
 /// stress variant.
 ///
 /// `None` reproduces [`self_lapping_cone`] exactly, op for op, which is what keeps the pinned
 /// device pinned: the VV.1 work budgets, VV.2 ε bounds and VV.3 chord goldens are all measured on
 /// the featureless recipe, and a baseline that moves whenever a new fixture is added stops being a
 /// baseline.
+///
+/// The parameter is a whole cutter rather than an `(apex, profile)` pair drawn in one hard-coded
+/// plane: a feature's *sketch plane* is as much a placement as its apex is, and [`bat_cutter`] is
+/// drawn in a tilted one. Callers that want the `z = 0` plane say
+/// `Cutter::extrude(sketch_plane(), apex, profile)`.
 ///
 /// Everything AUTH.1/AUTH.2 has been exercised on so far lives on [`sketch_panel`] — one region,
 /// `SupportFn::inherit` (so `γ ≡ 0`), no wrap. This is the hard chart: the extruded footprint is
@@ -76,7 +81,7 @@ pub fn self_lapping_cone_with(
     segments: usize,
     support_panels: usize,
     with_drill: bool,
-    feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
+    feature: Option<Cutter<Bignum>>,
 ) -> Part<Bignum> {
     self_lapping_cone_from(
         &self_lapping_spec(),
@@ -98,7 +103,7 @@ pub fn self_lapping_cone_from(
     segments: usize,
     support_panels: usize,
     with_drill: bool,
-    feature: Option<(Apex<Bignum>, Vec<Edge<Bignum>>)>,
+    feature: Option<Cutter<Bignum>>,
 ) -> Part<Bignum> {
     let mut part = lapped::lapped_cone(spec)
         .expect("the device recipe is valid")
@@ -125,8 +130,8 @@ pub fn self_lapping_cone_from(
         let (cx, cy, r2) = seam_drill_axis();
         part = part.subtract(Cutter::vertical_cylinder(cx, cy, r2));
     }
-    if let Some((apex, profile)) = feature {
-        part = part.subtract(Cutter::extrude(sketch_plane(), apex, profile));
+    if let Some(cutter) = feature {
+        part = part.subtract(cutter);
     }
     part
 }
@@ -361,6 +366,73 @@ pub fn inner_cut_profile() -> Vec<Edge<Bignum>> {
         .expect("data/inner-cut.dxf is a readable outline")
         .profile()
         .into_edges()
+}
+
+/// **The battery window, as the drawing states it** — `data/bat-cutout.dxf`, verbatim.
+///
+/// Embedded for the same reason [`INNER_CUT_DXF`] is: the file, not a transcription of it, is the
+/// definition.
+pub const BAT_CUTOUT_DXF: &str = include_str!("../data/bat-cutout.dxf");
+
+/// The unit [`BAT_CUTOUT_DXF`] is read in — the same statement as [`INNER_CUT_UNIT`]: the file
+/// carries `$MEASUREMENT 1`, which picks a linetype table and does not name a length unit.
+pub const BAT_CUTOUT_UNIT: interchange::unit::Unit = interchange::unit::Unit::Millimetre;
+
+/// The battery window's outline, read out of [`BAT_CUTOUT_DXF`].
+///
+/// Four `LINE` entities on layer `VISIBLE` forming one closed rectangle, `4.6 × 2.7` mm, centred on
+/// the sketch's `y` axis with its near edge `6.4198` from the sketch origin. Every wall is affine,
+/// so each casts to a **plane** and the whole footprint certifies at `ε = 0` — unlike the bore and
+/// the rim, whose arcs cast to quadrics.
+///
+/// Panics only on a file this repository ships, so a failure is a broken commit rather than a
+/// runtime condition.
+pub fn bat_cutout_profile() -> Vec<Edge<Bignum>> {
+    let opts = interchange::dxf::DxfOptions::<Bignum> {
+        assume_unit: Some(BAT_CUTOUT_UNIT),
+        ..Default::default()
+    };
+    interchange::dxf::read_dxf::<Bignum>(BAT_CUTOUT_DXF, &opts)
+        .expect("data/bat-cutout.dxf is a readable outline")
+        .profile()
+        .into_edges()
+}
+
+/// **The battery window's sketch plane** — through the cone's apex, `x` aligned with the world's,
+/// `y` tilted down over the material.
+///
+/// The tilt is stated the way the cone's own half-angle is, **from the axis**: the plane's line of
+/// steepest descent runs `44.0725°` off the axis against the cone's `42.0750°`, so the plane clears
+/// the surface everywhere but the apex and leans over the sheet by exactly `2°`. That two-degree
+/// stand-off is what makes the sweep direction a near-normal cut rather than a raking one.
+///
+/// `sin` and `cos` are **exact**: `(1428, 1475, 2053)` is Pythagorean, so the frame is orthonormal
+/// ([`Frame::metric`](develop::extrude::Frame::metric)) and the drawing's millimetres survive the
+/// placement — an affine frame would stretch the window's `2.7` mm height by `|v|`. The nearest
+/// rational unit vector to the authored angle is `0.0025°` away, which is the price of exactness and
+/// is stated rather than hidden.
+pub fn bat_plane() -> Frame<Bignum> {
+    Frame::new(
+        [qi(0), qi(0), qi(0)],
+        [qi(1), qi(0), qi(0)],
+        [qi(0), q(1428, 2053), q(-1475, 2053)],
+    )
+    .expect("the axes are independent")
+}
+
+/// The battery window's **sweep direction** — the [`bat_plane`]'s own normal, `u × v`.
+///
+/// A direction rather than a point, so the cutter is a straight prism: through all, no draft, walls
+/// perpendicular to the sketch plane. `Apex::direction` takes it projectively, so the integer
+/// `(0, 1475, 1428)` needs no normalizing and the prism runs both ways from the sketch.
+pub fn bat_sweep() -> Apex<Bignum> {
+    Apex::direction([qi(0), qi(1475), qi(1428)]).expect("a real sweep direction")
+}
+
+/// The battery window as a **cutter**: [`bat_cutout_profile`] drawn in [`bat_plane`], swept along
+/// [`bat_sweep`].
+pub fn bat_cutter() -> Cutter<Bignum> {
+    Cutter::extrude(bat_plane(), bat_sweep(), bat_cutout_profile())
 }
 
 /// The centre of the self-lapping device's seam drill, `(x, y, r²)` — the 3-D cylinder both

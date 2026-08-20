@@ -17,7 +17,7 @@
 //! whenever a fixture is added is not a baseline. This is its sibling, with its own pins.
 
 use acceptance::measure;
-use author::part::{OpRole, Part};
+use author::part::{Cutter, OpRole, Part};
 use certify_core::Verdict;
 use develop::counters;
 use develop::extrude::Apex;
@@ -40,7 +40,16 @@ fn parallel() -> Apex<Bignum> {
 
 /// The device carrying the lap slot, at the suite's lean budget.
 fn slotted(segments: usize, apex: Apex<Bignum>) -> Part<Bignum> {
-    acceptance::self_lapping_cone_with(segments, 8, true, Some((apex, acceptance::lap_slot())))
+    acceptance::self_lapping_cone_with(
+        segments,
+        8,
+        true,
+        Some(Cutter::extrude(
+            acceptance::sketch_plane(),
+            apex,
+            acceptance::lap_slot(),
+        )),
+    )
 }
 
 fn develop_or_panic(part: &Part<Bignum>, name: &str) -> author::part::FlatPattern<Bignum> {

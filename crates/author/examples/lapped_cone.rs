@@ -12,7 +12,8 @@
 //! nix develop -c cargo run --example lapped_cone --features step    # + the .step solid
 //! ```
 //!
-//! Flags: `--out-dir <dir>` (default `generated-demos/`), `--segments N`, `--panels N`.
+//! Flags: `--out-dir <dir>` (default `generated-demos/`), `--segments N`, `--panels N`, `--bat`
+//! (subtract the `bat-cutout.dxf` battery window — see [`acceptance::bat_cutter`]).
 
 use acceptance::lapped::{self, LappedCone};
 use author::part::Part;
@@ -40,6 +41,7 @@ fn spec() -> LappedCone {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let (mut out_dir, mut segments, mut panels) = ("generated-demos".to_string(), 16usize, 8usize);
+    let mut bat = false;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -54,6 +56,10 @@ fn main() {
             "--panels" => {
                 panels = argv[i + 1].parse().expect("--panels N");
                 i += 2;
+            }
+            "--bat" => {
+                bat = true;
+                i += 1;
             }
             other => panic!("unknown flag {other}"),
         }
@@ -116,7 +122,7 @@ fn main() {
     }
 
     // — the resolution knobs are the caller's, exactly as `self_lapping_cone` sets them —
-    let part: Part<Bignum> = lap
+    let mut part: Part<Bignum> = lap
         .part
         // Matches the acceptance device: the DRC keep-out is a length in the part's own unit.
         .clearance(qi(7))
@@ -131,6 +137,15 @@ fn main() {
             terms: 14,
             sqrt_eps: q(1, 1_000_000_000),
         });
+
+    // — the battery window, drawn in a plane through the apex tilted 2° off the cone —
+    if bat {
+        part = part.subtract(acceptance::bat_cutter());
+        println!(
+            "window    bat-cutout.dxf   sketch plane through the apex, v = (0, 1428, −1475)/2053 \
+             (44.0725° off the axis)   swept along (0, 1475, 1428)"
+        );
+    }
 
     // — direction ①: develop to the flat pattern —
     let t0 = std::time::Instant::now();

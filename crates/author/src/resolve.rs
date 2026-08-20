@@ -1087,11 +1087,28 @@ pub(crate) fn sweep<B: Backend>(
                     .ok_or(PartFault::CutUnresolved { op })?;
                 let brackets = tangent_events(&form, &rf.band, &tangent_tol())
                     .map_err(|_| PartFault::CutUnresolved { op })?;
-                for w in brackets.windows(2) {
+                // The band cut at every bracket — including the two stretches the **band's own
+                // ends** make. Reading `brackets.windows(2)` named only the stretches between two
+                // tangent rulings, so a footprint that reaches the band's edge got no window at
+                // all, and its hole-active samples were orphaned into `HoleCrossesRegions` — a
+                // fault about region joins, reported for a cut that never crossed one. That is
+                // #302's blind spot one layer up: there it cost `window_for` its clamp on rail
+                // windows, here it costs a hole its very attribution. Sound for the same reason the
+                // interior stretches are: the brackets isolate every root of `disc` in the band, so
+                // each stretch carries one sign and its own midpoint decides it.
+                let mut stretches: Vec<(Rat<B>, Rat<B>)> = Vec::with_capacity(brackets.len() + 1);
+                let mut open = rf.band.lo.clone();
+                for b in &brackets {
+                    stretches.push((core::mem::replace(&mut open, b.hi.clone()), b.lo.clone()));
+                }
+                stretches.push((open, rf.band.hi.clone()));
+                for (t1, t2) in &stretches {
                     // Each bracket **contains** its tangent ruling, so the gap between two of them
                     // lies inside the true window and the discriminant has one sign across it: a
                     // single evaluation at the midpoint decides the whole gap.
-                    let (t1, t2) = (&w[0].hi, &w[1].lo);
+                    if t1.cmp(t2) != core::cmp::Ordering::Less {
+                        continue; // a bracket straddling the band's end leaves no stretch
+                    }
                     let mid = t1.add(t2).mul(&Rat::new(1, 2));
                     let real = form
                         .disc()
