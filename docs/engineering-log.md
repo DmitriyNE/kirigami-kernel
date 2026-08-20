@@ -19,6 +19,33 @@ fine — this is a log, not a schema.
 
 ## To do
 
+- **BL.2a: the adjacency graph, and what `raw` turned out to contain (2026-08-20).** Linking each
+  sample's components to the next by µ̂-overlap — the same test `choose_comps` already propagates its
+  pick with — gives the material's adjacency graph, and two invariants come out of it. The first is a
+  check the sweep has always *assumed* and never made: **the picked component is connected across
+  σ** (every sample's pick lands in one face). The second is a cross-check between computations that
+  share no code — the face's independent cycles (`edges − nodes + 1`) equal its **hole records**,
+  µ̂-overlap on one side and the merge's `same_sub_op` test on the other. A gap closed on both sides
+  *is* an interior hole; a gap that never rejoins leaves no cycle and is a boundary bite, which is
+  the whole of #311 in graph terms.
+
+  **What the first failing run taught, which was not what I predicted.** The graph reported **2
+  faces** on the notched fixture and I assumed a grid artifact — a feature narrower than a sample
+  cell. The diagnostic said otherwise: face 0 spans `σ ∈ [−3.427, −1.823]` while the notch sits at
+  `σ ≈ 0.35–0.51`, nowhere near it. `cells[].raw` contains components the **region pick discards** —
+  on this chart the mirror nappe — so "how many faces" is a question about the recipe, not about the
+  part. The assertion had to name the *kept* face. Carried into BL.2: the tracer walks the picked
+  face; other components are bodies the recipe excludes, which is BL.0's "a part is still one kept
+  component unless a pick names one" doing real work rather than decorating the exclusions list.
+
+  **A claim in BL.0 needs narrowing, before it is leaned on.** The gate says the σ-partition is
+  exact and that within a cell no rail crosses another. True of the *event* partition; the resolver's
+  samples are a mid-cell grid plus targeted stations, so adjacency is as fine as the grid — the same
+  posture the run-fold it replaces has, which is why BL.2 still changes no certificate, but not the
+  stronger statement. Sharpening it to one sample per event gap is its own slice and is *not* done.
+
+  *2026-08-20 · BL.2a landed (17/17 resolver units); the event-partition sharpening is open · BL.2*
+
 - **BL — the boundary is a loop (the region model's own frontier).** GO-gated 2026-08-20; criteria
   in `docs/vv-guide.md` §BL, row `[BL]` in `vv-matrix.md`, slices BL.0–BL.6 on the task ledger.
   Raised by the user's battery window (#311) landing on the seam, and it is the *same* wall as #291's

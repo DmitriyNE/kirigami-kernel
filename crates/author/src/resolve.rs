@@ -141,6 +141,124 @@ impl<B: Backend> Clone for Cell<B> {
     }
 }
 
+/// The material's **adjacency graph** across σ, and the faces it partitions into (BL.2a).
+///
+/// A node is one component at one sample, `(cell, component)`. Two nodes on consecutive samples are
+/// linked when their µ̂-spans overlap — the same test [`choose_comps`] already propagates its pick
+/// with, so this makes no claim the resolver did not already make. A node may have several
+/// successors (a gap opening) or several predecessors (one closing), and it is exactly those
+/// branchings that the one-interval reading flattens into a hole record.
+///
+/// **What this does and does not know.** The samples are the resolver's mid-cell grid plus the
+/// targeted stations, *not* the exact event partition, so adjacency is as fine as the grid — the
+/// same posture as the run-folding it will replace, and the reason BL.2 changes no certificate.
+/// Sharpening it to one sample per event gap is a separate, later question (recorded in the log).
+// BL.2a is built and *tested* here and consumed by BL.2b's loop tracer, so the lib-without-tests
+// build is the only one where these are dead — `cfg_attr(not(test))` silences exactly that build
+// rather than blanket-allowing dead code in the module.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct Adjacency {
+    /// Per cell, the face index of each of its components.
+    pub face_of: Vec<Vec<usize>>,
+    /// How many faces the components fall into.
+    pub faces: usize,
+    /// Links `((cell, comp), (cell + 1, comp))`, in σ order.
+    pub links: Vec<((usize, usize), (usize, usize))>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl Adjacency {
+    /// The same count for **one** face. The graph sees every component the op algebra leaves,
+    /// including the ones the region pick discards (a mirror nappe is a face of its own), so a
+    /// claim about *the part* has to name the part's face rather than the whole graph.
+    pub fn cycles_of(&self, face: usize) -> usize {
+        let nodes = self
+            .face_of
+            .iter()
+            .flatten()
+            .filter(|f| **f == face)
+            .count();
+        let edges = self
+            .links
+            .iter()
+            .filter(|(a, _)| self.face_of[a.0][a.1] == face)
+            .count();
+        (edges + 1).saturating_sub(nodes)
+    }
+}
+
+/// Link every sample's components to the next sample's by µ̂-overlap, then read off the faces.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn adjacency<B: Backend>(cells: &[Cell<B>]) -> Adjacency {
+    let span = |c: &Comp| {
+        (
+            c.lo.expect("bounded component").0,
+            c.hi.expect("bounded component").0,
+        )
+    };
+    // Union-find over the flattened node list.
+    let offset: Vec<usize> = cells
+        .iter()
+        .scan(0usize, |acc, c| {
+            let at = *acc;
+            *acc += c.raw.len();
+            Some(at)
+        })
+        .collect();
+    let total: usize = cells.iter().map(|c| c.raw.len()).sum();
+    let mut parent: Vec<usize> = (0..total).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let mut links = Vec::new();
+    for w in 0..cells.len().saturating_sub(1) {
+        for (a, ca) in cells[w].raw.iter().enumerate() {
+            let (alo, ahi) = span(ca);
+            for (b, cb) in cells[w + 1].raw.iter().enumerate() {
+                let (blo, bhi) = span(cb);
+                if blo < ahi && alo < bhi {
+                    links.push(((w, a), (w + 1, b)));
+                    let (x, y) = (
+                        find(&mut parent, offset[w] + a),
+                        find(&mut parent, offset[w + 1] + b),
+                    );
+                    if x != y {
+                        parent[x] = y;
+                    }
+                }
+            }
+        }
+    }
+    // Number the roots in first-appearance order so the labelling is deterministic.
+    let mut seen: Vec<(usize, usize)> = Vec::new();
+    let mut face_of: Vec<Vec<usize>> = Vec::with_capacity(cells.len());
+    for (w, cell) in cells.iter().enumerate() {
+        let mut row = Vec::with_capacity(cell.raw.len());
+        for a in 0..cell.raw.len() {
+            let root = find(&mut parent, offset[w] + a);
+            let idx = match seen.iter().position(|(r, _)| *r == root) {
+                Some(i) => seen[i].1,
+                None => {
+                    let n = seen.len();
+                    seen.push((root, n));
+                    n
+                }
+            };
+            row.push(idx);
+        }
+        face_of.push(row);
+    }
+    Adjacency {
+        faces: seen.len(),
+        face_of,
+        links,
+    }
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
     /// The material's **derived** σ-extent — the sub-interval of the authored domain the ops
@@ -2279,6 +2397,100 @@ mu_negative Some(false)
             saw_a_fold,
             "no sample folded two components into one — `raw` is carrying nothing the merged view \
              does not already have, so BL.1 kept nothing"
+        );
+    }
+
+    /// **BL.2a: the adjacency graph, and the cycle that a hole record *is*.**
+    ///
+    /// Two claims, both about the face the region pick actually keeps — the graph also sees
+    /// components the pick discards (the mirror nappe on this chart is one), so "how many faces are
+    /// there" is a question about the recipe, not about the part.
+    ///
+    /// 1. **The kept material is one face.** Every sample's picked component belongs to the same
+    ///    face: the pick is connected across σ, which the sweep assumes everywhere and never checks.
+    /// 2. **That face's cycles are its hole records.** Independent cycles (`edges − nodes + 1`)
+    ///    count the times material split and rejoined, and a gap closed on both sides *is* an
+    ///    interior hole. The two numbers come from computations sharing no code — µ̂-overlap here,
+    ///    the merge's `same_sub_op` test there — so agreement is evidence rather than restatement.
+    #[test]
+    fn the_kept_faces_cycles_are_its_hole_records() {
+        for (name, part) in pre_state_fixtures() {
+            let st = extent(&part).expect("the fixture resolves");
+            let adj = adjacency(&st.cells);
+            // The picked component's index within `raw`: the merged component `pick` names, located
+            // by its lower end (the merge folds forward, so a merged component's `lo` is its first
+            // raw component's `lo`).
+            let kept: Vec<usize> = st
+                .cells
+                .iter()
+                .zip(adj.face_of.iter())
+                .map(|(cell, faces)| {
+                    let lo = cell.merged[cell.pick].comp.lo.expect("bounded").0;
+                    let at = cell
+                        .raw
+                        .iter()
+                        .position(|r| r.lo.expect("bounded").0 == lo)
+                        .expect("the kept component is one of the components");
+                    faces[at]
+                })
+                .collect();
+            assert!(
+                kept.windows(2).all(|w| w[0] == w[1]),
+                "{name}: the picked component jumps between faces — the sweep's own continuity \
+                 assumption does not hold on this part"
+            );
+            // The face count is a fact about the RECIPE, pinned because it is the finding: `raw`
+            // carries components the pick discards, and on this chart the mirror nappe is one.
+            // Measured, not predicted: only the notched fixture leaves a second component
+            // bounded (the mirror nappe), and the drill's own shadow unbounds it again. If this
+            // count moves, what `raw` contains has changed and BL.2b's tracer needs to know.
+            let expected_faces = match name {
+                "notched" => 2,
+                _ => 1,
+            };
+            assert_eq!(
+                adj.faces, expected_faces,
+                "{name}: {} face(s) — the components the pick discards are part of this count",
+                adj.faces
+            );
+            let face = kept[0];
+            assert_eq!(
+                adj.cycles_of(face),
+                st.holes.len(),
+                "{name}: face {face} has {} cycle(s) against {} hole record(s) — the graph and the \
+                 merge disagree about what closed",
+                adj.cycles_of(face),
+                st.holes.len()
+            );
+        }
+    }
+
+    /// **The branching the one-interval reading flattens.** The holed fixture's drill opens a gap
+    /// and closes it again, so somewhere a component has two successors and later two predecessors.
+    /// Without that, the graph is a chain and BL.2's tracer would have nothing to do that the run
+    /// fold does not already do.
+    #[test]
+    fn a_drill_makes_the_graph_branch() {
+        let part = pre_state_fixtures()
+            .into_iter()
+            .find(|(n, _)| *n == "holed")
+            .expect("the holed fixture")
+            .1;
+        let st = extent(&part).expect("the fixture resolves");
+        let adj = adjacency(&st.cells);
+        let splits = (0..st.cells.len())
+            .filter(|w| adj.links.iter().filter(|(a, _)| a.0 == *w).count() > 1)
+            .count();
+        let joins = (0..st.cells.len())
+            .filter(|w| adj.links.iter().filter(|(_, b)| b.0 == *w).count() > 1)
+            .count();
+        assert!(
+            splits > 0 && joins > 0,
+            "the drill must split the material and rejoin it — got {splits} split(s), {joins} join(s)"
+        );
+        assert!(
+            st.cells.iter().any(|c| c.raw.len() > 1),
+            "and some sample must actually carry two components"
         );
     }
 }
