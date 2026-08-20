@@ -259,6 +259,51 @@ pub(crate) fn adjacency<B: Backend>(cells: &[Cell<B>]) -> Adjacency {
     }
 }
 
+/// One σ-zone where the material's stretch structure can change, isolated (BL.2b′).
+///
+/// `at` is an isolating bracket around a single event — a wall's tangent ruling, two walls meeting,
+/// or a form degenerating — merged with any neighbour closer than the tolerance so the zones stay a
+/// partition. Between two consecutive zones **no** event occurs, so the component structure is
+/// constant there and one evaluation anywhere in the gap decides it. That is the property a boundary
+/// tracer needs and the sample grid cannot supply: a gap's wedge tip is an event, and BL.2b measured
+/// what happens without one (the outer and inner boundaries chain into a single walk).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct EventZone<B: Backend> {
+    /// Which region the zone belongs to.
+    pub region: usize,
+    /// The isolating bracket.
+    pub at: Interval<B>,
+    /// What collides here.
+    pub kinds: Vec<develop::cut::EventKind>,
+}
+
+/// Every region's event zones, in σ order — the partition the component structure is constant
+/// between.
+///
+/// Reads each region's **flat** wall list, so events *across* ops are included: two different
+/// cutters' rails crossing changes the stretch structure exactly as one wall's own tangent does,
+/// and a partition that missed those would be a partition of the wrong thing. This is the same
+/// argument list `locate_end` already derives the material's σ-ends from.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn event_zones<B: Backend>(
+    regions: &[RegionForms<B>],
+) -> Result<Vec<EventZone<B>>, PartFault> {
+    let tol = tangent_tol::<B>();
+    let mut out = Vec::new();
+    for (region, rf) in regions.iter().enumerate() {
+        let evs = develop::cut::structure_events(&rf.flat, &rf.band, &tol)
+            .map_err(|_| PartFault::CutUnresolved { op: 0 })?;
+        for e in evs {
+            out.push(EventZone {
+                region,
+                at: e.at,
+                kinds: e.kinds,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
     /// The material's **derived** σ-extent — the sub-interval of the authored domain the ops
@@ -1161,13 +1206,17 @@ fn span_reach<B: Backend>(
 
 /// The in-domain sweep: pull every op back on every region, resolve the sample grid, and fold
 /// the records into the boundary-run structure + hole classification (see the module docs).
-pub(crate) fn sweep<B: Backend>(
+/// Every op pulled back onto every region's chart — the argument list the sweep, the σ-end locator
+/// and the event partition all read.
+///
+/// Extracted so those three share one construction: the resolver built it inline and the tests
+/// rebuilt it by hand, which is two places for a pullback list to drift from the one the part is
+/// actually resolved with.
+pub(crate) fn region_forms<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
-) -> Result<Structure<B>, PartFault> {
+) -> Result<Vec<RegionForms<B>>, PartFault> {
     let zero = Rat::from_i128(0);
-    let reach = span_reach(part, built)?;
-    // Pull each op back on each region's chart.
     let mut regions: Vec<RegionForms<B>> = Vec::with_capacity(part.regions.len());
     for (r, chart) in part.regions.iter().zip(built.charts.iter()) {
         let mut forms = Vec::with_capacity(part.ops.len());
@@ -1192,6 +1241,17 @@ pub(crate) fn sweep<B: Backend>(
             detj_m: dj.mu,
         });
     }
+    Ok(regions)
+}
+
+pub(crate) fn sweep<B: Backend>(
+    part: &Part<B>,
+    built: &BuiltRegions<B>,
+) -> Result<Structure<B>, PartFault> {
+    let zero = Rat::from_i128(0);
+    let reach = span_reach(part, built)?;
+    // Pull each op back on each region's chart.
+    let regions = region_forms(part, built)?;
 
     // The sample grid: mid-cell stations per region, plus targeted stations inside every
     // disc-positive σ-window of each subtract cylinder (so a small hole is never missed between
@@ -2492,5 +2552,92 @@ mu_negative Some(false)
             st.cells.iter().any(|c| c.raw.len() > 1),
             "and some sample must actually carry two components"
         );
+    }
+
+    /// **BL.2b′: the partition, and its two claims.**
+    ///
+    /// *It is a partition.* The zones come out in σ order, disjoint, inside the band — anything else
+    /// and "the structure is constant between consecutive zones" means nothing.
+    ///
+    /// *It is sharp.* Every zone is orders below the resolver's own sample cell (`2⁻⁴⁰` against
+    /// `7/48 ≈ 0.146`), which is what makes the partition exact rather than a refinement of the grid.
+    ///
+    /// And the tie to what already ships: the holed fixture's hole record is a σ-window derived from
+    /// `tangent_events`, so **both of its ends must land in event zones**. If they did not, the
+    /// partition and the hole machinery would be talking about different σ, and BL.2b's tracer would
+    /// place a wedge tip where no hole begins.
+    #[test]
+    fn the_event_partition_is_sharp_and_holds_the_hole_window() {
+        for (name, part) in pre_state_fixtures() {
+            let built = part.build_regions().expect("the regions develop");
+            let st = extent(&part).expect("the fixture resolves");
+            // Rebuild the region forms the sweep used, to ask them for their events.
+            let regions = region_forms(&part, &built).expect("the pullbacks resolve");
+            let zones = event_zones(&regions).expect("the events isolate");
+            // A band can legitimately have NO events: the banded blank's two rails never meet
+            // inside it and the cylinder's tangent rulings fall outside, so the structure is
+            // constant across the whole band and one cell covers it. What must not happen is a
+            // fixture with a hole having no events — the gap has to open somewhere.
+            assert_eq!(
+                zones.is_empty(),
+                st.holes.is_empty() && name == "banded",
+                "{name}: {} zone(s) against {} hole record(s)",
+                zones.len(),
+                st.holes.len()
+            );
+            let cell = Q::new(7, 48 * 2); // the grid's own spacing on a ±3.5 band
+            for w in zones.windows(2) {
+                assert!(
+                    w[0].at.hi.cmp(&w[1].at.lo) != core::cmp::Ordering::Greater,
+                    "{name}: zones overlap — not a partition"
+                );
+            }
+            for z in &zones {
+                let width = z.at.hi.sub(&z.at.lo);
+                assert!(
+                    width.cmp(&cell) == core::cmp::Ordering::Less,
+                    "{name}: a zone is {:.3e} wide against a {:.3e} sample cell — the partition is \
+                     no sharper than the grid it replaces",
+                    rat_to_f64(&width),
+                    rat_to_f64(&cell)
+                );
+            }
+            // Every zone sits inside the band of the region it claims.
+            for z in &zones {
+                let band = &regions[z.region].band;
+                assert!(
+                    band.lo.cmp(&z.at.lo) != core::cmp::Ordering::Greater
+                        && z.at.hi.cmp(&band.hi) != core::cmp::Ordering::Greater,
+                    "{name}: a zone escapes region {}'s band",
+                    z.region
+                );
+            }
+            // A hole's window ends are the drill's own TANGENT rulings, so the zones holding them
+            // must say so. Containment alone would pass on a zone that happens to be nearby for an
+            // unrelated reason — naming the kind is what ties the partition to the gap.
+            for (op, _, window) in &st.holes {
+                for (end, at) in [("lo", &window.lo), ("hi", &window.hi)] {
+                    let holding = zones.iter().find(|z| {
+                        z.at.lo.cmp(at) != core::cmp::Ordering::Greater
+                            && at.cmp(&z.at.hi) != core::cmp::Ordering::Greater
+                    });
+                    let z = holding.unwrap_or_else(|| {
+                        panic!(
+                            "{name}: op {op}'s hole window {end} = {:.6} lies in no event zone — \
+                             the partition and the hole machinery disagree about where the gap opens",
+                            rat_to_f64(at)
+                        )
+                    });
+                    assert!(
+                        z.kinds
+                            .iter()
+                            .any(|k| matches!(k, develop::cut::EventKind::Tangent(_))),
+                        "{name}: the zone at op {op}'s window {end} carries {:?}, not a tangent \
+                         ruling — the gap opens for a different reason than the hole records",
+                        z.kinds
+                    );
+                }
+            }
+        }
     }
 }
