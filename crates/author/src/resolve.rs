@@ -108,6 +108,39 @@ impl<B: Backend> Clone for SigmaEnd<B> {
     }
 }
 
+/// One sample's material kept **whole** (BL.1) — every µ̂-component the op algebra leaves, beside
+/// the merged projection the one-interval model reads and the index it kept.
+///
+/// `raw` is the ground truth a boundary loop is traced over; `merged`/`pick` are the lossy view
+/// every consumer uses today. Keeping both is what makes the one-interval path *derived* rather
+/// than the only thing computed — BL.2 walks `raw`, and until it does, nothing reads it, which is
+/// why this slice is gated byte-identical.
+pub(crate) struct Cell<B: Backend> {
+    /// The sample σ.
+    pub sigma: Rat<B>,
+    /// Which region the sample sits in.
+    pub region: usize,
+    /// Every component here, in µ̂ order, gaps and all.
+    pub raw: Vec<Comp>,
+    /// The same material after gaps carved by one subtract op are folded in as holes.
+    pub merged: Vec<MergedComp>,
+    /// The merged component the sweep kept.
+    pub pick: usize,
+}
+
+// Hand-written so `B` need not be `Clone` (the backend markers are not).
+impl<B: Backend> Clone for Cell<B> {
+    fn clone(&self) -> Self {
+        Cell {
+            sigma: self.sigma.clone(),
+            region: self.region,
+            raw: self.raw.clone(),
+            merged: self.merged.clone(),
+            pick: self.pick,
+        }
+    }
+}
+
 /// The resolved structure the realizer certifies.
 pub(crate) struct Structure<B: Backend> {
     /// The material's **derived** σ-extent — the sub-interval of the authored domain the ops
@@ -126,6 +159,9 @@ pub(crate) struct Structure<B: Backend> {
     /// µ̂ < 0, `Some(false)` = all µ̂ > 0, `None` = mixed or 0-straddling. The fold's side
     /// convention (derived, never authored — the seam-#3 doctrine).
     pub mu_negative: Option<bool>,
+    /// Every live sample's material, unprojected (BL.1). `runs`/`holes`/`roles` above are the
+    /// one-interval reading of exactly this; BL.2 traces boundary loops over it instead.
+    pub cells: Vec<Cell<B>>,
 }
 
 // Hand-written so `B` need not be `Clone` (the backend markers are not).
@@ -138,6 +174,7 @@ impl<B: Backend> Clone for Structure<B> {
             holes: self.holes.clone(),
             roles: self.roles.clone(),
             mu_negative: self.mu_negative,
+            cells: self.cells.clone(),
         }
     }
 }
@@ -204,9 +241,9 @@ impl Shadow {
 
 /// One kept-material component at one σ: bounds are `None` at ±∞.
 #[derive(Clone, Copy)]
-struct Comp {
-    lo: End,
-    hi: End,
+pub(crate) struct Comp {
+    pub lo: End,
+    pub hi: End,
 }
 
 /// The per-op pullbacks on one region's chart, plus the chart's **singular rail** — the µ̂ where
@@ -543,9 +580,31 @@ fn comp_dist2<B: Backend>(
 /// One merged material component at a sample: its µ̂-ends plus the subtract ops whose interior
 /// gaps were merged **inside it** (its own hole record — a gap in some other component is not a
 /// hole of the part).
-struct MergedComp {
-    comp: Comp,
-    hole_ops: Vec<usize>,
+#[derive(Clone)]
+pub(crate) struct MergedComp {
+    pub comp: Comp,
+    pub hole_ops: Vec<usize>,
+}
+
+/// The material at one sample σ, in **both** readings (BL.1).
+///
+/// `raw` is what the op algebra actually leaves — every µ̂-component, gaps and all. `merged` is the
+/// projection the one-interval model consumes: consecutive components whose gap one subtract op
+/// carved are folded together, that op recorded as a hole of the survivor. The projection is lossy
+/// exactly where BL is: a gap that reaches the material's edge is not a hole, and a component the
+/// pick discards has a boundary the part still owns. Keeping `raw` beside `merged` costs one clone
+/// of a `Copy` list per sample and is what BL.2 traces loops over; every consumer today reads
+/// `merged`, so the derived structure is unchanged.
+struct Section {
+    raw: Vec<Comp>,
+    merged: Vec<MergedComp>,
+}
+
+impl Section {
+    /// Whether this σ carries no material at all — the emptiness the σ-extent is derived from.
+    fn is_empty(&self) -> bool {
+        self.merged.is_empty()
+    }
 }
 
 /// The merged material components at one sample σ within region `ri` (the op-shadow interval
@@ -558,7 +617,7 @@ fn sample_comps<B: Backend>(
     reach: &[Option<Vec<usize>>],
     ri: usize,
     sigma: &Rat<B>,
-) -> Result<Vec<MergedComp>, PartFault> {
+) -> Result<Section, PartFault> {
     let mut comps = vec![Comp { lo: None, hi: None }];
     for (op, (kind, cutter)) in part.ops.iter().enumerate() {
         // An op whose span does not reach this region is not applied here at all — the correct
@@ -592,7 +651,10 @@ fn sample_comps<B: Backend>(
         if had_unbounded {
             return Err(PartFault::UnboundedRegion);
         }
-        return Ok(Vec::new());
+        return Ok(Section {
+            raw: Vec::new(),
+            merged: Vec::new(),
+        });
     }
     comps.sort_by(|a, b| {
         a.lo.as_ref()
@@ -612,6 +674,7 @@ fn sample_comps<B: Backend>(
             _ => None,
         }
     };
+    let raw: Vec<Comp> = comps.clone();
     let mut merged: Vec<MergedComp> = vec![MergedComp {
         comp: comps[0],
         hole_ops: Vec::new(),
@@ -635,7 +698,7 @@ fn sample_comps<B: Backend>(
             });
         }
     }
-    Ok(merged)
+    Ok(Section { raw, merged })
 }
 
 /// Where the material's σ-extent ends on one side, located **exactly** — the AUTH.3a derivation
@@ -817,32 +880,32 @@ fn locate_end<B: Backend>(
 fn choose_comps<B: Backend>(
     part: &Part<B>,
     built: &BuiltRegions<B>,
-    at: &[(usize, Rat<B>, Vec<MergedComp>)],
+    at: &[(usize, Rat<B>, Section)],
 ) -> Result<Vec<usize>, PartFault> {
     let ends = |m: &MergedComp| -> (f64, f64) {
         (m.comp.lo.as_ref().unwrap().0, m.comp.hi.as_ref().unwrap().0)
     };
-    if at.iter().all(|(_, _, comps)| comps.len() == 1) {
+    if at.iter().all(|(_, _, sec)| sec.merged.len() == 1) {
         return Ok(vec![0; at.len()]);
     }
     let witness = match &part.pick {
         Some(RegionPick::KeepNear(p)) => p,
         None => {
-            let (_, _, comps) = at
+            let (_, _, sec) = at
                 .iter()
-                .find(|(_, _, comps)| comps.len() > 1)
+                .find(|(_, _, sec)| sec.merged.len() > 1)
                 .expect("a multi-component sample exists");
             // Attribute to the op whose rail separates the first two components.
-            let op = comps[0].comp.hi.as_ref().unwrap().1.0;
+            let op = sec.merged[0].comp.hi.as_ref().unwrap().1.0;
             return Err(PartFault::AmbiguousRegion { op });
         }
     };
     // Witness distances per sample, and the seed = the widest-margin sample (single-component
     // samples are perfect anchors).
     let mut dists: Vec<Vec<f64>> = Vec::with_capacity(at.len());
-    for (ri, sigma, comps) in at {
-        let mut row = Vec::with_capacity(comps.len());
-        for m in comps {
+    for (ri, sigma, sec) in at {
+        let mut row = Vec::with_capacity(sec.merged.len());
+        for m in &sec.merged {
             let (lo, hi) = ends(m);
             row.push(
                 comp_dist2(&built.charts[*ri], witness, sigma, lo, hi).ok_or(PartFault::Pole)?,
@@ -882,8 +945,8 @@ fn choose_comps<B: Backend>(
     // opening) → the witness re-decides among them; **none** → refuse the junction rather than
     // re-trust the raw witness metric far from the witness (the mirror-nappe hazard).
     let step = |chosen: &[usize], from: usize, to: usize| -> Result<usize, PartFault> {
-        let prev = ends(&at[from].2[chosen[from]]);
-        let comps = &at[to].2;
+        let prev = ends(&at[from].2.merged[chosen[from]]);
+        let comps = &at[to].2.merged;
         let overlapping: Vec<usize> = (0..comps.len())
             .filter(|&i| {
                 let (lo, hi) = ends(&comps[i]);
@@ -1136,10 +1199,12 @@ pub(crate) fn sweep<B: Backend>(
     // Resolve every sample: the component algebra everywhere first, then the seeded
     // continuity-propagated choice (see [`choose_comps`]). A sample may now come back with **no**
     // components — that σ simply carries no material — so the extent is derived before the choice.
-    let mut all: Vec<(usize, Rat<B>, Vec<MergedComp>)> = Vec::with_capacity(samples.len());
+    // BL.1: each sample keeps BOTH readings — `sec.raw` is every component the op algebra leaves,
+    // `sec.merged` the one-interval-plus-holes projection every consumer reads today.
+    let mut all: Vec<(usize, Rat<B>, Section)> = Vec::with_capacity(samples.len());
     for (ri, sigma) in samples {
-        let comps = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
-        all.push((ri, sigma, comps));
+        let sec = sample_comps(part, &regions, &built.charts[ri], &reach, ri, &sigma)?;
+        all.push((ri, sigma, sec));
     }
 
     // — The derived σ-extent (AUTH.3a, `docs/cutter-extrude-design.md` §12). —
@@ -1225,8 +1290,16 @@ pub(crate) fn sweep<B: Backend>(
     let at = &all[first..=last];
     let chosen = choose_comps(part, built, at)?;
     let mut recs: Vec<SampleRec<B>> = Vec::with_capacity(at.len());
-    for ((_, sigma, comps), pick) in at.iter().zip(chosen) {
-        let m = &comps[pick];
+    let mut cells: Vec<Cell<B>> = Vec::with_capacity(at.len());
+    for ((ri, sigma, sec), pick) in at.iter().zip(chosen) {
+        cells.push(Cell {
+            sigma: sigma.clone(),
+            region: *ri,
+            raw: sec.raw.clone(),
+            merged: sec.merged.clone(),
+            pick,
+        });
+        let m = &sec.merged[pick];
         let (lo_end, hi_end) = (m.comp.lo.as_ref().unwrap(), m.comp.hi.as_ref().unwrap());
         let mut hole_ops = m.hole_ops.clone();
         hole_ops.sort_unstable();
@@ -1348,6 +1421,7 @@ pub(crate) fn sweep<B: Backend>(
         holes,
         roles,
         mu_negative,
+        cells,
     })
 }
 
@@ -1790,6 +1864,7 @@ mod tests {
         }];
         sample_comps(part, &regions, chart, &reach, 0, sigma)
             .expect("the fixture resolves at every sample")
+            .merged
             .iter()
             .map(|m| {
                 let (lo, hi) = (m.comp.lo.expect("bounded"), m.comp.hi.expect("bounded"));
@@ -2158,4 +2233,52 @@ role op1 LowerBound
 role op2 Hole
 mu_negative Some(false)
 ";
+
+    /// **BL.1's own claim: the one-interval view is a projection of what is now kept.** Every merged
+    /// component begins and ends on some raw component's own end, and there are never fewer raw
+    /// components than merged ones — the merge only ever folds, never invents.
+    ///
+    /// Non-vacuous by the second half: the holed fixture must exhibit a σ where the raw list is
+    /// *longer* than the merged one. Without that, `raw` could be a copy of `merged` and the slice
+    /// would have kept nothing at all — which is exactly how a refactor gated on "nothing changed"
+    /// passes while doing nothing.
+    #[test]
+    fn the_merged_view_is_a_projection_of_the_components_kept() {
+        let mut saw_a_fold = false;
+        for (name, part) in pre_state_fixtures() {
+            let st = extent(&part).expect("the fixture resolves");
+            assert!(!st.cells.is_empty(), "{name}: no cells recorded");
+            for cell in &st.cells {
+                assert!(
+                    cell.raw.len() >= cell.merged.len(),
+                    "{name} at σ {:.6}: {} raw < {} merged — the merge invented material",
+                    rat_to_f64(&cell.sigma),
+                    cell.raw.len(),
+                    cell.merged.len()
+                );
+                assert!(cell.pick < cell.merged.len(), "{name}: pick out of range");
+                for m in &cell.merged {
+                    let (lo, hi) = (m.comp.lo.expect("bounded"), m.comp.hi.expect("bounded"));
+                    assert!(
+                        cell.raw.iter().any(|r| r.lo.expect("bounded").0 == lo.0),
+                        "{name} at σ {:.6}: merged lo {:.6} is on no component",
+                        rat_to_f64(&cell.sigma),
+                        lo.0
+                    );
+                    assert!(
+                        cell.raw.iter().any(|r| r.hi.expect("bounded").0 == hi.0),
+                        "{name} at σ {:.6}: merged hi {:.6} is on no component",
+                        rat_to_f64(&cell.sigma),
+                        hi.0
+                    );
+                }
+                saw_a_fold |= cell.raw.len() > cell.merged.len();
+            }
+        }
+        assert!(
+            saw_a_fold,
+            "no sample folded two components into one — `raw` is carrying nothing the merged view \
+             does not already have, so BL.1 kept nothing"
+        );
+    }
 }
